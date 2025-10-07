@@ -646,6 +646,28 @@ class TopStepXTradingBot:
         
         if symbol in tick_sizes:
             return tick_sizes[symbol]
+
+        # Try to discover tick size from contract metadata via API
+        try:
+            if self.session_token:
+                contracts = await self.get_available_contracts()  # type: ignore  # called from async contexts
+                # Find by symbol occurrence in known fields
+                for c in contracts or []:
+                    sym = (c.get("symbol") or c.get("name") or "").upper()
+                    cid = (c.get("contractId") or c.get("id") or "").upper()
+                    if symbol in sym or f".{symbol}." in cid:
+                        # check various possible keys for tick size
+                        for key in ("tickSize", "minTick", "priceIncrement", "minimumPriceIncrement", "tick"):
+                            if c.get(key):
+                                try:
+                                    ts = float(c.get(key))
+                                    if ts > 0:
+                                        logger.info(f"Discovered tick size from API for {symbol}: {ts} (key {key})")
+                                        return ts
+                                except Exception:
+                                    pass
+        except Exception as e:
+            logger.debug(f"Tick size discovery via API failed for {symbol}: {e}")
         
         # Default tick size
         logger.warning(f"Unknown symbol {symbol}, using default tick size: 0.25")
@@ -1487,6 +1509,7 @@ class TopStepXTradingBot:
             # rather than trying to get current market price, since we're placing a market order
             # that will execute at the current market price
             tick_size = self._get_tick_size(symbol)
+            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}")
             
             # For bracket orders, we calculate ticks from the entry price (which will be the market price when filled)
             # We don't need to get current market price since we're placing a market order
@@ -1520,7 +1543,7 @@ class TopStepXTradingBot:
                             if stop_loss_ticks < 0:
                                 stop_loss_ticks = -stop_loss_ticks
                         
-                        logger.info(f"Stop Loss Calculation: Entry=${entry_price}, Target=${stop_loss_price}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks}")
+                        logger.info(f"Stop Loss Calculation: Entry=${entry_price}, Target=${stop_loss_price}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks} (tick_size={tick_size})")
                         
                         # Validate tick values (TopStepX has limits)
                         if abs(stop_loss_ticks) > 1000:
@@ -1560,7 +1583,7 @@ class TopStepXTradingBot:
                             if take_profit_ticks > 0:
                                 take_profit_ticks = -take_profit_ticks
                         
-                        logger.info(f"Take Profit Calculation: Entry=${entry_price}, Target=${take_profit_price}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks}")
+                        logger.info(f"Take Profit Calculation: Entry=${entry_price}, Target=${take_profit_price}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks} (tick_size={tick_size})")
                         
                         # Validate tick values (TopStepX has limits)
                         if abs(take_profit_ticks) > 1000:
