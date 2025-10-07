@@ -1482,24 +1482,30 @@ async def select_account_interactive(bot):
 
 async def main():
     """Main function to run the webhook server"""
-    import argparse
-    
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='TopStepX TradingView Webhook Server')
-    parser.add_argument('--account-id', type=str, help='Account ID to trade on (optional)')
-    parser.add_argument('--position-size', type=int, default=1, help='Number of contracts per position (default: 1)')
-    parser.add_argument('--close-entire-at-tp1', action='store_true', help='Close entire position at TP1 instead of TP2')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=8080, help='Port to bind to (default: 8080)')
-    
-    args = parser.parse_args()
+    import os
     
     # Load environment variables
     import load_env
     
-    # Initialize trading bot
+    # Read configuration from environment variables
     api_key = os.getenv('PROJECT_X_API_KEY')
     username = os.getenv('PROJECT_X_USERNAME')
+    account_id = os.getenv('PROJECT_X_ACCOUNT_ID')
+    position_size = int(os.getenv('POSITION_SIZE', '1'))
+    close_entire_at_tp1 = os.getenv('CLOSE_ENTIRE_POSITION_AT_TP1', 'false').lower() in ('true', '1', 'yes', 'on')
+    host = os.getenv('WEBHOOK_HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', '8080'))
+    
+    # Log configuration
+    logger.info("=== WEBHOOK SERVER CONFIGURATION ===")
+    logger.info(f"API Key: {'***' + api_key[-4:] if api_key else 'Not set'}")
+    logger.info(f"Username: {username}")
+    logger.info(f"Account ID: {account_id or 'Auto-select'}")
+    logger.info(f"Position Size: {position_size} contracts")
+    logger.info(f"Close Entire at TP1: {close_entire_at_tp1}")
+    logger.info(f"Host: {host}")
+    logger.info(f"Port: {port}")
+    logger.info("=====================================")
     
     if not api_key or not username:
         logger.error("Missing API credentials. Please set PROJECT_X_API_KEY and PROJECT_X_USERNAME")
@@ -1521,14 +1527,14 @@ async def main():
     
     # Select account
     selected_account = None
-    if args.account_id:
+    if account_id:
         # Find account by ID
         for account in accounts:
-            if str(account['id']) == str(args.account_id):
+            if str(account['id']) == str(account_id):
                 selected_account = account
                 break
         if not selected_account:
-            logger.error(f"Account ID {args.account_id} not found")
+            logger.error(f"Account ID {account_id} not found")
             return
     else:
         # Use the first account
@@ -1536,17 +1542,17 @@ async def main():
     
     bot.selected_account = selected_account
     logger.info(f"Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
-    logger.info(f"Position size: {args.position_size} contracts")
-    logger.info(f"Close entire position at TP1: {args.close_entire_at_tp1}")
+    logger.info(f"Position size: {position_size} contracts")
+    logger.info(f"Close entire position at TP1: {close_entire_at_tp1}")
     
     # Start webhook server with configuration
     webhook_server = WebhookServer(
         bot, 
-        host=args.host, 
-        port=args.port,
-        account_id=args.account_id,
-        position_size=args.position_size,
-        close_entire_position_at_tp1=args.close_entire_at_tp1
+        host=host, 
+        port=port,
+        account_id=account_id,
+        position_size=position_size,
+        close_entire_position_at_tp1=close_entire_at_tp1
     )
     webhook_server.start()
     
