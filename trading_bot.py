@@ -839,38 +839,81 @@ class TopStepXTradingBot:
             
             logger.info(f"Flattening all positions on account {target_account}")
             
-            # Use the correct ProjectX Gateway API flatten endpoint
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
+            # Get all open positions first
+            positions = await self.get_open_positions(target_account)
+            if not positions:
+                logger.info("No open positions found to close")
+                print("✅ No open positions found")
+                return {"success": True, "message": "No positions to close"}
+            
+            # Close each position individually
+            closed_positions = []
+            failed_positions = []
+            
+            for position in positions:
+                position_id = position.get("id")
+                position_size = position.get("size", 0)
+                position_type = position.get("type", 0)
+                
+                if not position_id:
+                    logger.warning(f"Skipping position without ID: {position}")
+                    continue
+                
+                logger.info(f"Closing position {position_id} with size {position_size}")
+                
+                # Close the position
+                result = await self.close_position(position_id, account_id=target_account)
+                
+                if "error" in result:
+                    logger.error(f"Failed to close position {position_id}: {result['error']}")
+                    failed_positions.append({"id": position_id, "error": result["error"]})
+                else:
+                    logger.info(f"Successfully closed position {position_id}")
+                    closed_positions.append(position_id)
+            
+            # Cancel all open orders
+            logger.info("Canceling all open orders")
+            orders = await self.get_open_orders(target_account)
+            canceled_orders = []
+            failed_orders = []
+            
+            for order in orders:
+                order_id = order.get("id")
+                if not order_id:
+                    continue
+                
+                logger.info(f"Canceling order {order_id}")
+                result = await self.cancel_order(order_id, account_id=target_account)
+                
+                if "error" in result:
+                    logger.error(f"Failed to cancel order {order_id}: {result['error']}")
+                    failed_orders.append({"id": order_id, "error": result["error"]})
+                else:
+                    logger.info(f"Successfully canceled order {order_id}")
+                    canceled_orders.append(order_id)
+            
+            # Prepare result
+            result = {
+                "success": True,
+                "closed_positions": closed_positions,
+                "canceled_orders": canceled_orders,
+                "failed_positions": failed_positions,
+                "failed_orders": failed_orders,
+                "positions_count": len(closed_positions),
+                "orders_count": len(canceled_orders)
             }
             
-            # Prepare flatten request data as per ProjectX Gateway API documentation
-            flatten_data = {
-                "accountId": int(target_account)
-            }
+            if closed_positions or canceled_orders:
+                logger.info(f"Successfully closed {len(closed_positions)} positions and canceled {len(canceled_orders)} orders")
+                print(f"✅ All positions flattened successfully!")
+                print(f"   Account: {self.selected_account['name']}")
+                print(f"   Closed positions: {len(closed_positions)}")
+                print(f"   Canceled orders: {len(canceled_orders)}")
+            else:
+                logger.info("No positions or orders found to close/cancel")
+                print("✅ No positions or orders found to close/cancel")
             
-            logger.info(f"Calling /api/Order/flatten with accountId: {target_account}")
-            response = self._make_curl_request("POST", "/api/Order/flatten", data=flatten_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Flatten API call failed: {response['error']}")
-                print(f"❌ Flatten failed: {response['error']}")
-                return response
-            
-            # Check if flatten was successful
-            if response.get("success") == False:
-                error_code = response.get("errorCode", "Unknown")
-                error_message = response.get("errorMessage", "No error message")
-                logger.error(f"Flatten failed: Error Code {error_code}, Message: {error_message}")
-                print(f"❌ Flatten failed: Error Code {error_code}, Message: {error_message}")
-                return {"error": f"Flatten failed: Error Code {error_code}, Message: {error_message}"}
-            
-            logger.info(f"Positions flattened successfully: {response}")
-            print(f"✅ All positions flattened successfully!")
-            print(f"   Account: {self.selected_account['name']}")
-            return response
+            return result
             
         except Exception as e:
             logger.error(f"Failed to flatten positions: {str(e)}")
