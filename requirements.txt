@@ -1,0 +1,30 @@
+# TopStepX Trading Bot Requirements
+# Core dependencies for the trading bot
+
+# HTTP requests and API communication
+requests>=2.31.0
+
+# Async support (built into Python 3.7+)
+# asyncio is part of Python standard library
+
+# Data handling and JSON (built into Python standard library)
+# json is part of Python standard library
+
+# Logging and utilities (built into Python standard library)
+# logging, datetime, os, sys are part of Python standard library
+
+# Optional: For enhanced functionality
+websockets>=11.0.0  # For real-time data streaming (SignalR transport)
+signalrcore==0.9.5  # SignalR client for Python to consume ProjectX Market Hub (latest available)
+# Public tunneling (optional, used by start_webhook.py --tunnel ngrok)
+pyngrok>=7.1.0
+# pandas>=2.0.0       # For data analysis
+# numpy>=1.24.0       # For numerical operations
+# matplotlib>=3.7.0   # For plotting and visualization
+# ta>=0.10.0          # For technical analysis indicators
+
+# Development and testing (optional)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# flake8>=6.0.0

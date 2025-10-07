@@ -1,0 +1,3117 @@
+#!/usr/bin/env python3
+"""
+TopStepX Trading Bot - Real API Implementation
+A dynamic trading bot for TopStepX prop firm futures accounts.
+
+This bot provides:
+1. Real authentication with TopStepX ProjectX API
+2. Live account listing from API
+3. Account selection for trading
+4. Live market order placement
+"""
+
+import os
+import sys
+import asyncio
+import json
+import logging
+import subprocess
+import readline
+from typing import List, Dict, Optional
+from datetime import datetime
+from threading import Lock
+from signalrcore.hub_connection_builder import HubConnectionBuilder
+from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
+
+# Load environment variables from .env file
+import load_env
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('trading_bot.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class TopStepXTradingBot:
+    """
+    A real trading bot for TopStepX prop firm futures accounts.
+    Uses actual ProjectX API calls via cURL.
+    """
+    
+    def __init__(self, api_key: str = None, username: str = None, base_url: str = "https://api.topstepx.com"):
+        """
+        Initialize the trading bot.
+        
+        Args:
+            api_key: TopStepX API key
+            username: TopStepX username
+            base_url: TopStepX API base URL
+        """
+        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY')
+        self.username = username or os.getenv('PROJECT_X_USERNAME')
+        self.base_url = base_url
+        self.session_token = None
+        self.selected_account = None
+        # In-memory caches for quick shutdown without searching
+        # Structure: { accountId: { symbol: set([orderId, ...]) } }
+        self._cached_order_ids = {}
+        # Structure: { accountId: { symbol: set([positionId, ...]) } }
+        self._cached_position_ids = {}
+        # Real-time quote cache: { SYMBOL: { 'bid': float, 'ask': float, 'last': float, 'volume': float, 'ts': iso } }
+        self._quote_cache: Dict[str, Dict] = {}
+        self._quote_cache_lock: Lock = Lock()
+        self._market_hub = None
+        self._market_hub_connected = False
+        self._market_hub_url = os.getenv("PROJECT_X_MARKET_HUB_URL", "https://rtc.topstepx.com/hubs/market")
+        # Allow overriding hub method names via env to adapt without code change
+        self._market_hub_quote_event = os.getenv("PROJECT_X_QUOTE_EVENT", "GatewayQuote")
+        self._market_hub_subscribe_method = os.getenv("PROJECT_X_SUBSCRIBE_METHOD", "SubscribeContractQuotes")
+        self._market_hub_unsubscribe_method = os.getenv("PROJECT_X_UNSUBSCRIBE_METHOD", "UnsubscribeContractQuotes")
+        self._subscribed_symbols = set()
+        self._pending_symbols = set()
+
+    # ---------------------------
+    # SignalR Market Hub Support
+    # ---------------------------
+    async def _ensure_market_socket_started(self) -> None:
+        if self._market_hub_connected:
+            return
+        # Build headers with bearer token for auth
+        headers = {"Authorization": f"Bearer {self.session_token}"} if self.session_token else {}
+        # Websocket transport ensures low latency
+        # Append token to URL per docs, while also setting access_token_factory
+        url_with_token = self._market_hub_url
+        if self.session_token and "access_token=" not in url_with_token:
+            sep = '&' if '?' in url_with_token else '?'
+            url_with_token = f"{url_with_token}{sep}access_token={self.session_token}"
+
+        # Convert to ws/wss when using direct WebSocket transport
+        url_ws = url_with_token
+        if url_ws.startswith("https://"):
+            url_ws = "wss://" + url_ws[len("https://"):]
+        elif url_ws.startswith("http://"):
+            url_ws = "ws://" + url_ws[len("http://"):]
+
+        hub = (
+            HubConnectionBuilder()
+            .with_url(
+                url_ws,
+                options={
+                    "headers": headers,
+                    "skip_negotiation": True,
+                    "access_token_factory": (lambda: self.session_token or ""),
+                    "transport": WebsocketTransport
+                }
+            )
+            .with_automatic_reconnect({"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 1, "max_attempts": 0})
+            .build()
+        )
+
+        def on_open():
+            logger.info("SignalR Market Hub connected")
+            self._market_hub_connected = True
+            # Flush any pending subscriptions
+            try:
+                for sym in list(self._pending_symbols):
+                    cid = self._get_contract_id(sym)
+                    self._market_hub.send(self._market_hub_subscribe_method, [cid])
+                    self._subscribed_symbols.add(sym)
+                    self._pending_symbols.discard(sym)
+                    logger.info(f"Subscribed (flush) to {sym} via {cid}")
+            except Exception as e:
+                logger.debug(f"Flush subscribe failed: {e}")
+
+        def on_close():
+            logger.warning("SignalR Market Hub disconnected")
+            self._market_hub_connected = False
+
+        def on_error(err):
+            logger.error(f"SignalR Market Hub error: {err}")
+
+        def on_quote(*args):
+            try:
+                # Normalize payload across different SignalR client shapes
+                cid = ""
+                data = {}
+                if len(args) >= 2:
+                    cid = args[0] or ""
+                    data = args[1] or {}
+                elif len(args) == 1:
+                    maybe = args[0]
+                    if isinstance(maybe, dict):
+                        data = maybe
+                        cid = data.get("contractId") or ""
+                    elif isinstance(maybe, (list, tuple)) and len(maybe) >= 2:
+                        cid = maybe[0] or ""
+                        data = maybe[1] or {}
+                    else:
+                        data = {}
+                symbol = ""
+                if isinstance(cid, str) and "." in cid:
+                    parts = cid.split(".")
+                    symbol = parts[-2].upper() if len(parts) >= 2 else cid
+                if not symbol:
+                    # Fallback to symbolId in payload
+                    sym_id = (data.get("symbol") or data.get("symbolId") or "").upper()
+                    if sym_id and "." in sym_id:
+                        parts = sym_id.split(".")
+                        symbol = parts[-1].upper()
+                    elif sym_id:
+                        symbol = sym_id
+                if not symbol:
+                    return
+                with self._quote_cache_lock:
+                    entry = self._quote_cache.setdefault(symbol, {})
+                    # GatewayQuote payload fields per docs
+                    if "bestBid" in data:
+                        entry["bid"] = data.get("bestBid")
+                    if "bestAsk" in data:
+                        entry["ask"] = data.get("bestAsk")
+                    if "lastPrice" in data:
+                        entry["last"] = data.get("lastPrice")
+                    if "volume" in data:
+                        entry["volume"] = data.get("volume")
+                    entry["ts"] = datetime.utcnow().isoformat()
+            except Exception as e:
+                logger.debug(f"Failed processing quote message: {e}")
+
+        hub.on_open(on_open)
+        hub.on_close(on_close)
+        hub.on_error(on_error)
+        # Register multiple likely quote event names; env var takes precedence
+        event_names = [self._market_hub_quote_event, "GatewayQuote"]
+        seen = set()
+        for ev in event_names:
+            if ev and ev not in seen:
+                try:
+                    hub.on(ev, on_quote)
+                    seen.add(ev)
+                except Exception:
+                    pass
+
+        # Start the hub (non-blocking)
+        hub.start()
+        self._market_hub = hub
+
+        # Wait until connection opens before allowing subscriptions
+        import time
+        start = time.time()
+        while not self._market_hub_connected and time.time() - start < 10:
+            time.sleep(0.05)
+
+    async def _ensure_quote_subscription(self, symbol: str) -> None:
+        sym = symbol.upper()
+        if sym in self._subscribed_symbols:
+            return
+        if not self._market_hub_connected:
+            self._pending_symbols.add(sym)
+            logger.debug(f"Queued subscription for {sym} until hub connects")
+            return
+        try:
+            # Per docs, subscribe by contract ID
+            cid = self._get_contract_id(sym)
+            self._market_hub.send(self._market_hub_subscribe_method, [cid])
+            self._subscribed_symbols.add(sym)
+            logger.info(f"Subscribed to live quotes for {sym} via {cid}")
+        except Exception as e:
+            logger.warning(f"Failed to subscribe to quotes for {sym}: {e}")
+        
+        if not self.api_key or not self.username:
+            raise ValueError("API key and username must be provided either as parameters or environment variables")
+    
+    def _make_curl_request(self, method: str, endpoint: str, data: Dict = None, headers: Dict = None) -> Dict:
+        """
+        Make HTTP request using cURL.
+        
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            endpoint: API endpoint
+            data: Request data (for POST requests)
+            headers: Request headers
+            
+        Returns:
+            Dict: Response data
+        """
+        try:
+            url = f"{self.base_url}{endpoint}"
+            
+            # Build cURL command with sane timeouts to avoid hanging
+            curl_cmd = [
+                "curl", "-s", "-X", method,
+                "--connect-timeout", "5",
+                "--max-time", "10"
+            ]
+            
+            # Add headers
+            if headers:
+                for key, value in headers.items():
+                    curl_cmd.extend(["-H", f"{key}: {value}"])
+            
+            # Add data for POST requests
+            if data and method.upper() == "POST":
+                curl_cmd.extend(["-H", "Content-Type: application/json"])
+                curl_cmd.extend(["-d", json.dumps(data)])
+            
+            # Add URL
+            curl_cmd.append(url)
+            
+            logger.debug(f"Executing cURL command: {' '.join(curl_cmd)}")
+            
+            # Execute cURL command
+            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.error(f"cURL command failed: {result.stderr}")
+                return {"error": f"cURL failed: {result.stderr}"}
+            
+            # Parse JSON response
+            try:
+                # Handle empty response (common for successful operations)
+                if not result.stdout.strip():
+                    return {"success": True, "message": "Operation completed successfully"}
+                
+                response_data = json.loads(result.stdout)
+                return response_data
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                logger.error(f"Raw response: {result.stdout}")
+                return {"error": f"Invalid JSON response: {e}"}
+                
+        except subprocess.TimeoutExpired:
+            logger.error("cURL request timed out")
+            return {"error": "Request timed out"}
+        except Exception as e:
+            logger.error(f"cURL request failed: {str(e)}")
+            return {"error": str(e)}
+    
+    async def authenticate(self) -> bool:
+        """
+        Authenticate with the TopStepX API using username and API key.
+        
+        Returns:
+            bool: True if authentication successful, False otherwise
+        """
+        try:
+            logger.info("Authenticating with TopStepX API...")
+            
+            # Prepare login data
+            login_data = {
+                "userName": self.username,
+                "apiKey": self.api_key
+            }
+            
+            # Set headers for login request
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json"
+            }
+            
+            # Make login request
+            response = self._make_curl_request("POST", "/api/Auth/loginKey", data=login_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Authentication failed: {response['error']}")
+                return False
+            
+            # Check if login was successful
+            if response.get("success") and response.get("token"):
+                self.session_token = response["token"]
+                logger.info(f"Successfully authenticated as: {self.username}")
+                logger.info(f"Session token obtained: {self.session_token[:20]}...")
+                # Best-effort start market hub after auth for real-time quotes
+                try:
+                    await self._ensure_market_socket_started()
+                except Exception as sock_err:
+                    logger.warning(f"Failed to start market hub (will fallback to REST): {sock_err}")
+                return True
+            else:
+                error_msg = response.get("errorMessage", "Unknown error")
+                logger.error(f"Authentication failed: {error_msg}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Authentication failed: {str(e)}")
+            return False
+    
+    async def list_accounts(self) -> List[Dict]:
+        """
+        List all active accounts for the authenticated user.
+        
+        Returns:
+            List[Dict]: List of account information
+        """
+        try:
+            logger.info("Fetching active accounts from TopStepX API...")
+            
+            if not self.session_token:
+                logger.error("No session token available. Please authenticate first.")
+                return []
+            
+            # Make real API call to get accounts using session token
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Search for active accounts
+            search_data = {
+                "onlyActiveAccounts": True
+            }
+            
+            response = self._make_curl_request("POST", "/api/Account/search", data=search_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch accounts: {response['error']}")
+                return []
+            
+            # Parse the response - adjust based on actual API response structure
+            if isinstance(response, list):
+                accounts = response
+            elif isinstance(response, dict) and "accounts" in response:
+                accounts = response["accounts"]
+            elif isinstance(response, dict) and "data" in response:
+                accounts = response["data"]
+            elif isinstance(response, dict) and "result" in response:
+                accounts = response["result"]
+            else:
+                logger.warning(f"Unexpected API response format: {response}")
+                accounts = []
+            
+            # Normalize account data structure
+            normalized_accounts = []
+            for account in accounts:
+                # Determine account type from name or other fields
+                account_name = account.get("name") or account.get("accountName", "Unknown Account")
+                account_type = "unknown"
+                
+                if "PRAC" in account_name.upper():
+                    account_type = "practice"
+                elif "150KTC" in account_name.upper():
+                    account_type = "eval"
+                elif "EXPRESS" in account_name.upper():
+                    account_type = "funded"
+                elif "EVAL" in account_name.upper():
+                    account_type = "evaluation"
+                
+                normalized_account = {
+                    "id": account.get("id") or account.get("accountId"),
+                    "name": account_name,
+                    "status": account.get("status", "active"),
+                    "balance": account.get("balance", 0.0),
+                    "currency": account.get("currency", "USD"),
+                    "account_type": account_type
+                }
+                normalized_accounts.append(normalized_account)
+            
+            logger.info(f"Found {len(normalized_accounts)} active accounts")
+            return normalized_accounts
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch accounts: {str(e)}")
+            return []
+    
+    def display_accounts(self, accounts: List[Dict]) -> None:
+        """
+        Display accounts in a formatted table.
+        
+        Args:
+            accounts: List of account dictionaries
+        """
+        if not accounts:
+            print("No accounts found.")
+            return
+        
+        print("\n" + "="*80)
+        print("ACTIVE ACCOUNTS")
+        print("="*80)
+        print(f"{'#':<3} {'Account Name':<30} {'ID':<12} {'Status':<10} {'Balance':<12} {'Type':<12}")
+        print("-"*80)
+        
+        for idx, account in enumerate(accounts, 1):
+            balance = f"${account.get('balance', 0):,.2f}"
+            print(f"{idx:<3} {account.get('name', 'N/A'):<30} {account.get('id', 'N/A'):<12} "
+                  f"{account.get('status', 'N/A'):<10} {balance:<12} {account.get('account_type', 'N/A'):<12}")
+        
+        print("="*80)
+    
+    def select_account(self, accounts: List[Dict]) -> Optional[Dict]:
+        """
+        Allow user to select an account for trading.
+        
+        Args:
+            accounts: List of account dictionaries
+            
+        Returns:
+            Optional[Dict]: Selected account or None if invalid selection
+        """
+        if not accounts:
+            print("No accounts available for selection.")
+            return None
+        
+        while True:
+            try:
+                print(f"\nSelect an account to trade on (1-{len(accounts)}, or 'q' to quit):")
+                choice = input("Enter your choice: ").strip().lower()
+                
+                if choice == 'q':
+                    print("Exiting account selection.")
+                    return None
+                
+                account_index = int(choice) - 1
+                
+                if 0 <= account_index < len(accounts):
+                    selected_account = accounts[account_index]
+                    self.selected_account = selected_account
+                    
+                    print(f"\n✓ Selected Account: {selected_account['name']}")
+                    print(f"  Account ID: {selected_account['id']}")
+                    print(f"  Balance: ${selected_account.get('balance', 0):,.2f}")
+                    print(f"  Status: {selected_account.get('status', 'N/A')}")
+                    
+                    return selected_account
+                else:
+                    print(f"Invalid choice. Please enter a number between 1 and {len(accounts)}.")
+                    
+            except ValueError:
+                print("Invalid input. Please enter a number or 'q' to quit.")
+            except KeyboardInterrupt:
+                print("\nExiting account selection.")
+                return None
+    
+    async def get_account_balance(self, account_id: str = None) -> Optional[float]:
+        """
+        Get the current balance for the selected account.
+        Since we already have balance info from account listing, we'll use that.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Optional[float]: Account balance or None if error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                logger.error("No account selected")
+                return None
+            
+            # Use balance from selected account (already fetched during account listing)
+            if self.selected_account and self.selected_account['id'] == target_account:
+                balance = self.selected_account.get('balance', 0.0)
+                logger.info(f"Using cached balance for account {target_account}: ${balance:,.2f}")
+                return float(balance)
+            
+            # If we need to fetch balance for a different account, refresh account list
+            logger.info(f"Refreshing account list to get balance for account {target_account}")
+            accounts = await self.list_accounts()
+            
+            for account in accounts:
+                if account['id'] == target_account:
+                    balance = account.get('balance', 0.0)
+                    logger.info(f"Found balance for account {target_account}: ${balance:,.2f}")
+                    return float(balance)
+            
+            logger.warning(f"Account {target_account} not found in account list")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get account balance: {str(e)}")
+            return None
+    
+    async def get_account_info(self, account_id: str = None) -> Dict:
+        """
+        Get detailed account information including positions and orders.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Account information or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Fetching account info for account {target_account}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Try different account info endpoints
+            endpoints_to_try = [
+                f"/api/Account/{target_account}",
+                f"/api/Account/{target_account}/info",
+                f"/api/Account/{target_account}/details",
+                f"/api/Account/{target_account}/summary"
+            ]
+            
+            for endpoint in endpoints_to_try:
+                try:
+                    logger.info(f"Trying account info endpoint: {endpoint}")
+                    response = self._make_curl_request("GET", endpoint, headers=headers)
+                    
+                    if "error" not in response and response:
+                        logger.info(f"Found account info from {endpoint}: {response}")
+                        return response
+                    else:
+                        logger.warning(f"Endpoint {endpoint} failed: {response}")
+                        continue
+                        
+                except Exception as e:
+                    logger.warning(f"Endpoint {endpoint} failed with exception: {e}")
+                    continue
+            
+            return {"error": "Could not fetch account info from any endpoint"}
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch account info: {str(e)}")
+            return {"error": str(e)}
+    
+    def _get_contract_id(self, symbol: str) -> str:
+        """
+        Convert trading symbol to TopStepX contract ID format.
+        
+        Args:
+            symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
+            
+        Returns:
+            str: Contract ID in TopStepX format
+        """
+        symbol = symbol.upper()
+        
+        # Common contract mappings for TopStepX
+        contract_mappings = {
+            "ES": "CON.F.US.ES.Z25",      # E-mini S&P 500
+            "MES": "CON.F.US.MES.Z25",    # Micro E-mini S&P 500
+            "NQ": "CON.F.US.NQ.Z25",      # E-mini NASDAQ-100
+            "MNQ": "CON.F.US.MNQ.Z25",    # Micro E-mini NASDAQ-100
+            "YM": "CON.F.US.YM.Z25",       # E-mini Dow Jones
+            "MYM": "CON.F.US.MYM.Z25",    # Micro E-mini Dow Jones
+            "RTY": "CON.F.US.RTY.Z25",    # E-mini Russell 2000
+            "M2K": "CON.F.US.M2K.Z25",    # Micro E-mini Russell 2000
+        }
+        
+        if symbol in contract_mappings:
+            return contract_mappings[symbol]
+        
+        # If not found, try to construct it
+        logger.warning(f"Unknown symbol {symbol}, using generic format")
+        return f"CON.F.US.{symbol}.Z25"
+    
+    def _get_tick_size(self, symbol: str) -> float:
+        """
+        Get the tick size for a trading symbol.
+        
+        Args:
+            symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
+            
+        Returns:
+            float: Tick size for the symbol
+        """
+        symbol = symbol.upper()
+        
+        # Tick sizes for common futures contracts
+        tick_sizes = {
+            "ES": 0.25,      # E-mini S&P 500
+            "MES": 0.25,     # Micro E-mini S&P 500
+            "NQ": 0.25,      # E-mini NASDAQ-100
+            "MNQ": 0.25,     # Micro E-mini NASDAQ-100
+            "YM": 1.0,       # E-mini Dow Jones
+            "MYM": 0.5,      # Micro E-mini Dow Jones (0.5 point ticks)
+            "RTY": 0.1,      # E-mini Russell 2000
+            "M2K": 0.1,      # Micro E-mini Russell 2000
+            "CL": 0.01,      # Crude Oil
+            "NG": 0.001,     # Natural Gas
+            "GC": 0.1,       # Gold
+            "SI": 0.005,     # Silver
+        }
+        
+        if symbol in tick_sizes:
+            return tick_sizes[symbol]
+        
+        # Default tick size
+        logger.warning(f"Unknown symbol {symbol}, using default tick size: 0.25")
+        return 0.25
+    
+    async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
+                                stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
+                                limit_price: float = None) -> Dict:
+        """
+        Place a market or limit order on the selected account.
+        
+        Args:
+            symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            account_id: Account ID (uses selected account if not provided)
+            stop_loss_ticks: Optional stop loss in ticks
+            take_profit_ticks: Optional take profit in ticks
+            order_type: "market" or "limit"
+            limit_price: Price for limit orders (required if order_type="limit")
+            
+        Returns:
+            Dict: Order response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            if side.upper() not in ["BUY", "SELL"]:
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            if order_type.lower() not in ["market", "limit"]:
+                return {"error": "Order type must be 'market' or 'limit'"}
+            
+            if order_type.lower() == "limit" and limit_price is None:
+                return {"error": "Limit price is required for limit orders"}
+            
+            logger.info(f"Placing {side} {order_type} order for {quantity} {symbol} on account {target_account}")
+            if order_type.lower() == "limit":
+                logger.info(f"Limit price: {limit_price}")
+            
+            # Convert side to numeric value (TopStepX API uses numbers)
+            side_value = 0 if side.upper() == "BUY" else 1
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            # Determine order type (TopStepX API uses numbers)
+            order_type_value = 1 if order_type.lower() == "limit" else 2  # 1 = Limit, 2 = Market
+            
+            # Prepare order data for TopStepX API
+            order_data = {
+                "accountId": int(target_account),  # Ensure it's an integer
+                "contractId": contract_id,
+                "type": order_type_value,  # 1 = Limit order, 2 = Market order
+                "side": side_value,  # 0 = Buy, 1 = Sell
+                "size": quantity,
+                "limitPrice": limit_price if order_type.lower() == "limit" else None,
+                "stopPrice": None,
+                "trailPrice": None,
+                "customTag": None
+            }
+            
+            # Add bracket orders if specified
+            if stop_loss_ticks is not None or take_profit_ticks is not None:
+                if stop_loss_ticks is not None:
+                    order_data["stopLossBracket"] = {
+                        "ticks": stop_loss_ticks,
+                        "type": 4  # Stop loss type
+                    }
+                
+                if take_profit_ticks is not None:
+                    order_data["takeProfitBracket"] = {
+                        "ticks": take_profit_ticks,
+                        "type": 1  # Take profit type
+                    }
+            
+            # Make real API call to place order using session token
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to place order: {response['error']}")
+                return response
+            
+            # Check if order was actually successful
+            if response.get("success") == False:
+                error_code = response.get("errorCode", "Unknown")
+                error_message = response.get("errorMessage", "No error message")
+                logger.error(f"Order failed: Error Code {error_code}, Message: {error_message}")
+                return {"error": f"Order failed: Error Code {error_code}, Message: {error_message}"}
+            
+            logger.info(f"Order placed successfully: {response}")
+
+            # Cache any discovered order/position IDs for fast future cancellations/closures
+            try:
+                self._cache_ids_from_response(response, target_account, symbol)
+            except Exception as cache_err:
+                logger.warning(f"Failed to cache IDs from order response: {cache_err}")
+
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to place order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_available_contracts(self) -> List[Dict]:
+        """
+        Get available trading contracts.
+        
+        Returns:
+            List[Dict]: List of available contracts
+        """
+        try:
+            logger.info("Fetching available contracts...")
+            
+            if not self.session_token:
+                logger.error("No session token available. Please authenticate first.")
+                return []
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            response = self._make_curl_request("GET", "/api/Contract/list", headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch contracts: {response['error']}")
+                return []
+            
+            # Parse contracts from response
+            if isinstance(response, list):
+                contracts = response
+            elif isinstance(response, dict) and "contracts" in response:
+                contracts = response["contracts"]
+            elif isinstance(response, dict) and "data" in response:
+                contracts = response["data"]
+            elif isinstance(response, dict) and "result" in response:
+                contracts = response["result"]
+            else:
+                logger.warning(f"Unexpected contracts response format: {response}")
+                contracts = []
+            
+            logger.info(f"Found {len(contracts)} available contracts")
+            return contracts
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch contracts: {str(e)}")
+            return []
+    
+    async def flatten_all_positions(self, interactive: bool = True) -> Dict:
+        """
+        Close all open positions and cancel all open orders on the selected account.
+        
+        Args:
+            interactive: If True, ask for confirmation. If False, proceed automatically.
+        
+        Returns:
+            Dict: Flatten response or error
+        """
+        try:
+            if not self.selected_account:
+                print("❌ No account selected")
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                print("❌ No session token available. Please authenticate first.")
+                return {"error": "No session token available"}
+            
+            target_account = self.selected_account['id']
+            print(f"\n⚠️  FLATTEN ALL POSITIONS")
+            print(f"   Account: {self.selected_account['name']}")
+            print(f"   This will close ALL positions and cancel ALL orders!")
+            
+            if interactive:
+                confirm = input("   Are you sure? Type 'FLATTEN' to confirm: ").strip()
+                if confirm != 'FLATTEN':
+                    print("❌ Flatten cancelled")
+                    return {"error": "Cancelled by user"}
+            else:
+                print("   Auto-confirming for webhook execution...")
+            
+            logger.info(f"Flattening all positions on account {target_account}")
+            
+            # Use the correct ProjectX Gateway API flatten endpoint
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Prepare flatten request data as per ProjectX Gateway API documentation
+            flatten_data = {
+                "accountId": int(target_account)
+            }
+            
+            logger.info(f"Calling /api/Order/flatten with accountId: {target_account}")
+            response = self._make_curl_request("POST", "/api/Order/flatten", data=flatten_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Flatten API call failed: {response['error']}")
+                print(f"❌ Flatten failed: {response['error']}")
+                return response
+            
+            # Check if flatten was successful
+            if response.get("success") == False:
+                error_code = response.get("errorCode", "Unknown")
+                error_message = response.get("errorMessage", "No error message")
+                logger.error(f"Flatten failed: Error Code {error_code}, Message: {error_message}")
+                print(f"❌ Flatten failed: Error Code {error_code}, Message: {error_message}")
+                return {"error": f"Flatten failed: Error Code {error_code}, Message: {error_message}"}
+            
+            logger.info(f"Positions flattened successfully: {response}")
+            print(f"✅ All positions flattened successfully!")
+            print(f"   Account: {self.selected_account['name']}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to flatten positions: {str(e)}")
+            print(f"❌ Flatten failed: {str(e)}")
+            return {"error": str(e)}
+    
+    # ============================================================================
+    # NATIVE TOPSTEPX API METHODS - POSITION MANAGEMENT
+    # ============================================================================
+    
+    async def get_open_positions(self, account_id: str = None) -> List[Dict]:
+        """
+        Get all open positions for the selected account.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            List[Dict]: List of open positions
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                logger.error("No account selected")
+                return []
+            
+            if not self.session_token:
+                logger.error("No session token available. Please authenticate first.")
+                return []
+            
+            logger.info(f"Fetching open positions for account {target_account}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Use the official TopStepX Gateway API for positions
+            # Based on https://gateway.docs.projectx.com/docs/api-reference/positions/search-open-positions
+            search_data = {
+                "accountId": int(target_account)
+            }
+            
+            logger.info(f"Requesting open positions for account {target_account} using TopStepX Gateway API")
+            logger.info(f"Request data: {search_data}")
+            
+            # Call the official TopStepX Gateway API
+            response = self._make_curl_request("POST", "/api/Position/searchOpen", data=search_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"TopStepX Gateway API failed: {response['error']}")
+                return []
+            
+            if not response.get("success"):
+                logger.error(f"TopStepX Gateway API returned error: {response}")
+                return []
+            
+            positions = response.get("positions", [])
+            if not positions:
+                logger.info(f"No open positions found for account {target_account}")
+                return []
+            
+            logger.info(f"Successfully found {len(positions)} open positions from TopStepX Gateway API")
+            logger.info(f"Positions data: {positions}")
+            
+            return positions
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch positions: {str(e)}")
+            return []
+
+    # ============================================================================
+    # ID CACHE HELPERS
+    # ============================================================================
+
+    def _cache_ids_from_response(self, response: Dict, account_id: str, symbol: str) -> None:
+        """Extract and cache order and position IDs from arbitrary API responses."""
+        def collect_ids(obj, orders, positions):
+            if isinstance(obj, dict):
+                # Common keys for IDs
+                for key, value in obj.items():
+                    lk = key.lower()
+                    if lk in ("id", "orderid", "order_id") and isinstance(value, (str, int)):
+                        orders.add(str(value))
+                    if lk in ("positionid", "position_id") and isinstance(value, (str, int)):
+                        positions.add(str(value))
+                    # Recurse into nested structures
+                    collect_ids(value, orders, positions)
+            elif isinstance(obj, list):
+                for item in obj:
+                    collect_ids(item, orders, positions)
+
+        order_ids, position_ids = set(), set()
+        collect_ids(response, order_ids, position_ids)
+
+        if order_ids:
+            acct_map = self._cached_order_ids.setdefault(str(account_id), {})
+            sym_set = acct_map.setdefault(symbol.upper(), set())
+            sym_set.update(str(oid) for oid in order_ids)
+            logger.info(f"Cached {len(order_ids)} order IDs for {symbol} on account {account_id}")
+        if position_ids:
+            acct_map = self._cached_position_ids.setdefault(str(account_id), {})
+            sym_set = acct_map.setdefault(symbol.upper(), set())
+            sym_set.update(str(pid) for pid in position_ids)
+            logger.info(f"Cached {len(position_ids)} position IDs for {symbol} on account {account_id}")
+
+    async def cancel_cached_orders(self, account_id: str = None, symbol: str = None) -> Dict:
+        """Cancel cached orders quickly without searching; returns details of attempts."""
+        target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+        if not target_account:
+            return {"error": "No account selected"}
+        acct_map = self._cached_order_ids.get(str(target_account), {})
+        symbols = [symbol.upper()] if symbol else list(acct_map.keys())
+        canceled, failed = [], []
+        for sym in symbols:
+            ids = list(acct_map.get(sym, set()))
+            for oid in ids:
+                result = await self.cancel_order(oid, account_id=target_account)
+                if "error" in result:
+                    failed.append(oid)
+                else:
+                    canceled.append(oid)
+                    acct_map[sym].discard(oid)
+        return {"canceled": canceled, "failed": failed}
+
+    async def close_cached_positions(self, account_id: str = None, symbol: str = None) -> Dict:
+        """Close cached positions quickly without searching; returns details of attempts."""
+        target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+        if not target_account:
+            return {"error": "No account selected"}
+        acct_map = self._cached_position_ids.get(str(target_account), {})
+        symbols = [symbol.upper()] if symbol else list(acct_map.keys())
+        closed, failed = [], []
+        for sym in symbols:
+            ids = list(acct_map.get(sym, set()))
+            for pid in ids:
+                result = await self.close_position(pid, account_id=target_account)
+                if "error" in result:
+                    failed.append(pid)
+                else:
+                    closed.append(pid)
+                    acct_map[sym].discard(pid)
+        return {"closed": closed, "failed": failed}
+    
+    async def get_position_details(self, position_id: str, account_id: str = None) -> Dict:
+        """
+        Get detailed information about a specific position.
+        
+        Args:
+            position_id: Position ID
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Position details or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Fetching position details for position {position_id}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            response = self._make_curl_request("GET", f"/api/Position/{position_id}", headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch position details: {response['error']}")
+                return response
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch position details: {str(e)}")
+            return {"error": str(e)}
+    
+    async def close_position(self, position_id: str, quantity: int = None, account_id: str = None) -> Dict:
+        """
+        Close a specific position or part of it.
+        
+        Args:
+            position_id: Position ID to close
+            quantity: Quantity to close (None for entire position)
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Close response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Closing position {position_id} on account {target_account}")
+            if quantity:
+                logger.info(f"Closing {quantity} contracts")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Get the contract ID for this position
+            positions = await self.get_open_positions(target_account)
+            contract_id = None
+            for pos in positions:
+                if str(pos.get('id')) == str(position_id):
+                    contract_id = pos.get('contractId')
+                    break
+            
+            if not contract_id:
+                return {"error": f"Could not find contract ID for position {position_id}"}
+            
+            close_data = {
+                "accountId": int(target_account),
+                "contractId": contract_id
+            }
+            
+            if quantity:
+                close_data["quantity"] = quantity
+            
+            response = self._make_curl_request("POST", "/api/Position/closeContract", data=close_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to close position: {response['error']}")
+                return response
+            
+            logger.info(f"Position closed successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to close position: {str(e)}")
+            return {"error": str(e)}
+    
+    # ============================================================================
+    # NATIVE TOPSTEPX API METHODS - ORDER MANAGEMENT
+    # ============================================================================
+    
+    async def get_open_orders(self, account_id: str = None) -> List[Dict]:
+        """
+        Get all open orders for the selected account.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            List[Dict]: List of open orders
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                logger.error("No account selected")
+                return []
+            
+            if not self.session_token:
+                logger.error("No session token available. Please authenticate first.")
+                return []
+            
+            logger.info(f"Fetching open orders for account {target_account}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Use the official TopStepX Gateway API for orders
+            # Try the standard order search endpoint with proper data
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            search_data = {
+                "accountId": int(target_account),
+                "startTimestamp": start_time.isoformat(),
+                "endTimestamp": now.isoformat(),
+                "request": {
+                    "accountId": int(target_account),
+                    "status": "Open"
+                }
+            }
+            
+            logger.info(f"Requesting open orders for account {target_account} using TopStepX Gateway API")
+            logger.info(f"Request data: {search_data}")
+            
+            # Call the official TopStepX Gateway API
+            response = self._make_curl_request("POST", "/api/Order/search", data=search_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"TopStepX Gateway API failed: {response['error']}")
+                return []
+            
+            if not response.get("success"):
+                logger.error(f"TopStepX Gateway API returned error: {response}")
+                return []
+            
+            # Check for different possible order data fields
+            orders = []
+            for field in ["orders", "data", "result", "items", "list"]:
+                if field in response and isinstance(response[field], list):
+                    orders = response[field]
+                    break
+            
+            if not orders:
+                logger.info(f"No open orders found for account {target_account}")
+                return []
+            
+            total_orders = len(orders)
+            # Filter strictly to OPEN orders (status == 1)
+            open_only = [o for o in orders if o.get("status") == 1]
+            logger.info(f"Orders returned: {total_orders}; OPEN filtered: {len(open_only)}")
+            if total_orders != len(open_only):
+                logger.debug(f"Filtered out non-open orders; first 3 removed examples: {[o for o in orders if o.get('status') != 1][:3]}")
+            logger.info(f"Open Orders data: {open_only}")
+            
+            return open_only
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch orders: {str(e)}")
+            return []
+    
+    async def cancel_order(self, order_id: str, account_id: str = None) -> Dict:
+        """
+        Cancel a specific order.
+        
+        Args:
+            order_id: Order ID to cancel
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Cancel response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Canceling order {order_id} on account {target_account}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            cancel_data = {
+                "orderId": order_id,
+                "accountId": int(target_account)
+            }
+            
+            response = self._make_curl_request("POST", "/api/Order/cancel", data=cancel_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to cancel order: {response['error']}")
+                return response
+            
+            logger.info(f"Order canceled successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to cancel order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def modify_order(self, order_id: str, new_quantity: int = None, new_price: float = None, 
+                          account_id: str = None, order_type: int = None) -> Dict:
+        """
+        Modify an existing order.
+        
+        Args:
+            order_id: Order ID to modify
+            new_quantity: New quantity (None to keep current)
+            new_price: New price (None to keep current)
+            account_id: Account ID (uses selected account if not provided)
+            order_type: Order type (1=Limit, 4=Stop, etc.) to determine price field
+            
+        Returns:
+            Dict: Modify response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Modifying order {order_id} on account {target_account}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            modify_data = {
+                "orderId": order_id,
+                "accountId": int(target_account)
+            }
+            
+            if new_quantity is not None:
+                modify_data["size"] = new_quantity  # Use 'size' field for TopStepX API
+            if new_price is not None:
+                # Determine price field based on order type
+                if order_type == 4:  # Stop order
+                    modify_data["stopPrice"] = new_price
+                else:  # Limit order or other types
+                    modify_data["limitPrice"] = new_price
+            
+            response = self._make_curl_request("POST", "/api/Order/modify", data=modify_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to modify order: {response['error']}")
+                return response
+            
+            logger.info(f"Order modified successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to modify order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_order_history(self, account_id: str = None, limit: int = 100) -> List[Dict]:
+        """
+        Get order history for the selected account.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            limit: Maximum number of orders to return
+            
+        Returns:
+            List[Dict]: List of historical orders
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                logger.error("No account selected")
+                return []
+            
+            if not self.session_token:
+                logger.error("No session token available. Please authenticate first.")
+                return []
+            
+            logger.info(f"Fetching order history for account {target_account}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Get order history
+            search_data = {
+                "accountId": int(target_account),
+                "limit": limit
+            }
+            
+            response = self._make_curl_request("POST", "/api/Order/history", data=search_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch order history: {response['error']}")
+                return []
+            
+            # Parse orders from response
+            if isinstance(response, list):
+                orders = response
+            elif isinstance(response, dict) and "orders" in response:
+                orders = response["orders"]
+            elif isinstance(response, dict) and "data" in response:
+                orders = response["data"]
+            elif isinstance(response, dict) and "result" in response:
+                orders = response["result"]
+            else:
+                logger.warning(f"Unexpected order history response format: {response}")
+                orders = []
+            
+            logger.info(f"Found {len(orders)} historical orders")
+            return orders
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch order history: {str(e)}")
+            return []
+    
+    # ============================================================================
+    # NATIVE TOPSTEPX API METHODS - BRACKET ORDER SYSTEM
+    # ============================================================================
+    
+    async def create_bracket_order(self, symbol: str, side: str, quantity: int, 
+                                 stop_loss_price: float = None, take_profit_price: float = None,
+                                 stop_loss_ticks: int = None, take_profit_ticks: int = None,
+                                 account_id: str = None) -> Dict:
+        """
+        Create a native TopStepX bracket order with linked stop loss and take profit.
+        Uses the same approach as the working place_market_order method.
+        
+        Args:
+            symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            stop_loss_price: Stop loss price (optional if stop_loss_ticks provided)
+            take_profit_price: Take profit price (optional if take_profit_price provided)
+            stop_loss_ticks: Stop loss in ticks (optional if stop_loss_price provided)
+            take_profit_ticks: Take profit in ticks (optional if take_profit_price provided)
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Bracket order response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            if side.upper() not in ["BUY", "SELL"]:
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            logger.info(f"Creating bracket order for {side} {quantity} {symbol} on account {target_account}")
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            # Convert side to numeric value
+            side_value = 0 if side.upper() == "BUY" else 1
+            
+            # Prepare order data using the same format as place_market_order
+            order_data = {
+                "accountId": int(target_account),
+                "contractId": contract_id,
+                "type": 2,  # Market order for entry
+                "side": side_value,
+                "size": quantity,
+                "limitPrice": None,
+                "stopPrice": None,
+                "trailPrice": None,
+                "customTag": None
+            }
+            
+            # For bracket orders, we should use the entry price as the reference point
+            # rather than trying to get current market price, since we're placing a market order
+            # that will execute at the current market price
+            tick_size = self._get_tick_size(symbol)
+            
+            # For bracket orders, we calculate ticks from the entry price (which will be the market price when filled)
+            # We don't need to get current market price since we're placing a market order
+            
+            # Calculate stop loss ticks from entry price
+            if stop_loss_price is not None and stop_loss_ticks is None:
+                try:
+                    # Prefer bid/ask aligned to side for better precision
+                    quote = await self.get_market_quote(symbol)
+                    if "error" not in quote and (quote.get("bid") or quote.get("ask") or quote.get("last")):
+                        if side.upper() == "BUY":
+                            entry_price = float(quote.get("ask") or quote.get("last"))
+                        else:
+                            entry_price = float(quote.get("bid") or quote.get("last"))
+                        logger.info(f"Using current market price as entry: ${entry_price}")
+                        
+                        if side.upper() == "BUY":
+                            # For BUY orders, stop loss should be below entry price
+                            # TopStepX expects negative ticks for long stop loss
+                            price_diff = entry_price - stop_loss_price
+                            stop_loss_ticks = int(price_diff / tick_size)
+                            # Ensure negative ticks for long stop loss
+                            if stop_loss_ticks > 0:
+                                stop_loss_ticks = -stop_loss_ticks
+                        else:
+                            # For SELL orders, stop loss should be above entry price
+                            # TopStepX expects positive ticks for short stop loss
+                            price_diff = stop_loss_price - entry_price
+                            stop_loss_ticks = int(price_diff / tick_size)
+                            # Ensure positive ticks for short stop loss
+                            if stop_loss_ticks < 0:
+                                stop_loss_ticks = -stop_loss_ticks
+                        
+                        logger.info(f"Stop Loss Calculation: Entry=${entry_price}, Target=${stop_loss_price}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks}")
+                        
+                        # Validate tick values (TopStepX has limits)
+                        if abs(stop_loss_ticks) > 1000:
+                            logger.warning(f"Stop loss ticks ({stop_loss_ticks}) exceeds 1000 limit, capping at 1000")
+                            stop_loss_ticks = 1000 if stop_loss_ticks > 0 else -1000
+                    else:
+                        logger.error(f"Could not get market price for {symbol}")
+                        return {"error": f"Could not get market price for {symbol}. Market data is required for bracket orders."}
+                except Exception as e:
+                    logger.error(f"Failed to calculate stop loss ticks: {e}")
+                    return {"error": f"Failed to calculate stop loss ticks: {e}"}
+            
+            # Calculate take profit ticks from entry price
+            if take_profit_price is not None and take_profit_ticks is None:
+                try:
+                    quote = await self.get_market_quote(symbol)
+                    if "error" not in quote and (quote.get("bid") or quote.get("ask") or quote.get("last")):
+                        if side.upper() == "BUY":
+                            entry_price = float(quote.get("ask") or quote.get("last"))
+                        else:
+                            entry_price = float(quote.get("bid") or quote.get("last"))
+                        
+                        if side.upper() == "BUY":
+                            # For BUY orders, take profit should be above entry price
+                            # TopStepX expects positive ticks for long take profit
+                            price_diff = take_profit_price - entry_price
+                            take_profit_ticks = int(price_diff / tick_size)
+                            # Ensure positive ticks for long take profit
+                            if take_profit_ticks < 0:
+                                take_profit_ticks = -take_profit_ticks
+                        else:
+                            # For SELL orders, take profit should be below entry price
+                            # TopStepX expects negative ticks for short take profit
+                            price_diff = entry_price - take_profit_price
+                            take_profit_ticks = int(price_diff / tick_size)
+                            # Ensure negative ticks for short take profit
+                            if take_profit_ticks > 0:
+                                take_profit_ticks = -take_profit_ticks
+                        
+                        logger.info(f"Take Profit Calculation: Entry=${entry_price}, Target=${take_profit_price}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks}")
+                        
+                        # Validate tick values (TopStepX has limits)
+                        if abs(take_profit_ticks) > 1000:
+                            logger.warning(f"Take profit ticks ({take_profit_ticks}) exceeds 1000 limit, capping at 1000")
+                            take_profit_ticks = 1000 if take_profit_ticks > 0 else -1000
+                    else:
+                        logger.error(f"Could not get market price for {symbol}")
+                        return {"error": f"Could not get market price for {symbol}. Market data is required for bracket orders."}
+                except Exception as e:
+                    logger.error(f"Failed to calculate take profit ticks: {e}")
+                    return {"error": f"Failed to calculate take profit ticks: {e}"}
+            
+            # Add bracket orders using the same format as place_market_order
+            if stop_loss_ticks is not None:
+                order_data["stopLossBracket"] = {
+                    "ticks": stop_loss_ticks,
+                    "type": 4  # Stop loss type
+                }
+                logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks")
+            
+            if take_profit_ticks is not None:
+                order_data["takeProfitBracket"] = {
+                    "ticks": take_profit_ticks,
+                    "type": 1  # Take profit type
+                }
+                logger.info(f"Added take profit bracket: {take_profit_ticks} ticks")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Use the same endpoint as place_market_order
+            response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to create bracket order: {response['error']}")
+                return response
+            
+            # Check if order was actually successful
+            if response.get("success") == False:
+                error_code = response.get("errorCode", "Unknown")
+                error_message = response.get("errorMessage", "No error message")
+                logger.error(f"Bracket order failed: Error Code {error_code}, Message: {error_message}")
+                
+                # If bracket order fails due to tick limits, try a regular market order
+                if "ticks" in error_message.lower() and "1000" in error_message:
+                    logger.warning("Bracket order failed due to tick limits, falling back to regular market order")
+                    
+                    # Place a regular market order without brackets
+                    fallback_result = await self.place_market_order(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        account_id=target_account
+                    )
+                    
+                    if "error" not in fallback_result:
+                        logger.info("Fallback market order placed successfully")
+                        return {
+                            "success": True,
+                            "order_result": fallback_result,
+                            "warning": "Bracket order failed due to tick limits, placed regular market order instead"
+                        }
+                    else:
+                        logger.error(f"Fallback market order also failed: {fallback_result['error']}")
+                        return {"error": f"Both bracket order and fallback market order failed. Bracket: {error_message}, Market: {fallback_result['error']}"}
+                else:
+                    return {"error": f"Bracket order failed: Error Code {error_code}, Message: {error_message}"}
+            
+            logger.info(f"Bracket order created successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to create bracket order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_linked_orders(self, position_id: str, account_id: str = None) -> List[Dict]:
+        """
+        Get all orders linked to a specific position.
+        
+        Args:
+            position_id: Position ID
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            List[Dict]: List of linked orders
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Fetching linked orders for position {position_id}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Use the official TopStepX Gateway API for orders
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            search_data = {
+                "accountId": int(target_account),
+                "startTimestamp": start_time.isoformat(),
+                "endTimestamp": now.isoformat(),
+                "request": {
+                    "accountId": int(target_account),
+                    "status": "Open"
+                }
+            }
+            
+            logger.info(f"Requesting linked orders for position {position_id} using TopStepX Gateway API")
+            logger.info(f"Request data: {search_data}")
+            
+            # Call the official TopStepX Gateway API
+            response = self._make_curl_request("POST", "/api/Order/search", data=search_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"TopStepX Gateway API failed: {response['error']}")
+                return []
+            
+            if not response.get("success"):
+                logger.error(f"TopStepX Gateway API returned error: {response}")
+                return []
+            
+            # Check for different possible order data fields
+            orders = []
+            for field in ["orders", "data", "result", "items", "list"]:
+                if field in response and isinstance(response[field], list):
+                    orders = response[field]
+                    break
+            
+            # Filter orders that are linked to this position
+            # Since we don't have direct position linking, we'll find orders for the same contract
+            # that are likely bracket orders (stop loss and take profit)
+            linked_orders = []
+            position_contract = None
+            
+            # Get the contract ID for the position
+            positions = await self.get_open_positions(target_account)
+            for pos in positions:
+                if str(pos.get('id')) == str(position_id):
+                    position_contract = pos.get('contractId')
+                    break
+            
+            if not position_contract:
+                logger.error(f"Could not find contract for position {position_id}")
+                return []
+            
+            for order in orders:
+                order_contract = order.get('contractId', '')
+                order_status = order.get('status', 0)
+                custom_tag = order.get('customTag', '')
+                order_type = order.get('type', 0)
+                
+                # Only process open orders for the same contract
+                if order_contract == position_contract and order_status == 1:  # Status 1 = Open
+                    # Check for bracket orders using customTag
+                    if "AutoBracket" in custom_tag:
+                        if "-SL" in custom_tag or "-TP" in custom_tag:
+                            linked_orders.append(order)
+                            logger.info(f"Found bracket order: {order.get('id')} tag: {custom_tag}")
+                    # Also check by order type (4 = Stop orders, 1 = Limit orders)
+                    elif order_type == 4:  # Stop orders
+                        linked_orders.append(order)
+                        logger.info(f"Found stop order: {order.get('id')} type: {order_type}")
+                    elif order_type == 1:  # Limit orders that might be take profit
+                        side = order.get('side', -1)
+                        if side == 1:  # SELL side limit order is likely take profit
+                            linked_orders.append(order)
+                            logger.info(f"Found take profit order: {order.get('id')} type: {order_type}")
+            
+            logger.info(f"Found {len(linked_orders)} linked orders for position {position_id}")
+            return linked_orders
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch linked orders: {str(e)}")
+            return []
+    
+    async def adjust_bracket_orders(self, position_id: str, new_quantity: int, 
+                                   account_id: str = None) -> Dict:
+        """
+        Adjust bracket orders when position size changes.
+        This method automatically finds and adjusts all linked stop loss and take profit orders.
+        
+        Args:
+            position_id: Position ID
+            new_quantity: New total quantity for the position
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Adjustment response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Adjusting bracket orders for position {position_id} to quantity {new_quantity}")
+            
+            # Get current open orders to find linked ones
+            open_orders = await self.get_open_orders(target_account)
+            
+            if not open_orders:
+                logger.warning("No open orders found")
+                return {"error": "No open orders found"}
+            
+            # Find orders that are linked to this position
+            # Look for bracket orders using customTag and contract matching
+            linked_orders = []
+            position_contract = None
+            
+            # Get the contract ID for the position
+            positions = await self.get_open_positions(target_account)
+            for pos in positions:
+                if str(pos.get('id')) == str(position_id):
+                    position_contract = pos.get('contractId')
+                    break
+            
+            if not position_contract:
+                logger.error(f"Could not find contract for position {position_id}")
+                return {"error": f"Could not find contract for position {position_id}"}
+            
+            for order in open_orders:
+                order_contract = order.get('contractId', '')
+                custom_tag = order.get('customTag', '')
+                order_type = order.get('type', 0)
+                order_status = order.get('status', 0)
+                
+                # Only process open orders for the same contract
+                if order_contract == position_contract and order_status == 1:  # Status 1 = Open
+                    # Check for bracket orders using customTag
+                    if "AutoBracket" in custom_tag:
+                        if "-SL" in custom_tag or "-TP" in custom_tag:
+                            linked_orders.append(order)
+                            logger.info(f"Found bracket order: {order.get('id')} tag: {custom_tag}")
+                    # Also check by order type (4 = Stop orders, 1 = Limit orders)
+                    elif order_type == 4:  # Stop orders
+                        linked_orders.append(order)
+                        logger.info(f"Found stop order: {order.get('id')} type: {order_type}")
+                    elif order_type == 1:  # Limit orders that might be take profit
+                        side = order.get('side', -1)
+                        if side == 1:  # SELL side limit order is likely take profit
+                            linked_orders.append(order)
+                            logger.info(f"Found take profit order: {order.get('id')} type: {order_type}")
+            
+            if not linked_orders:
+                logger.warning("No linked orders found for position")
+                return {"error": "No linked orders found for position"}
+            
+            # Adjust each linked order
+            adjustment_results = []
+            for order in linked_orders:
+                order_id = order.get("id")
+                current_quantity = order.get("size", 0)
+                custom_tag = order.get("customTag", "")
+                
+                if order_id and current_quantity != new_quantity:
+                    try:
+                        logger.info(f"Adjusting order {order_id} from {current_quantity} to {new_quantity} (tag: {custom_tag})")
+                        # Get order type for proper price field handling
+                        order_type = order.get("type", 1)  # Default to limit order
+                        # Modify the order with new quantity
+                        modify_result = await self.modify_order(order_id, new_quantity=new_quantity, account_id=target_account, order_type=order_type)
+                        if "error" not in modify_result:
+                            adjustment_results.append({"order_id": order_id, "success": True, "result": modify_result})
+                            logger.info(f"Successfully adjusted order {order_id} to quantity {new_quantity}")
+                        else:
+                            adjustment_results.append({"order_id": order_id, "success": False, "error": modify_result["error"]})
+                            logger.error(f"Failed to adjust order {order_id}: {modify_result['error']}")
+                    except Exception as e:
+                        logger.error(f"Exception adjusting order {order_id}: {e}")
+                        adjustment_results.append({"order_id": order_id, "success": False, "error": str(e)})
+                else:
+                    logger.info(f"Order {order_id} already has correct quantity {current_quantity}, skipping")
+            
+            successful_adjustments = [r for r in adjustment_results if r.get("success")]
+            logger.info(f"Adjusted {len(successful_adjustments)} out of {len(adjustment_results)} linked orders")
+            
+            return {
+                "success": True, 
+                "adjusted_orders": len(successful_adjustments),
+                "total_orders": len(adjustment_results),
+                "results": adjustment_results
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to adjust bracket orders: {str(e)}")
+            return {"error": str(e)}
+    
+    async def monitor_position_changes(self, account_id: str = None) -> Dict:
+        """
+        Monitor position changes and automatically adjust bracket orders.
+        This method should be called periodically to track position size changes.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Monitoring results
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            logger.info(f"Monitoring position changes for account {target_account}")
+            
+            # Get current positions
+            positions = await self.get_open_positions(target_account)
+            
+            if not positions:
+                logger.info("No open positions found")
+                return {"positions": 0, "adjustments": 0}
+            
+            adjustments_made = 0
+            
+            for position in positions:
+                position_id = position.get("id")
+                current_quantity = position.get("size", 0)  # Use 'size' field for position quantity
+                symbol = position.get("symbol", "Unknown")
+                
+                logger.info(f"Checking position {position_id}: {current_quantity} {symbol}")
+                
+                # Check if we have tracked this position before
+                # In a real implementation, you'd store the previous quantity
+                # For now, we'll just log the current state
+                
+                # Get linked orders for this position
+                linked_orders = await self.get_linked_orders(position_id, target_account)
+                
+                if linked_orders:
+                    logger.info(f"Found {len(linked_orders)} linked orders for position {position_id}")
+                    
+                    # Check if any linked orders need quantity adjustment
+                    # Only adjust if position quantity is greater than 0
+                    if current_quantity > 0:
+                        for order in linked_orders:
+                            order_quantity = order.get("size", 0)  # Use 'size' field for order quantity
+                            if order_quantity != current_quantity:
+                                logger.info(f"Order {order.get('id')} quantity {order_quantity} != position quantity {current_quantity}")
+                                
+                                # Adjust the order quantity
+                                adjust_result = await self.adjust_bracket_orders(position_id, current_quantity, target_account)
+                                if adjust_result.get("success"):
+                                    adjustments_made += 1
+                                    logger.info(f"Successfully adjusted bracket orders for position {position_id}")
+                                else:
+                                    logger.error(f"Failed to adjust bracket orders for position {position_id}: {adjust_result.get('error')}")
+                                break  # Only adjust once per position
+                    else:
+                        logger.info(f"Position {position_id} has zero quantity, skipping bracket order adjustments")
+            
+            return {
+                "success": True,
+                "positions": len(positions),
+                "adjustments": adjustments_made
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to monitor position changes: {str(e)}")
+            return {"error": str(e)}
+    
+    # ============================================================================
+    # NATIVE TOPSTEPX API METHODS - ADVANCED ORDER TYPES
+    # ============================================================================
+    
+    async def place_stop_order(self, symbol: str, side: str, quantity: int, stop_price: float,
+                              account_id: str = None) -> Dict:
+        """
+        Place a stop order.
+        
+        Args:
+            symbol: Trading symbol
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            stop_price: Stop price
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Stop order response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            if side.upper() not in ["BUY", "SELL"]:
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            logger.info(f"Placing stop order for {side} {quantity} {symbol} at {stop_price}")
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            # Convert side to numeric value
+            side_value = 0 if side.upper() == "BUY" else 1
+            
+            # Prepare stop order data
+            stop_data = {
+                "accountId": int(target_account),
+                "contractId": contract_id,
+                "type": 4,  # Stop order type
+                "side": side_value,
+                "size": quantity,
+                "stopPrice": stop_price
+            }
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            response = self._make_curl_request("POST", "/api/Order/place", data=stop_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to place stop order: {response['error']}")
+                return response
+            
+            logger.info(f"Stop order placed successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to place stop order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def place_trailing_stop_order(self, symbol: str, side: str, quantity: int, 
+                                       trail_amount: float, account_id: str = None) -> Dict:
+        """
+        Place a trailing stop order.
+        
+        Args:
+            symbol: Trading symbol
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            trail_amount: Trail amount in price units
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Trailing stop order response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            if side.upper() not in ["BUY", "SELL"]:
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            logger.info(f"Placing trailing stop order for {side} {quantity} {symbol} with trail {trail_amount}")
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            # Convert side to numeric value
+            side_value = 0 if side.upper() == "BUY" else 1
+            
+            # Prepare trailing stop order data
+            trail_data = {
+                "accountId": int(target_account),
+                "contractId": contract_id,
+                "type": 5,  # Trailing stop order type
+                "side": side_value,
+                "size": quantity,
+                "trailAmount": trail_amount
+            }
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            response = self._make_curl_request("POST", "/api/Order/place", data=trail_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to place trailing stop order: {response['error']}")
+                return response
+            
+            logger.info(f"Trailing stop order placed successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to place trailing stop order: {str(e)}")
+            return {"error": str(e)}
+    
+    # ============================================================================
+    # NATIVE TOPSTEPX API METHODS - MARKET DATA
+    # ============================================================================
+    
+    async def get_market_quote(self, symbol: str) -> Dict:
+        """
+        Get near real-time market quote for a symbol.
+        Prefer SignalR live stream (bid/ask/last/volume); fallback to REST bars.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dict: Market quote or error
+        """
+        try:
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+
+            symbol_up = symbol.upper()
+
+            # Try live cache first
+            try:
+                await self._ensure_market_socket_started()
+                await self._ensure_quote_subscription(symbol_up)
+                # Briefly wait for first live tick
+                import time
+                start_wait = time.time()
+                while time.time() - start_wait < 0.5:
+                    with self._quote_cache_lock:
+                        live = self._quote_cache.get(symbol_up)
+                    if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
+                        break
+                    time.sleep(0.02)
+                with self._quote_cache_lock:
+                    live = self._quote_cache.get(symbol_up)
+                if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
+                    return {
+                        "bid": live.get("bid"),
+                        "ask": live.get("ask"),
+                        "last": live.get("last"),
+                        "volume": live.get("volume"),
+                        "ts": live.get("ts"),
+                        "source": "signalr"
+                    }
+            except Exception as live_err:
+                logger.debug(f"Live quote not available yet for {symbol_up}: {live_err}")
+
+            # Try REST quote endpoint for bid/ask/last/volume
+            try:
+                headers = {
+                    "accept": "text/plain",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.session_token}"
+                }
+                contract_id = self._get_contract_id(symbol_up)
+                quote_resp = self._make_curl_request("GET", f"/api/MarketData/quote/{contract_id}", headers=headers)
+                if quote_resp and "error" not in quote_resp:
+                    # Normalize keys possibly: bid, ask, last, volume
+                    bid = quote_resp.get("bid") or quote_resp.get("bestBid")
+                    ask = quote_resp.get("ask") or quote_resp.get("bestAsk")
+                    last = quote_resp.get("last") or quote_resp.get("lastPrice") or quote_resp.get("price")
+                    volume = quote_resp.get("volume") or quote_resp.get("totalVolume")
+                    if any(v is not None for v in (bid, ask, last, volume)):
+                        return {
+                            "bid": bid,
+                            "ask": ask,
+                            "last": last,
+                            "volume": volume,
+                            "source": "rest_quote"
+                        }
+            except Exception as e:
+                logger.debug(f"REST quote endpoint not available: {e}")
+
+            # Fallback to recent bars for last price
+            from datetime import datetime, timezone, timedelta
+            logger.info(f"Fetching fallback bars for {symbol_up}")
+            contract_id = self._get_contract_id(symbol_up)
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            now = datetime.now(timezone.utc)
+            start_time = now - timedelta(seconds=5)
+            bars_request = {
+                "contractId": contract_id,
+                "live": True,
+                "startTime": start_time.isoformat(),
+                "endTime": now.isoformat(),
+                "unit": 1,
+                "unitNumber": 1,
+                "limit": 5,
+                "includePartialBar": True
+            }
+            response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+            if "error" in response or not response.get("success"):
+                # Retry with non-live over a wider window
+                from datetime import timedelta as _td
+                start_time2 = now - _td(seconds=30)
+                bars_request2 = dict(bars_request)
+                bars_request2.update({"live": False, "startTime": start_time2.isoformat(), "limit": 30})
+                response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
+                if "error" in response or not response.get("success"):
+                    # Last resort: return any cached last if present
+                    with self._quote_cache_lock:
+                        live2 = self._quote_cache.get(symbol_up)
+                    if live2 and live2.get("last") is not None:
+                        return {
+                            "last": live2.get("last"),
+                            "bid": live2.get("bid"),
+                            "ask": live2.get("ask"),
+                            "volume": live2.get("volume"),
+                            "source": "cache"
+                        }
+                    return {"error": response.get("error") or response.get("errorMessage") or "Bars request failed"}
+            bars = response.get("bars", [])
+            if not bars:
+                # Same retry logic if empty
+                from datetime import timedelta as _td
+                start_time2 = now - _td(seconds=30)
+                bars_request2 = dict(bars_request)
+                bars_request2.update({"live": False, "startTime": start_time2.isoformat(), "limit": 30})
+                response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
+                bars = response.get("bars", []) if response and response.get("success") else []
+                if not bars:
+                    with self._quote_cache_lock:
+                        live2 = self._quote_cache.get(symbol_up)
+                    if live2 and live2.get("last") is not None:
+                        return {
+                            "last": live2.get("last"),
+                            "bid": live2.get("bid"),
+                            "ask": live2.get("ask"),
+                            "volume": live2.get("volume"),
+                            "source": "cache"
+                        }
+                    return {"error": f"No market data available for {symbol_up}"}
+            latest_bar = bars[-1]
+            current_price = latest_bar.get("c")
+            if current_price is None:
+                with self._quote_cache_lock:
+                    live2 = self._quote_cache.get(symbol_up)
+                if live2 and live2.get("last") is not None:
+                    return {
+                        "last": live2.get("last"),
+                        "bid": live2.get("bid"),
+                        "ask": live2.get("ask"),
+                        "volume": live2.get("volume"),
+                        "source": "cache"
+                    }
+                return {"error": f"No close price found in latest bar for {symbol_up}"}
+            return {
+                "last": current_price,
+                "source": "bars_fallback",
+                "bar_data": latest_bar
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch market quote: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_market_depth(self, symbol: str) -> Dict:
+        """
+        Get market depth (order book) for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Dict: Market depth or error
+        """
+        try:
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Fetching market depth for {symbol}")
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            response = self._make_curl_request("GET", f"/api/MarketData/depth/{contract_id}", headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch market depth: {response['error']}")
+                return response
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch market depth: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_historical_data(self, symbol: str, timeframe: str = "1m", 
+                                 limit: int = 100) -> List[Dict]:
+        """
+        Get historical price data for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe (1m, 5m, 15m, 1h, 1d)
+            limit: Number of bars to return
+            
+        Returns:
+            List[Dict]: Historical data or error
+        """
+        try:
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            logger.info(f"Fetching historical data for {symbol} ({timeframe})")
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            params = {
+                "timeframe": timeframe,
+                "limit": limit
+            }
+            
+            response = self._make_curl_request("GET", f"/api/MarketData/history/{contract_id}", 
+                                            headers=headers, data=params)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch historical data: {response['error']}")
+                return []
+            
+            # Parse historical data from response
+            if isinstance(response, list):
+                data = response
+            elif isinstance(response, dict) and "data" in response:
+                data = response["data"]
+            elif isinstance(response, dict) and "result" in response:
+                data = response["result"]
+            else:
+                logger.warning(f"Unexpected historical data response format: {response}")
+                data = []
+            
+            logger.info(f"Found {len(data)} historical bars")
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch historical data: {str(e)}")
+            return []
+    
+    async def run(self):
+        """
+        Main bot execution flow.
+        """
+        try:
+            print("🤖 TopStepX Trading Bot - Real API Version")
+            print("="*50)
+            
+            # Step 1: Authenticate
+            if not await self.authenticate():
+                print("❌ Authentication failed. Please check your API key.")
+                return
+            
+            print("✅ Authentication successful!")
+            
+            # Step 2: List accounts
+            accounts = await self.list_accounts()
+            if not accounts:
+                print("❌ No active accounts found.")
+                return
+            
+            # Step 3: Display accounts
+            self.display_accounts(accounts)
+            
+            # Step 4: Select account
+            selected_account = self.select_account(accounts)
+            if not selected_account:
+                print("❌ No account selected. Exiting.")
+                return
+            
+            # Step 5: Show account details
+            balance = await self.get_account_balance()
+            if balance is not None:
+                print(f"\n💰 Current Balance: ${balance:,.2f}")
+            
+            # Step 6: Get available contracts
+            contracts = await self.get_available_contracts()
+            if contracts:
+                print(f"\n📋 Available Contracts: {len(contracts)} found")
+                for contract in contracts[:5]:  # Show first 5
+                    print(f"  - {contract.get('symbol', 'Unknown')}: {contract.get('name', 'No name')}")
+                if len(contracts) > 5:
+                    print(f"  ... and {len(contracts) - 5} more")
+            
+            # Step 7: Trading interface
+            print(f"\n🎯 Ready to trade on account: {selected_account['name']}")
+            await self.trading_interface()
+            
+        except Exception as e:
+            logger.error(f"Bot execution failed: {str(e)}")
+            print(f"❌ Bot execution failed: {str(e)}")
+    
+    def _setup_readline(self):
+        """
+        Set up readline for command history and arrow key navigation.
+        """
+        # Set up history file
+        history_file = os.path.expanduser("~/.topstepx_trading_history")
+        
+        # Load existing history
+        try:
+            readline.read_history_file(history_file)
+        except FileNotFoundError:
+            pass
+        
+        # Set history length
+        readline.set_history_length(100)
+        
+        # Set up tab completion for commands
+        def completer(text, state):
+            commands = [
+                "trade", "limit", "bracket", "native_bracket", "stop", "trail",
+                "positions", "orders", "close", "cancel", "modify", "quote", "depth", "history", "monitor", "account_info",
+                "flatten", "contracts", "accounts", "help", "quit"
+            ]
+            matches = [cmd for cmd in commands if cmd.startswith(text.lower())]
+            if state < len(matches):
+                return matches[state]
+            return None
+        
+        readline.set_completer(completer)
+        readline.parse_and_bind("tab: complete")
+        
+        # Save history on exit
+        def save_history():
+            try:
+                readline.write_history_file(history_file)
+            except:
+                pass
+        
+        import atexit
+        atexit.register(save_history)
+    
+    async def trading_interface(self):
+        """
+        Interactive trading interface with command history.
+        """
+        # Set up readline for command history
+        self._setup_readline()
+        
+        print("\n" + "="*50)
+        print("TRADING INTERFACE")
+        print("="*50)
+        print("Commands:")
+        print("  trade <symbol> <side> <quantity> - Place market order")
+        print("  limit <symbol> <side> <quantity> <price> - Place limit order")
+        print("  bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks> - Place bracket order")
+        print("  native_bracket <symbol> <side> <quantity> <stop_price> <profit_price> - Native bracket order")
+        print("  stop <symbol> <side> <quantity> <price> - Place stop order")
+        print("  trail <symbol> <side> <quantity> <trail_amount> - Place trailing stop")
+        print("  positions - Show open positions")
+        print("  orders - Show open orders")
+        print("  close <position_id> [quantity] - Close position")
+        print("  cancel <order_id> - Cancel order")
+        print("  modify <order_id> <new_quantity> [new_price] - Modify order")
+        print("  quote <symbol> - Get market quote")
+        print("  depth <symbol> - Get market depth")
+        print("  history <symbol> [timeframe] [limit] - Get historical data")
+        print("  monitor - Monitor position changes and adjust bracket orders")
+        print("  account_info - Get detailed account information")
+        print("  flatten - Close all positions and cancel all orders")
+        print("  contracts - List available contracts")
+        print("  accounts - List accounts again")
+        print("  help - Show this help message")
+        print("  quit - Exit trading interface")
+        print("="*50)
+        print("💡 Use ↑/↓ arrows to navigate command history, Tab for completion")
+        print("="*50)
+        
+        while True:
+            try:
+                command = input("\nEnter command: ").strip()
+                
+                # Convert to lowercase for processing but keep original for history
+                command_lower = command.lower()
+                
+                if command_lower == "quit" or command_lower == "q":
+                    print("👋 Exiting trading interface.")
+                    break
+                elif command_lower == "flatten":
+                    await self.flatten_all_positions()
+                elif command_lower == "contracts":
+                    contracts = await self.get_available_contracts()
+                    if contracts:
+                        print(f"\n📋 Available Contracts ({len(contracts)}):")
+                        for contract in contracts:
+                            print(f"  - {contract.get('symbol', 'Unknown')}: {contract.get('name', 'No name')}")
+                    else:
+                        print("❌ No contracts available")
+                elif command_lower == "accounts":
+                    accounts = await self.list_accounts()
+                    self.display_accounts(accounts)
+                elif command_lower == "help":
+                    print("\n" + "="*50)
+                    print("TRADING INTERFACE HELP")
+                    print("="*50)
+                    print("Commands:")
+                    print("  trade <symbol> <side> <quantity>")
+                    print("    Example: trade MNQ BUY 1")
+                    print("    Places a market order")
+                    print()
+                    print("  limit <symbol> <side> <quantity> <price>")
+                    print("    Example: limit MNQ BUY 1 19500.50")
+                    print("    Places a limit order at specified price")
+                    print()
+                    print("  bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks>")
+                    print("    Example: bracket MNQ BUY 1 80 80")
+                    print("    Places a bracket order with stop loss and take profit")
+                    print()
+                    print("  native_bracket <symbol> <side> <quantity> <stop_price> <profit_price>")
+                    print("    Example: native_bracket MNQ BUY 1 19400.00 19600.00")
+                    print("    Places a native TopStepX bracket order with linked stop/take profit")
+                    print()
+                    print("  stop <symbol> <side> <quantity> <price>")
+                    print("    Example: stop MNQ BUY 1 19400.00")
+                    print("    Places a stop order")
+                    print()
+                    print("  trail <symbol> <side> <quantity> <trail_amount>")
+                    print("    Example: trail MNQ BUY 1 50.00")
+                    print("    Places a trailing stop order")
+                    print()
+                    print("  positions")
+                    print("    Shows all open positions")
+                    print()
+                    print("  orders")
+                    print("    Shows all open orders")
+                    print()
+                    print("  close <position_id> [quantity]")
+                    print("    Example: close 12345 1")
+                    print("    Closes a position (entire or partial)")
+                    print()
+                    print("  cancel <order_id>")
+                    print("    Example: cancel 12345")
+                    print("    Cancels an order")
+                    print()
+                    print("  modify <order_id> <new_quantity> [new_price]")
+                    print("    Example: modify 12345 2 19500.00")
+                    print("    Modifies an existing order")
+                    print()
+                    print("  quote <symbol>")
+                    print("    Example: quote MNQ")
+                    print("    Gets real-time market quote")
+                    print()
+                    print("  depth <symbol>")
+                    print("    Example: depth MNQ")
+                    print("    Gets market depth (order book)")
+                    print()
+                    print("  history <symbol> [timeframe] [limit]")
+                    print("    Example: history MNQ 1m 50")
+                    print("    Gets historical price data")
+                    print()
+                    print("  monitor")
+                    print("    Monitors position changes and automatically adjusts bracket orders")
+                    print("    Use this after adding/subtracting contracts to existing positions")
+                    print()
+                    print("  flatten")
+                    print("    Closes all positions and cancels all orders")
+                    print("    Requires confirmation by typing 'FLATTEN'")
+                    print()
+                    print("  contracts")
+                    print("    Lists available trading contracts")
+                    print()
+                    print("  accounts")
+                    print("    Lists all your trading accounts")
+                    print()
+                    print("  help")
+                    print("    Shows this help message")
+                    print()
+                    print("  quit")
+                    print("    Exits the trading interface")
+                    print("="*50)
+                    print("💡 Use ↑/↓ arrows for command history, Tab for completion")
+                    print("="*50)
+                elif command_lower.startswith("trade "):
+                    parts = command.split()
+                    if len(parts) != 4:
+                        print("❌ Usage: trade <symbol> <side> <quantity>")
+                        print("   Example: trade MNQ BUY 1")
+                        continue
+                    
+                    symbol, side, quantity = parts[1], parts[2], parts[3]
+                    
+                    try:
+                        quantity = int(quantity)
+                    except ValueError:
+                        print("❌ Quantity must be a number")
+                        continue
+                    
+                    if side.upper() not in ["BUY", "SELL"]:
+                        print("❌ Side must be BUY or SELL")
+                        continue
+                    
+                    # Confirm the trade
+                    print(f"\n⚠️  CONFIRM TRADE:")
+                    print(f"   Symbol: {symbol.upper()}")
+                    print(f"   Side: {side.upper()}")
+                    print(f"   Quantity: {quantity}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Trade cancelled")
+                        continue
+                    
+                    # Place the order
+                    result = await self.place_market_order(symbol, side, quantity)
+                    if "error" in result:
+                        print(f"❌ Order failed: {result['error']}")
+                    else:
+                        print(f"✅ Order placed successfully!")
+                        print(f"   Order ID: {result.get('orderId', 'Unknown')}")
+                        print(f"   Status: {result.get('status', 'Unknown')}")
+                
+                elif command_lower.startswith("limit "):
+                    parts = command.split()
+                    if len(parts) != 5:
+                        print("❌ Usage: limit <symbol> <side> <quantity> <price>")
+                        print("   Example: limit MNQ BUY 1 19500.50")
+                        continue
+                    
+                    symbol, side, quantity, price = parts[1], parts[2], parts[3], parts[4]
+                    
+                    try:
+                        quantity = int(quantity)
+                        price = float(price)
+                    except ValueError:
+                        print("❌ Quantity must be a number and price must be a decimal number")
+                        continue
+                    
+                    if side.upper() not in ["BUY", "SELL"]:
+                        print("❌ Side must be BUY or SELL")
+                        continue
+                    
+                    # Confirm the limit order
+                    print(f"\n⚠️  CONFIRM LIMIT ORDER:")
+                    print(f"   Symbol: {symbol.upper()}")
+                    print(f"   Side: {side.upper()}")
+                    print(f"   Quantity: {quantity}")
+                    print(f"   Price: {price}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Order cancelled")
+                        continue
+                    
+                    # Place the limit order
+                    result = await self.place_market_order(symbol, side, quantity, order_type="limit", limit_price=price)
+                    if "error" in result:
+                        print(f"❌ Order failed: {result['error']}")
+                    else:
+                        print(f"✅ Limit order placed successfully!")
+                        print(f"   Order ID: {result.get('orderId', 'Unknown')}")
+                        print(f"   Status: {result.get('status', 'Unknown')}")
+                
+                elif command_lower.startswith("bracket "):
+                    parts = command.split()
+                    if len(parts) != 6:
+                        print("❌ Usage: bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks>")
+                        print("   Example: bracket MNQ BUY 1 80 80")
+                        continue
+                    
+                    symbol, side, quantity, stop_ticks, profit_ticks = parts[1], parts[2], parts[3], parts[4], parts[5]
+                    
+                    try:
+                        quantity = int(quantity)
+                        stop_ticks = int(stop_ticks)
+                        profit_ticks = int(profit_ticks)
+                    except ValueError:
+                        print("❌ Quantity, stop_ticks, and profit_ticks must be numbers")
+                        continue
+                    
+                    if side.upper() not in ["BUY", "SELL"]:
+                        print("❌ Side must be BUY or SELL")
+                        continue
+                    
+                    # Confirm the bracket trade
+                    print(f"\n⚠️  CONFIRM BRACKET TRADE:")
+                    print(f"   Symbol: {symbol.upper()}")
+                    print(f"   Side: {side.upper()}")
+                    print(f"   Quantity: {quantity}")
+                    print(f"   Stop Loss: {stop_ticks} ticks")
+                    print(f"   Take Profit: {profit_ticks} ticks")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Trade cancelled")
+                        continue
+                    
+                    # Place the bracket order
+                    result = await self.place_market_order(symbol, side, quantity, 
+                                                        stop_loss_ticks=stop_ticks, 
+                                                        take_profit_ticks=profit_ticks)
+                    if "error" in result:
+                        print(f"❌ Order failed: {result['error']}")
+                    else:
+                        print(f"✅ Bracket order placed successfully!")
+                        print(f"   Order ID: {result.get('orderId', 'Unknown')}")
+                        print(f"   Status: {result.get('status', 'Unknown')}")
+                
+                elif command_lower.startswith("native_bracket "):
+                    parts = command.split()
+                    if len(parts) != 6:
+                        print("❌ Usage: native_bracket <symbol> <side> <quantity> <stop_price> <profit_price>")
+                        print("   Example: native_bracket MNQ BUY 1 19400.00 19600.00")
+                        continue
+                    
+                    symbol, side, quantity, stop_price, profit_price = parts[1], parts[2], parts[3], parts[4], parts[5]
+                    
+                    try:
+                        quantity = int(quantity)
+                        stop_price = float(stop_price)
+                        profit_price = float(profit_price)
+                    except ValueError:
+                        print("❌ Quantity must be a number and prices must be decimal numbers")
+                        continue
+                    
+                    if side.upper() not in ["BUY", "SELL"]:
+                        print("❌ Side must be BUY or SELL")
+                        continue
+                    
+                    # Confirm the native bracket order
+                    print(f"\n⚠️  CONFIRM NATIVE BRACKET ORDER:")
+                    print(f"   Symbol: {symbol.upper()}")
+                    print(f"   Side: {side.upper()}")
+                    print(f"   Quantity: {quantity}")
+                    print(f"   Stop Loss: ${stop_price}")
+                    print(f"   Take Profit: ${profit_price}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Order cancelled")
+                        continue
+                    
+                    # Place the native bracket order
+                    result = await self.create_bracket_order(symbol, side, quantity, 
+                                                          stop_loss_price=stop_price, 
+                                                          take_profit_price=profit_price)
+                    if "error" in result:
+                        print(f"❌ Order failed: {result['error']}")
+                    else:
+                        print(f"✅ Native bracket order placed successfully!")
+                        print(f"   Order ID: {result.get('orderId', 'Unknown')}")
+                        print(f"   Status: {result.get('status', 'Unknown')}")
+                
+                elif command_lower.startswith("stop "):
+                    parts = command.split()
+                    if len(parts) != 5:
+                        print("❌ Usage: stop <symbol> <side> <quantity> <price>")
+                        print("   Example: stop MNQ BUY 1 19400.00")
+                        continue
+                    
+                    symbol, side, quantity, price = parts[1], parts[2], parts[3], parts[4]
+                    
+                    try:
+                        quantity = int(quantity)
+                        price = float(price)
+                    except ValueError:
+                        print("❌ Quantity must be a number and price must be a decimal number")
+                        continue
+                    
+                    if side.upper() not in ["BUY", "SELL"]:
+                        print("❌ Side must be BUY or SELL")
+                        continue
+                    
+                    # Confirm the stop order
+                    print(f"\n⚠️  CONFIRM STOP ORDER:")
+                    print(f"   Symbol: {symbol.upper()}")
+                    print(f"   Side: {side.upper()}")
+                    print(f"   Quantity: {quantity}")
+                    print(f"   Stop Price: ${price}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Order cancelled")
+                        continue
+                    
+                    # Place the stop order
+                    result = await self.place_stop_order(symbol, side, quantity, price)
+                    if "error" in result:
+                        print(f"❌ Order failed: {result['error']}")
+                    else:
+                        print(f"✅ Stop order placed successfully!")
+                        print(f"   Order ID: {result.get('orderId', 'Unknown')}")
+                        print(f"   Status: {result.get('status', 'Unknown')}")
+                
+                elif command_lower.startswith("trail "):
+                    parts = command.split()
+                    if len(parts) != 5:
+                        print("❌ Usage: trail <symbol> <side> <quantity> <trail_amount>")
+                        print("   Example: trail MNQ BUY 1 50.00")
+                        continue
+                    
+                    symbol, side, quantity, trail_amount = parts[1], parts[2], parts[3], parts[4]
+                    
+                    try:
+                        quantity = int(quantity)
+                        trail_amount = float(trail_amount)
+                    except ValueError:
+                        print("❌ Quantity must be a number and trail_amount must be a decimal number")
+                        continue
+                    
+                    if side.upper() not in ["BUY", "SELL"]:
+                        print("❌ Side must be BUY or SELL")
+                        continue
+                    
+                    # Confirm the trailing stop order
+                    print(f"\n⚠️  CONFIRM TRAILING STOP ORDER:")
+                    print(f"   Symbol: {symbol.upper()}")
+                    print(f"   Side: {side.upper()}")
+                    print(f"   Quantity: {quantity}")
+                    print(f"   Trail Amount: ${trail_amount}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Order cancelled")
+                        continue
+                    
+                    # Place the trailing stop order
+                    result = await self.place_trailing_stop_order(symbol, side, quantity, trail_amount)
+                    if "error" in result:
+                        print(f"❌ Order failed: {result['error']}")
+                    else:
+                        print(f"✅ Trailing stop order placed successfully!")
+                        print(f"   Order ID: {result.get('orderId', 'Unknown')}")
+                        print(f"   Status: {result.get('status', 'Unknown')}")
+                
+                elif command_lower == "positions":
+                    positions = await self.get_open_positions()
+                    if positions:
+                        print(f"\n📊 Open Positions ({len(positions)}):")
+                        print(f"{'ID':<12} {'Symbol':<8} {'Side':<6} {'Quantity':<10} {'Price':<12} {'P&L':<12}")
+                        print("-" * 70)
+                        for pos in positions:
+                            pos_id = pos.get('id', 'N/A')
+                            # Get symbol from contractId or symbol field
+                            contract_id = pos.get('contractId', '')
+                            if contract_id:
+                                # Extract symbol from contract ID (e.g., CON.F.US.MNQ.Z25 -> MNQ)
+                                symbol = contract_id.split('.')[-2] if '.' in contract_id else contract_id
+                            else:
+                                symbol = pos.get('symbol', 'N/A')
+                            
+                            # Determine side from type (1 = Long, 2 = Short)
+                            position_type = pos.get('type', 0)
+                            if position_type == 1:
+                                side = "LONG"
+                            elif position_type == 2:
+                                side = "SHORT"
+                            else:
+                                side = "UNKNOWN"
+                            
+                            quantity = pos.get('size', 0)
+                            price = pos.get('averagePrice', 0.0)
+                            pnl = pos.get('unrealizedPnl', 0.0)
+                            print(f"{pos_id:<12} {symbol:<8} {side:<6} {quantity:<10} ${price:<11.2f} ${pnl:<11.2f}")
+                    else:
+                        print("❌ No open positions found")
+                
+                elif command_lower == "orders":
+                    orders = await self.get_open_orders()
+                    if orders:
+                        print(f"\n📋 Open Orders ({len(orders)}):")
+                        print(f"{'ID':<12} {'Symbol':<8} {'Side':<6} {'Type':<8} {'Quantity':<10} {'Price':<12} {'Status':<10}")
+                        print("-" * 80)
+                        for order in orders:
+                            order_id = order.get('id', 'N/A')
+                            # Get symbol from contractId or symbol field
+                            contract_id = order.get('contractId', '')
+                            if contract_id:
+                                # Extract symbol from contract ID (e.g., CON.F.US.MNQ.Z25 -> MNQ)
+                                symbol = contract_id.split('.')[-2] if '.' in contract_id else contract_id
+                            else:
+                                symbol = order.get('symbol', 'N/A')
+                            
+                            # Determine side from side field (0 = BUY, 1 = SELL)
+                            side_num = order.get('side', -1)
+                            if side_num == 0:
+                                side = "BUY"
+                            elif side_num == 1:
+                                side = "SELL"
+                            else:
+                                side = "UNKNOWN"
+                            
+                            # Determine order type from type field
+                            type_num = order.get('type', -1)
+                            if type_num == 1:
+                                order_type = "LIMIT"
+                            elif type_num == 2:
+                                order_type = "MARKET"
+                            elif type_num == 4:
+                                order_type = "STOP"
+                            else:
+                                order_type = f"TYPE{type_num}"
+                            
+                            # Determine status from status field
+                            status_num = order.get('status', -1)
+                            if status_num == 1:
+                                status = "OPEN"
+                            elif status_num == 2:
+                                status = "FILLED"
+                            elif status_num == 3:
+                                status = "PENDING"
+                            elif status_num == 5:
+                                status = "CANCELLED"
+                            else:
+                                status = f"STATUS{status_num}"
+                            
+                            quantity = order.get('size', 0)
+                            price = order.get('limitPrice') or order.get('stopPrice') or 0.0
+                            custom_tag = order.get('customTag', '')
+                            
+                            print(f"{order_id:<12} {symbol:<8} {side:<6} {order_type:<8} {quantity:<10} ${price:<11.2f} {status:<10}")
+                            if custom_tag:
+                                print(f"             Tag: {custom_tag}")
+                    else:
+                        print("❌ No open orders found")
+                
+                elif command_lower.startswith("close "):
+                    parts = command.split()
+                    if len(parts) < 2 or len(parts) > 3:
+                        print("❌ Usage: close <position_id> [quantity]")
+                        print("   Example: close 12345 1")
+                        continue
+                    
+                    position_id = parts[1]
+                    quantity = int(parts[2]) if len(parts) == 3 else None
+                    
+                    # Confirm the close
+                    print(f"\n⚠️  CONFIRM CLOSE POSITION:")
+                    print(f"   Position ID: {position_id}")
+                    if quantity:
+                        print(f"   Quantity: {quantity}")
+                    else:
+                        print(f"   Quantity: Entire position")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Close cancelled")
+                        continue
+                    
+                    # Close the position
+                    result = await self.close_position(position_id, quantity)
+                    if "error" in result:
+                        print(f"❌ Close failed: {result['error']}")
+                    else:
+                        print(f"✅ Position closed successfully!")
+                        print(f"   Position ID: {position_id}")
+                
+                elif command_lower.startswith("cancel "):
+                    parts = command.split()
+                    if len(parts) != 2:
+                        print("❌ Usage: cancel <order_id>")
+                        print("   Example: cancel 12345")
+                        continue
+                    
+                    order_id = parts[1]
+                    
+                    # Confirm the cancel
+                    print(f"\n⚠️  CONFIRM CANCEL ORDER:")
+                    print(f"   Order ID: {order_id}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Cancel cancelled")
+                        continue
+                    
+                    # Cancel the order
+                    result = await self.cancel_order(order_id)
+                    if "error" in result:
+                        print(f"❌ Cancel failed: {result['error']}")
+                    else:
+                        print(f"✅ Order cancelled successfully!")
+                        print(f"   Order ID: {order_id}")
+                
+                elif command_lower.startswith("modify "):
+                    parts = command.split()
+                    if len(parts) < 3 or len(parts) > 4:
+                        print("❌ Usage: modify <order_id> <new_quantity> [new_price]")
+                        print("   Example: modify 12345 2 19500.00")
+                        continue
+                    
+                    order_id = parts[1]
+                    new_quantity = int(parts[2])
+                    new_price = float(parts[3]) if len(parts) == 4 else None
+                    
+                    # Confirm the modify
+                    print(f"\n⚠️  CONFIRM MODIFY ORDER:")
+                    print(f"   Order ID: {order_id}")
+                    print(f"   New Quantity: {new_quantity}")
+                    if new_price:
+                        print(f"   New Price: ${new_price}")
+                    print(f"   Account: {self.selected_account['name']}")
+                    
+                    confirm = input("   Confirm? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Modify cancelled")
+                        continue
+                    
+                    # Modify the order
+                    result = await self.modify_order(order_id, new_quantity, new_price)
+                    if "error" in result:
+                        print(f"❌ Modify failed: {result['error']}")
+                    else:
+                        print(f"✅ Order modified successfully!")
+                        print(f"   Order ID: {order_id}")
+                
+                elif command_lower.startswith("quote "):
+                    parts = command.split()
+                    if len(parts) != 2:
+                        print("❌ Usage: quote <symbol>")
+                        print("   Example: quote MNQ")
+                        continue
+                    
+                    symbol = parts[1]
+                    
+                    # Get market quote
+                    result = await self.get_market_quote(symbol)
+                    if "error" in result:
+                        print(f"❌ Quote failed: {result['error']}")
+                    else:
+                        print(f"\n📈 Market Quote for {symbol.upper()}:")
+                        bid = result.get('bid', 'N/A')
+                        ask = result.get('ask', 'N/A')
+                        last = result.get('last', 'N/A')
+                        volume = result.get('volume', 'N/A')
+                        source = result.get('source', 'N/A')
+                        print(f"   Bid: ${bid}")
+                        print(f"   Ask: ${ask}")
+                        print(f"   Last: ${last}")
+                        print(f"   Volume: {volume}")
+                        print(f"   Source: {source}")
+                
+                elif command_lower.startswith("depth "):
+                    parts = command.split()
+                    if len(parts) != 2:
+                        print("❌ Usage: depth <symbol>")
+                        print("   Example: depth MNQ")
+                        continue
+                    
+                    symbol = parts[1]
+                    
+                    # Get market depth
+                    result = await self.get_market_depth(symbol)
+                    if "error" in result:
+                        print(f"❌ Depth failed: {result['error']}")
+                    else:
+                        print(f"\n📊 Market Depth for {symbol.upper()}:")
+                        bids = result.get('bids', [])
+                        asks = result.get('asks', [])
+                        
+                        if asks:
+                            print("   Asks (Sell):")
+                            for ask in asks[:5]:  # Show top 5
+                                price = ask.get('price', 0)
+                                size = ask.get('size', 0)
+                                print(f"     ${price:.2f} x {size}")
+                        
+                        if bids:
+                            print("   Bids (Buy):")
+                            for bid in bids[:5]:  # Show top 5
+                                price = bid.get('price', 0)
+                                size = bid.get('size', 0)
+                                print(f"     ${price:.2f} x {size}")
+                
+                elif command_lower.startswith("history "):
+                    parts = command.split()
+                    if len(parts) < 2 or len(parts) > 4:
+                        print("❌ Usage: history <symbol> [timeframe] [limit]")
+                        print("   Example: history MNQ 1m 50")
+                        continue
+                    
+                    symbol = parts[1]
+                    timeframe = parts[2] if len(parts) > 2 else "1m"
+                    limit = int(parts[3]) if len(parts) > 3 else 20
+                    
+                    # Get historical data
+                    result = await self.get_historical_data(symbol, timeframe, limit)
+                    if not result:
+                        print(f"❌ History failed for {symbol}")
+                    else:
+                        print(f"\n📊 Historical Data for {symbol.upper()} ({timeframe}):")
+                        print(f"{'Time':<20} {'Open':<10} {'High':<10} {'Low':<10} {'Close':<10} {'Volume':<10}")
+                        print("-" * 80)
+                        for bar in result[-10:]:  # Show last 10 bars
+                            time = bar.get('time', 'N/A')
+                            open_price = bar.get('open', 0)
+                            high = bar.get('high', 0)
+                            low = bar.get('low', 0)
+                            close = bar.get('close', 0)
+                            volume = bar.get('volume', 0)
+                            print(f"{time:<20} ${open_price:<9.2f} ${high:<9.2f} ${low:<9.2f} ${close:<9.2f} {volume:<10}")
+                
+                elif command_lower == "monitor":
+                    # Monitor position changes and adjust bracket orders
+                    result = await self.monitor_position_changes()
+                    if "error" in result:
+                        print(f"❌ Monitor failed: {result['error']}")
+                    else:
+                        print(f"✅ Position monitoring completed!")
+                        print(f"   Positions checked: {result.get('positions', 0)}")
+                        print(f"   Adjustments made: {result.get('adjustments', 0)}")
+                
+                elif command_lower == "account_info":
+                    # Get detailed account information
+                    result = await self.get_account_info()
+                    if "error" in result:
+                        print(f"❌ Account info failed: {result['error']}")
+                    else:
+                        print(f"✅ Account info retrieved successfully!")
+                        print(f"   Response: {result}")
+                
+                else:
+                    print("❌ Unknown command. Available commands:")
+                    print("   trade, limit, bracket, native_bracket, stop, trail, positions, orders,")
+                    print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts, help, quit")
+                    print("   Use ↑/↓ arrows for command history, Tab for completion")
+                    print("   Type 'help' for detailed command information")
+                    
+            except KeyboardInterrupt:
+                print("\n👋 Exiting trading interface.")
+                break
+            except Exception as e:
+                print(f"❌ Error: {str(e)}")
+                logger.error(f"Trading interface error: {str(e)}")
+
+def main():
+    """
+    Main entry point for the trading bot.
+    """
+    print("TopStepX Trading Bot - Real API Version")
+    print("=======================================")
+    print()
+    print("This bot will help you:")
+    print("1. Authenticate with TopStepX API")
+    print("2. List your active accounts")
+    print("3. Select which account to trade on")
+    print("4. Place live market orders")
+    print()
+    
+    # Check for environment variables
+    api_key = os.getenv('PROJECT_X_API_KEY')
+    username = os.getenv('PROJECT_X_USERNAME')
+    
+    if not api_key or not username:
+        print("⚠️  Environment variables not found.")
+        print("Please set your credentials:")
+        print("  export PROJECT_X_API_KEY='your_api_key_here'")
+        print("  export PROJECT_X_USERNAME='your_username_here'")
+        print()
+        print("Or provide them manually:")
+        
+        if not api_key:
+            api_key = input("Enter your TopStepX API Key: ").strip()
+        if not username:
+            username = input("Enter your TopStepX Username: ").strip()
+        
+        if not api_key or not username:
+            print("❌ Both API key and username are required. Exiting.")
+            return
+    
+    # Initialize and run the bot
+    bot = TopStepXTradingBot(api_key=api_key, username=username)
+    
+    try:
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        print("\n\n👋 Bot stopped by user.")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {str(e)}")
+
+if __name__ == "__main__":
+    main()

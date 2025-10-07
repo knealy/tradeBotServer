@@ -1,0 +1,1934 @@
+//@version=6
+indicator('Map Of Markets', shorttitle = 'MoM [current]', overlay = true, max_labels_count = 500, max_bars_back = 500, max_boxes_count = 500, max_lines_count = 500, max_polylines_count = 100, behind_chart = true)
+
+// most up to date version of MOM as of 10/4/25
+
+
+
+var color maFillCol = na
+var color maFillCol2 = na
+show_maFill = input.bool(true, title = 'Show color fill between moving averages ', group = 'Moving Averages', display = display.none) 
+
+var float baseLevel = na
+var string RSI_STRING = na
+var float current_atr = na
+
+var bool openBuy = false
+var bool openSell = false
+var float buyEntry = na
+var float sellEntry = na
+var float buyStop = na
+var float buyProf = na
+var float buyProf2 = na
+var float sellStop = na
+var float sellProf = na
+var float sellProf2 = na
+
+var string lab = na
+var float pnl = 0
+var tradeTime = 0
+var tradeDate = 0
+var Bcount = 0
+var Scount = 0
+var Tcount = 0
+var CloseCount = 0
+
+var lbl_dist = 0.0
+var box rewardbox = na
+var box rewardbox1 = na
+var box riskbox = na
+var bool buySignal = false
+var bool sellSignal = false
+
+var int MAX_TABLE_ROWS = 99  
+var int current_buy_row = 0
+var int current_sell_row = 0
+
+var int entry_bar_index = na
+var int entry_month = na
+var int entry_dayofmonth = na
+var int entry_hour = na
+var int entry_minute = na
+
+var float total_points_gained = 0.0
+var float total_points_lost = 0.0
+var float largest_win = 0.0
+var float largest_loss = 0.0
+var float avg_win_size = 0.0
+var float avg_loss_size = 0.0
+var int win_streak_current = 0
+var int loss_streak_current = 0
+var int max_win_streak = 0
+var int max_loss_streak = 0
+
+var int total_win_duration = 0       
+var int total_loss_duration = 0       
+var int win_trade_count = 0         
+var int loss_trade_count = 0        
+var float avg_win_duration = 0.0    
+var float avg_loss_duration = 0.0
+
+var int tp1_hits = 0
+var int tp2_hits = 0
+var int tp2_after_tp1 = 0
+var float tp2_conversion_rate = 0.0
+
+var float total_drawdown = 0.0       
+var int drawdown_count = 0           
+var float avg_drawdown = 0.0         
+var float max_drawdown = 0.0         
+
+var float actual_points = na
+var float running_pnl = 0.0
+var int total_trades = 0
+var float sum_wins = 0.0
+var float sum_losses = 0.0
+
+var float DOJI_THRESHOLD = 0.1  
+var float STAR_BODY_THRESHOLD = 0.3  
+
+var float orb_high = na                                   
+var float orb_low = na
+var color plotColor = na
+var label orb_high_label = na
+var label orb_low_label = na
+var float last_plotted_high = na
+var float last_plotted_low = na
+
+var string currentSession = syminfo.session
+var bool show_eth_warning = false
+var string ticker_type = syminfo.type     
+var string session_type = syminfo.session
+
+var color pnl_color = na 
+var string label_text = na 
+var bool is_win = false 
+var int tracking_tp2 = na 
+var float tp2_level = na
+
+var float tp2_entry_level = na
+var bool is_tp2_long = false
+var float temp_entry_level = na
+var float temp_tp2_level = na
+
+const string GROUP_OPENING_RANGE = "Opening Range"
+const string GROUP_SESSION = "Session Times"  
+const int offset = 20
+
+chart_url = "https://www.tradingview.com/chart/?symbol=" + str.tostring(syminfo.ticker) + "&interval=" + str.tostring(timeframe.period)
+
+
+show_ORB = input(true, 
+     title = 'Show Intraday Range', 
+     tooltip = "Display the overnight trading range before regular session",
+     group = 'Show') 
+
+stratType = input.string('breakout', 
+     title = 'Strategy to signal for', 
+     tooltip = "Select the trading strategy to generate signals:\n• breakout: Signals when price breaks key levels\n• macloud: Moving average crossover strategy\n• reclaim: Signals when price reclaims a level after testing it\n• stars: Based on morning/evening star candlestick patterns\n• fbds: Failed Breakdown Strategy - Signals when price breaks below a recent swing low on selected timeframe and then reclaims it with higher volume",
+     options = ['breakout','macloud','reclaim','stars','fbds', 'extremes'], 
+     group = 'Trading', 
+     display = display.status_line)
+
+showStopLbls = input.bool(false, 
+     title = 'Show Trade Details ?', 
+     tooltip = "Display labels with more text showing trade outcomes including profit/loss amounts and exit types (TP, SL, or SC). Helps visualize detailed performance of each trade.",
+     group = 'Show', 
+     display = display.none)  
+
+showStats = input.bool(true, 
+     title = 'Show Backtest Data Stats? ', 
+     tooltip = "Display a statistics table showing win rate, profit/loss, average win/loss size, drawdown metrics, and other performance statistics.",
+     group = 'Show', 
+     display = display.none)
+
+// Debug mode for testing TP2 alerts
+debugMode = input.bool(false, 
+     title = 'Debug Mode - Force TP2 Testing', 
+     tooltip = "Enable this to test TP2 alerts during after-hours. Creates fake TP1 hits to trigger TP2 tracking.",
+     group = 'Trading', 
+     display = display.none)
+
+showMAs = input.bool(false, 
+     title = 'Show All Moving Averages', 
+     tooltip = "Display all configured moving averages on the chart. Useful for seeing multiple trend timeframes at once.",
+     group = 'Show', 
+     display = display.none)
+
+ma_tf = input.string('120', 
+     title = 'Moving Average Time Frame?', 
+     tooltip = "Timeframe used to calculate moving averages. Higher timeframes provide smoother, more significant trend signals with less noise.",
+     options = ['1', '3', '5', '15', '30', '60', '120', '240', 'D', 'W'], 
+     group = 'Show', 
+     display = display.none)
+
+show_bigRSI = input.bool(false,
+     "Show HTF RSI Labels", 
+     tooltip = "Show labels when the larger timeframe (selected moving average timeframe) RSI is overbought/oversold. This helps signify that price may reverse soon.", 
+     group = 'Show', 
+     display = display.none) 
+
+LEVEL_TIMEFRAME = input.string('30', 
+     title = "Level Calculation Timeframe", 
+     tooltip = "Timeframe used to calculate significant price levels. Higher timeframes produce fewer but more significant levels.",
+     options=["1", "3", "5", "15", "30", "60"], 
+     group = 'Trading', 
+     display = display.status_line)
+
+STOP_TIMEFRAME = input.string("15", 
+     title = "Stop Level Timeframe", 
+     tooltip = "Timeframe used to calculate stop loss levels. Lower timeframes create tighter stops, while higher timeframes create wider stops based on longer-term volatility.",
+     options=["1", "3", "5", "15", "30", "60"], 
+     group = 'Trading')
+
+TARGET_TIMEFRAME = input.string("15", 
+     title = "Target Level Timeframe", 
+     tooltip = "Timeframe used to calculate take profit targets. Higher timeframes may identify more significant resistance/support levels for profit targets.",
+     options=["1", "3", "5", "15", "30", "60"], 
+     group = 'Trading')
+
+close_buffer = input.session("1530-1600",
+     title = "No Trades between", 
+     tooltip = "Time period before market close when new signals are no longer generated. Helps avoid entering trades too close to market close.",
+     group = 'Trading',
+     display = display.none)
+
+// Parse the close buffer times
+close_buffer_start = str.tonumber(str.substring(close_buffer, 0, 2)) * 60 + str.tonumber(str.substring(close_buffer, 2, 4))
+close_buffer_end = str.tonumber(str.substring(close_buffer, 5, 7)) * 60 + str.tonumber(str.substring(close_buffer, 7, 9))
+
+// Calculate current time in minutes since midnight
+current_time_minutes = hour * 60 + minute
+
+// Check if we're within the close buffer period
+not_close = current_time_minutes < close_buffer_start or current_time_minutes > close_buffer_end
+
+showSignals = input.bool(true, 
+     title = 'Show Buy Signals ?', 
+     tooltip = "Display long entry signals based on the selected strategy. When enabled, the indicator will highlight potential buying opportunities.",
+     group = 'Trading', 
+     display = display.none) 
+
+showSellSignals = input.bool(true, 
+     title = 'Show Sell Signals ?', 
+     tooltip = "Display short entry signals based on the selected strategy. When enabled, the indicator will highlight potential selling opportunities.",
+     group = 'Trading', 
+     display = display.none) 
+
+showTradeLines = input.bool(true, 
+     title = 'Show Suggested Trade Levels ?', 
+     tooltip = "Display horizontal lines for entry, stop loss, and take profit levels. These lines help visualize the risk/reward setup for each trade.",
+     group = 'Trading', 
+     display = display.none)  
+
+risk = input.float(1.0, 
+     title = 'Risk', 
+     tooltip = "Risk multiplier for stop loss calculation. Higher values create wider stops (more room for price to move before stopping out).",
+     group = 'Trading', 
+     display = display.none)
+
+RISKCOLOR = input.color(color.maroon, 
+     title = 'Trade Risk Color',
+     tooltip = "Risk color for stop loss visual.",
+     group = 'Trading', 
+     display = display.none)
+
+PROFCOLOR = input.color(color.green,
+     title = 'Trade Profit Color',
+     tooltip = "Profit color for take profit 1 visual.",
+     group = 'Trading', 
+     display = display.none)
+
+PROFCOLOR2 = input.color(color.lime,
+     title = 'Trade Profit 2 Color',
+     tooltip = "Profit color for take profit 2 visual.",
+     group = 'Trading', 
+     display = display.none)
+
+DAY_BND_COLOR = input.color(color.orange,
+     title = 'Daily Boundary Color',
+     tooltip = "Daily bounds color for daily targets",
+     group = 'Trading', 
+     display = display.none)
+
+
+TRADETXTCOLOR = input.color(color.white,
+     title = 'Trade Text Color',
+     tooltip = "Color for trade text.",
+     group = 'Trading', 
+     display = display.none)
+
+prof = input.float(1.2, 
+     title = 'Reward', 
+     tooltip = "Reward multiplier for take profit calculation. Higher values place take profit targets further from entry (targeting larger moves).",
+     group = 'Trading', 
+     display = display.none)
+
+
+ATR_LENGTH = input.int(14, 
+     title = "ATR Length", 
+     tooltip = "Number of bars used to calculate the Average True Range. Affects volatility measurement and level spacing.",
+     minval=1, 
+     maxval=600, 
+     display = display.none)
+
+ATR_MULTIPLIER = input.float(1.0, 
+     title = "ATR Multiplier", 
+     tooltip = "Multiplier applied to the ATR value. Higher values create wider stops and targets based on increased volatility expectations.",
+     minval=0.1, 
+     step=0.1, 
+     display = display.none)
+
+timezoneOptions = input.string(defval="EST/EDT", title="Select your Timezone", options=["UTC", "EST/EDT", "CST/CDT", "MST/MDT", "PST/PDT", "Custom UTC Offset"], display = display.none)
+customUtcOffset = input.int(defval=-5, title="Custom UTC Offset (only if selected above)", display = display.none)
+
+showData = input.bool(false, 
+     title = 'Show Backtest Data Individual Trades? ', 
+     tooltip = "Display a table with detailed information about each trade. Useful for analyzing individual trade performance.",
+     group = 'Statistics', 
+     display = display.none)
+
+tblPos = input.string('bottom', 
+     title = 'Put Data Table on top or bottom ?', 
+     tooltip = "Position of the data table on the chart. Choose 'top' for upper corner placement or 'bottom' for lower corner placement.",
+     options = ['bottom', 'top'], 
+     group = 'Statistics', 
+     display = display.none)
+
+data_tbl_pos = tblPos == 'bottom' ? position.bottom_left : position.top_left
+
+showVerts = input.bool(false, 
+     title = 'Show Vertical Lines over Trades ?', 
+     tooltip = "Display vertical lines at trade entry and exit points. Helps visualize when trades occurred on the chart.",
+     group = 'Statistics', 
+     display = display.none)
+
+
+MIN_FBD_POINTS = input.float(5.0, 
+     title = "Minimum Points for FBD Rally", 
+     tooltip = "Minimum price movement required to qualify as a Failed Breakdown/Breakout. Higher values filter out smaller price movements.",
+     minval=0.0, 
+     step=1.0, 
+     group='FBD Strategy', 
+     display = display.none)
+
+VOL_MULTIPLIER = input.float(3.0, 
+     title = "Volume Spike Multiplier", 
+     tooltip = "Multiplier for volume spike detection. Higher values require stronger volume confirmation for FBD signals.",
+     minval=1.5, 
+     step=0.5, 
+     group='FBD Strategy', 
+     display = display.none)
+
+VOL_LOOKBACK = input.int(5, 
+     title = "Volume Average Lookback", 
+     tooltip = "Number of bars used to calculate the average volume for comparison. Affects sensitivity of volume spike detection.",
+     minval=3, 
+     maxval=20, 
+     group='FBD Strategy', 
+     display = display.none)
+
+MAX_LULL_BARS = input.int(10, 
+     title = "Maximum Lull Period Length", 
+     tooltip = "Maximum number of bars allowed for the volume lull period before a breakout. Helps identify proper FBD setups.",
+     minval=3, 
+     maxval=20, 
+     group='FBD Strategy', 
+     display = display.none)
+
+LULL_THRESHOLD = input.float(1.2, 
+     title = "Volume Lull Threshold Multiplier", 
+     tooltip = "Multiplier for identifying low volume periods before breakouts. Lower values create stricter criteria for volume lulls.",
+     minval=1.0, 
+     step=0.1, 
+     group='FBD Strategy', 
+     display = display.none)
+
+fbd_tf = input.string('30', 
+     title = 'FBD Level Selection Timeframe', 
+     tooltip = "Timeframe used for Failed Breakdown strategy level selection. Higher timeframes identify more significant swing lows.",
+     options = ['1', '3', '5', '15', '30', '60', '120', '240', 'D', 'W'], 
+     group = 'FBD Strategy',
+     display = display.none)
+
+fbd_vol_tf = input.string('5', 
+     title = 'FBD Volume Calculation Timeframe', 
+     tooltip = "Timeframe used for volume calculations in the Failed Breakdown strategy. Lower timeframes can provide more precise volume signals.",
+     options = ['1', '3', '5', '15', '30', '60', '120', '240', 'D', 'W'], 
+     group = 'FBD Strategy',
+     display = display.none)
+
+fbd_lookback = input.int(10, 
+     title = 'Swing Low Lookback', 
+     tooltip = "Number of bars to look back when finding the swing low. Higher values look further back in time.",
+     minval = 3, 
+     maxval = 50, 
+     group = 'FBD Strategy',
+     display = display.none)
+
+fbd_vol_mult = input.float(1.5, 
+     title = 'Volume Multiplier', 
+     tooltip = "Multiplier for average volume. Signal triggers when volume is greater than this multiple of the average.",
+     minval = 1.0, 
+     maxval = 5.0, 
+     step = 0.1, 
+     group = 'FBD Strategy',
+     display = display.none)
+
+openHour = input.int(defval = 9, 
+     title = 'Opening Session Hour',
+     tooltip = "Hour of the trading session open (24-hour format). Used to identify session boundaries for opening range calculations.",
+     inline = 'session_open',
+     minval = 0,
+     maxval = 23,
+     display = display.none)
+
+openMin = input.int(defval = 30, 
+     title = 'Opening Session Minute',
+     tooltip = "Minute of the trading session open. Combined with the hour to precisely define when the trading session begins.",
+     inline = 'session_open',
+     minval = 0,
+     maxval = 59,
+     display = display.none)
+
+closeHour = input.int(16, 
+     title = 'Closing Session Hour',
+     tooltip = "Hour of the trading session close (24-hour format). Used to identify session boundaries and avoid signals after market close.",
+     inline = 'session_close',
+     minval = 0,
+     maxval = 23,
+     display = display.none)
+
+closeMin = input.int(15, 
+     title = 'Closing Session Minute',
+     tooltip = "Minute of the trading session close. Combined with the hour to precisely define when the trading session ends.",
+     inline = 'session_close',
+     minval = 0,
+     maxval = 59,
+     display = display.none)
+
+OR_COLOR = input.color(color.yellow, 
+     title = 'Color', 
+     tooltip = "Color of the intraday range box. This highlights the price range established during the pre-market or opening period.",
+     inline="open_range", 
+     group = GROUP_OPENING_RANGE)
+
+OR_OPACITY = input.int(90, 
+     title = 'Transparency', 
+     tooltip = "Transparency level of the intraday range box. Higher values make the box more transparent (less visible).",
+     inline="open_range", 
+     group=GROUP_OPENING_RANGE)
+
+
+RSI_MAX = input.float(72, 
+     title = "HTF RSI Overbought Level", 
+     tooltip = "RSI overbought number. RSI above this number suggests exhausted buyers.", 
+     minval=0, 
+     maxval=100, 
+     group = "RSI", 
+     display = display.none)
+
+RSI_MIN = input.float(30, 
+     title = "HTF RSI Oversold Level", 
+     tooltip = "RSI oversold number. RSI below this number suggests exhausted sellers.", 
+     minval=0, 
+     maxval=100, 
+     group = 'RSI', 
+     display = display.none)
+
+
+showMA1 = input.bool(true, title = 'Show Moving Average 1', tooltip = "Display the first moving average (typically fastest/shortest period). Often used for short-term trend direction.", group = 'Moving Averages', display = display.none)
+l1 = input.int(8, title = 'Length', tooltip = "Number of bars used to calculate the first moving average. Lower values are more responsive but noisier.", minval = 1, group = 'Moving Avg 1', display = display.none)
+t1 = input.string('Exponential', title = 'Type', tooltip = "EMA responds faster to recent price changes, while SMA treats all prices in the period equally.", options = ['Exponential', 'Simple'], group = 'Moving Avg 1', display = display.none)
+c1 = input.color(color.new(#43A047, 0), title = 'Color', tooltip = "Color of the first moving average line on the chart.", group = 'Moving Avg 1', display = display.none)
+e1 = t1 == 'Exponential' ? ta.ema(close, l1) : ta.sma(close, l1)
+
+showMA2 = input.bool(true, title = 'Show Moving Average 2', tooltip = "Display the second moving average. Often used with MA1 to identify crossovers for trend changes.", group = 'Moving Averages', display = display.none)
+l2 = input.int(21, title = 'Length', tooltip = "Number of bars used to calculate the second moving average. Medium-term trend indicator.", minval = 1, group = 'Moving Avg 2', display = display.none)
+t2 = input.string('Exponential', title = 'Type', tooltip = "EMA responds faster to recent price changes, while SMA treats all prices in the period equally.", options = ['Exponential', 'Simple'], group = 'Moving Avg 2', display = display.none)
+c2 = input.color(color.new(#770ee8, 0), title = 'Color', tooltip = "Color of the second moving average line on the chart.", group = 'Moving Avg 2', display = display.none)
+e2 = t2 == 'Exponential' ? ta.ema(close, l2) : ta.sma(close, l2)
+
+showMA3 = input.bool(false, title = 'Show Moving Average 3 ', tooltip = "Display the third moving average. Often used with MA4 to identify crossovers for trend changes.", group = 'Moving Averages', display = display.none)
+l3 = input.int(50, minval = 1, title = 'Length', tooltip = "Color of the third moving average line on the chart.", group = 'Moving Avg 3', display = display.none)
+t3 = input.string('Exponential', options = ['Exponential', 'Simple'], title = 'Type', tooltip = "EMA responds faster to recent price changes, while SMA treats all prices in the period equally.", group = 'Moving Avg 3', display = display.none)
+e3 = t3 == 'Exponential' ? ta.ema(close, l3) : ta.sma(close, l3)
+c3 = input.color(color.new(#227cf1, 0), title = 'Color', tooltip = "Color of the second moving average line on the chart.", group = 'Moving Avg 3', display = display.none)
+
+showMA4 = input.bool(false, title = 'Show Moving Average 4 ', tooltip = "Display the fourth moving average. Often used with MA3 to identify crossovers for trend changes.", group = 'Moving Averages', display = display.none)
+l4 = input.int(100, minval = 1, title = 'Length', tooltip = "Color of the fourth moving average line on the chart.", group = 'Moving Avg 4', display = display.none)
+t4 = input.string('Exponential', options = ['Exponential', 'Simple'], title = 'Type', tooltip = "EMA responds faster to recent price changes, while SMA treats all prices in the period equally.", group = 'Moving Avg 4', display = display.none)
+e4 = t4 == 'Exponential' ? ta.ema(close, l4) : ta.sma(close, l4)
+c4 = input.color(color.new(#f2cb09, 0), title = 'Color', tooltip = "Color of the second moving average line on the chart.", group = 'Moving Avg 4', display = display.none)
+
+showMA5 = input.bool(false, title = 'Show Moving Average 5 ', tooltip = "Display the fifth moving average. Often used as long term trend support or resistance." , group = 'Moving Averages', display = display.none)
+l5 = input.int(200, minval = 1, title = 'Length', tooltip = "Color of the fifth moving average line on the chart.", group = 'Moving Avg 5', display = display.none)
+t5 = input.string('Exponential', options = ['Exponential', 'Simple'], title = 'Type', tooltip = "EMA responds faster to recent price changes, while SMA treats all prices in the period equally.", group = 'Moving Avg 5', display = display.none)
+e5 = t5 == 'Exponential' ? ta.ema(close, l5) : ta.sma(close, l5)
+c5 = input.color(color.new(#f42a0b, 0), title = 'Color', tooltip = "Color of the second moving average line on the chart.", group = 'Moving Avg 5', display = display.none)
+
+
+var table data_tbl = table.new(data_tbl_pos, 100, 100, bgcolor = color.new(color.black, 50))
+var color longFillColor = color.new(PROFCOLOR, 60) 
+var color shortFillColor = color.new(RISKCOLOR, 60)
+
+var bool is_close = hour == closeHour and minute == closeMin
+var color c_bull = color.green, var color c_bear = color.red
+
+// Create variables to store open time bar index and line references
+var float day_dist = na
+var float day_bull_price = na
+var float day_bull_price1 = na 
+var float day_bear_price = na
+var float day_bear_price1 = na
+
+var int open_bar_index = na
+var line day_bull_lvl = na
+var line day_bear_lvl = na
+var line day_bull_lvl1 = na
+var line day_bear_lvl1 = na
+
+
+// Opening Range 
+type OpeningRange
+	float or_high
+	float or_low
+	color fillColor
+
+formatPrice(price) =>
+    str.tostring(price, "#.##")
+
+safeFloat(val) =>
+    na(val) ? "null" : str.tostring(val, '#.##')
+
+padTimeString(n) =>
+    str.length(n) < 2 ? '0' + n : n
+
+// Initialize the opening range
+initOpeningRange() =>
+    OpeningRange.new(or_high = high, or_low = low, fillColor = color.new(OR_COLOR,OR_OPACITY))
+var openingRange = initOpeningRange()
+
+// Update the opening range
+updateOpeningRange(OpeningRange _or, float currentHigh, float currentLow, bool inSession) =>
+    if inSession and not na(_or)
+        _high = na(_or.or_high) or currentHigh > _or.or_high ? currentHigh : _or.or_high
+        _low = na(_or.or_low) or currentLow < _or.or_low ? currentLow : _or.or_low
+        OpeningRange.new(_high, _low, _or.fillColor)
+    else
+        _or
+
+// Function to get moving averages and RSI values
+moving_avgs(_time) =>
+    _ma1 = request.security(syminfo.tickerid, _time, e1, gaps=barmerge.gaps_off)
+    _ma2 = request.security(syminfo.tickerid, _time, e2, gaps=barmerge.gaps_off)
+    _ma3 = request.security(syminfo.tickerid, _time, e3, gaps=barmerge.gaps_off)
+    _ma4 = request.security(syminfo.tickerid, _time, e4, gaps=barmerge.gaps_off)
+    _ma5 = request.security(syminfo.tickerid, _time, e5, gaps=barmerge.gaps_off)
+    _rsi = request.security(syminfo.tickerid, _time, ta.rsi(close,14), gaps = barmerge.gaps_off)
+
+    _ma1_filled = ta.valuewhen(not na(_ma1), _ma1, 0)
+    _ma2_filled = ta.valuewhen(not na(_ma2), _ma2, 0)
+    _ma3_filled = ta.valuewhen(not na(_ma3), _ma3, 0)
+    _ma4_filled = ta.valuewhen(not na(_ma4), _ma4, 0)
+    _ma5_filled = ta.valuewhen(not na(_ma5), _ma5, 0)
+    _rsi_filled = ta.valuewhen(not na(_rsi), _rsi, 0)
+
+    [_ma1_filled, _ma2_filled, _ma3_filled, _ma4_filled, _ma5_filled, _rsi_filled]
+
+
+// Simplified time format function using Pine Script's built-in formatter
+formatTime(_timestamp) =>
+    var string return_string = na  
+    // Map the timezone option to a format compatible with str.format_time
+    string timezone = switch timezoneOptions
+        "UTC" => "UTC"
+        "EST/EDT" => "America/New_York"
+        "CST/CDT" => "America/Chicago"
+        "MST/MDT" => "America/Denver"
+        "PST/PDT" => "America/Los_Angeles"
+        "Custom UTC Offset" => "UTC" // No direct way to do custom offset with str.format_time
+        => "UTC"  // fallback
+    
+    // Handle custom UTC offset as special case
+    if timezoneOptions == "Custom UTC Offset"
+        // Get the time in UTC
+        string utcTime = str.format_time(_timestamp, "yyyy-MM-dd HH:mm:ss", "UTC")
+        
+        // Parse components
+        float year_ = str.tonumber(str.substring(utcTime, 0, 4))
+        float month_ = str.tonumber(str.substring(utcTime, 5, 7))
+        float day_ = str.tonumber(str.substring(utcTime, 8, 10))
+        float hour_ = str.tonumber(str.substring(utcTime, 11, 13))
+        float minute_ = str.tonumber(str.substring(utcTime, 14, 16))
+        float second_ = str.tonumber(str.substring(utcTime, 17, 19))
+        
+        // Apply custom offset to hour
+        hour_ := (hour_ + customUtcOffset) % 24
+        if hour_ < 0
+            hour_ := hour_ + 24
+            
+        // Format with adjusted hour
+        string hourStr = hour_ < 10 ? "0" + str.tostring(hour_) : str.tostring(hour_)
+        return_string := str.substring(utcTime, 0, 11) + hourStr + str.substring(utcTime, 13)
+    else 
+        // Use built-in formatter for standard timezones
+        return_string := str.format_time(_timestamp, "yyyy-MM-dd HH:mm:ss", timezone)
+    return_string
+
+getEmbedColor(_sig) =>
+    _sigLower = str.lower(_sig)
+    _openLong = str.contains(_sigLower, "open long")
+    _openShort = str.contains(_sigLower, "open short")
+    _trimLong = str.contains(_sigLower, "trim") and str.contains(_sigLower, "long")
+    _trimShort = str.contains(_sigLower, "trim") and str.contains(_sigLower, "short")
+    _stopOutLong = str.contains(_sigLower, "stop out") and str.contains(_sigLower, "long")
+    _stopOutShort = str.contains(_sigLower, "stop out") and str.contains(_sigLower, "short")
+    _sessionClose = str.contains(_sigLower, "session close")
+
+    color_ = _openLong     ? 3066993 :      // Green
+             _openShort    ? 15158332 :     // Red
+             _trimLong     ? 16776960 :     // Yellow
+             _trimShort    ? 16753920 :     // Orange
+             _stopOutLong or _stopOutShort ? 10038562 :  // Dark Red
+             _sessionClose ? 3447003 :      // Blue
+             10181046                   // Purple fallback
+    color_
+
+getTitleEmoji(_sig) =>
+    _sigLower = str.lower(_sig)
+    _openLong = str.contains(_sigLower, "open long")
+    _openShort = str.contains(_sigLower, "open short")
+    _trimLong = str.contains(_sigLower, "trim") and str.contains(_sigLower, "long")
+    _trimShort = str.contains(_sigLower, "trim") and str.contains(_sigLower, "short")
+    _stopOutLong = str.contains(_sigLower, "stop out") and str.contains(_sigLower, "long")
+    _stopOutShort = str.contains(_sigLower, "stop out") and str.contains(_sigLower, "short")
+    _sessionClose = str.contains(_sigLower, "session close")
+
+    emoji = _openLong     ? "🚀" :
+             _openShort    ? "🔻" :
+             _trimLong     ? "✂️📈" :
+             _trimShort    ? "✂️📉" :
+             _stopOutLong  ? "💥📈" :
+             _stopOutShort ? "💥📉" :
+             _sessionClose ? "🏁" :
+             "📊"
+    emoji
+
+safeStr(strVal) =>
+    sanitized = strVal
+    sanitized := na(sanitized) or str.length(sanitized) == 0 ? "" : sanitized
+    sanitized := str.replace_all(sanitized, "\\", "\\\\") // Escape backslashes first
+    sanitized := str.replace_all(sanitized, '"', '\\"')   // Escape quotes
+    sanitized := str.replace_all(sanitized, '\n', '\\n')  // Escape newlines
+    sanitized
+
+
+formatTrade(_time, _sym, _strat, _sig, _ent, _stop, _tg1, _tg2, _chart_url) =>
+    sEmoji = getTitleEmoji(_sig)
+    sSym   = safeStr(str.tostring(_sym))
+    sSig   = safeStr(str.tostring(_sig))
+    sStrat = safeStr(str.tostring(_strat))
+    sTime  = safeStr(str.tostring(_time))
+    sColor = str.tostring(getEmbedColor(_sig))
+    sUrl   = safeStr(str.tostring(_chart_url))
+    
+    sEnt   = safeFloat(_ent)
+    sStop  = safeFloat(_stop)
+    sTg1   = safeFloat(_tg1)
+    sTg2   = safeFloat(_tg2)
+    
+    _sigLower = str.lower(_sig)
+    isClosingTrade = str.contains(_sigLower, "trim/close") or 
+                     str.contains(_sigLower, "stop out") or 
+                     str.contains(_sigLower, "tp2") or
+                     str.contains(_sigLower, "session close")
+    
+    isLongTrade = str.contains(_sigLower, "long")
+    isShortTrade = str.contains(_sigLower, "short")
+    
+    sPnL = ""
+    if isClosingTrade
+        if isLongTrade
+            float pnlValue = na 
+            if str.contains(_sigLower, "tp2")
+                sTg2 := sTg2 + " 👈"
+                pnlValue := _tg2 - _ent
+            else if str.contains(_sigLower, "trim/close")
+                sTg1 := sTg1 + " 👈"
+                pnlValue := _tg1 - _ent
+            else if str.contains(_sigLower,"stop")
+                sStop := sStop + " 👈"
+                pnlValue := _stop - _ent
+            else
+                pnlValue := close - _ent
+            pnlEmoji = pnlValue >= 0 ? "💰 +" : "📉 "
+            sPnL := pnlEmoji + safeFloat(pnlValue)
+        else if isShortTrade
+            float pnlValue = na
+            if str.contains(_sigLower, "tp2")
+                sTg2 := sTg2 + " 👈"
+                pnlValue := _ent - _tg2
+            else if str.contains(_sigLower, "trim/close")
+                sTg1 := sTg1 + " 👈"
+                pnlValue := _ent - _tg1
+            else if str.contains(_sigLower, "stop")
+                sStop := sStop + " 👈"
+                pnlValue := _ent - _stop
+            else 
+                pnlValue := _ent - close
+            pnlEmoji = pnlValue >= 0 ? "💰 +" : "📉 "
+            sPnL := pnlEmoji + safeFloat(pnlValue)
+    else 
+        if str.contains(_sigLower, "open")
+            sEnt := sEnt + " 👈"
+    
+    embedTitle = sEmoji + ' [' + sSym + '] ' + sSig
+    embedDesc  = '**Strategy:** ' + sStrat + '\\n**Time:** ' + sTime
+    
+    if isClosingTrade and str.length(sPnL) > 0
+        embedDesc := embedDesc + '\\n**PnL:** ' + sPnL + ' points'
+
+    fieldsBlock = '[' +
+         '{"name":"🌶️ Entry","value":"' + sEnt + '","inline":true},' +
+         '{"name":"🛑 Stop","value":"' + sStop + '","inline":true},' +
+         '{"name":"🥇 Target 1","value":"' + sTg1 + '","inline":true},' +
+         '{"name":"🥈 Target 2","value":"' + sTg2 + '","inline":true}'
+
+    fieldsBlock := fieldsBlock + ',' +
+         '{"name":"Chart Link","value":"[Open Chart](' + sUrl + ')","inline":false}' +
+     ']'
+
+    fullJson = '{' +
+         '"embeds":[' +
+             '{' +
+                 '"title":"' + embedTitle + '",' +
+                 '"description":"' + embedDesc + '",' +
+                 '"color":' + sColor + ',' +
+                 '"url":"' + sUrl + '",' +
+                 '"fields":' + fieldsBlock +
+             '}' +
+         ']' +
+     '}'
+
+    fullJson
+
+// Add this at the beginning of your script
+var float cached_atr = na
+var int last_atr_calc = 0
+
+// Function to check if we need a new ATR calculation
+shouldUpdateATR(int last_calc, int current_bar) =>
+    current_bar - last_calc >= 5 or na(cached_atr)
+
+// Function to calculate ATR (without modifying globals)
+calculateATR(int atr_length, float atr_mult) =>
+    ta.atr(atr_length) * atr_mult
+
+// Then update in main script:
+needs_atr_update = shouldUpdateATR(last_atr_calc, bar_index)
+if needs_atr_update
+    current_atr := calculateATR(ATR_LENGTH, ATR_MULTIPLIER)
+    cached_atr := current_atr
+    last_atr_calc := bar_index
+else
+    current_atr := cached_atr
+
+
+getHTFAtr() =>
+    htf_high = request.security(syminfo.tickerid, LEVEL_TIMEFRAME, high)
+    htf_low = request.security(syminfo.tickerid, LEVEL_TIMEFRAME, low)
+    htf_close = request.security(syminfo.tickerid, LEVEL_TIMEFRAME, close)
+    htf_atr = request.security(syminfo.tickerid, LEVEL_TIMEFRAME, ta.atr(ATR_LENGTH))
+    result = htf_atr * ATR_MULTIPLIER
+    result
+
+var int last_session_day = dayofmonth
+
+is_session_change() =>
+    current_session = dayofmonth
+    current_session != last_session_day
+
+var bool is_lower_tf = timeframe.in_seconds() <= 300  // 5 minutes or lower
+
+getHTFLevels() =>
+    float htf_close = request.security(syminfo.tickerid, LEVEL_TIMEFRAME, close, lookahead=barmerge.lookahead_off)
+    float htf_atr = request.security(syminfo.tickerid, LEVEL_TIMEFRAME, ta.atr(ATR_LENGTH), lookahead=barmerge.lookahead_off)
+    
+    if is_lower_tf
+        htf_close := request.security(syminfo.tickerid, "5", close[1], lookahead=barmerge.lookahead_off)
+        htf_atr := request.security(syminfo.tickerid, "5", ta.atr(ATR_LENGTH)[1], lookahead=barmerge.lookahead_off)
+    
+    [htf_close, htf_atr]
+
+getHTFData() =>
+    [htf_open, htf_high, htf_low, htf_close, htf_atr, htf_volume] = request.security(
+         syminfo.tickerid, 
+         LEVEL_TIMEFRAME, 
+         [open, high, low, close, ta.atr(ATR_LENGTH), volume],
+         lookahead=barmerge.lookahead_off
+         )
+    [htf_open, htf_high, htf_low, htf_close, htf_atr, htf_volume]
+
+get_nearest_atr_target(current_price, is_long) =>
+    var float target_price = na
+
+    if na(target_price)
+        target_price := is_long ? current_price + (current_atr* prof) : current_price - (current_atr* prof)
+    
+    target_price
+
+handleTradeExit(float entry_price, float exit_price, string exit_type, string trade_type, 
+                 int _month, int _dayofmonth, int _hour, int _minute, bool showStopLbls,
+                 int entry_bar_index, int entry_month, int entry_dayofmonth, int entry_hour, int entry_minute) =>
+
+    float _actual_points = trade_type == "long" ? exit_price - entry_price : entry_price - exit_price
+    bool winner = _actual_points > 0
+    
+    // Calculate bar duration
+    int bars_in_trade = bar_index - entry_bar_index
+    
+    // Calculate time duration (simplified - doesn't account for month/day boundaries)
+    float minutes_in_trade = (_hour * 60 + _minute) - (entry_hour * 60 + entry_minute)
+    
+    // Handle day boundaries
+    if minutes_in_trade < 0 and _dayofmonth > entry_dayofmonth
+        minutes_in_trade := minutes_in_trade + 1440  // Add 24 hours
+    
+    // Format time in trade as hours:minutes
+    float hours_in_trade = math.floor(minutes_in_trade / 60)
+    float mins_remainder = minutes_in_trade % 60
+    string duration_str = str.tostring(hours_in_trade) + 'h:' + str.tostring(mins_remainder) + 'm'
+    
+    string trade_time_str = str.tostring(_month) + '/' + str.tostring(_dayofmonth) + 
+         ' [' + str.tostring(_hour) + ':' + str.tostring(_minute) + ']'
+    
+    string _label_text = showStopLbls ? 
+         exit_type + ' ' + str.tostring(entry_price, '#.##') + ' ' + 
+         (winner ? '+' : '') + str.tostring(_actual_points, '#.##') + ' ' + 
+         trade_time_str + ' [' + duration_str + '/' + str.tostring(bars_in_trade) + ' bars]' :
+         exit_type == "TP" ? (trade_type == "long" ? 'TP1 ▼' : 'TP1 ▲') :
+         exit_type == "SL" ? 'Stop X' : 'EOD Close'
+    
+    [_actual_points, _label_text, winner, bars_in_trade, minutes_in_trade]
+
+
+
+
+getStopLevelATR() =>
+    stop_atr = request.security(syminfo.tickerid, STOP_TIMEFRAME, ta.atr(ATR_LENGTH))
+    stop_atr * ATR_MULTIPLIER
+
+getTargetLevelATR() =>
+    target_atr = request.security(syminfo.tickerid, TARGET_TIMEFRAME, ta.atr(ATR_LENGTH))
+    target_atr * ATR_MULTIPLIER
+
+getDailyLevelATR() =>
+    daily_atr = request.security(syminfo.tickerid, "D", ta.atr(ATR_LENGTH))
+    daily_atr
+
+float current_HTF_atr = getHTFAtr()
+float target_atr = getTargetLevelATR()
+float stop_atr = getStopLevelATR()
+
+calculateLevels(float entry_price, bool isLong) =>
+    if na(entry_price)
+        [na, na, na]
+    else
+        float stop_distance = stop_atr * risk
+        float profit_distance = target_atr * prof
+        float profit_distance2 = profit_distance * 2
+        
+        float stop_level = isLong ? entry_price - stop_distance : entry_price + stop_distance
+        float profit_level = isLong ? entry_price + profit_distance : entry_price - profit_distance
+        float profit_level2 = isLong ? entry_price + profit_distance + profit_distance : entry_price - profit_distance - profit_distance
+        
+        [stop_level, profit_level, profit_level2]
+
+
+calculateEntry(string sigType,float baseLevel) =>
+    float _entry = na
+    ofst = ((high - low) * 0.236)
+    if sigType == 'long' 
+        _entry := low <= baseLevel ? baseLevel : low + ofst
+    else
+        _entry := high >= baseLevel ? baseLevel : high - ofst
+    _entry
+
+calcSquaredSum(float[] arr) =>
+    float sum = 0.0
+    for i = 0 to array.size(arr) - 1
+        sum += math.pow(array.get(arr, i), 2)
+    sum
+
+calcXYSum(float[] arrX, float[] arrY) =>
+    float sum = 0.0
+    for i = 0 to array.size(arrX) - 1
+        sum += array.get(arrX, i) * array.get(arrY, i)
+    sum
+
+var int last_box_update = 0
+SHOW_LAST_N_TRADE_BOXES=100
+
+
+detectStarPattern(bool checkEvening) =>
+    if checkEvening and not (close[2] > open[2] and close < open)
+        false
+    else if not checkEvening and not (close[2] < open[2] and close > open)
+        false
+    else
+        float body1 = math.abs(close[2] - open[2])
+        float body2 = math.abs(close[1] - open[1])
+        float body3 = math.abs(close - open)
+        float range2 = high[1] - low[1]
+        bool is_doji = body2 / range2 < DOJI_THRESHOLD
+        
+        if checkEvening  // Evening Star
+            pattern = close[2] > open[2] and  // First candle bullish
+                      body1 > STAR_BODY_THRESHOLD * current_atr and  // Strong first candle
+                      is_doji and  // Middle candle is doji-like
+                      close < open and  // Third candle bearish
+                      close < math.min(open[2], close[2]) and  // Confirmation
+                      high[1] >= get_nearest_atr_target(open[1],false) // check doji crossed an open 
+            pattern
+        else  // Morning Star
+            pattern = close[2] < open[2] and  // First candle bearish
+                      body1 > STAR_BODY_THRESHOLD * current_atr and  // Strong first candle
+                      is_doji and  // Middle candle is doji-like
+                      close > open and  // Third candle bullish
+                      close > math.max(open[2], close[2]) and  // Confirmation
+                      low[1] <= get_nearest_atr_target(open[1],true) // check doji crossed an open
+            pattern
+
+detectFBD() =>
+    [htf_open, htf_high, htf_low, htf_close] = request.security(syminfo.tickerid, fbd_tf, [open, high, low, close])
+    
+    htf_volume = request.security(syminfo.tickerid, fbd_vol_tf, volume)
+    
+    float swing_low = htf_low[0]
+    int swing_low_idx = 0
+    
+    for i = 1 to fbd_lookback
+        if not na(htf_low[i]) and htf_low[i] < swing_low
+            swing_low := htf_low[i]
+            swing_low_idx := i
+    
+    bool breaks_level = low < swing_low
+    bool recovers_level = close > swing_low
+    
+    float avg_volume = request.security(syminfo.tickerid, fbd_vol_tf, ta.sma(volume, 20))
+    bool higher_volume = htf_volume > avg_volume * fbd_vol_mult
+    
+    bool fbd_triggered = breaks_level and recovers_level and higher_volume and swing_low_idx > 0
+    
+    float base_level_ = swing_low
+    
+    [fbd_triggered, base_level_]
+
+
+
+// 1. UNIFIED TRADE ENTRY FUNCTION
+enterTrade(bool is_long, float base_level, string strat_type) =>
+    float entry_price = calculateEntry(is_long ? "long" : "short", base_level)
+    
+    // Calculate stop and target levels
+    [stop_level, profit_level, profit_level2] = calculateLevels(entry_price, is_long)
+    
+    // Format alert message
+    trade_direction = is_long ? "long" : "short"
+    formattedTime = formatTime(timenow)
+    jsonstring = formatTrade(formattedTime, syminfo.ticker, strat_type, 
+                             'open ' + trade_direction, 
+                             entry_price, stop_level, profit_level, profit_level2, 
+                             chart_url)
+    
+    // Create label - FIXED: Use a local variable for the label text, not the global
+    string entry_label_text = showStopLbls ? 
+         str.tostring(month) + '/' + str.tostring(dayofmonth) + 
+         ' [' + str.tostring(hour) + ':' + str.tostring(minute) + ']' + ' ' + strat_type + 
+         ' ' + str.tostring(trade_direction) + ' @ ' + str.tostring(entry_price, '#.##') + ' STOP: ' + 
+         str.tostring(stop_level, '#.##') + ' TP1: ' + 
+         str.tostring(profit_level, "#.##") + ' TP2: ' + 
+         str.tostring(profit_level2, "#.##") : 
+         (is_long ? 'Long ▲ ' : 'Short ▼ ') + str.tostring(entry_price, "#.##")
+    
+    label_color = is_long ? c_bull : c_bear
+    label_style = is_long ? 
+         (showStopLbls ? label.style_label_upper_right : label.style_label_up) : 
+         (showStopLbls ? label.style_label_lower_right : label.style_label_down)
+    label_position = is_long ? low - lbl_dist : high + lbl_dist
+    
+    // FIXED: Use the local variable for the label text
+    label.new(bar_index, label_position,
+         text=entry_label_text,
+         color=label_color,
+         style=label_style,
+         textcolor=TRADETXTCOLOR,
+         tooltip=entry_label_text,
+         size=size.tiny)
+    
+    box _riskbox = na
+    box _rewardbox = na
+    box _rewardbox1 = na
+    
+    // Create risk/reward boxes if needed
+    if showTradeLines
+        // Use exact bar_index for both left and right (no lookback)
+        _riskbox := box.new(bar_index, entry_price, bar_index + 1, stop_level,
+             border_color=color.new(c_bear, 0),
+             bgcolor=color.new(c_bear, 90),
+             extend=extend.none)
+            
+        _rewardbox := box.new(bar_index, entry_price, bar_index + 1, profit_level,
+             border_color=color.new(c_bull, 0),
+             bgcolor=color.new(c_bull, 90),
+             extend=extend.none)
+
+        _rewardbox1 := box.new(bar_index, profit_level, bar_index + 1, profit_level2,
+             border_color=color.new(c_bull, 0),
+             bgcolor=color.new(color.aqua, 90),
+             extend=extend.none)
+    
+    [entry_price, stop_level, profit_level, profit_level2, jsonstring, _riskbox, _rewardbox, _rewardbox1, entry_label_text]
+
+// 2. UNIFIED TRADE EXIT FUNCTION
+exitTrade(bool is_long, string exit_type, float entry_price, float exit_price, float stop_level, 
+          float profit_level, float profit_level2) =>
+    
+    // Process the exit calculations
+    [_points, _label_text, _is_win, _bars, _minutes] = handleTradeExit(
+         entry_price, exit_price, exit_type, is_long ? "long" : "short",
+         month, dayofmonth, hour, minute, showStopLbls,
+         entry_bar_index, entry_month, entry_dayofmonth, entry_hour, entry_minute)
+    
+    // Create the exit alert
+    formattedTime = formatTime(timenow)
+    trade_direction = is_long ? "long" : "short"
+    
+    alert_type = exit_type == "TP" ? 'trim/close ' + trade_direction :
+                 exit_type == "SL" ? 'stop out ' + trade_direction :
+                 'session close'
+                  
+    jsonstring = formatTrade(formattedTime, syminfo.ticker, stratType, alert_type, 
+                             entry_price, stop_level, profit_level, profit_level2, chart_url)
+    
+    // Determine label style and position
+    color _pnl_color = _is_win ? color.green : color.red
+    
+    label_style = _is_win == (exit_type != "SL") ? 
+                 (is_long ? label.style_label_lower_right : label.style_label_upper_right) :
+                 (is_long ? label.style_label_upper_right : label.style_label_lower_right)
+                 
+    label_position = (exit_type == "TP" or (_is_win and exit_type == "SC")) ?
+                   (is_long ? high + lbl_dist : low - lbl_dist) :
+                   (is_long ? low - lbl_dist : high + lbl_dist)
+                   
+    label.new(bar_index, label_position,
+         text=_label_text,
+         color=_pnl_color,
+         style=showStopLbls ? label_style : (is_long ? label.style_label_down : label.style_label_up),
+         textcolor=TRADETXTCOLOR,
+         tooltip=_label_text,
+         size=size.tiny)
+         
+    // Generate visual tools if requested
+    if showVerts
+        line.new(bar_index, close, bar_index, close * 1.01, 
+                 extend=extend.both, color=_pnl_color, 
+                 style=line.style_dotted, width=3)
+    
+    // Return values to be used for updates outside the function
+    [jsonstring, _points, _is_win, _bars, _pnl_color, exit_type, _label_text]
+
+// 3. UNIFIED TRADE MONITORING FUNCTION
+monitorTrade(bool is_long, float entry_price, float stop_level, float profit_level, float profit_level2) =>
+    // Update trade boxes
+    if showTradeLines and not na(rewardbox) and not na(rewardbox1) and not na(riskbox)
+        box.set_right(rewardbox, bar_index+1)
+        box.set_right(rewardbox1, bar_index+1)
+        box.set_right(riskbox, bar_index+1)
+        
+    // Check for exit conditions based on trade direction
+    float exit_price = na
+    string exit_type = na
+    bool should_exit = false
+    
+    // We removed the tp2_hit check since TP1 will always hit first
+    
+    // Regular exit checks
+    if is_long
+        take_profit_hit = high >= profit_level ? high : na
+        stop_loss_hit = low <= stop_level ? low : na
+        
+        if not na(take_profit_hit)
+            exit_price := take_profit_hit
+            exit_type := "TP"
+            should_exit := true
+        else if not na(stop_loss_hit)
+            exit_price := stop_loss_hit
+            exit_type := "SL"
+            should_exit := true
+        else if is_close
+            exit_price := close
+            exit_type := "SC" // Session Close
+            should_exit := true
+    else // Short trade
+        take_profit_hit = low <= profit_level ? low : na
+        stop_loss_hit = high >= stop_level ? high : na
+        
+        if not na(take_profit_hit)
+            exit_price := take_profit_hit
+            exit_type := "TP"
+            should_exit := true
+        else if not na(stop_loss_hit)
+            exit_price := stop_loss_hit
+            exit_type := "SL"
+            should_exit := true
+        else if is_close
+            exit_price := close
+            exit_type := "SC" // Session Close
+            should_exit := true
+    
+    [should_exit, exit_type, exit_price]
+
+
+
+///////////////////////////////////////////////////////////////// MAIN LOGIC ////////////////////////////////////////////////////////////////
+
+isFutures = str.contains(syminfo.type, "futures")
+// not_close = na(time(timeframe.period, close_buffer))
+
+if isFutures
+    openHour := openHour - 1
+    closeHour := closeHour - 1
+    closeHour
+
+is_open = hour == openHour and minute == openMin 
+open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0) 
+open_index = ta.barssince(is_open) 
+
+close_price = ta.valuewhen(is_close, open, 0)
+dt = time - time[1]
+
+TBL_TRSP = 0
+
+oH = str.tostring(openHour)
+oM = str.tostring(openMin)
+cH = str.tostring(closeHour)
+cM = str.tostring(closeMin)
+
+if str.length(oH) < 2
+    oH := '0' + oH
+if str.length(oM) < 2
+    oM := '0' + oM
+if str.length(cH) < 2
+    cH := '0' + cH
+if str.length(cM) < 2
+    cM := '0' + cM
+
+inv_sess = cH + cM + '-' + oH + oM
+openHour := isFutures ? openHour - 1 : openHour
+closeHour := isFutures ? closeHour - 1 : closeHour
+
+showONR = show_ORB and timeframe.isintraday                
+t = time(timeframe.period, inv_sess + ':1234567')      
+in_session = not na(t)
+is_first = in_session and not in_session[1]    
+
+if barstate.isfirst
+    show_eth_warning := false
+
+if (session_type == "regular" and ticker_type == "stock") or 
+     (session_type == "us_regular" and ticker_type == "futures") or 
+     (session_type == "regular" and ticker_type == "fund")
+
+    show_eth_warning := true
+
+if is_first                                            
+    orb_high := high
+    orb_low := low
+    openingRange := OpeningRange.new(high, low, color.new(OR_COLOR, OR_OPACITY))
+else if in_session
+    orb_high := math.max(orb_high[1], high)
+    orb_low := math.min(orb_low[1], low)
+    openingRange := updateOpeningRange(openingRange, orb_high, orb_low, true)
+
+if not na(openingRange)
+    plotColor := openingRange.fillColor
+
+if showONR
+    if is_first
+        if not na(orb_high_label)
+            label.delete(orb_high_label)
+        if not na(orb_low_label)
+            label.delete(orb_low_label)
+        
+        last_plotted_high := na
+        last_plotted_low := na
+    else if barstate.islast
+        last_bar = last_bar_index
+        if na(last_plotted_high) or orb_high != last_plotted_high
+            if not na(orb_high_label)
+                label.delete(orb_high_label)
+            orb_high_label := label.new(last_bar+offset, orb_high,
+                             text=str.tostring(orb_high, "#.##"),
+                             xloc=xloc.bar_index,
+                             style=label.style_text_outline,
+                             tooltip="ORB High",
+                             color=OR_COLOR,
+                             textcolor=color.black,
+                             size=size.tiny,
+                             textalign=text.align_right)
+            last_plotted_high := orb_high
+        
+        if na(last_plotted_low) or orb_low != last_plotted_low
+            if not na(orb_low_label)
+                label.delete(orb_low_label)
+            orb_low_label := label.new(last_bar+offset, orb_low,
+                             text=str.tostring(orb_low, "#.##"),
+                             xloc=xloc.bar_index,
+                             style=label.style_text_outline,
+                             tooltip="ORB Low",
+                             color=OR_COLOR,
+                             textcolor=color.black,
+                             size=size.tiny,
+                             textalign=text.align_right)
+            last_plotted_low := orb_low
+
+if barstate.islast and show_eth_warning
+    label.new(bar_index, high + (high * 0.001), 
+         text="⚠️ No Extended Hours Data Available", 
+         style=label.style_label_down,
+         color=color.new(color.yellow, 20),
+         textcolor=color.black,
+         tooltip="For best results switch to 'Electronic Trading Hours' ETH in chart settings (lower right corner) to see extended hours data")
+
+// Get the moving averages and RSI values
+[ma1, ma2, ma3, ma4, ma5, big_rsi] = moving_avgs(ma_tf)
+RSI_STRING := big_rsi > RSI_MAX ? "Buy Exhaustion" : big_rsi < RSI_MIN ? "Sell Exhaustion" : na
+
+if RSI_STRING == "Buy Exhaustion" and show_bigRSI
+    label.new(bar_index,high,
+     RSI_STRING,
+     xloc.bar_index,
+     yloc.abovebar,
+     color.white,
+     label.style_label_down, 
+     RISKCOLOR, 
+     size.tiny)
+if RSI_STRING == "Sell Exhaustion" and show_bigRSI
+    label.new(bar_index,
+     low,
+     RSI_STRING,
+     xloc.bar_index,
+     yloc.belowbar,
+     color.white,
+     label.style_label_up, 
+     PROFCOLOR, 
+     size.tiny)
+
+
+// Check if the close is above or below the moving averages
+above_ma1 = close > ma1
+below_ma1 = close < ma1
+above_ma2 = close > ma2 
+below_ma2 = close < ma2
+
+bull_stack = ma1 > ma2 and ma3 > ma4 
+bear_stack = ma1 < ma2 and ma3 < ma4
+
+ma8_reject = above_ma1[1] and below_ma1 and bear_stack and (not in_session)
+ma8_bounce = below_ma1[1] and above_ma1 and bull_stack and (not in_session)
+maFillCol := ma1 >= ma2 and show_maFill ? color.new(c1, 75) : color.new(c2, 75)
+maFillCol2 := ma3 >= ma4 and show_maFill ? color.new(c3, 75) : color.new(c4, 75)
+
+// Check if the close is above or below the opening range
+candleOverORB = close > orb_high 
+candleUnderORB = close < orb_low 
+candleInsideORB = close < orb_high and close > orb_low 
+onh_break = candleInsideORB[1] and candleOverORB
+onl_break = candleInsideORB[1] and candleUnderORB
+onl_reclaim = candleInsideORB and candleUnderORB[1]
+onh_reject = candleInsideORB and candleOverORB[1]
+
+day_dist := getDailyLevelATR() * 0.5
+
+day_bear_price := open_price - day_dist * 0.5
+day_bear_price1 := open_price - day_dist * 0.618
+
+day_bull_price := open_price + day_dist * 0.5
+day_bull_price1 := open_price + day_dist * 0.618
+
+bottom_bounce = close > day_bear_price and close[1] < day_bear_price
+top_reject = close < day_bull_price and close[1] > day_bull_price
+
+evening_star_resistance = detectStarPattern(true)
+morning_star_support = detectStarPattern(false)
+[has_fbd, base_level] = detectFBD()
+
+// debug strategy tester
+// stratType := "tester"
+
+// Function to detect strategy signals and return results
+detectStrategy(string strategyType) =>
+    // Initialize variables
+    bool _buySignal = false
+    bool _sellSignal = false
+    float _baseLevel = na
+    
+    // Strategy-specific detection logic
+    if strategyType == "tester"
+        _buySignal := close>open and close[1]>open[1]
+        _sellSignal := close<open and close[1]<open[1]
+        _baseLevel := open[1]
+        
+    else if strategyType == "fbds"
+        [has_fbd, fbd_level] = detectFBD()
+        _buySignal := has_fbd
+        _sellSignal := false
+        _baseLevel := fbd_level
+        
+    else if strategyType == "macloud"
+        _buySignal := ma8_bounce
+        _sellSignal := ma8_reject
+        _baseLevel := ma1
+        
+    else if strategyType == "reclaim"
+        _buySignal := onl_reclaim
+        _sellSignal := onh_reject
+        _baseLevel := _buySignal ? orb_low : orb_high
+    
+    else if strategyType == "extremes"
+        _buySignal := bottom_bounce
+        _sellSignal := top_reject
+        _baseLevel := _buySignal ? day_bear_price : day_bull_price
+        
+    else if strategyType == "stars"
+        morning_star = detectStarPattern(false)
+        evening_star = detectStarPattern(true)
+        _buySignal := morning_star
+        _sellSignal := evening_star
+        _baseLevel := open[1]
+        
+    else // Default to "breakout"
+        _buySignal := onh_break
+        _sellSignal := onl_break
+        _baseLevel := open_price
+        
+    [_buySignal, _sellSignal, _baseLevel]
+
+
+
+
+// Main code - replace the existing strategy detection logic
+[_buySignal, _sellSignal, _baseLevel] = detectStrategy(stratType)
+
+// Debug mode - simulate TP1 hit to test TP2 alerts
+if debugMode and not na(tracking_tp2) == false and barstate.islast
+    // Simulate a long trade TP1 hit
+    buyEntry := close - 10  // Fake entry price
+    buyStop := close - 20   // Fake stop
+    buyProf := close + 5    // Fake TP1
+    buyProf2 := close + 15  // Fake TP2
+    
+    // Trigger TP1 hit to start TP2 tracking
+    tp1_hits := tp1_hits + 1
+    tracking_tp2 := 1
+    tp2_level := buyProf2
+    tp2_entry_level := buyEntry
+    is_tp2_long := true
+    
+    // Create a label to show debug mode is active
+    label.new(bar_index, high + (high * 0.01), 
+         text="DEBUG: TP2 Tracking Active - Check alerts!", 
+         style=label.style_label_down,
+         color=color.new(color.yellow, 20),
+         textcolor=color.black,
+         tooltip="Debug mode is simulating TP1 hit to test TP2 alerts")
+
+buySignal := _buySignal
+sellSignal := _sellSignal
+baseLevel := _baseLevel
+
+// Use these signals
+is_buy = buySignal and not openBuy and showSignals and not_close
+is_sell = sellSignal and not openSell and showSellSignals and not_close
+
+var string entry_txt = na
+
+// For trade entry logic
+if is_buy or is_sell
+    is_long = is_buy
+    [entry_price, stop_level, profit_level, profit_level2, alert_msg, _riskbox, _rewardbox, _rewardbox1, entry_label_text] = enterTrade(is_long, baseLevel, stratType)
+    
+    if is_long
+        buyEntry := entry_price
+        buyStop := stop_level
+        buyProf := profit_level 
+        buyProf2 := profit_level2
+        openBuy := true
+        Bcount := Bcount + 1
+        entry_bar_index := bar_index
+        entry_month := month
+        entry_dayofmonth := dayofmonth
+        entry_hour := hour
+        entry_minute := minute
+
+        entry_txt := entry_label_text
+
+        alert(alert_msg, freq = alert.freq_once_per_bar)
+        
+        if not na(_riskbox)
+            riskbox := _riskbox
+        if not na(_rewardbox)
+            rewardbox := _rewardbox
+        if not na(_rewardbox1)
+            rewardbox1 := _rewardbox1
+    else
+        sellEntry := entry_price
+        sellStop := stop_level
+        sellProf := profit_level
+        sellProf2 := profit_level2
+        openSell := true 
+        Scount := Scount + 1
+        entry_bar_index := bar_index
+        entry_month := month
+        entry_dayofmonth := dayofmonth
+        entry_hour := hour
+        entry_minute := minute
+
+        entry_txt := entry_label_text
+
+        alert(alert_msg, freq = alert.freq_once_per_bar)
+        
+        if not na(_riskbox)
+            riskbox := _riskbox
+        if not na(_rewardbox)
+            rewardbox := _rewardbox
+        if not na(_rewardbox1)
+            rewardbox1 := _rewardbox1
+
+// For trade monitoring logic
+if openBuy and showSignals
+    [should_exit, exit_type, exit_price] = monitorTrade(true, buyEntry, buyStop, buyProf, buyProf2)
+    if should_exit
+        [alert_msg, points, is_win, bars, _pnl_color, _exit_type, _label] = exitTrade(true, exit_type, buyEntry, exit_price, buyStop, buyProf, buyProf2)
+        
+        pnl := pnl + points
+        pnl_color := _pnl_color
+        
+        if is_win
+            win_trade_count := win_trade_count + 1
+            total_points_gained := total_points_gained + points
+            largest_win := math.max(largest_win, points)
+            win_streak_current := win_streak_current + 1
+            loss_streak_current := 0
+            max_win_streak := math.max(max_win_streak, win_streak_current)
+            avg_win_size := win_trade_count > 0 ? total_points_gained / win_trade_count : 0
+            total_win_duration := total_win_duration + bars
+            avg_win_duration := win_trade_count > 0 ? total_win_duration / win_trade_count : 0.0
+            
+            if _exit_type == "TP"
+                tp1_hits := tp1_hits + 1
+                tracking_tp2 := 1
+                tp2_level := buyProf2
+                
+                // Save entry level specifically for TP2 tracking before clearing it
+                tp2_entry_level := buyEntry
+                is_tp2_long := true
+            else
+                tracking_tp2 := na
+                tp2_level := na
+                tp2_entry_level := na
+        else
+            loss_trade_count := loss_trade_count + 1
+            total_points_lost := total_points_lost + math.abs(points)
+            largest_loss := math.max(largest_loss, math.abs(points))
+            loss_streak_current := loss_streak_current + 1
+            win_streak_current := 0
+            max_loss_streak := math.max(max_loss_streak, loss_streak_current)
+            avg_loss_size := loss_trade_count > 0 ? total_points_lost / loss_trade_count : 0
+            total_loss_duration := total_loss_duration + bars
+            avg_loss_duration := loss_trade_count > 0 ? total_loss_duration / loss_trade_count : 0.0
+            
+            tracking_tp2 := na
+            tp2_level := na
+            tp2_entry_level := na
+            
+        openBuy := false
+        buyEntry := na
+        buyStop := na
+        buyProf := na
+        buyProf2 := na
+        CloseCount += 1
+        alert(alert_msg, freq = alert.freq_once_per_bar)
+        
+        // Handle data table update
+        if showData and current_buy_row < MAX_TABLE_ROWS
+            current_buy_row := current_buy_row + 1
+            data_tbl.cell(1, current_buy_row, entry_txt, text_color=color.white, 
+                      text_halign=text.align_left, bgcolor=pnl_color)
+
+if openSell and showSellSignals
+    [should_exit, exit_type, exit_price] = monitorTrade(false, sellEntry, sellStop, sellProf, sellProf2)
+    if should_exit
+        [alert_msg, points, is_win, bars, _pnl_color, _exit_type, _label] = exitTrade(false, exit_type, sellEntry, exit_price, sellStop, sellProf, sellProf2)
+        
+        pnl := pnl + points
+        pnl_color := _pnl_color
+        
+        if is_win
+            win_trade_count := win_trade_count + 1
+            total_points_gained := total_points_gained + points
+            largest_win := math.max(largest_win, points)
+            win_streak_current := win_streak_current + 1
+            loss_streak_current := 0
+            max_win_streak := math.max(max_win_streak, win_streak_current)
+            avg_win_size := win_trade_count > 0 ? total_points_gained / win_trade_count : 0
+            total_win_duration := total_win_duration + bars
+            avg_win_duration := win_trade_count > 0 ? total_win_duration / win_trade_count : 0.0
+            
+            if _exit_type == "TP"
+                tp1_hits := tp1_hits + 1
+                tracking_tp2 := 0
+                tp2_level := sellProf2
+                
+                // Save entry level specifically for TP2 tracking before clearing it
+                tp2_entry_level := sellEntry
+                is_tp2_long := false
+            else
+                tracking_tp2 := na
+                tp2_level := na
+                tp2_entry_level := na
+        else
+            loss_trade_count := loss_trade_count + 1
+            total_points_lost := total_points_lost + math.abs(points)
+            largest_loss := math.max(largest_loss, math.abs(points))
+            loss_streak_current := loss_streak_current + 1
+            win_streak_current := 0
+            max_loss_streak := math.max(max_loss_streak, loss_streak_current)
+            avg_loss_size := loss_trade_count > 0 ? total_points_lost / loss_trade_count : 0
+            total_loss_duration := total_loss_duration + bars
+            avg_loss_duration := loss_trade_count > 0 ? total_loss_duration / loss_trade_count : 0.0
+            
+            tracking_tp2 := na
+            tp2_level := na
+            tp2_entry_level := na
+            
+        openSell := false
+        sellEntry := na
+        sellStop := na
+        sellProf := na
+        sellProf2 := na
+        CloseCount += 1
+        alert(alert_msg, freq = alert.freq_once_per_bar)
+        
+        // Handle data table update
+        if showData and current_sell_row < MAX_TABLE_ROWS
+            current_sell_row := current_sell_row + 1
+            data_tbl.cell(2, current_sell_row, entry_txt, text_color=color.white, 
+                      text_halign=text.align_left, bgcolor=pnl_color)
+
+calcStatsOptimized() =>
+    var table stats_table = table.new(position.top_right, 5, 15, color.new(color.black, TBL_TRSP))
+    float win_rate = 0.0
+    int _Tcount = Bcount + Scount 
+    if showSignals and not showSellSignals  // Only long trades
+        win_rate := Bcount > 0 ? (win_trade_count / Bcount) * 100 : 0
+    else if showSellSignals and not showSignals  // Only short trades
+        win_rate := Scount> 0 ? (win_trade_count / Scount) * 100 : 0
+    else if showSignals and showSellSignals  // Both types of trades
+        win_rate := (win_trade_count + loss_trade_count) > 0 ? (win_trade_count / (win_trade_count + loss_trade_count)) * 100 : 0
+
+    table.cell(stats_table, 0, 0, 'Total Trades', text_color=color.white)
+    table.cell(stats_table, 1, 0, str.tostring(_Tcount), text_color=color.white)
+
+    table.cell(stats_table, 0, 1, 'Win Rate (TP1)', text_color=color.white)
+    table.cell(stats_table, 1, 1, str.tostring(win_rate, '#.##') + '%', 
+                 text_color=win_rate >= 50 ? color.green : color.red)
+
+    table.cell(stats_table, 0, 2, 'Total P/L', text_color=color.white)
+    table.cell(stats_table, 1, 2, str.tostring(total_points_gained-total_points_lost, '#.##'), 
+                 text_color=pnl >= 0 ? color.green : color.red) 
+    
+    float _avg_win = win_trade_count > 0 ? total_points_gained / win_trade_count : 0
+    float _avg_loss = loss_trade_count > 0 ? total_points_lost / loss_trade_count : 0
+    
+    table.cell(stats_table, 0, 3, 'Avg Win (points)', text_color=color.white)
+    table.cell(stats_table, 1, 3, str.tostring(_avg_win, '#.##'), text_color=color.green)
+    
+    table.cell(stats_table, 0, 4, 'Avg Loss (points)', text_color=color.white)
+    table.cell(stats_table, 1, 4, str.tostring(_avg_loss, '#.##'), text_color=color.red)    
+    
+    float _risk_reward_ratio = _avg_loss > 0 ? _avg_win / _avg_loss : 0   
+    table.cell(stats_table, 0, 5, 'Avg Reward/Risk (TP1)', text_color=color.white)
+    table.cell(stats_table, 1, 5, str.tostring(_risk_reward_ratio, '#.##'), 
+                 text_color=_risk_reward_ratio >= 1 ? color.green : color.red)
+    
+    table.cell(stats_table, 0, 6, 'Max Win Streak', text_color=color.white)
+    table.cell(stats_table, 1, 6, str.tostring(max_win_streak), text_color=color.green)
+    
+    table.cell(stats_table, 0, 7, 'Max Loss Streak', text_color=color.white)
+    table.cell(stats_table, 1, 7, str.tostring(max_loss_streak), text_color=color.red)
+    
+    float _tp1_rate = (win_trade_count + loss_trade_count) > 0 ? win_trade_count / (win_trade_count + loss_trade_count) * 100 : 0
+    float _tp2_rate = win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+
+    table.cell(stats_table, 0, 8, 'TP1 Hit Rate', text_color=color.white)
+    table.cell(stats_table, 1, 8, str.tostring(_tp1_rate, '#.##') + '%', 
+                 text_color=_tp1_rate >= 50 ? color.green : color.red)
+
+    table.cell(stats_table, 0, 9, 'TP2 After TP1 %', text_color=color.white)
+    table.cell(stats_table, 1, 9, str.tostring(_tp2_rate, '#.##') + '%', 
+                 text_color=_tp2_rate >= 50 ? color.green : color.yellow)
+
+    table.cell(stats_table, 0, 10, 'Avg Win Duration', text_color=color.white)
+    table.cell(stats_table, 1, 10, str.tostring(avg_win_duration, '#.##') + ' bars', text_color=color.green)
+
+    table.cell(stats_table, 0, 11, 'Avg Loss Duration', text_color=color.white)
+    table.cell(stats_table, 1, 11, str.tostring(avg_loss_duration, '#.##') + ' bars', text_color=color.red)
+
+    table.cell(stats_table, 0, 12, 'Strategy', text_color=color.white)
+    table.cell(stats_table, 1, 12, stratType, text_color=color.yellow)
+
+if tracking_tp2==1 and high >= tp2_level
+    tp2_after_tp1 := tp2_after_tp1 + 1
+    tp2_hits := tp2_hits + 1
+    
+    // Store values before clearing them for alert generation
+    temp_entry_level := tp2_entry_level
+    temp_tp2_level := tp2_level
+    
+    tracking_tp2 := na
+    tp2_level := na
+    tp2_entry_level := na
+    tp2_conversion_rate := win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+
+    label_text := "TP2"
+    pnl_color := color.green
+    label.new(bar_index, high + lbl_dist,
+     text=label_text,
+     color=pnl_color,
+     style=showStopLbls ? label.style_label_lower_right : label.style_label_down,
+     textcolor=TRADETXTCOLOR,
+     tooltip=label_text,
+     size=size.tiny)
+     
+    // Add TP2 alert here using stored values
+    formattedTime = formatTime(timenow)
+    tp2_alert_msg = formatTrade(formattedTime, syminfo.ticker, stratType, 
+                         'TP2 hit for long', 
+                         temp_entry_level, buyStop, buyProf, temp_tp2_level, 
+                         chart_url)
+    alert(tp2_alert_msg, freq = alert.freq_once_per_bar)
+    
+else if tracking_tp2==0 and low <= tp2_level
+    tp2_after_tp1 := tp2_after_tp1 + 1
+    tp2_hits := tp2_hits + 1
+    
+    // Store values before clearing them for alert generation
+    temp_entry_level := tp2_entry_level
+    temp_tp2_level := tp2_level
+    
+    tracking_tp2 := na
+    tp2_level := na
+    tp2_entry_level := na
+    tp2_conversion_rate := win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+
+    label_text := "TP2"
+    pnl_color := color.green
+    label.new(bar_index, low - lbl_dist,
+     text=label_text,
+     color=pnl_color,
+     style=showStopLbls ? label.style_label_upper_left : label.style_label_up,
+     textcolor=TRADETXTCOLOR,
+     tooltip=label_text,
+     size=size.tiny)
+     
+    // Add TP2 alert here using stored values
+    formattedTime = formatTime(timenow)
+    tp2_alert_msg = formatTrade(formattedTime, syminfo.ticker, stratType, 
+                         'TP2 hit for short', 
+                         temp_entry_level, sellStop, sellProf, temp_tp2_level, 
+                         chart_url)
+    alert(tp2_alert_msg, freq = alert.freq_once_per_bar)
+
+// Add Box update code for TP2 box after TP1 hits
+if (not na(tracking_tp2) and not na(rewardbox1))
+    // For long trades (tracking_tp2 == 1)
+    if tracking_tp2 == 1
+        // Stop extending the box if low price returns to entry level, TP2 hit, or session close
+        // Now we use tp2_entry_level instead of buyEntry which might be na
+        if high >= tp2_level or (not na(tp2_entry_level) and low <= tp2_entry_level) or is_close
+            // Store values before clearing them for alert generation
+            temp_entry_level := tp2_entry_level
+            temp_tp2_level := tp2_level
+            
+            // Don't extend - we'll leave the box as is
+            tracking_tp2 := na  // Also clear tracking so we stop checking
+            tp2_level := na
+            
+            if high >= tp2_level
+                // Add TP2 hit visuals and stats (copied from the TP2 hit code above)
+                tp2_after_tp1 := tp2_after_tp1 + 1
+                tp2_hits := tp2_hits + 1
+                tp2_conversion_rate := win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+            
+                label_text := "TP2"
+                pnl_color := color.green
+                label.new(bar_index, high + lbl_dist,
+                 text=label_text,
+                 color=pnl_color,
+                 style=showStopLbls ? label.style_label_lower_right : label.style_label_down,
+                 textcolor=TRADETXTCOLOR,
+                 tooltip=label_text,
+                 size=size.tiny)
+                 
+                // Add TP2 alert using stored values
+                formattedTime = formatTime(timenow)
+                tp2_alert_msg = formatTrade(formattedTime, syminfo.ticker, stratType, 
+                                     'TP2 hit for long', 
+                                     temp_entry_level, buyStop, buyProf, temp_tp2_level, 
+                                     chart_url)
+                alert(tp2_alert_msg, freq = alert.freq_once_per_bar)
+            else if not na(tp2_entry_level) and low <= tp2_entry_level
+                // Reset the TP2 tracking variables
+                tp2_entry_level := na
+        else
+            // Continue extending the TP2 box
+            box.set_right(rewardbox1, bar_index+1)
+            
+    // For short trades (tracking_tp2 == 0)
+    else if tracking_tp2 == 0
+        // Stop extending the box if TP2 hit, price returns to entry level, or session close
+        // Now we use tp2_entry_level instead of sellEntry which might be na
+        if low <= tp2_level or (not na(tp2_entry_level) and high >= tp2_entry_level) or is_close
+            // Store values before clearing them for alert generation
+            temp_entry_level := tp2_entry_level
+            temp_tp2_level := tp2_level
+            
+            // Don't extend - we'll leave the box as is
+            tracking_tp2 := na  // Also clear tracking so we stop checking
+            tp2_level := na
+            
+            if low <= tp2_level
+                // Add TP2 hit visuals and stats (copied from the TP2 hit code above)
+                tp2_after_tp1 := tp2_after_tp1 + 1
+                tp2_hits := tp2_hits + 1
+                tp2_conversion_rate := win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+            
+                label_text := "TP2"
+                pnl_color := color.green
+                label.new(bar_index, low - lbl_dist,
+                 text=label_text,
+                 color=pnl_color,
+                 style=showStopLbls ? label.style_label_upper_left : label.style_label_up,
+                 textcolor=TRADETXTCOLOR,
+                 tooltip=label_text,
+                 size=size.tiny)
+                 
+                // Add TP2 alert using stored values
+                formattedTime = formatTime(timenow)
+                tp2_alert_msg = formatTrade(formattedTime, syminfo.ticker, stratType, 
+                                     'TP2 hit for short', 
+                                     temp_entry_level, sellStop, sellProf, temp_tp2_level, 
+                                     chart_url)
+                alert(tp2_alert_msg, freq = alert.freq_once_per_bar)
+            else if not na(tp2_entry_level) and high >= tp2_entry_level
+                tp2_entry_level := na
+        else
+            // Continue extending the TP2 box
+            box.set_right(rewardbox1, bar_index+1)
+            
+// Update the standalone TP2 detection to use tp2_entry_level
+if tracking_tp2==1 and high >= tp2_level
+    tp2_after_tp1 := tp2_after_tp1 + 1
+    tp2_hits := tp2_hits + 1
+    
+    // Store values before clearing them for alert generation
+    temp_entry_level := tp2_entry_level
+    temp_tp2_level := tp2_level
+    
+    tracking_tp2 := na
+    tp2_level := na
+    tp2_entry_level := na
+    tp2_conversion_rate := win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+
+    label_text := "TP2"
+    pnl_color := color.green
+    label.new(bar_index, high + lbl_dist,
+     text=label_text,
+     color=pnl_color,
+     style=showStopLbls ? label.style_label_lower_right : label.style_label_down,
+     textcolor=TRADETXTCOLOR,
+     tooltip=label_text,
+     size=size.tiny)
+     
+    // Add TP2 alert here using stored values
+    formattedTime = formatTime(timenow)
+    tp2_alert_msg = formatTrade(formattedTime, syminfo.ticker, stratType, 
+                         'TP2 hit for long', 
+                         temp_entry_level, buyStop, buyProf, temp_tp2_level, 
+                         chart_url)
+    alert(tp2_alert_msg, freq = alert.freq_once_per_bar)
+    
+else if tracking_tp2==0 and low <= tp2_level
+    tp2_after_tp1 := tp2_after_tp1 + 1
+    tp2_hits := tp2_hits + 1
+    
+    // Store values before clearing them for alert generation
+    temp_entry_level := tp2_entry_level
+    temp_tp2_level := tp2_level
+    
+    tracking_tp2 := na
+    tp2_level := na
+    tp2_entry_level := na
+    tp2_conversion_rate := win_trade_count > 0 ? (tp2_after_tp1 / win_trade_count) * 100 : 0
+
+    label_text := "TP2"
+    pnl_color := color.green
+    label.new(bar_index, low - lbl_dist,
+     text=label_text,
+     color=pnl_color,
+     style=showStopLbls ? label.style_label_upper_left : label.style_label_up,
+     textcolor=TRADETXTCOLOR,
+     tooltip=label_text,
+     size=size.tiny)
+     
+    // Add TP2 alert here using stored values
+    formattedTime = formatTime(timenow)
+    tp2_alert_msg = formatTrade(formattedTime, syminfo.ticker, stratType, 
+                         'TP2 hit for short', 
+                         temp_entry_level, sellStop, sellProf, temp_tp2_level, 
+                         chart_url)
+    alert(tp2_alert_msg, freq = alert.freq_once_per_bar)
+
+    
+if barstate.islast
+    if current_buy_row > MAX_TABLE_ROWS - 10
+        table.clear(data_tbl, 0, 0, 0, current_buy_row)
+        current_buy_row := 0
+    nx = ''
+    pnl_string = ''
+    risk_string = ''
+    prof_string = ''
+    if math.round(pnl) > 0
+        nx := nx + '+'
+        nx
+    if math.round(pnl) == 0
+        pnl_string := str.tostring(pnl, '#.#######')
+        risk_string := str.tostring(risk, '#.#####')
+        prof_string := str.tostring(prof, '#.#####')
+        prof_string
+    else
+        pnl_string := str.tostring(math.round(pnl))
+        risk_string := str.tostring(risk, '##.##')
+        prof_string := str.tostring(prof, '##.##')
+        prof_string
+    if showData
+        if showSignals
+            data_tbl.cell(1, 0, '|Longs| ' + str.tostring(Bcount), text_color = color.white, text_halign = text.align_left)
+        if showSellSignals
+            data_tbl.cell(2, 0, '|Shorts| ' + str.tostring(Scount), text_color = color.white, text_halign = text.align_left)
+    if showStats
+        calcStatsOptimized()
+
+// Plotting the ORB Range High
+RangeHigh = plot(showONR ? orb_high : na, 
+     style=plot.style_line,
+     color = orb_high[1] != orb_high ? na : OR_COLOR, 
+     title='OnH', 
+     linewidth=2,
+     display=display.pane,
+     trackprice=false)
+
+// Plotting the ORB Range Low
+RangeLow = plot(showONR ? orb_low : na,
+     style=plot.style_line, 
+     color = orb_low[1] != orb_low ? na : OR_COLOR,
+     title='OnL', 
+     linewidth=2,
+     display=display.pane,
+     trackprice=false)
+
+
+
+// At open time, store the bar index and create initial lines
+if is_open
+    open_bar_index := bar_index
+
+    // Create new lines with start point at open, but don't extend them yet
+    day_bull_lvl1 := line.new(
+         x1 = bar_index, 
+         y1 = day_bull_price1, 
+         x2 = bar_index, 
+         y2 = day_bull_price1, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     ) 
+    
+    day_bear_lvl1 := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price1, 
+         x2 = bar_index, 
+         y2 = day_bear_price1, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+    
+    // Create new lines with start point at open, but don't extend them yet
+    day_bull_lvl := line.new(
+         x1 = bar_index, 
+         y1 = day_bull_price, 
+         x2 = bar_index, 
+         y2 = day_bull_price, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     ) 
+    
+    day_bear_lvl := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price, 
+         x2 = bar_index, 
+         y2 = day_bear_price, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+// At every bar during the day, update the end point of the lines to the current bar
+if not na(open_bar_index) and not na(day_bull_lvl) and not na(day_bear_lvl) and not is_close
+    line.set_x2(day_bull_lvl, bar_index)
+    line.set_x2(day_bear_lvl, bar_index)
+    line.set_x2(day_bull_lvl1, bar_index)
+    line.set_x2(day_bear_lvl1, bar_index)
+    
+    linefill.new(day_bull_lvl,day_bull_lvl1,color.new(DAY_BND_COLOR,80))
+    linefill.new(day_bear_lvl,day_bear_lvl1,color.new(DAY_BND_COLOR,80))
+    
+
+// At close time, finalize the line length for the day
+if is_close
+    if not na(day_bull_lvl) and not na(day_bear_lvl)
+        line.set_x2(day_bull_lvl, bar_index)
+        line.set_x2(day_bear_lvl, bar_index)
+        line.set_x2(day_bull_lvl1, bar_index)
+        line.set_x2(day_bear_lvl1, bar_index)
+    // Reset the open_bar_index for the next day
+    open_bar_index := na
+
+// Filling the ORB Range Color
+fill(RangeHigh, RangeLow, color= showONR and not (not in_session or is_close) ? plotColor: na)
+
+// Plotting the Moving Averages
+pm1 = plot(showMA1 or showMAs ? ma1 : na, '2h_8e', color = c1, linewidth = 1, display = display.pane)
+pm2 = plot(showMA2 or showMAs ? ma2 : na, '2h_21e', color = c2, linewidth = 1, display = display.pane)
+pm3 = plot(showMA3 or showMAs ? ma3 : na, '2h_50', color = c3, linewidth = 1, display = display.pane)
+pm4 = plot(showMA4 or showMAs ? ma4 : na, '2h_100', color = c4, linewidth = 1, display = display.pane)
+pm5 = plot(showMA5 or showMAs ? ma5 : na, '2h_200', color = c5, linewidth = 1, display = display.pane)
+fill(pm1, pm2, maFillCol, fillgaps = true)
+fill(pm3, pm4, maFillCol2, fillgaps = true)
