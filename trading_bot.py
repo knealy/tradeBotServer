@@ -645,7 +645,13 @@ class TopStepXTradingBot:
         }
         
         if symbol in tick_sizes:
-            return tick_sizes[symbol]
+            base_ts = tick_sizes[symbol]
+            # Hard guard for critical micros
+            hard_map = {"MNQ": 0.25, "MES": 0.25, "MYM": 0.5, "MGC": 0.1}
+            if symbol in hard_map and base_ts != hard_map[symbol]:
+                logger.warning(f"Hard guard: overriding tick size for {symbol} to {hard_map[symbol]} (was {base_ts})")
+                return hard_map[symbol]
+            return base_ts
 
         # Try to discover tick size from contract metadata via API
         try:
@@ -662,6 +668,11 @@ class TopStepXTradingBot:
                                 try:
                                     ts = float(c.get(key))
                                     if ts > 0:
+                                        # Enforce hard guards if symbol is one of our known micros
+                                        hard_map = {"MNQ": 0.25, "MES": 0.25, "MYM": 0.5, "MGC": 0.1}
+                                        if symbol in hard_map and abs(ts - hard_map[symbol]) > 1e-9:
+                                            logger.warning(f"Hard guard: API tick for {symbol}={ts} differs from expected {hard_map[symbol]}; using expected")
+                                            return hard_map[symbol]
                                         logger.info(f"Discovered tick size from API for {symbol}: {ts} (key {key})")
                                         return ts
                                 except Exception:
@@ -670,6 +681,11 @@ class TopStepXTradingBot:
             logger.debug(f"Tick size discovery via API failed for {symbol}: {e}")
         
         # Default tick size
+        # Before defaulting, apply hard guard if symbol is one of our known ones
+        hard_map = {"MNQ": 0.25, "MES": 0.25, "MYM": 0.5, "MGC": 0.1}
+        if symbol in hard_map:
+            logger.warning(f"Hard guard default: using {hard_map[symbol]} for {symbol}")
+            return hard_map[symbol]
         logger.warning(f"Unknown symbol {symbol}, using default tick size: 0.25")
         return 0.25
     
