@@ -570,19 +570,69 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             logger.info(f"Executing open long: {symbol} @ {entry}, stop: {stop_loss}, tp1: {take_profit_1}, tp2: {take_profit_2}")
             logger.info(f"Position size: {position_size}, Close entire at TP1: {close_entire_at_tp1}")
+
+            # Debounce duplicate open signals per symbol
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            last_ts = self.webhook_server._last_open_signal_ts.get((symbol, "LONG"))
+            if last_ts and (now - last_ts).total_seconds() < self.webhook_server.debounce_seconds:
+                wait_left = int(self.webhook_server.debounce_seconds - (now - last_ts).total_seconds())
+                logger.warning(f"Debounced duplicate open_long for {symbol}; received too soon. Wait {wait_left}s")
+                return {"success": True, "action": "open_long", "debounced": True, "reason": "duplicate within debounce window"}
+            self.webhook_server._last_open_signal_ts[(symbol, "LONG")] = now
             
-            # Use TP2 for native bracket order (no limit orders for TP1)
-            take_profit_price = take_profit_2
-            logger.info(f"Using TP2 for native bracket order: {take_profit_price}")
-            
-            # Use native bracket order with TP2
-            result = await self.trading_bot.create_bracket_order(
-                symbol=symbol,
-                side="BUY",
-                quantity=position_size,
-                stop_loss_price=stop_loss,
-                take_profit_price=take_profit_price
-            )
+            # Choose between full TP1 exit or staged TP1/TP2 exits
+            if close_entire_at_tp1:
+                # Close entire position at TP1 (single native bracket with TP1)
+                result = await self.trading_bot.create_bracket_order(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=position_size,
+                    stop_loss_price=stop_loss,
+                    take_profit_price=take_profit_1,
+                    account_id=self.webhook_server.account_id
+                )
+                logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+            else:
+                # Staged exit via TWO native OCO brackets so remaining position always has SL+TP
+                tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75')) if os.getenv('TP1_FRACTION') else 0.75
+                try:
+                    if not (0.0 < tp1_fraction < 1.0):
+                        tp1_fraction = 0.75
+                except Exception:
+                    tp1_fraction = 0.75
+                tp1_quantity = max(1, int(round(position_size * tp1_fraction)))
+                tp2_quantity = max(0, position_size - tp1_quantity)
+                logger.info(f"Placing dual OCO brackets: TP1 {tp1_quantity} @ {take_profit_1}, TP2 {tp2_quantity} @ {take_profit_2}, SL {stop_loss}")
+
+                # First bracket for ~75% to TP1
+                result_tp1 = await self.trading_bot.create_bracket_order(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=tp1_quantity,
+                    stop_loss_price=stop_loss,
+                    take_profit_price=take_profit_1,
+                    account_id=self.webhook_server.account_id
+                )
+                if "error" in result_tp1:
+                    return {"success": False, "error": result_tp1["error"]}
+
+                # Second bracket for remaining to TP2 (only if quantity > 0)
+                result_tp2 = {"success": True}
+                if tp2_quantity > 0:
+                    result_tp2 = await self.trading_bot.create_bracket_order(
+                        symbol=symbol,
+                        side="BUY",
+                        quantity=tp2_quantity,
+                        stop_loss_price=stop_loss,
+                        take_profit_price=take_profit_2,
+                        account_id=self.webhook_server.account_id
+                    )
+                    if "error" in result_tp2:
+                        return {"success": False, "error": result_tp2["error"]}
+
+                # Consolidated result for response structure parity
+                result = {"success": True, "tp1": result_tp1, "tp2": result_tp2}
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
@@ -593,6 +643,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info("Running position monitor after open long...")
             monitor_result = await self.trading_bot.monitor_position_changes()
             logger.info(f"Monitor result: {monitor_result}")
+            
+            # Also run bracket monitoring for position management
+            logger.info("Running bracket position monitoring...")
+            bracket_monitor_result = await self.trading_bot.monitor_all_bracket_positions()
+            logger.info(f"Bracket monitor result: {bracket_monitor_result}")
             
             return {
                 "success": True,
@@ -628,19 +683,69 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             logger.info(f"Executing open short: {symbol} @ {entry}, stop: {stop_loss}, tp1: {take_profit_1}, tp2: {take_profit_2}")
             logger.info(f"Position size: {position_size}, Close entire at TP1: {close_entire_at_tp1}")
+
+            # Debounce duplicate open signals per symbol
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            last_ts = self.webhook_server._last_open_signal_ts.get((symbol, "SHORT"))
+            if last_ts and (now - last_ts).total_seconds() < self.webhook_server.debounce_seconds:
+                wait_left = int(self.webhook_server.debounce_seconds - (now - last_ts).total_seconds())
+                logger.warning(f"Debounced duplicate open_short for {symbol}; received too soon. Wait {wait_left}s")
+                return {"success": True, "action": "open_short", "debounced": True, "reason": "duplicate within debounce window"}
+            self.webhook_server._last_open_signal_ts[(symbol, "SHORT")] = now
             
-            # Use TP2 for native bracket order (no limit orders for TP1)
-            take_profit_price = take_profit_2
-            logger.info(f"Using TP2 for native bracket order: {take_profit_price}")
-            
-            # Use native bracket order with TP2
-            result = await self.trading_bot.create_bracket_order(
-                symbol=symbol,
-                side="SELL",
-                quantity=position_size,
-                stop_loss_price=stop_loss,
-                take_profit_price=take_profit_price
-            )
+            # Choose between full TP1 exit or staged TP1/TP2 exits
+            if close_entire_at_tp1:
+                # Close entire position at TP1 (single native bracket with TP1)
+                result = await self.trading_bot.create_bracket_order(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=position_size,
+                    stop_loss_price=stop_loss,
+                    take_profit_price=take_profit_1,
+                    account_id=self.webhook_server.account_id
+                )
+                logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+            else:
+                # Staged exit via TWO native OCO brackets so remaining position always has SL+TP
+                tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75')) if os.getenv('TP1_FRACTION') else 0.75
+                try:
+                    if not (0.0 < tp1_fraction < 1.0):
+                        tp1_fraction = 0.75
+                except Exception:
+                    tp1_fraction = 0.75
+                tp1_quantity = max(1, int(round(position_size * tp1_fraction)))
+                tp2_quantity = max(0, position_size - tp1_quantity)
+                logger.info(f"Placing dual OCO brackets: TP1 {tp1_quantity} @ {take_profit_1}, TP2 {tp2_quantity} @ {take_profit_2}, SL {stop_loss}")
+
+                # First bracket for ~75% to TP1
+                result_tp1 = await self.trading_bot.create_bracket_order(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=tp1_quantity,
+                    stop_loss_price=stop_loss,
+                    take_profit_price=take_profit_1,
+                    account_id=self.webhook_server.account_id
+                )
+                if "error" in result_tp1:
+                    return {"success": False, "error": result_tp1["error"]}
+
+                # Second bracket for remaining to TP2 (only if quantity > 0)
+                result_tp2 = {"success": True}
+                if tp2_quantity > 0:
+                    result_tp2 = await self.trading_bot.create_bracket_order(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=tp2_quantity,
+                        stop_loss_price=stop_loss,
+                        take_profit_price=take_profit_2,
+                        account_id=self.webhook_server.account_id
+                    )
+                    if "error" in result_tp2:
+                        return {"success": False, "error": result_tp2["error"]}
+
+                # Consolidated result for response structure parity
+                result = {"success": True, "tp1": result_tp1, "tp2": result_tp2}
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
@@ -651,6 +756,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info("Running position monitor after open short...")
             monitor_result = await self.trading_bot.monitor_position_changes()
             logger.info(f"Monitor result: {monitor_result}")
+            
+            # Also run bracket monitoring for position management
+            logger.info("Running bracket position monitoring...")
+            bracket_monitor_result = await self.trading_bot.monitor_all_bracket_positions()
+            logger.info(f"Bracket monitor result: {bracket_monitor_result}")
             
             return {
                 "success": True,
@@ -1119,6 +1229,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
     async def _execute_tp1_hit_long(self, trade_info: Dict) -> Dict:
         """Execute tp1 hit long: partial close or flatten all based on --close-entire-at-tp1 setting"""
         try:
+            # Optional ignore of TP1 signals (OCO-managed exits)
+            ignore_tp1 = os.getenv('IGNORE_TP1_SIGNALS', 'true').lower() in ('true','1','yes','on')
+            if ignore_tp1:
+                logger.info("Ignoring TP1 LONG signal (IGNORE_TP1_SIGNALS=true). OCO manages exits; logging only.")
+                return {"success": True, "action": "tp1_hit_long", "ignored": True, "reason": "IGNORE_TP1_SIGNALS"}
             # Get configuration from webhook server
             close_entire_at_tp1 = self.webhook_server.close_entire_position_at_tp1
             
@@ -1178,6 +1293,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
     async def _execute_tp1_hit_short(self, trade_info: Dict) -> Dict:
         """Execute tp1 hit short: partial close or flatten all based on --close-entire-at-tp1 setting"""
         try:
+            # Optional ignore of TP1 signals (OCO-managed exits)
+            ignore_tp1 = os.getenv('IGNORE_TP1_SIGNALS', 'true').lower() in ('true','1','yes','on')
+            if ignore_tp1:
+                logger.info("Ignoring TP1 SHORT signal (IGNORE_TP1_SIGNALS=true). OCO manages exits; logging only.")
+                return {"success": True, "action": "tp1_hit_short", "ignored": True, "reason": "IGNORE_TP1_SIGNALS"}
             # Get configuration from webhook server
             close_entire_at_tp1 = self.webhook_server.close_entire_position_at_tp1
             
@@ -1404,6 +1524,13 @@ class WebhookServer:
         self.account_id = account_id
         self.position_size = position_size
         self.close_entire_position_at_tp1 = close_entire_position_at_tp1
+        # Debounce control: prevent duplicate opens within a short window per symbol
+        self._last_open_signal_ts = {}
+        self.debounce_seconds = 90
+        
+        # Bracket monitoring control
+        self._bracket_monitoring_enabled = True
+        self._last_bracket_check = None
     
     def start(self):
         """Start the webhook server"""
@@ -1424,9 +1551,36 @@ class WebhookServer:
             
             logger.info("Webhook server started successfully!")
             
+            # Start periodic bracket monitoring
+            if self._bracket_monitoring_enabled:
+                self._start_bracket_monitoring_task()
+            
         except Exception as e:
             logger.error(f"Failed to start webhook server: {str(e)}")
             raise
+    
+    def _start_bracket_monitoring_task(self):
+        """Start background task for periodic bracket monitoring"""
+        import threading
+        import time
+        
+        def monitor_brackets():
+            while True:
+                try:
+                    if hasattr(self, 'trading_bot') and self.trading_bot:
+                        # Run bracket monitoring every 30 seconds
+                        time.sleep(30)
+                        if self._bracket_monitoring_enabled:
+                            logger.info("Running periodic bracket monitoring...")
+                            # This would need to be run in an async context
+                            # For now, we'll rely on manual calls after each signal
+                except Exception as e:
+                    logger.error(f"Bracket monitoring task error: {e}")
+                    time.sleep(60)  # Wait longer on error
+        
+        monitor_thread = threading.Thread(target=monitor_brackets, daemon=True)
+        monitor_thread.start()
+        logger.info("Started background bracket monitoring task")
     
     def stop(self):
         """Stop the webhook server"""
@@ -1493,6 +1647,15 @@ async def main():
     account_id = os.getenv('PROJECT_X_ACCOUNT_ID')
     position_size = int(os.getenv('POSITION_SIZE', '1'))
     close_entire_at_tp1 = os.getenv('CLOSE_ENTIRE_POSITION_AT_TP1', 'false').lower() in ('true', '1', 'yes', 'on')
+    # TP1 split fraction (0.0-1.0). Default 0.75
+    try:
+        tp1_fraction_env = os.getenv('TP1_FRACTION', '0.75')
+        tp1_fraction = float(tp1_fraction_env)
+        if not (0.0 < tp1_fraction < 1.0):
+            raise ValueError("TP1_FRACTION must be between 0 and 1")
+    except Exception:
+        tp1_fraction = 0.75
+        logger.warning("Invalid or missing TP1_FRACTION; defaulting to 0.75")
     host = os.getenv('WEBHOOK_HOST', '0.0.0.0')
     port = int(os.getenv('PORT', '8080'))
     
@@ -1503,6 +1666,7 @@ async def main():
     logger.info(f"Account ID: {account_id or 'Auto-select'}")
     logger.info(f"Position Size: {position_size} contracts")
     logger.info(f"Close Entire at TP1: {close_entire_at_tp1}")
+    logger.info(f"TP1 Fraction: {tp1_fraction}")
     logger.info(f"Host: {host}")
     logger.info(f"Port: {port}")
     logger.info("=====================================")

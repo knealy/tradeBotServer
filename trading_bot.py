@@ -604,6 +604,8 @@ class TopStepXTradingBot:
             "MYM": "CON.F.US.MYM.Z25",    # Micro E-mini Dow Jones
             "RTY": "CON.F.US.RTY.Z25",    # E-mini Russell 2000
             "M2K": "CON.F.US.M2K.Z25",    # Micro E-mini Russell 2000
+            "GC": "CON.F.US.GC.Z25",       # Gold
+            "MGC": "CON.F.US.MGC.Z25",     # Micro Gold
         }
         
         if symbol in contract_mappings:
@@ -639,6 +641,7 @@ class TopStepXTradingBot:
             "NG": 0.001,     # Natural Gas
             "GC": 0.1,       # Gold
             "SI": 0.005,     # Silver
+            "MGC": 0.1,      # Micro Gold
         }
         
         if symbol in tick_sizes:
@@ -716,13 +719,17 @@ class TopStepXTradingBot:
                 if stop_loss_ticks is not None:
                     order_data["stopLossBracket"] = {
                         "ticks": stop_loss_ticks,
-                        "type": 4  # Stop loss type
+                        "type": 4,  # Stop loss type
+                        "size": quantity,
+                        "reduceOnly": True
                     }
                 
                 if take_profit_ticks is not None:
                     order_data["takeProfitBracket"] = {
                         "ticks": take_profit_ticks,
-                        "type": 1  # Take profit type
+                        "type": 1,  # Take profit type
+                        "size": quantity,
+                        "reduceOnly": True
                     }
             
             # Make real API call to place order using session token
@@ -1570,16 +1577,20 @@ class TopStepXTradingBot:
             if stop_loss_ticks is not None:
                 order_data["stopLossBracket"] = {
                     "ticks": stop_loss_ticks,
-                    "type": 4  # Stop loss type
+                    "type": 4,  # Stop loss type
+                    "size": quantity,
+                    "reduceOnly": True
                 }
-                logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks")
+                logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks, size: {quantity}, reduceOnly: True")
             
             if take_profit_ticks is not None:
                 order_data["takeProfitBracket"] = {
                     "ticks": take_profit_ticks,
-                    "type": 1  # Take profit type
+                    "type": 1,  # Take profit type
+                    "size": quantity,
+                    "reduceOnly": True
                 }
-                logger.info(f"Added take profit bracket: {take_profit_ticks} ticks")
+                logger.info(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
             
             headers = {
                 "accept": "text/plain",
@@ -1630,6 +1641,313 @@ class TopStepXTradingBot:
             
         except Exception as e:
             logger.error(f"Failed to create bracket order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def create_partial_tp_bracket_order(self, symbol: str, side: str, quantity: int, 
+                                             stop_loss_price: float = None, take_profit_1_price: float = None,
+                                             take_profit_2_price: float = None, tp1_quantity: int = None,
+                                             account_id: str = None) -> Dict:
+        """
+        Create a bracket order with partial TP1 and full TP2 exits.
+        This places the entry order, then creates separate TP1 and TP2 orders.
+        
+        Args:
+            symbol: Trading symbol
+            side: "BUY" or "SELL"
+            quantity: Total number of contracts
+            stop_loss_price: Stop loss price
+            take_profit_1_price: TP1 price (partial exit)
+            take_profit_2_price: TP2 price (full exit)
+            tp1_quantity: Number of contracts for TP1 (default: 1)
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Bracket order response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not self.session_token:
+                return {"error": "No session token available. Please authenticate first."}
+            
+            if side.upper() not in ["BUY", "SELL"]:
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            if tp1_quantity is None:
+                tp1_quantity = 1  # Default to 1 contract for TP1
+            
+            if tp1_quantity >= quantity:
+                return {"error": "TP1 quantity must be less than total quantity"}
+            
+            logger.info(f"Creating partial TP bracket order for {side} {quantity} {symbol} on account {target_account}")
+            logger.info(f"TP1: {tp1_quantity} contracts at {take_profit_1_price}, TP2: {quantity} contracts at {take_profit_2_price}")
+            
+            # First, place the entry order
+            entry_result = await self.place_market_order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                account_id=target_account
+            )
+            
+            if "error" in entry_result:
+                return {"error": f"Entry order failed: {entry_result['error']}"}
+            
+            logger.info(f"Entry order placed successfully: {entry_result}")
+            
+            # Wait a moment for the position to be established
+            import time
+            time.sleep(1)
+            
+            # Get the position ID for the new position
+            positions = await self.get_open_positions(target_account)
+            position_id = None
+            for pos in positions:
+                if pos.get('contractId') == self._get_contract_id(symbol):
+                    position_id = pos.get('id')
+                    break
+            
+            if not position_id:
+                return {"error": "Could not find position after entry order"}
+            
+            # Create stop loss order
+            stop_result = None
+            if stop_loss_price:
+                stop_side = "SELL" if side.upper() == "BUY" else "BUY"
+                stop_result = await self.place_stop_order(
+                    symbol=symbol,
+                    side=stop_side,
+                    quantity=quantity,
+                    stop_price=stop_loss_price,
+                    account_id=target_account
+                )
+                if "error" in stop_result:
+                    logger.warning(f"Stop loss order failed: {stop_result['error']}")
+                else:
+                    logger.info(f"Stop loss order placed: {stop_result}")
+            
+            # Create TP1 order (partial exit)
+            tp1_result = None
+            if take_profit_1_price:
+                tp1_side = "SELL" if side.upper() == "BUY" else "BUY"
+                tp1_result = await self.place_market_order(
+                    symbol=symbol,
+                    side=tp1_side,
+                    quantity=tp1_quantity,
+                    order_type="limit",
+                    limit_price=take_profit_1_price,
+                    account_id=target_account
+                )
+                if "error" in tp1_result:
+                    logger.warning(f"TP1 order failed: {tp1_result['error']}")
+                else:
+                    logger.info(f"TP1 order placed: {tp1_result}")
+            
+            # Create TP2 order (full exit) - only if TP2 price is provided
+            tp2_result = None
+            if take_profit_2_price:
+                tp2_side = "SELL" if side.upper() == "BUY" else "BUY"
+                tp2_result = await self.place_market_order(
+                    symbol=symbol,
+                    side=tp2_side,
+                    quantity=quantity,
+                    order_type="limit",
+                    limit_price=take_profit_2_price,
+                    account_id=target_account
+                )
+                if "error" in tp2_result:
+                    logger.warning(f"TP2 order failed: {tp2_result['error']}")
+                else:
+                    logger.info(f"TP2 order placed: {tp2_result}")
+            else:
+                logger.info("No TP2 order created (full exit at TP1)")
+            
+            # Create appropriate message based on TP2 presence
+            if take_profit_2_price:
+                message = f"Staged TP bracket created: {tp1_quantity}@TP1, {quantity}@TP2"
+            else:
+                message = f"Full TP1 exit created: {tp1_quantity}@TP1 (no TP2)"
+            
+            # Start position monitoring for this bracket order
+            if position_id:
+                await self._start_bracket_monitoring(position_id, symbol, target_account)
+            
+            return {
+                "success": True,
+                "entry_order": entry_result,
+                "stop_order": stop_result,
+                "tp1_order": tp1_result,
+                "tp2_order": tp2_result,
+                "position_id": position_id,
+                "message": message
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to create partial TP bracket order: {str(e)}")
+            return {"error": str(e)}
+    
+    async def _start_bracket_monitoring(self, position_id: str, symbol: str, account_id: str) -> None:
+        """
+        Start monitoring a position for bracket order management.
+        This ensures orders are adjusted when position size changes.
+        """
+        try:
+            # Store monitoring info for this position
+            if not hasattr(self, '_bracket_monitoring'):
+                self._bracket_monitoring = {}
+            
+            self._bracket_monitoring[position_id] = {
+                'symbol': symbol,
+                'account_id': account_id,
+                'original_quantity': None,  # Will be set when we first check
+                'last_check': None,
+                'active': True
+            }
+            
+            logger.info(f"Started bracket monitoring for position {position_id} ({symbol})")
+            
+        except Exception as e:
+            logger.error(f"Failed to start bracket monitoring: {str(e)}")
+    
+    async def _manage_bracket_orders(self, position_id: str) -> Dict:
+        """
+        Manage bracket orders for a specific position.
+        Adjusts orders when position size changes and cancels conflicting orders.
+        """
+        try:
+            if not hasattr(self, '_bracket_monitoring') or position_id not in self._bracket_monitoring:
+                return {"error": "Position not being monitored"}
+            
+            monitoring_info = self._bracket_monitoring[position_id]
+            if not monitoring_info['active']:
+                return {"message": "Monitoring stopped for this position"}
+            
+            symbol = monitoring_info['symbol']
+            account_id = monitoring_info['account_id']
+            
+            # Get current position
+            positions = await self.get_open_positions(account_id)
+            current_position = None
+            for pos in positions:
+                if str(pos.get('id')) == str(position_id):
+                    current_position = pos
+                    break
+            
+            if not current_position:
+                logger.info(f"Position {position_id} no longer exists, stopping monitoring")
+                monitoring_info['active'] = False
+                return {"message": "Position closed, monitoring stopped"}
+            
+            current_quantity = current_position.get('size', 0)
+            original_quantity = monitoring_info.get('original_quantity')
+            
+            # Set original quantity on first check
+            if original_quantity is None:
+                monitoring_info['original_quantity'] = current_quantity
+                original_quantity = current_quantity
+                logger.info(f"Set original quantity for position {position_id}: {original_quantity}")
+            
+            # Check if position size has changed
+            if current_quantity == original_quantity:
+                return {"message": "Position size unchanged"}
+            
+            logger.info(f"Position {position_id} size changed: {original_quantity} → {current_quantity}")
+            
+            # Get all open orders for this symbol
+            orders = await self.get_open_orders(account_id)
+            symbol_orders = []
+            for order in orders:
+                order_contract = order.get('contractId', '')
+                if order_contract == self._get_contract_id(symbol):
+                    symbol_orders.append(order)
+            
+            # Cancel all existing TP and SL orders for this symbol
+            canceled_orders = []
+            for order in symbol_orders:
+                order_id = order.get('id')
+                order_type = order.get('type', 0)
+                custom_tag = order.get('customTag', '')
+                
+                # Cancel stop loss and take profit orders
+                if (order_type in [1, 4] or  # Limit or Stop orders
+                    'AutoBracket' in custom_tag or
+                    '-SL' in custom_tag or '-TP' in custom_tag):
+                    
+                    cancel_result = await self.cancel_order(order_id, account_id)
+                    if "error" not in cancel_result:
+                        canceled_orders.append(order_id)
+                        logger.info(f"Canceled order {order_id} (type: {order_type}, tag: {custom_tag})")
+                    else:
+                        logger.warning(f"Failed to cancel order {order_id}: {cancel_result.get('error')}")
+            
+            # If position is still open, create new orders based on remaining quantity
+            if current_quantity > 0:
+                # Determine if we should create new orders
+                # For now, we'll let the position run without new orders
+                # This prevents over-trading and position reversals
+                logger.info(f"Position {position_id} has {current_quantity} contracts remaining - no new orders created")
+                logger.info("Manual intervention may be required to set new targets")
+            else:
+                logger.info(f"Position {position_id} fully closed - all orders canceled")
+                monitoring_info['active'] = False
+            
+            return {
+                "success": True,
+                "position_quantity": current_quantity,
+                "canceled_orders": canceled_orders,
+                "monitoring_active": monitoring_info['active']
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to manage bracket orders: {str(e)}")
+            return {"error": str(e)}
+    
+    async def monitor_all_bracket_positions(self, account_id: str = None) -> Dict:
+        """
+        Monitor all positions with active bracket orders.
+        This should be called periodically to manage order adjustments.
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if not hasattr(self, '_bracket_monitoring'):
+                return {"message": "No positions being monitored"}
+            
+            results = {}
+            positions_to_remove = []
+            
+            for position_id, monitoring_info in self._bracket_monitoring.items():
+                if not monitoring_info['active']:
+                    positions_to_remove.append(position_id)
+                    continue
+                
+                result = await self._manage_bracket_orders(position_id)
+                results[position_id] = result
+                
+                # If monitoring stopped, mark for removal
+                if not monitoring_info['active']:
+                    positions_to_remove.append(position_id)
+            
+            # Clean up stopped monitoring
+            for position_id in positions_to_remove:
+                del self._bracket_monitoring[position_id]
+                logger.info(f"Removed monitoring for position {position_id}")
+            
+            return {
+                "success": True,
+                "monitored_positions": len(self._bracket_monitoring),
+                "results": results,
+                "removed_positions": len(positions_to_remove)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to monitor bracket positions: {str(e)}")
             return {"error": str(e)}
     
     async def get_linked_orders(self, position_id: str, account_id: str = None) -> List[Dict]:
@@ -2438,6 +2756,7 @@ class TopStepXTradingBot:
         print("  depth <symbol> - Get market depth")
         print("  history <symbol> [timeframe] [limit] - Get historical data")
         print("  monitor - Monitor position changes and adjust bracket orders")
+        print("  bracket_monitor - Monitor bracket positions and manage orders")
         print("  account_info - Get detailed account information")
         print("  flatten - Close all positions and cancel all orders")
         print("  contracts - List available contracts")
@@ -3087,6 +3406,19 @@ class TopStepXTradingBot:
                         print(f"✅ Position monitoring completed!")
                         print(f"   Positions checked: {result.get('positions', 0)}")
                         print(f"   Adjustments made: {result.get('adjustments', 0)}")
+                
+                elif command_lower == "bracket_monitor":
+                    # Monitor bracket positions and manage orders
+                    result = await self.monitor_all_bracket_positions()
+                    if "error" in result:
+                        print(f"❌ Bracket monitor failed: {result['error']}")
+                    else:
+                        print(f"✅ Bracket monitoring completed!")
+                        print(f"   Monitored positions: {result.get('monitored_positions', 0)}")
+                        print(f"   Removed positions: {result.get('removed_positions', 0)}")
+                        if result.get('results'):
+                            for pos_id, pos_result in result['results'].items():
+                                print(f"   Position {pos_id}: {pos_result.get('message', 'No changes')}")
                 
                 elif command_lower == "account_info":
                     # Get detailed account information
