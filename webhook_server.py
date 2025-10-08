@@ -571,6 +571,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info(f"Executing open long: {symbol} @ {entry}, stop: {stop_loss}, tp1: {take_profit_1}, tp2: {take_profit_2}")
             logger.info(f"Position size: {position_size}, Close entire at TP1: {close_entire_at_tp1}")
             
+            # Validate price levels for debugging
+            if entry and take_profit_1 and take_profit_2:
+                tp1_distance = abs(take_profit_1 - entry)
+                tp2_distance = abs(take_profit_2 - entry)
+                logger.info(f"Price validation: Entry={entry}, TP1={take_profit_1} (distance={tp1_distance:.2f}), TP2={take_profit_2} (distance={tp2_distance:.2f})")
+                
+                # Check for suspicious TP2 values (too far from entry)
+                if tp2_distance > tp1_distance * 2:
+                    logger.warning(f"⚠️ TP2 distance ({tp2_distance:.2f}) is more than 2x TP1 distance ({tp1_distance:.2f}) - this may be incorrect!")
+            
             # Debounce duplicate open signals per symbol
             from datetime import datetime, timezone, timedelta
             now = datetime.now(timezone.utc)
@@ -698,6 +708,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             logger.info(f"Executing open short: {symbol} @ {entry}, stop: {stop_loss}, tp1: {take_profit_1}, tp2: {take_profit_2}")
             logger.info(f"Position size: {position_size}, Close entire at TP1: {close_entire_at_tp1}")
+            
+            # Validate price levels for debugging
+            if entry and take_profit_1 and take_profit_2:
+                tp1_distance = abs(take_profit_1 - entry)
+                tp2_distance = abs(take_profit_2 - entry)
+                logger.info(f"Price validation: Entry={entry}, TP1={take_profit_1} (distance={tp1_distance:.2f}), TP2={take_profit_2} (distance={tp2_distance:.2f})")
+                
+                # Check for suspicious TP2 values (too far from entry)
+                if tp2_distance > tp1_distance * 2:
+                    logger.warning(f"⚠️ TP2 distance ({tp2_distance:.2f}) is more than 2x TP1 distance ({tp1_distance:.2f}) - this may be incorrect!")
             
             # Debounce duplicate open signals per symbol
             from datetime import datetime, timezone, timedelta
