@@ -584,11 +584,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Choose between full TP1 exit or staged TP1/TP2 exits
             if close_entire_at_tp1:
                 # Close entire position at TP1 (single native bracket with TP1)
-            result = await self.trading_bot.create_bracket_order(
-                symbol=symbol,
-                side="BUY",
-                quantity=position_size,
-                stop_loss_price=stop_loss,
+                result = await self.trading_bot.create_bracket_order(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=position_size,
+                    stop_loss_price=stop_loss,
                     take_profit_price=take_profit_1,
                     account_id=self.webhook_server.account_id
                 )
@@ -712,11 +712,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Choose between full TP1 exit or staged TP1/TP2 exits
             if close_entire_at_tp1:
                 # Close entire position at TP1 (single native bracket with TP1)
-            result = await self.trading_bot.create_bracket_order(
-                symbol=symbol,
-                side="SELL",
-                quantity=position_size,
-                stop_loss_price=stop_loss,
+                result = await self.trading_bot.create_bracket_order(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=position_size,
+                    stop_loss_price=stop_loss,
                     take_profit_price=take_profit_1,
                     account_id=self.webhook_server.account_id
                 )
