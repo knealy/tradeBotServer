@@ -594,7 +594,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 )
                 logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
             else:
-                # Staged exit via TWO native OCO brackets so remaining position always has SL+TP
+                # Staged exit: Single entry + Two separate OCO exit orders
                 tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75')) if os.getenv('TP1_FRACTION') else 0.75
                 try:
                     if not (0.0 < tp1_fraction < 1.0):
@@ -603,36 +603,60 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     tp1_fraction = 0.75
                 tp1_quantity = max(1, int(round(position_size * tp1_fraction)))
                 tp2_quantity = max(0, position_size - tp1_quantity)
-                logger.info(f"Placing dual OCO brackets: TP1 {tp1_quantity} @ {take_profit_1}, TP2 {tp2_quantity} @ {take_profit_2}, SL {stop_loss}")
+                logger.info(f"Staged exit setup: Entry {position_size}, TP1 exit {tp1_quantity} @ {take_profit_1}, TP2 exit {tp2_quantity} @ {take_profit_2}, SL {stop_loss}")
 
-                # First bracket for ~75% to TP1
-                result_tp1 = await self.trading_bot.create_bracket_order(
+                # Step 1: Place the entry order (market buy)
+                entry_result = await self.trading_bot.place_market_order(
                     symbol=symbol,
                     side="BUY",
-                    quantity=tp1_quantity,
-                    stop_loss_price=stop_loss,
-                    take_profit_price=take_profit_1,
+                    quantity=position_size,
                     account_id=self.webhook_server.account_id
                 )
-                if "error" in result_tp1:
-                    return {"success": False, "error": result_tp1["error"]}
+                if "error" in entry_result:
+                    return {"success": False, "error": entry_result["error"]}
+                
+                logger.info(f"Entry order placed: {entry_result}")
 
-                # Second bracket for remaining to TP2 (only if quantity > 0)
+                # Step 2: Create TP1 exit order (SELL with SL + TP1)
+                result_tp1 = {"success": True}
+                if tp1_quantity > 0:
+                    result_tp1 = await self.trading_bot.create_bracket_order(
+                        symbol=symbol,
+                        side="SELL",  # Exit order
+                        quantity=tp1_quantity,
+                        stop_loss_price=stop_loss,
+                        take_profit_price=take_profit_1,
+                        account_id=self.webhook_server.account_id
+                    )
+                    if "error" in result_tp1:
+                        logger.error(f"TP1 bracket failed: {result_tp1['error']}")
+                        return {"success": False, "error": result_tp1["error"]}
+                    logger.info(f"TP1 exit bracket created: SELL {tp1_quantity} @ {take_profit_1}")
+
+                # Step 3: Create TP2 exit order (SELL with SL + TP2) 
                 result_tp2 = {"success": True}
                 if tp2_quantity > 0:
                     result_tp2 = await self.trading_bot.create_bracket_order(
                         symbol=symbol,
-                        side="BUY",
+                        side="SELL",  # Exit order
                         quantity=tp2_quantity,
                         stop_loss_price=stop_loss,
                         take_profit_price=take_profit_2,
                         account_id=self.webhook_server.account_id
                     )
                     if "error" in result_tp2:
+                        logger.error(f"TP2 bracket failed: {result_tp2['error']}")
                         return {"success": False, "error": result_tp2["error"]}
+                    logger.info(f"TP2 exit bracket created: SELL {tp2_quantity} @ {take_profit_2}")
 
-                # Consolidated result for response structure parity
-                result = {"success": True, "tp1": result_tp1, "tp2": result_tp2}
+                # Consolidated result
+                result = {
+                    "success": True, 
+                    "entry": entry_result,
+                    "tp1": result_tp1, 
+                    "tp2": result_tp2,
+                    "message": f"Staged exit: Entry {position_size}, TP1 exit {tp1_quantity}, TP2 exit {tp2_quantity}"
+                }
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
@@ -707,7 +731,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 )
                 logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
             else:
-                # Staged exit via TWO native OCO brackets so remaining position always has SL+TP
+                # Staged exit: Single entry + Two separate OCO exit orders
                 tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75')) if os.getenv('TP1_FRACTION') else 0.75
                 try:
                     if not (0.0 < tp1_fraction < 1.0):
@@ -716,36 +740,60 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     tp1_fraction = 0.75
                 tp1_quantity = max(1, int(round(position_size * tp1_fraction)))
                 tp2_quantity = max(0, position_size - tp1_quantity)
-                logger.info(f"Placing dual OCO brackets: TP1 {tp1_quantity} @ {take_profit_1}, TP2 {tp2_quantity} @ {take_profit_2}, SL {stop_loss}")
+                logger.info(f"Staged exit setup: Entry {position_size}, TP1 exit {tp1_quantity} @ {take_profit_1}, TP2 exit {tp2_quantity} @ {take_profit_2}, SL {stop_loss}")
 
-                # First bracket for ~75% to TP1
-                result_tp1 = await self.trading_bot.create_bracket_order(
+                # Step 1: Place the entry order (market sell)
+                entry_result = await self.trading_bot.place_market_order(
                     symbol=symbol,
                     side="SELL",
-                    quantity=tp1_quantity,
-                    stop_loss_price=stop_loss,
-                    take_profit_price=take_profit_1,
+                    quantity=position_size,
                     account_id=self.webhook_server.account_id
                 )
-                if "error" in result_tp1:
-                    return {"success": False, "error": result_tp1["error"]}
+                if "error" in entry_result:
+                    return {"success": False, "error": entry_result["error"]}
+                
+                logger.info(f"Entry order placed: {entry_result}")
 
-                # Second bracket for remaining to TP2 (only if quantity > 0)
+                # Step 2: Create TP1 exit order (BUY with SL + TP1)
+                result_tp1 = {"success": True}
+                if tp1_quantity > 0:
+                    result_tp1 = await self.trading_bot.create_bracket_order(
+                        symbol=symbol,
+                        side="BUY",  # Exit order
+                        quantity=tp1_quantity,
+                        stop_loss_price=stop_loss,
+                        take_profit_price=take_profit_1,
+                        account_id=self.webhook_server.account_id
+                    )
+                    if "error" in result_tp1:
+                        logger.error(f"TP1 bracket failed: {result_tp1['error']}")
+                        return {"success": False, "error": result_tp1["error"]}
+                    logger.info(f"TP1 exit bracket created: BUY {tp1_quantity} @ {take_profit_1}")
+
+                # Step 3: Create TP2 exit order (BUY with SL + TP2) 
                 result_tp2 = {"success": True}
                 if tp2_quantity > 0:
                     result_tp2 = await self.trading_bot.create_bracket_order(
                         symbol=symbol,
-                        side="SELL",
+                        side="BUY",  # Exit order
                         quantity=tp2_quantity,
                         stop_loss_price=stop_loss,
                         take_profit_price=take_profit_2,
                         account_id=self.webhook_server.account_id
                     )
                     if "error" in result_tp2:
+                        logger.error(f"TP2 bracket failed: {result_tp2['error']}")
                         return {"success": False, "error": result_tp2["error"]}
+                    logger.info(f"TP2 exit bracket created: BUY {tp2_quantity} @ {take_profit_2}")
 
-                # Consolidated result for response structure parity
-                result = {"success": True, "tp1": result_tp1, "tp2": result_tp2}
+                # Consolidated result
+                result = {
+                    "success": True, 
+                    "entry": entry_result,
+                    "tp1": result_tp1, 
+                    "tp2": result_tp2,
+                    "message": f"Staged exit: Entry {position_size}, TP1 exit {tp1_quantity}, TP2 exit {tp2_quantity}"
+                }
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
