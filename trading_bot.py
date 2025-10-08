@@ -615,7 +615,7 @@ class TopStepXTradingBot:
         logger.warning(f"Unknown symbol {symbol}, using generic format")
         return f"CON.F.US.{symbol}.Z25"
     
-    def _get_tick_size(self, symbol: str) -> float:
+    async def _get_tick_size(self, symbol: str) -> float:
         """
         Get the tick size for a trading symbol.
         
@@ -1524,7 +1524,7 @@ class TopStepXTradingBot:
             # For bracket orders, we should use the entry price as the reference point
             # rather than trying to get current market price, since we're placing a market order
             # that will execute at the current market price
-            tick_size = self._get_tick_size(symbol)
+            tick_size = await self._get_tick_size(symbol)
             logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}")
             
             # For bracket orders, we calculate ticks from the entry price (which will be the market price when filled)
