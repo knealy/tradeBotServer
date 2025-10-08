@@ -1676,6 +1676,35 @@ class TopStepXTradingBot:
                     return {"error": f"Bracket order failed: Error Code {error_code}, Message: {error_message}"}
             
             logger.info(f"Bracket order created successfully: {response}")
+            
+            # Start monitoring for this position if we have a position ID
+            if "orderId" in response and response.get("success"):
+                # We need to get the position ID from the order response or by checking positions
+                # For now, we'll start monitoring after a brief delay to let the position be created
+                import asyncio
+                await asyncio.sleep(1)  # Brief delay to let position be created
+                
+                # Get the most recent position for this symbol
+                positions = await self.get_open_positions(target_account)
+                if positions:
+                    # Find the most recent position for this symbol
+                    symbol_positions = []
+                    for pos in positions:
+                        if pos.get('contractId') == contract_id:
+                            symbol_positions.append(pos)
+                    
+                    if symbol_positions:
+                        # Get the most recent position
+                        latest_position = max(symbol_positions, key=lambda x: x.get('creationTimestamp', ''))
+                        position_id = str(latest_position.get('id'))
+                        
+                        # Start monitoring with trade parameters
+                        await self._start_bracket_monitoring(
+                            position_id, symbol, target_account,
+                            side=side, stop_loss_price=stop_loss_price, take_profit_price=take_profit_price
+                        )
+                        logger.info(f"Started bracket monitoring for position {position_id}")
+            
             return response
             
         except Exception as e:
@@ -1812,7 +1841,10 @@ class TopStepXTradingBot:
             
             # Start position monitoring for this bracket order
             if position_id:
-                await self._start_bracket_monitoring(position_id, symbol, target_account)
+                await self._start_bracket_monitoring(
+                    position_id, symbol, target_account,
+                    side=side, stop_loss_price=stop_loss_price, take_profit_price=take_profit_1_price
+                )
             
             return {
                 "success": True,
@@ -1828,7 +1860,8 @@ class TopStepXTradingBot:
             logger.error(f"Failed to create partial TP bracket order: {str(e)}")
             return {"error": str(e)}
     
-    async def _start_bracket_monitoring(self, position_id: str, symbol: str, account_id: str) -> None:
+    async def _start_bracket_monitoring(self, position_id: str, symbol: str, account_id: str, 
+                                      side: str = None, stop_loss_price: float = None, take_profit_price: float = None) -> None:
         """
         Start monitoring a position for bracket order management.
         This ensures orders are adjusted when position size changes.
@@ -1841,12 +1874,15 @@ class TopStepXTradingBot:
             self._bracket_monitoring[position_id] = {
                 'symbol': symbol,
                 'account_id': account_id,
+                'side': side,  # Original trade direction
+                'stop_loss_price': stop_loss_price,  # Original stop loss price
+                'take_profit_price': take_profit_price,  # Original take profit price
                 'original_quantity': None,  # Will be set when we first check
                 'last_check': None,
                 'active': True
             }
             
-            logger.info(f"Started bracket monitoring for position {position_id} ({symbol})")
+            logger.info(f"Started bracket monitoring for position {position_id} ({symbol}) - Side: {side}, SL: {stop_loss_price}, TP: {take_profit_price}")
             
         except Exception as e:
             logger.error(f"Failed to start bracket monitoring: {str(e)}")
@@ -1924,11 +1960,39 @@ class TopStepXTradingBot:
             
             # If position is still open, create new orders based on remaining quantity
             if current_quantity > 0:
-                # Determine if we should create new orders
-                # For now, we'll let the position run without new orders
-                # This prevents over-trading and position reversals
-                logger.info(f"Position {position_id} has {current_quantity} contracts remaining - no new orders created")
-                logger.info("Manual intervention may be required to set new targets")
+                # CRITICAL: All positions must have protection - never leave positions unhedged
+                logger.warning(f"Position {position_id} has {current_quantity} contracts remaining - creating new protection orders")
+                
+                # Get the original trade parameters from monitoring info
+                original_side = monitoring_info.get('side', 'BUY')
+                original_stop_loss = monitoring_info.get('stop_loss_price')
+                original_take_profit = monitoring_info.get('take_profit_price')
+                
+                if original_stop_loss and original_take_profit:
+                    # Create new bracket order for remaining position
+                    new_side = "SELL" if original_side == "BUY" else "BUY"
+                    
+                    logger.info(f"Creating new protection for {current_quantity} contracts: {new_side} with SL={original_stop_loss}, TP={original_take_profit}")
+                    
+                    new_bracket_result = await self.create_bracket_order(
+                        symbol=symbol,
+                        side=new_side,
+                        quantity=current_quantity,
+                        stop_loss_price=original_stop_loss,
+                        take_profit_price=original_take_profit,
+                        account_id=account_id
+                    )
+                    
+                    if "error" in new_bracket_result:
+                        logger.error(f"Failed to create new protection orders: {new_bracket_result['error']}")
+                        logger.error("⚠️ POSITION IS UNPROTECTED - MANUAL INTERVENTION REQUIRED")
+                    else:
+                        logger.info(f"Successfully created new protection orders: {new_bracket_result}")
+                        # Update monitoring info with new order details
+                        monitoring_info['original_quantity'] = current_quantity
+                else:
+                    logger.error(f"Cannot create protection orders - missing original parameters for position {position_id}")
+                    logger.error("⚠️ POSITION IS UNPROTECTED - MANUAL INTERVENTION REQUIRED")
             else:
                 logger.info(f"Position {position_id} fully closed - all orders canceled")
                 monitoring_info['active'] = False
@@ -1954,6 +2018,9 @@ class TopStepXTradingBot:
             
             if not target_account:
                 return {"error": "No account selected"}
+            
+            # First, check for any unprotected positions
+            await self._check_unprotected_positions(target_account)
             
             if not hasattr(self, '_bracket_monitoring'):
                 return {"message": "No positions being monitored"}
@@ -1988,6 +2055,70 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.error(f"Failed to monitor bracket positions: {str(e)}")
             return {"error": str(e)}
+    
+    async def _check_unprotected_positions(self, account_id: str) -> None:
+        """
+        Check for positions that don't have proper stop/target protection.
+        This is a safety mechanism to prevent orphaned positions.
+        """
+        try:
+            positions = await self.get_open_positions(account_id)
+            if not positions:
+                return
+            
+            orders = await self.get_open_orders(account_id)
+            
+            for position in positions:
+                position_id = str(position.get('id'))
+                symbol = position.get('contractId', '')
+                size = position.get('size', 0)
+                
+                if size == 0:
+                    continue
+                
+                # Check if this position has any protective orders
+                has_protection = False
+                for order in orders:
+                    order_contract = order.get('contractId', '')
+                    if order_contract == symbol:
+                        order_type = order.get('type', 0)
+                        custom_tag = order.get('customTag', '')
+                        
+                        # Check for stop loss or take profit orders
+                        if (order_type in [1, 4] or  # Limit or Stop orders
+                            'AutoBracket' in custom_tag or
+                            '-SL' in custom_tag or '-TP' in custom_tag):
+                            has_protection = True
+                            break
+                
+                if not has_protection:
+                    logger.error(f"⚠️ UNPROTECTED POSITION DETECTED: {position_id} - {symbol} size {size}")
+                    logger.error("This position has no stop loss or take profit orders!")
+                    logger.error("Manual intervention required to add protection")
+                    
+                    # If this position is not being monitored, start monitoring it
+                    if not hasattr(self, '_bracket_monitoring') or position_id not in self._bracket_monitoring:
+                        logger.warning(f"Starting emergency monitoring for unprotected position {position_id}")
+                        # We can't start proper monitoring without original trade parameters
+                        # But we can at least track it
+                        if not hasattr(self, '_bracket_monitoring'):
+                            self._bracket_monitoring = {}
+                        
+                        self._bracket_monitoring[position_id] = {
+                            'symbol': symbol,
+                            'account_id': account_id,
+                            'side': 'UNKNOWN',  # We don't know the original direction
+                            'stop_loss_price': None,  # We don't have original parameters
+                            'take_profit_price': None,
+                            'original_quantity': size,
+                            'last_check': None,
+                            'active': True,
+                            'emergency': True  # Mark as emergency monitoring
+                        }
+                        logger.warning(f"Emergency monitoring started for position {position_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to check unprotected positions: {str(e)}")
     
     async def get_linked_orders(self, position_id: str, account_id: str = None) -> List[Dict]:
         """
