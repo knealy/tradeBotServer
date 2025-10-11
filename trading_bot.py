@@ -1797,7 +1797,7 @@ class TopStepXTradingBot:
                 else:
                     logger.info(f"Stop loss order placed: {stop_result}")
             
-            # Create TP1 order (partial exit)
+            # FIXED: Create TP1 order (partial exit) using proper limit order
             tp1_result = None
             if take_profit_1_price:
                 tp1_side = "SELL" if side.upper() == "BUY" else "BUY"
@@ -1812,30 +1812,34 @@ class TopStepXTradingBot:
                 if "error" in tp1_result:
                     logger.warning(f"TP1 order failed: {tp1_result['error']}")
                 else:
-                    logger.info(f"TP1 order placed: {tp1_result}")
+                    logger.info(f"TP1 limit order placed: {tp1_result}")
             
-            # Create TP2 order (full exit) - only if TP2 price is provided
+            # FIXED: Create TP2 order (remaining position exit) using proper limit order
             tp2_result = None
             if take_profit_2_price:
                 tp2_side = "SELL" if side.upper() == "BUY" else "BUY"
-                tp2_result = await self.place_market_order(
-                    symbol=symbol,
-                    side=tp2_side,
-                    quantity=quantity,
-                    order_type="limit",
-                    limit_price=take_profit_2_price,
-                    account_id=target_account
-                )
-                if "error" in tp2_result:
-                    logger.warning(f"TP2 order failed: {tp2_result['error']}")
+                tp2_quantity = quantity - tp1_quantity  # Remaining contracts after TP1
+                if tp2_quantity > 0:
+                    tp2_result = await self.place_market_order(
+                        symbol=symbol,
+                        side=tp2_side,
+                        quantity=tp2_quantity,
+                        order_type="limit",
+                        limit_price=take_profit_2_price,
+                        account_id=target_account
+                    )
+                    if "error" in tp2_result:
+                        logger.warning(f"TP2 order failed: {tp2_result['error']}")
+                    else:
+                        logger.info(f"TP2 limit order placed: {tp2_result}")
                 else:
-                    logger.info(f"TP2 order placed: {tp2_result}")
+                    logger.info("No TP2 order needed (TP1 covers entire position)")
             else:
                 logger.info("No TP2 order created (full exit at TP1)")
             
             # Create appropriate message based on TP2 presence
-            if take_profit_2_price:
-                message = f"Staged TP bracket created: {tp1_quantity}@TP1, {quantity}@TP2"
+            if take_profit_2_price and tp2_quantity > 0:
+                message = f"Staged TP bracket created: {tp1_quantity}@TP1, {tp2_quantity}@TP2"
             else:
                 message = f"Full TP1 exit created: {tp1_quantity}@TP1 (no TP2)"
             

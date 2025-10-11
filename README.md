@@ -1,16 +1,24 @@
-# TopStepX Trading Bot 🤖
+# TopStepX Trading Bot 🤖 (FIXED VERSION)
 
 A production-ready trading bot for TopStepX prop firm futures accounts with TradingView webhook integration.
+
+## 🚨 **CRITICAL FIXES APPLIED**
+
+This version includes comprehensive fixes to prevent:
+- ❌ **Oversized orphaned positions** (no more -6 contract issues)
+- ❌ **Multiple separate positions** (now creates single positions)
+- ❌ **Unprotected positions** (all positions have stop/take profit)
+- ❌ **OCO order cancellations** (proper bracket management)
 
 ## ✨ Features
 
 - **Real TopStepX API Integration** - Live account authentication and trading
 - **TradingView Webhook Integration** - Automatic trade execution from TradingView alerts
-- **Interactive Trading Interface** - Command-line interface with history and tab completion
-- **Market & Limit Orders** - Support for both market and limit order types
-- **Bracket Orders** - Automatic stop loss and take profit management
-- **Position Management** - Flatten all positions, partial closes, and position tracking
-- **Advanced Signal Processing** - Supports all TradingView signal types
+- **FIXED Position Management** - Single positions with proper staged exits
+- **FIXED Signal Filtering** - Only processes entry signals, ignores TP1/TP2
+- **FIXED Risk Management** - All positions protected with OCO brackets
+- **Enhanced Debounce** - 5-minute window prevents duplicate signals
+- **Position Size Limits** - Configurable maximum position sizes
 
 ## 🚀 Quick Start
 
@@ -27,26 +35,37 @@ pip install -r requirements.txt
 ./setup_env.sh
 ```
 
-### 2. **Configuration**
+### 2. **Configuration (FIXED)**
 ```bash
 # Set your TopStepX credentials
-export PROJECT_X_API_KEY="your_api_key_here"
-export PROJECT_X_USERNAME="your_username_here"
+export TOPSETPX_USERNAME="your_username_here"
+export TOPSETPX_PASSWORD="your_password_here"
+export TOPSETPX_ACCOUNT_ID="11481693"
+
+# FIXED: Critical settings to prevent oversized positions
+export POSITION_SIZE=3
+export MAX_POSITION_SIZE=6
+export IGNORE_NON_ENTRY_SIGNALS=true
+export IGNORE_TP1_SIGNALS=true
+export DEBOUNCE_SECONDS=300
 ```
 
-### 3. **Interactive Trading**
+### 3. **Test the Fixed System**
 ```bash
-# Start the trading bot
-python3 trading_bot.py
+# Test all fixes before deployment
+python3 test_fixed_system.py
 ```
 
-### 4. **Webhook Server**
+### 4. **Webhook Server (FIXED)**
 ```bash
-# Start webhook server (conservative mode)
-python3 webhook_server.py --position-size 1 --close-entire-at-tp1 true
+# Start webhook server with fixed settings
+python3 start_webhook.py --position-size 3
 
-# Start webhook server (aggressive mode)
-python3 webhook_server.py --position-size 3 --close-entire-at-tp1 false
+# The system now:
+# ✅ Creates single positions with staged exits
+# ✅ Ignores TP1/TP2 signals (OCO manages exits)
+# ✅ Prevents oversized positions (max 6 contracts)
+# ✅ Debounces duplicate signals (5-minute window)
 ```
 
 ## 📋 Trading Commands
