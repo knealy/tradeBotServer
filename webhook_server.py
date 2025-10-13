@@ -8,6 +8,7 @@ and executes trades based on the JSON payloads.
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from typing import Dict, Optional, List
@@ -65,6 +66,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 
         except Exception as e:
             logger.error(f"Error processing webhook: {str(e)}")
+            self._send_response(500, {"error": "Internal server error"})
+    
+    def do_GET(self):
+        """Handle GET requests for health checks"""
+        try:
+            # Simple health check endpoint
+            if self.path == '/' or self.path == '/health':
+                self._send_response(200, {
+                    "status": "healthy",
+                    "service": "TopStepX Trading Bot Webhook Server",
+                    "timestamp": datetime.now().isoformat()
+                })
+            else:
+                self._send_response(404, {"error": "Not found"})
+        except Exception as e:
+            logger.error(f"Error handling GET request: {str(e)}")
             self._send_response(500, {"error": "Internal server error"})
     
     def _process_webhook(self, payload: Dict) -> Dict:
