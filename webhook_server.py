@@ -38,6 +38,49 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.webhook_server = webhook_server
         super().__init__(*args, **kwargs)
     
+    def do_GET(self):
+        """Handle GET requests for health checks"""
+        if self.path == '/health':
+            # Health check endpoint
+            try:
+                # Check if trading bot is authenticated
+                is_authenticated = self.trading_bot.session_token is not None
+                selected_account = self.trading_bot.selected_account
+                
+                health_data = {
+                    "status": "healthy" if is_authenticated else "unhealthy",
+                    "authenticated": is_authenticated,
+                    "selected_account": selected_account.get('name') if selected_account else None,
+                    "timestamp": datetime.now().isoformat(),
+                    "uptime": "running"
+                }
+                
+                status_code = 200 if is_authenticated else 503
+                self._send_response(status_code, health_data)
+                
+            except Exception as e:
+                logger.error(f"Health check failed: {str(e)}")
+                self._send_response(500, {"status": "unhealthy", "error": str(e)})
+                
+        elif self.path == '/status':
+            # Status endpoint
+            try:
+                status_data = {
+                    "service": "TopStepX Trading Bot",
+                    "version": "1.0.0",
+                    "status": "running",
+                    "timestamp": datetime.now().isoformat()
+                }
+                self._send_response(200, status_data)
+                
+            except Exception as e:
+                logger.error(f"Status check failed: {str(e)}")
+                self._send_response(500, {"error": str(e)})
+                
+        else:
+            # Default response for other GET requests
+            self._send_response(404, {"error": "Not found"})
+    
     def do_POST(self):
         """Handle POST requests from TradingView"""
         try:
@@ -68,21 +111,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.error(f"Error processing webhook: {str(e)}")
             self._send_response(500, {"error": "Internal server error"})
     
-    def do_GET(self):
-        """Handle GET requests for health checks"""
-        try:
-            # Simple health check endpoint
-            if self.path == '/' or self.path == '/health':
-                self._send_response(200, {
-                    "status": "healthy",
-                    "service": "TopStepX Trading Bot Webhook Server",
-                    "timestamp": datetime.now().isoformat()
-                })
-            else:
-                self._send_response(404, {"error": "Not found"})
-        except Exception as e:
-            logger.error(f"Error handling GET request: {str(e)}")
-            self._send_response(500, {"error": "Internal server error"})
     
     def _process_webhook(self, payload: Dict) -> Dict:
         """Process the TradingView webhook payload"""

@@ -27,11 +27,12 @@ from signalrcore.transport.websockets.websocket_transport import WebsocketTransp
 import load_env
 
 # Configure logging
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=getattr(logging, log_level, logging.INFO),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('trading_bot.log'),
+        logging.FileHandler('trading_bot.log', mode='a'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -52,8 +53,8 @@ class TopStepXTradingBot:
             username: TopStepX username
             base_url: TopStepX API base URL
         """
-        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY')
-        self.username = username or os.getenv('PROJECT_X_USERNAME')
+        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+        self.username = username or os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
         self.base_url = base_url
         self.session_token = None
         self.selected_account = None
@@ -65,6 +66,9 @@ class TopStepXTradingBot:
         # Real-time quote cache: { SYMBOL: { 'bid': float, 'ask': float, 'last': float, 'volume': float, 'ts': iso } }
         self._quote_cache: Dict[str, Dict] = {}
         self._quote_cache_lock: Lock = Lock()
+        # Real-time depth cache: { SYMBOL: { 'bids': [], 'asks': [], 'ts': iso } }
+        self._depth_cache: Dict[str, Dict] = {}
+        self._depth_cache_lock: Lock = Lock()
         self._market_hub = None
         self._market_hub_connected = False
         self._market_hub_url = os.getenv("PROJECT_X_MARKET_HUB_URL", "https://rtc.topstepx.com/hubs/market")
@@ -176,9 +180,57 @@ class TopStepXTradingBot:
                         entry["last"] = data.get("lastPrice")
                     if "volume" in data:
                         entry["volume"] = data.get("volume")
-                    entry["ts"] = datetime.utcnow().isoformat()
+                    entry["ts"] = datetime.now(datetime.UTC).isoformat()
             except Exception as e:
                 logger.debug(f"Failed processing quote message: {e}")
+
+        def on_depth(*args):
+            try:
+                # Handle depth/orderbook data similar to quotes
+                cid = ""
+                data = {}
+                if len(args) >= 2:
+                    cid = args[0] or ""
+                    data = args[1] or {}
+                elif len(args) == 1:
+                    maybe = args[0]
+                    if isinstance(maybe, dict):
+                        data = maybe
+                        cid = data.get("contractId") or ""
+                    elif isinstance(maybe, (list, tuple)) and len(maybe) >= 2:
+                        cid = maybe[0] or ""
+                        data = maybe[1] or {}
+                    else:
+                        data = {}
+                
+                symbol = ""
+                if isinstance(cid, str) and "." in cid:
+                    parts = cid.split(".")
+                    symbol = parts[-2].upper() if len(parts) >= 2 else cid
+                if not symbol:
+                    sym_id = (data.get("symbol") or data.get("symbolId") or "").upper()
+                    if sym_id and "." in sym_id:
+                        parts = sym_id.split(".")
+                        symbol = parts[-1].upper()
+                    elif sym_id:
+                        symbol = sym_id
+                if not symbol:
+                    return
+                
+                with self._depth_cache_lock:
+                    entry = self._depth_cache.setdefault(symbol, {})
+                    # Handle different depth data formats
+                    if "bids" in data:
+                        entry["bids"] = data.get("bids", [])
+                    if "asks" in data:
+                        entry["asks"] = data.get("asks", [])
+                    if "orderBook" in data:
+                        order_book = data.get("orderBook", {})
+                        entry["bids"] = order_book.get("bids", [])
+                        entry["asks"] = order_book.get("asks", [])
+                    entry["ts"] = datetime.now(datetime.UTC).isoformat()
+            except Exception as e:
+                logger.debug(f"Failed processing depth message: {e}")
 
         hub.on_open(on_open)
         hub.on_close(on_close)
@@ -193,6 +245,14 @@ class TopStepXTradingBot:
                     seen.add(ev)
                 except Exception:
                     pass
+        
+        # Register depth event handlers
+        depth_event_names = ["Depth", "OrderBook", "Level2", "MarketDepth", "GatewayDepth"]
+        for ev in depth_event_names:
+            try:
+                hub.on(ev, on_depth)
+            except Exception:
+                pass
 
         # Start the hub (non-blocking)
         hub.start()
@@ -220,6 +280,32 @@ class TopStepXTradingBot:
             logger.info(f"Subscribed to live quotes for {sym} via {cid}")
         except Exception as e:
             logger.warning(f"Failed to subscribe to quotes for {sym}: {e}")
+    
+    async def _ensure_depth_subscription(self, symbol: str) -> None:
+        """Subscribe to market depth data via SignalR."""
+        sym = symbol.upper()
+        if not self._market_hub_connected:
+            logger.debug(f"Market hub not connected, cannot subscribe to depth for {sym}")
+            return
+        try:
+            # Subscribe to depth data - try different possible method names
+            cid = self._get_contract_id(sym)
+            # Try only the most likely depth subscription methods to reduce errors
+            depth_methods = [
+                "SubscribeOrderBook",  # Most common for depth data
+                "SubscribeLevel2"      # Alternative depth method
+            ]
+            
+            for method in depth_methods:
+                try:
+                    self._market_hub.send(method, [cid])
+                    logger.info(f"Subscribed to depth data for {sym} via {cid} using {method}")
+                except Exception as e:
+                    logger.debug(f"Depth method {method} failed: {e}")
+                    continue
+                
+        except Exception as e:
+            logger.warning(f"Failed to subscribe to depth for {sym}: {e}")
         
         if not self.api_key or not self.username:
             raise ValueError("API key and username must be provided either as parameters or environment variables")
@@ -1394,6 +1480,13 @@ class TopStepXTradingBot:
                 logger.error(f"Failed to modify order: {response['error']}")
                 return response
             
+            # Check if the API response indicates success
+            if response.get("success") == False:
+                error_code = response.get("errorCode", "Unknown")
+                error_message = response.get("errorMessage", "No error message")
+                logger.error(f"Order modification failed: Error Code {error_code}, Message: {error_message}")
+                return {"error": f"Order modification failed: Error Code {error_code}, Message: {error_message}"}
+            
             logger.info(f"Order modified successfully: {response}")
             return response
             
@@ -1499,6 +1592,10 @@ class TopStepXTradingBot:
             
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            # Check if OCO brackets are enabled for the account
+            logger.warning("⚠️  IMPORTANT: Bracket orders require 'Auto OCO Brackets' to be enabled in your TopStepX account settings.")
+            logger.warning("   If this order fails with 'Brackets cannot be used with Position Brackets', please enable Auto OCO Brackets in your account.")
             
             logger.info(f"Creating bracket order for {side} {quantity} {symbol} on account {target_account}")
             
@@ -2718,7 +2815,7 @@ class TopStepXTradingBot:
     
     async def get_market_depth(self, symbol: str) -> Dict:
         """
-        Get market depth (order book) for a symbol.
+        Get market depth (order book) for a symbol using SignalR.
         
         Args:
             symbol: Trading symbol
@@ -2730,7 +2827,67 @@ class TopStepXTradingBot:
             if not self.session_token:
                 return {"error": "No session token available. Please authenticate first."}
             
-            logger.info(f"Fetching market depth for {symbol}")
+            logger.info(f"Fetching market depth for {symbol} via SignalR")
+            
+            symbol_up = symbol.upper()
+            
+            # Try to get depth data through SignalR
+            try:
+                await self._ensure_market_socket_started()
+                await self._ensure_depth_subscription(symbol_up)
+                
+                # Wait for depth data to arrive
+                import time
+                start_wait = time.time()
+                depth_data = None
+                
+                while time.time() - start_wait < 2.0:  # Wait up to 2 seconds
+                    with self._depth_cache_lock:
+                        depth_data = self._depth_cache.get(symbol_up)
+                    if depth_data and (depth_data.get('bids') or depth_data.get('asks')):
+                        break
+                    time.sleep(0.05)
+                
+                if depth_data and (depth_data.get('bids') or depth_data.get('asks')):
+                    logger.info(f"Got market depth data via SignalR for {symbol_up}")
+                    return {
+                        "bids": depth_data.get('bids', []),
+                        "asks": depth_data.get('asks', []),
+                        "source": "signalr"
+                    }
+                else:
+                    logger.warning(f"No depth data received via SignalR for {symbol_up}")
+                    
+                    # Try to get basic depth from quote data (bid/ask)
+                    try:
+                        await self._ensure_quote_subscription(symbol_up)
+                        import time
+                        time.sleep(0.2)  # Wait a bit longer for quote data
+                        
+                        with self._quote_cache_lock:
+                            quote_data = self._quote_cache.get(symbol_up)
+                        
+                        if quote_data and quote_data.get('bid') and quote_data.get('ask'):
+                            # Create basic depth from bid/ask
+                            bid_price = quote_data.get('bid')
+                            ask_price = quote_data.get('ask')
+                            
+                            logger.info(f"Got depth from quote data for {symbol_up}: bid={bid_price}, ask={ask_price}")
+                            return {
+                                "bids": [{"price": bid_price, "size": 1}],
+                                "asks": [{"price": ask_price, "size": 1}],
+                                "source": "signalr_quote"
+                            }
+                        else:
+                            logger.debug(f"No quote data available for {symbol_up}: {quote_data}")
+                    except Exception as e:
+                        logger.debug(f"Could not get depth from quote data: {e}")
+                    
+            except Exception as e:
+                logger.warning(f"SignalR depth failed: {e}")
+            
+            # Fallback to REST API if SignalR fails
+            logger.info(f"Falling back to REST API for market depth: {symbol}")
             
             # Get proper contract ID
             contract_id = self._get_contract_id(symbol)
@@ -2741,13 +2898,80 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            response = self._make_curl_request("GET", f"/api/MarketData/depth/{contract_id}", headers=headers)
+            # Try different possible endpoints for market depth
+            endpoints_to_try = [
+                f"/api/MarketData/orderbook/{contract_id}",
+                f"/api/MarketData/level2/{contract_id}",
+                f"/api/MarketData/depth/{contract_id}",
+                f"/api/MarketData/orderbook",
+                f"/api/MarketData/depth",
+                f"/api/MarketData/level2"
+            ]
+            
+            response = None
+            for endpoint in endpoints_to_try:
+                try:
+                    if endpoint in [f"/api/MarketData/depth", f"/api/MarketData/orderbook", f"/api/MarketData/level2"]:
+                        # Try with contract_id as parameter using both GET and POST
+                        for method in ["GET", "POST"]:
+                            try:
+                                response = self._make_curl_request(method, endpoint, headers=headers, data={"contractId": contract_id})
+                                if response and "error" not in response and response != {"success": True, "message": "Operation completed successfully"}:
+                                    logger.info(f"Successfully got response from endpoint: {endpoint} ({method})")
+                                    break
+                            except Exception as e:
+                                logger.debug(f"Endpoint {endpoint} ({method}) failed: {e}")
+                                continue
+                        if response and "error" not in response:
+                            break
+                    else:
+                        # Try both GET and POST for specific contract endpoints
+                        for method in ["GET", "POST"]:
+                            try:
+                                response = self._make_curl_request(method, endpoint, headers=headers)
+                                if response and "error" not in response and response != {"success": True, "message": "Operation completed successfully"}:
+                                    logger.info(f"Successfully got response from endpoint: {endpoint} ({method})")
+                                    break
+                            except Exception as e:
+                                logger.debug(f"Endpoint {endpoint} ({method}) failed: {e}")
+                                continue
+                        if response and "error" not in response:
+                            break
+                except Exception as e:
+                    logger.debug(f"Endpoint {endpoint} failed: {e}")
+                    continue
+            
+            if not response:
+                response = self._make_curl_request("GET", f"/api/MarketData/depth/{contract_id}", headers=headers)
+            
+            # Debug logging to see actual API response
+            logger.info(f"Raw market depth API response: {response}")
             
             if "error" in response:
                 logger.error(f"Failed to fetch market depth: {response['error']}")
                 return response
             
-            return response
+            # Parse market depth response - check for different possible formats
+            if isinstance(response, dict):
+                if "bids" in response and "asks" in response:
+                    # Direct format with bids/asks
+                    return response
+                elif "data" in response:
+                    # Data wrapped in 'data' field
+                    return response["data"]
+                elif "result" in response:
+                    # Data wrapped in 'result' field
+                    return response["result"]
+                elif "success" in response and response.get("success") == True:
+                    # Success response but no depth data available
+                    logger.warning(f"Market depth API returned success but no depth data available for {symbol}")
+                    return {"bids": [], "asks": []}
+                else:
+                    logger.warning(f"Unexpected market depth response format: {response}")
+                    return {"bids": [], "asks": []}
+            else:
+                logger.warning(f"Unexpected market depth response type: {type(response)}")
+                return {"bids": [], "asks": []}
             
         except Exception as e:
             logger.error(f"Failed to fetch market depth: {str(e)}")
@@ -2756,7 +2980,7 @@ class TopStepXTradingBot:
     async def get_historical_data(self, symbol: str, timeframe: str = "1m", 
                                  limit: int = 100) -> List[Dict]:
         """
-        Get historical price data for a symbol.
+        Get historical price data for a symbol using REST API (historical data is not real-time).
         
         Args:
             symbol: Trading symbol
@@ -2781,13 +3005,70 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            params = {
-                "timeframe": timeframe,
+            # Try the History API endpoint which is more likely to work
+            # Based on the error message, we need: live, startTime, endTime, unit, unitNumber, request
+            from datetime import datetime, timedelta
+            
+            # Calculate time range
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=24)  # Get last 24 hours of data
+            
+            # Convert timeframe to unit and unitNumber
+            # Based on the error, the API expects specific enum values
+            timeframe_map = {
+                "1m": {"unit": 0, "unitNumber": 1},  # 0 = Minute
+                "5m": {"unit": 0, "unitNumber": 5},   # 0 = Minute
+                "15m": {"unit": 0, "unitNumber": 15}, # 0 = Minute
+                "1h": {"unit": 1, "unitNumber": 1},   # 1 = Hour
+                "1d": {"unit": 2, "unitNumber": 1}    # 2 = Day
+            }
+            
+            timeframe_info = timeframe_map.get(timeframe, {"unit": 0, "unitNumber": 1})
+            
+            history_data = {
+                "live": False,
+                "startTime": start_time.isoformat() + "Z",
+                "endTime": end_time.isoformat() + "Z",
+                "unit": timeframe_info["unit"],
+                "unitNumber": timeframe_info["unitNumber"],
+                "contractId": contract_id,
                 "limit": limit
             }
             
-            response = self._make_curl_request("GET", f"/api/MarketData/history/{contract_id}", 
-                                            headers=headers, data=params)
+            # Try different possible endpoints for historical data
+            endpoints_to_try = [
+                "/api/History/retrieveBars",
+                "/api/History/bars",
+                "/api/History/historical",
+                f"/api/MarketData/history/{contract_id}",
+                f"/api/MarketData/bars/{contract_id}",
+                f"/api/MarketData/ohlc/{contract_id}"
+            ]
+            
+            response = None
+            for endpoint in endpoints_to_try:
+                try:
+                    if endpoint.startswith("/api/History/"):
+                        # History endpoints typically use POST
+                        response = self._make_curl_request("POST", endpoint, headers=headers, data=history_data)
+                    else:
+                        # MarketData endpoints might use GET with params
+                        params = {"timeframe": timeframe, "limit": limit}
+                        response = self._make_curl_request("GET", endpoint, headers=headers, data=params)
+                    
+                    if response and "error" not in response and response != {"success": True, "message": "Operation completed successfully"}:
+                        logger.info(f"Successfully got response from endpoint: {endpoint}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Endpoint {endpoint} failed: {e}")
+                    continue
+            
+            if not response:
+                # Fallback to the original endpoint
+                response = self._make_curl_request("POST", "/api/History/retrieveBars", headers=headers, data=history_data)
+            
+            # Debug logging to see actual API response
+            logger.info(f"Raw historical data API response: {response}")
             
             if "error" in response:
                 logger.error(f"Failed to fetch historical data: {response['error']}")
@@ -2800,6 +3081,24 @@ class TopStepXTradingBot:
                 data = response["data"]
             elif isinstance(response, dict) and "result" in response:
                 data = response["result"]
+            elif isinstance(response, dict) and "bars" in response:
+                bars = response["bars"]
+                if bars is None:
+                    # API returned error
+                    error_code = response.get("errorCode", "Unknown")
+                    error_message = response.get("errorMessage", "No error message")
+                    logger.error(f"Historical data API error: Code {error_code}, Message: {error_message}")
+                    data = []
+                else:
+                    data = bars
+            elif isinstance(response, dict) and "success" in response:
+                # Check if this is a successful response with no data
+                if response.get("success") == True and "data" not in response and "bars" not in response:
+                    logger.warning(f"Historical data API returned success but no data. This might indicate the symbol is not available for historical data or the timeframe is not supported.")
+                    data = []
+                else:
+                    logger.warning(f"Unexpected historical data response format: {response}")
+                    data = []
             else:
                 logger.warning(f"Unexpected historical data response format: {response}")
                 data = []
@@ -3194,6 +3493,10 @@ class TopStepXTradingBot:
                         print("❌ Side must be BUY or SELL")
                         continue
                     
+                    # Show OCO bracket warning
+                    print(f"\n⚠️  IMPORTANT: Bracket orders require 'Auto OCO Brackets' to be enabled in your TopStepX account settings.")
+                    print(f"   If this order fails with 'Brackets cannot be used with Position Brackets', please enable Auto OCO Brackets in your account.")
+                    
                     # Confirm the native bracket order
                     print(f"\n⚠️  CONFIRM NATIVE BRACKET ORDER:")
                     print(f"   Symbol: {symbol.upper()}")
@@ -3529,19 +3832,26 @@ class TopStepXTradingBot:
                         bids = result.get('bids', [])
                         asks = result.get('asks', [])
                         
-                        if asks:
-                            print("   Asks (Sell):")
-                            for ask in asks[:5]:  # Show top 5
-                                price = ask.get('price', 0)
-                                size = ask.get('size', 0)
-                                print(f"     ${price:.2f} x {size}")
-                        
-                        if bids:
-                            print("   Bids (Buy):")
-                            for bid in bids[:5]:  # Show top 5
-                                price = bid.get('price', 0)
-                                size = bid.get('size', 0)
-                                print(f"     ${price:.2f} x {size}")
+                        if not bids and not asks:
+                            print("   No market depth data available")
+                            print("   This might indicate:")
+                            print("   - Market is closed")
+                            print("   - Symbol is not actively traded")
+                            print("   - Market depth data is not available for this symbol")
+                        else:
+                            if asks:
+                                print("   Asks (Sell):")
+                                for ask in asks[:5]:  # Show top 5
+                                    price = ask.get('price', 0)
+                                    size = ask.get('size', 0)
+                                    print(f"     ${price:.2f} x {size}")
+                            
+                            if bids:
+                                print("   Bids (Buy):")
+                                for bid in bids[:5]:  # Show top 5
+                                    price = bid.get('price', 0)
+                                    size = bid.get('size', 0)
+                                    print(f"     ${price:.2f} x {size}")
                 
                 elif command_lower.startswith("history "):
                     parts = command.split()
@@ -3557,7 +3867,12 @@ class TopStepXTradingBot:
                     # Get historical data
                     result = await self.get_historical_data(symbol, timeframe, limit)
                     if not result:
-                        print(f"❌ History failed for {symbol}")
+                        print(f"❌ No historical data available for {symbol}")
+                        print("   This might indicate:")
+                        print("   - Symbol is not available for historical data")
+                        print("   - Timeframe is not supported")
+                        print("   - Market is closed or data is not available")
+                        print("   - Try a different symbol or timeframe")
                     else:
                         print(f"\n📊 Historical Data for {symbol.upper()} ({timeframe}):")
                         print(f"{'Time':<20} {'Open':<10} {'High':<10} {'Low':<10} {'Close':<10} {'Volume':<10}")
@@ -3632,14 +3947,17 @@ def main():
     print()
     
     # Check for environment variables
-    api_key = os.getenv('PROJECT_X_API_KEY')
-    username = os.getenv('PROJECT_X_USERNAME')
+    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
     
     if not api_key or not username:
         print("⚠️  Environment variables not found.")
         print("Please set your credentials:")
         print("  export PROJECT_X_API_KEY='your_api_key_here'")
         print("  export PROJECT_X_USERNAME='your_username_here'")
+        print("  OR")
+        print("  export TOPSETPX_API_KEY='your_api_key_here'")
+        print("  export TOPSETPX_USERNAME='your_username_here'")
         print()
         print("Or provide them manually:")
         
