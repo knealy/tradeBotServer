@@ -203,4 +203,4 @@ This project is for educational and personal use. Please ensure compliance with 
 
 ---
 
-**⚠️ Disclaimer**: Trading futures involves substantial risk of loss. This software is provided as-is without warranty. Use at your own risk.
+**⚠️ Disclaimer**: Trading futures involves substantial risk of loss. This software is provided as-is without warranty. Use at your own risk.# Force deployment Tue Oct 14 13:18:55 EDT 2025
