@@ -1874,6 +1874,8 @@ async def main():
     # Enhanced account ID parsing with robust normalization
     raw_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
     logger.info(f"Raw account ID from environment: {repr(raw_account_id)}")
+    logger.info(f"TOPSTEPX_ACCOUNT_ID: {repr(os.getenv('TOPSTEPX_ACCOUNT_ID'))}")
+    logger.info(f"PROJECT_X_ACCOUNT_ID: {repr(os.getenv('PROJECT_X_ACCOUNT_ID'))}")
     
     account_id = None
     if raw_account_id:
@@ -1974,9 +1976,10 @@ async def main():
     
     bot.selected_account = selected_account
     if bot.selected_account:
-        logger.info(f"Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
+        logger.info(f"✅ Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
+        logger.info(f"✅ Bot selected_account set to: {bot.selected_account}")
     else:
-        logger.error("No selected account. Service will report unhealthy until correct account is available.")
+        logger.error("❌ No selected account. Service will report unhealthy until correct account is available.")
     logger.info(f"Position size: {position_size} contracts")
     logger.info(f"Close entire position at TP1: {close_entire_at_tp1}")
     
