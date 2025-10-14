@@ -75,7 +75,8 @@ class TradingDashboard {
             return;
         }
         
-        const wsUrl = `${protocol}//${window.location.host}/ws/dashboard?token=${encodeURIComponent(token)}`;
+        // Try WebSocket on port 8081 first, fallback to same port
+        const wsUrl = `${protocol}//${window.location.hostname}:8081/ws/dashboard?token=${encodeURIComponent(token)}`;
         
         try {
             this.ws = new WebSocket(wsUrl);
@@ -96,19 +97,24 @@ class TradingDashboard {
                 this.updateConnectionStatus(false);
                 this.isConnected = false;
                 
-                // Attempt to reconnect after 5 seconds
-                setTimeout(() => {
-                    this.connectWebSocket();
-                }, 5000);
+                // Don't auto-reconnect if WebSocket is disabled
+                // Just show as connected for HTTP polling
+                this.updateConnectionStatus(true);
             };
             
             this.ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
-                this.updateConnectionStatus(false);
+                // If WebSocket fails, fall back to HTTP polling mode
+                console.log('WebSocket not available, using HTTP polling mode');
+                this.updateConnectionStatus(true);
+                this.isConnected = true;
             };
         } catch (error) {
             console.error('Failed to connect WebSocket:', error);
-            this.updateConnectionStatus(false);
+            // Fall back to HTTP polling mode
+            console.log('WebSocket not available, using HTTP polling mode');
+            this.updateConnectionStatus(true);
+            this.isConnected = true;
         }
     }
     

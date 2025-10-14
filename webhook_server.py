@@ -1845,14 +1845,23 @@ class WebhookServer:
     def _init_websocket_server(self):
         """Initialize WebSocket server for real-time updates"""
         try:
+            # Check if WebSocket is enabled via environment variable
+            websocket_enabled = os.getenv('WEBSOCKET_ENABLED', 'false').lower() in ('true', '1', 'yes', 'on')
+            if not websocket_enabled:
+                logger.info("WebSocket server disabled via WEBSOCKET_ENABLED=false")
+                self.websocket_server = None
+                return
+                
             from websocket_server import WebSocketServer
+            # Use a different port for WebSocket to avoid conflicts
+            websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
             self.websocket_server = WebSocketServer(
                 trading_bot=self.trading_bot,
                 webhook_server=self,
                 host=self.host,
-                port=self.port  # Use same port as HTTP server
+                port=websocket_port
             )
-            logger.info("WebSocket server initialized")
+            logger.info(f"WebSocket server initialized on port {websocket_port}")
         except Exception as e:
             logger.warning(f"Failed to initialize WebSocket server: {e}")
             self.websocket_server = None
@@ -1906,7 +1915,16 @@ class WebhookServer:
             # Start WebSocket server if available
             if self.websocket_server:
                 try:
-                    asyncio.create_task(self.websocket_server.start())
+                    # Start WebSocket server in a separate thread
+                    def start_websocket():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.websocket_server.start())
+                        loop.run_forever()
+                    
+                    websocket_thread = threading.Thread(target=start_websocket)
+                    websocket_thread.daemon = True
+                    websocket_thread.start()
                     logger.info("WebSocket server started")
                 except Exception as e:
                     logger.warning(f"Failed to start WebSocket server: {e}")
