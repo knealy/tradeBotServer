@@ -90,6 +90,25 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 logger.error(f"Status check failed: {str(e)}")
                 self._send_response(500, {"error": str(e)})
                 
+        elif self.path == '/debug':
+            # Debug endpoint to show account selection details
+            try:
+                debug_data = {
+                    "selected_account": self.trading_bot.selected_account,
+                    "selected_account_id": self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None,
+                    "selected_account_name": self.trading_bot.selected_account.get('name') if self.trading_bot.selected_account else None,
+                    "env_account_id": getattr(self.webhook_server, 'env_account_id', None),
+                    "account_consistent": (str(getattr(self.webhook_server, 'env_account_id', None)) == str(self.trading_bot.selected_account.get('id'))) if self.trading_bot.selected_account else False,
+                    "startup_blocked": getattr(self.webhook_server, '_startup_blocked', False),
+                    "startup_block_reason": getattr(self.webhook_server, '_startup_block_reason', None),
+                    "timestamp": datetime.now().isoformat()
+                }
+                self._send_response(200, debug_data)
+                
+            except Exception as e:
+                logger.error(f"Debug check failed: {str(e)}")
+                self._send_response(500, {"error": str(e)})
+                
         else:
             # Default response for other GET requests
             self._send_response(404, {"error": "Not found"})
