@@ -21,7 +21,7 @@ class DiscordNotifier:
         self.webhook_url = webhook_url or os.getenv('DISCORD_WEBHOOK_URL')
         self.enabled = bool(self.webhook_url)
         self._last_notification_time = 0
-        self._rate_limit_delay = 1.0  # 1 second between notifications
+        self._rate_limit_delay = 0.5  # 0.5 seconds between notifications
         
         if not self.enabled:
             logger.warning("Discord notifications disabled - DISCORD_WEBHOOK_URL not set")
