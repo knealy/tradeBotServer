@@ -52,6 +52,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "status": "healthy" if is_authenticated else "unhealthy",
                     "authenticated": is_authenticated,
                     "selected_account": selected_account.get('name') if selected_account else None,
+                    "selected_account_id": selected_account.get('id') if selected_account else None,
+                    "fills_worker_active": self.webhook_server._fills_worker_active,
+                    "last_fill_check_ts": self.webhook_server._last_fill_check_ts,
                     "timestamp": datetime.now().isoformat(),
                     "uptime": "running"
                 }
@@ -555,6 +558,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
     
+    async def _trigger_fill_checks(self, account_id: str = None):
+        """Trigger immediate fill checks after position changes"""
+        try:
+            target_account = account_id or self.webhook_server.account_id
+            if target_account and self.trading_bot:
+                # Run immediate fill checks
+                await self.trading_bot.check_order_fills(target_account)
+                await self.trading_bot._check_position_closes(target_account)
+                await self.trading_bot._check_order_fills_for_closes(target_account)
+                logger.info("Triggered immediate fill checks after position change")
+        except Exception as e:
+            logger.error(f"Failed to trigger fill checks: {e}")
+    
     def log_message(self, format, *args):
         """Override to use our logger"""
         logger.info(f"{self.address_string()} - {format % args}")
@@ -716,6 +732,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             bracket_monitor_result = await self.trading_bot.monitor_all_bracket_positions(account_id=self.webhook_server.account_id)
             logger.info(f"Bracket monitor result: {bracket_monitor_result}")
             
+            # Trigger immediate fill checks to catch fast fills and initialize position tracking
+            await self._trigger_fill_checks()
+            
             return {
                 "success": True,
                 "action": "open_long",
@@ -826,6 +845,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info("Starting bracket monitoring for new position...")
             bracket_monitor_result = await self.trading_bot.monitor_all_bracket_positions(account_id=self.webhook_server.account_id)
             logger.info(f"Bracket monitor result: {bracket_monitor_result}")
+            
+            # Trigger immediate fill checks to catch fast fills and initialize position tracking
+            await self._trigger_fill_checks()
             
             return {
                 "success": True,
@@ -1046,6 +1068,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             monitor_result = await self.trading_bot.monitor_position_changes()
             logger.info(f"Monitor result: {monitor_result}")
             
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
+            
             return {
                 "success": True,
                 "action": "trim_long",
@@ -1095,6 +1120,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info("Running position monitor after trim short...")
             monitor_result = await self.trading_bot.monitor_position_changes()
             logger.info(f"Monitor result: {monitor_result}")
+            
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
             
             return {
                 "success": True,
@@ -1185,6 +1213,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             if closed_positions or canceled_orders:
                 logger.info(f"Successfully closed {len(closed_positions)} long positions and canceled {len(canceled_orders)} orders")
+                
+                # Trigger immediate fill checks to detect position closes
+                await self._trigger_fill_checks()
+                
                 return {
                     "success": True,
                     "action": "tp2_hit_long",
@@ -1475,6 +1507,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             if "error" in result:
                 return {"success": False, "error": result["error"]}
             
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
+            
             return {
                 "success": True,
                 "action": "close_long",
@@ -1494,6 +1529,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
+            
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
             
             return {
                 "success": True,
@@ -1515,6 +1553,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             if "error" in result:
                 return {"success": False, "error": result["error"]}
             
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
+            
             return {
                 "success": True,
                 "action": "exit_long",
@@ -1535,6 +1576,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             if "error" in result:
                 return {"success": False, "error": result["error"]}
             
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
+            
             return {
                 "success": True,
                 "action": "exit_short",
@@ -1554,6 +1598,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
+            
+            # Trigger immediate fill checks to detect position closes
+            await self._trigger_fill_checks()
             
             return {
                 "success": True,
@@ -1607,6 +1654,11 @@ class WebhookServer:
         # Bracket monitoring control
         self._bracket_monitoring_enabled = True
         self._last_bracket_check = None
+        
+        # Background fill checker
+        self._fills_worker_active = False
+        self._fills_worker_thread = None
+        self._last_fill_check_ts = None
     
     def start(self):
         """Start the webhook server"""
@@ -1630,6 +1682,9 @@ class WebhookServer:
             # Start periodic bracket monitoring
             if self._bracket_monitoring_enabled:
                 self._start_bracket_monitoring_task()
+            
+            # Start background fill checker
+            self._start_fills_worker()
             
         except Exception as e:
             logger.error(f"Failed to start webhook server: {str(e)}")
@@ -1658,10 +1713,53 @@ class WebhookServer:
         monitor_thread.start()
         logger.info("Started background bracket monitoring task")
     
+    def _start_fills_worker(self):
+        """Start background task for periodic fill checking"""
+        import threading
+        import time
+        import asyncio
+        
+        def fills_worker():
+            self._fills_worker_active = True
+            logger.info("Started background fill checker")
+            
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            async def check_fills():
+                while self._fills_worker_active:
+                    try:
+                        if hasattr(self, 'trading_bot') and self.trading_bot and self.account_id:
+                            await self.trading_bot.check_order_fills(self.account_id)
+                            self._last_fill_check_ts = time.time()
+                    except Exception as e:
+                        logger.error(f"Fill checker error: {e}")
+                    
+                    # Wait 30 seconds between checks
+                    await asyncio.sleep(30)
+            
+            try:
+                loop.run_until_complete(check_fills())
+            except Exception as e:
+                logger.error(f"Fills worker loop error: {e}")
+            finally:
+                loop.close()
+        
+        self._fills_worker_thread = threading.Thread(target=fills_worker, daemon=True)
+        self._fills_worker_thread.start()
+        logger.info("Started background fill checker")
+    
     def stop(self):
         """Stop the webhook server"""
         if self.server:
             logger.info("Stopping webhook server...")
+            
+            # Stop fills worker
+            self._fills_worker_active = False
+            if self._fills_worker_thread:
+                self._fills_worker_thread.join(timeout=5)
+            
             self.server.shutdown()
             self.server.server_close()
             if self.server_thread:
