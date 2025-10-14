@@ -182,6 +182,7 @@ class DiscordNotifier:
             entry_price = position_data.get('entry_price', 'Unknown')
             exit_price = position_data.get('exit_price', 'Unknown')
             pnl = position_data.get('pnl', 0)
+            close_method = position_data.get('close_method', 'Unknown')
             position_id = position_data.get('position_id', 'Unknown')
             
             # Create embed
@@ -196,6 +197,7 @@ class DiscordNotifier:
                     {"name": "Entry Price", "value": str(entry_price), "inline": True},
                     {"name": "Exit Price", "value": str(exit_price), "inline": True},
                     {"name": "P&L", "value": f"${pnl:.2f}", "inline": True},
+                    {"name": "Close Method", "value": str(close_method), "inline": True},
                     {"name": "Position ID", "value": str(position_id), "inline": True},
                     {"name": "Timestamp", "value": datetime.utcnow().strftime("%H:%M:%S UTC"), "inline": True}
                 ],

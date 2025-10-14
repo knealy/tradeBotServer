@@ -95,6 +95,7 @@ class TopStepXTradingBot:
         
         # Track filled orders to avoid duplicate notifications
         self._notified_orders = set()
+        self._notified_positions = set()  # Track position close notifications
         
         # Auto fills settings
         self._auto_fills_enabled = False
@@ -824,49 +825,78 @@ class TopStepXTradingBot:
             current_positions = await self.get_open_positions(account_id)
             current_position_ids = {str(pos.get('id', '')) for pos in current_positions}
             
-            # Check if we have any previously tracked positions that are now closed
-            if hasattr(self, '_tracked_positions'):
-                for tracked_id in list(self._tracked_positions):
-                    if tracked_id not in current_position_ids:
-                        # Position was closed
-                        position_data = self._tracked_positions[tracked_id]
-                        
-                        # Send close notification
-                        try:
-                            account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                            
-                            # Get current market price for exit price
-                            symbol = position_data.get('symbol', 'Unknown')
-                            exit_price = "Unknown"
-                            try:
-                                quote = await self.get_market_quote(symbol)
-                                if "error" not in quote:
-                                    if position_data.get('side', 0) == 0:  # Long position
-                                        exit_price = quote.get("bid") or quote.get("last")
-                                    else:  # Short position
-                                        exit_price = quote.get("ask") or quote.get("last")
-                                    if exit_price:
-                                        exit_price = f"${float(exit_price):.2f}"
-                            except Exception as price_err:
-                                logger.warning(f"Could not fetch exit price: {price_err}")
-                            
-                            notification_data = {
-                                'symbol': symbol,
-                                'side': 'LONG' if position_data.get('side', 0) == 0 else 'SHORT',
-                                'quantity': position_data.get('size', 0),
-                                'entry_price': f"${position_data.get('entryPrice', 0):.2f}",
-                                'exit_price': exit_price,
-                                'pnl': position_data.get('unrealizedPnl', 0),
-                                'position_id': tracked_id
-                            }
-                            
-                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
-                            
-                        except Exception as notif_err:
-                            logger.warning(f"Failed to send position close notification: {notif_err}")
-                        
-                        # Remove from tracked positions
-                        del self._tracked_positions[tracked_id]
+                    # Check if we have any previously tracked positions that are now closed
+                    if hasattr(self, '_tracked_positions'):
+                        for tracked_id in list(self._tracked_positions):
+                            if tracked_id not in current_position_ids:
+                                # Position was closed - check if we already notified
+                                if tracked_id in self._notified_positions:
+                                    continue
+                                
+                                # Position was closed
+                                position_data = self._tracked_positions[tracked_id]
+
+                                # Send close notification
+                                try:
+                                    account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+
+                                    # Get current market price for exit price
+                                    symbol = position_data.get('symbol', 'Unknown')
+                                    exit_price = "Unknown"
+                                    close_method = "Unknown"
+                                    
+                                    try:
+                                        quote = await self.get_market_quote(symbol)
+                                        if "error" not in quote:
+                                            if position_data.get('side', 0) == 0:  # Long position
+                                                exit_price = quote.get("bid") or quote.get("last")
+                                            else:  # Short position
+                                                exit_price = quote.get("ask") or quote.get("last")
+                                            if exit_price:
+                                                exit_price = f"${float(exit_price):.2f}"
+                                    except Exception as price_err:
+                                        logger.warning(f"Could not fetch exit price: {price_err}")
+
+                                    # Try to determine close method by checking recent order history
+                                    try:
+                                        recent_orders = await self.get_order_history(account_id, limit=10)
+                                        for order in recent_orders:
+                                            if (order.get('positionId') == tracked_id and 
+                                                order.get('status') in [2, 3, 4] and  # Filled/Executed/Complete
+                                                order.get('positionDisposition') == 'Closing'):
+                                                
+                                                order_type = order.get('type', 0)
+                                                if order_type == 4:  # Stop order
+                                                    close_method = "Stop Loss Hit"
+                                                elif order_type == 1:  # Limit order
+                                                    close_method = "Take Profit Hit"
+                                                elif order_type == 2:  # Market order
+                                                    close_method = "Manual Close"
+                                                else:
+                                                    close_method = "Order Close"
+                                                break
+                                    except Exception as method_err:
+                                        logger.warning(f"Could not determine close method: {method_err}")
+
+                                    notification_data = {
+                                        'symbol': symbol,
+                                        'side': 'LONG' if position_data.get('side', 0) == 0 else 'SHORT',
+                                        'quantity': position_data.get('size', 0),
+                                        'entry_price': f"${position_data.get('entryPrice', 0):.2f}",
+                                        'exit_price': exit_price,
+                                        'pnl': position_data.get('unrealizedPnl', 0),
+                                        'close_method': close_method,
+                                        'position_id': tracked_id
+                                    }
+
+                                    self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                                    self._notified_positions.add(tracked_id)
+
+                                except Exception as notif_err:
+                                    logger.warning(f"Failed to send position close notification: {notif_err}")
+
+                                # Remove from tracked positions
+                                del self._tracked_positions[tracked_id]
             
             # Track new positions
             if not hasattr(self, '_tracked_positions'):
@@ -4548,9 +4578,10 @@ class TopStepXTradingBot:
                 elif command_lower == "clear_notifications":
                     # Clear notification cache to re-check all orders
                     self._notified_orders.clear()
+                    self._notified_positions.clear()
                     if hasattr(self, '_tracked_positions'):
                         self._tracked_positions.clear()
-                    print("✅ Notification cache cleared - will re-check all orders")
+                    print("✅ Notification cache cleared - will re-check all orders and positions")
                 
                 elif command_lower == "test_fills":
                     # Test fill checking with detailed output
