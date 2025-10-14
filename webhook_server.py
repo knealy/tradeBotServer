@@ -1883,14 +1883,19 @@ async def main():
     """Main function to run the webhook server"""
     import os
     
-    # Load environment variables
-    import load_env
+    # Load environment variables - handle Railway deployment
+    try:
+        import load_env
+        logger.info("✅ Environment variables loaded from .env file")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not load .env file: {e}")
+        logger.info("Using system environment variables (Railway deployment)")
     
     # Read configuration from environment variables
     api_key = os.getenv('TOPSTEPX_API_KEY') or os.getenv('PROJECT_X_API_KEY')
     username = os.getenv('TOPSTEPX_USERNAME') or os.getenv('PROJECT_X_USERNAME')
     
-    # Enhanced account ID parsing with robust normalization
+    # Enhanced account ID parsing with robust normalization for Railway
     raw_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
     logger.info(f"Raw account ID from environment: {repr(raw_account_id)}")
     logger.info(f"TOPSTEPX_ACCOUNT_ID: {repr(os.getenv('TOPSTEPX_ACCOUNT_ID'))}")
@@ -1898,9 +1903,17 @@ async def main():
     
     account_id = None
     if raw_account_id:
-        # Strip all whitespace and quotes, convert to string
-        account_id = str(raw_account_id).strip().strip('\'"').strip()
-        logger.info(f"Normalized account ID: {repr(account_id)}")
+        # Railway stringifies all env vars, so we need robust normalization
+        # Strip all whitespace and quotes, convert to string, then to int and back to string for consistency
+        account_id_str = str(raw_account_id).strip().strip('\'"').strip()
+        try:
+            # Convert to int first to handle any type issues, then back to string
+            account_id_int = int(account_id_str)
+            account_id = str(account_id_int)  # Ensure it's a clean string
+            logger.info(f"Normalized account ID: {repr(account_id)} (converted from {repr(account_id_str)})")
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid account ID format: {repr(raw_account_id)} - {e}")
+            account_id = account_id_str  # Fallback to string
         logger.info(f"Account ID type: {type(account_id)}, length: {len(account_id)}")
     else:
         logger.warning("No account ID found in environment variables")
@@ -1967,11 +1980,11 @@ async def main():
             account_id_from_api = account.get('id')
             account_name = account.get('name', 'Unknown')
             
-            # Normalize both sides for comparison - ensure both are strings and stripped
+            # Normalize both sides for comparison - Railway stringifies everything
             api_id_str = str(account_id_from_api).strip()
             target_id_str = str(account_id).strip()
             
-            # Also try integer comparison in case of type mismatch
+            # Convert both to integers for comparison (Railway env vars are strings)
             api_id_int = None
             target_id_int = None
             try:
@@ -1987,8 +2000,17 @@ async def main():
             if api_id_int is not None and target_id_int is not None:
                 logger.info(f"  Integer match: {api_id_int == target_id_int}")
             
-            # Check both string and integer comparison
-            if api_id_str == target_id_str or (api_id_int is not None and target_id_int is not None and api_id_int == target_id_int):
+            # Primary comparison: integer comparison (most reliable for Railway)
+            # Fallback: string comparison
+            match_found = False
+            if api_id_int is not None and target_id_int is not None and api_id_int == target_id_int:
+                match_found = True
+                logger.info(f"  ✅ Integer comparison match: {api_id_int} == {target_id_int}")
+            elif api_id_str == target_id_str:
+                match_found = True
+                logger.info(f"  ✅ String comparison match: {repr(api_id_str)} == {repr(target_id_str)}")
+            
+            if match_found:
                 selected_account = account
                 logger.info(f"✅ MATCH FOUND: {account_name} (ID: {account_id_from_api})")
                 break
