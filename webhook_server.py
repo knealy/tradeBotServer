@@ -1680,6 +1680,8 @@ class WebhookServer:
         # Cache intended env account id for consistency checks
         try:
             self.env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
+            if isinstance(self.env_account_id, str):
+                self.env_account_id = self.env_account_id.strip().strip('\'"')
         except Exception:
             self.env_account_id = None
         # Startup block controls
@@ -1869,6 +1871,8 @@ async def main():
     api_key = os.getenv('TOPSTEPX_API_KEY') or os.getenv('PROJECT_X_API_KEY')
     username = os.getenv('TOPSTEPX_USERNAME') or os.getenv('PROJECT_X_USERNAME')
     account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
+    if isinstance(account_id, str):
+        account_id = account_id.strip().strip('\'"')
     position_size = int(os.getenv('POSITION_SIZE', '1'))
     close_entire_at_tp1 = os.getenv('CLOSE_ENTIRE_POSITION_AT_TP1', 'false').lower() in ('true', '1', 'yes', 'on')
     use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
@@ -1931,32 +1935,25 @@ async def main():
                 break
         if not selected_account:
             logger.error(f"Account ID {account_id} not found in returned accounts; startup blocked")
-            # Mark startup blocked and reason; start minimal server already created
-            try:
-                # Bind a placeholder selected_account for health visibility
-                bot.selected_account = accounts[0] if accounts else None
-            except Exception:
-                pass
-            # Mark block
-            # The server will report unhealthy via /health
-            # Prevent fills worker start via flags set in WebhookServer.__init__
-            # We cannot access webhook_server instance yet; setting flag later after instantiation
-            pass
+            # Do not bind a placeholder account; keep selected_account as None for health to reflect reality
     else:
         logger.error("TOPSTEPX_ACCOUNT_ID missing; startup blocked")
         selected_account = None
     
     bot.selected_account = selected_account
-    logger.info(f"Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
+    if bot.selected_account:
+        logger.info(f"Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
+    else:
+        logger.error("No selected account. Service will report unhealthy until correct account is available.")
     logger.info(f"Position size: {position_size} contracts")
     logger.info(f"Close entire position at TP1: {close_entire_at_tp1}")
     
     # Hard account guard: ensure env TOPSTEPX_ACCOUNT_ID matches selected account
     env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
-    if env_account_id and str(env_account_id) != str(bot.selected_account.get('id')):
+    if env_account_id and (not bot.selected_account or str(env_account_id) != str(bot.selected_account.get('id'))):
         logger.error(f"Account guard failed: env TOPSTEPX_ACCOUNT_ID={env_account_id} != selected_account.id={bot.selected_account.get('id')}")
         logger.error("Refusing to start to avoid operating on the wrong account.")
-        return
+        # proceed to start server but with startup_blocked for health and blocked POSTs
     
     # Seed notified orders to suppress historical notifications on cold start
     try:
@@ -1985,6 +1982,10 @@ async def main():
     if account_id and (not selected_account or str(selected_account.get('id')) != str(account_id)):
         webhook_server._startup_blocked = True
         webhook_server._startup_block_reason = f"Configured account {account_id} not found in API accounts"
+        logger.error(webhook_server._startup_block_reason)
+    elif not account_id:
+        webhook_server._startup_blocked = True
+        webhook_server._startup_block_reason = "TOPSTEPX_ACCOUNT_ID missing"
         logger.error(webhook_server._startup_block_reason)
     webhook_server.start()
     
