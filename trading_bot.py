@@ -882,7 +882,7 @@ class TopStepXTradingBot:
         """Check for order fills that close positions and send notifications"""
         try:
             # Get order history to check for fills
-            orders = await self.get_order_history(account_id, limit=20)
+            orders = await self.get_order_history(account_id, limit=50)
             
             for order in orders:
                 order_id = str(order.get('id', ''))
@@ -892,6 +892,8 @@ class TopStepXTradingBot:
                 # Check if order is filled and closes a position
                 status = order.get('status', '').lower()
                 position_disposition = order.get('positionDisposition', '')
+                
+                logger.info(f"Checking order {order_id}: status={status}, disposition={position_disposition}")
                 
                 if status in ['filled', 'executed', 'complete'] and position_disposition == 'Closing':
                     # This is a closing order - send notification
@@ -909,6 +911,8 @@ class TopStepXTradingBot:
                         # Get position ID if available
                         position_id = order.get('positionId', 'Unknown')
                         
+                        logger.info(f"Found closing order: {order_id} - {side} {quantity} {symbol} at ${fill_price}")
+                        
                         # Send Discord notification for closing order
                         account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
                         
@@ -924,6 +928,8 @@ class TopStepXTradingBot:
                         
                         self.discord_notifier.send_order_fill_notification(notification_data, account_name)
                         self._notified_orders.add(order_id)
+                        
+                        logger.info(f"Sent Discord notification for closing order {order_id}")
                         
                     except Exception as notif_err:
                         logger.warning(f"Failed to send closing order notification: {notif_err}")
@@ -3763,6 +3769,8 @@ class TopStepXTradingBot:
         print("  activate_monitor - Manually activate monitoring for testing")
         print("  deactivate_monitor - Manually deactivate monitoring")
         print("  check_fills - Check for filled orders and send Discord notifications")
+        print("  test_fills - Test fill checking with detailed output")
+        print("  clear_notifications - Clear notification cache to re-check all orders")
         print("  auto_fills - Enable automatic fill checking every 30 seconds")
         print("  stop_auto_fills - Disable automatic fill checking")
         print("  account_info - Get detailed account information")
@@ -4494,6 +4502,28 @@ class TopStepXTradingBot:
                     # Disable automatic fill checking
                     self._auto_fills_enabled = False
                     print("✅ Automatic fill checking disabled")
+                
+                elif command_lower == "clear_notifications":
+                    # Clear notification cache to re-check all orders
+                    self._notified_orders.clear()
+                    if hasattr(self, '_tracked_positions'):
+                        self._tracked_positions.clear()
+                    print("✅ Notification cache cleared - will re-check all orders")
+                
+                elif command_lower == "test_fills":
+                    # Test fill checking with detailed output
+                    print("🔄 Testing fill checking...")
+                    result = await self.check_order_fills()
+                    if "error" in result:
+                        print(f"❌ Test failed: {result['error']}")
+                    else:
+                        print(f"✅ Fill check completed!")
+                        print(f"   Orders checked: {result.get('checked_orders', 0)}")
+                        print(f"   New fills found: {result.get('filled_orders', 0)}")
+                        if result.get('new_fills'):
+                            print(f"   Fill notifications sent for: {', '.join(result['new_fills'])}")
+                        else:
+                            print("   No new fills found")
                 
                 elif command_lower == "account_info":
                     # Get detailed account information
