@@ -46,7 +46,7 @@ def _print_tradingview_instructions(host: str, port: int, account_name: str, pub
     print("2) Set 'Webhook URL' to:")
     print(f"   {url}")
     if not public_url:
-        print("   Note: TradingView requires public HTTP/HTTPS (ports 80/443). Use --tunnel ngrok for an HTTPS URL.")
+        print("   Note: Railway provides HTTPS automatically - no tunneling needed!")
     print("3) Use the following JSON in the alert Message field:")
     print()
     # Example payload matching webhook_server._extract_trade_info expectations (Discord-style embed)
@@ -76,13 +76,21 @@ def _print_tradingview_instructions(host: str, port: int, account_name: str, pub
     print("- TP1 hit for long/short, TP2 hit for long/short, TP3 hit ...")
     print("- Close Long / Close Short / Exit Long / Exit Short / Session Close")
     print()
-    print(f"Webhook is listening on {url} and will trade on account: {account_name}")
+    if public_url:
+        print(f"Webhook is listening on {url} and will trade on account: {account_name}")
+    else:
+        print(f"Webhook is listening on Railway (HTTPS) and will trade on account: {account_name}")
     print("=" * 72)
 
 
 async def _bootstrap(args: argparse.Namespace) -> None:
-    # Load env
-    import load_env  # noqa: F401  (side-effect: loads .env)
+    # Load env - handle Railway deployment gracefully
+    try:
+        import load_env  # noqa: F401  (side-effect: loads .env)
+        logger.info("✅ Environment variables loaded from .env file")
+    except Exception as e:
+        logger.info("ℹ️  Using system environment variables (Railway deployment)")
+        # This is normal for Railway - no .env file needed
 
     api_key = os.getenv("PROJECT_X_API_KEY")
     username = os.getenv("PROJECT_X_USERNAME")
