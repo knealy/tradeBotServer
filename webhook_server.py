@@ -1870,9 +1870,19 @@ async def main():
     # Read configuration from environment variables
     api_key = os.getenv('TOPSTEPX_API_KEY') or os.getenv('PROJECT_X_API_KEY')
     username = os.getenv('TOPSTEPX_USERNAME') or os.getenv('PROJECT_X_USERNAME')
-    account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
-    if isinstance(account_id, str):
-        account_id = account_id.strip().strip('\'"')
+    
+    # Enhanced account ID parsing with robust normalization
+    raw_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
+    logger.info(f"Raw account ID from environment: {repr(raw_account_id)}")
+    
+    account_id = None
+    if raw_account_id:
+        # Strip all whitespace and quotes, convert to string
+        account_id = str(raw_account_id).strip().strip('\'"').strip()
+        logger.info(f"Normalized account ID: {repr(account_id)}")
+        logger.info(f"Account ID type: {type(account_id)}, length: {len(account_id)}")
+    else:
+        logger.warning("No account ID found in environment variables")
     position_size = int(os.getenv('POSITION_SIZE', '1'))
     close_entire_at_tp1 = os.getenv('CLOSE_ENTIRE_POSITION_AT_TP1', 'false').lower() in ('true', '1', 'yes', 'on')
     use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
@@ -1926,18 +1936,40 @@ async def main():
     except Exception:
         pass
 
-    # Strict selection: require env account id; no fallback
+    # Enhanced account selection with detailed logging
     selected_account = None
     if account_id:
-        for account in accounts:
-            if str(account.get('id')) == str(account_id):
+        logger.info(f"Searching for account ID: {repr(account_id)}")
+        logger.info(f"Target account ID type: {type(account_id)}")
+        
+        for i, account in enumerate(accounts):
+            account_id_from_api = account.get('id')
+            account_name = account.get('name', 'Unknown')
+            
+            # Normalize both sides for comparison
+            api_id_str = str(account_id_from_api).strip()
+            target_id_str = str(account_id).strip()
+            
+            logger.info(f"Comparing account {i+1}: {account_name}")
+            logger.info(f"  API ID: {repr(api_id_str)} (type: {type(api_id_str)})")
+            logger.info(f"  Target ID: {repr(target_id_str)} (type: {type(target_id_str)})")
+            logger.info(f"  Match: {api_id_str == target_id_str}")
+            
+            if api_id_str == target_id_str:
                 selected_account = account
+                logger.info(f"✅ MATCH FOUND: {account_name} (ID: {account_id_from_api})")
                 break
+            else:
+                logger.info(f"❌ No match for {account_name}")
+        
         if not selected_account:
-            logger.error(f"Account ID {account_id} not found in returned accounts; startup blocked")
+            logger.error(f"❌ Account ID {repr(account_id)} not found in returned accounts; startup blocked")
+            logger.error("Available account IDs:")
+            for a in accounts:
+                logger.error(f"  - {a.get('name')}: {repr(str(a.get('id')))}")
             # Do not bind a placeholder account; keep selected_account as None for health to reflect reality
     else:
-        logger.error("TOPSTEPX_ACCOUNT_ID missing; startup blocked")
+        logger.error("❌ TOPSTEPX_ACCOUNT_ID missing; startup blocked")
         selected_account = None
     
     bot.selected_account = selected_account
@@ -1956,17 +1988,21 @@ async def main():
         # proceed to start server but with startup_blocked for health and blocked POSTs
     
     # Seed notified orders to suppress historical notifications on cold start
-    try:
-        recent_filled = await bot.get_order_history(account_id=bot.selected_account.get('id'), limit=50)
-        if hasattr(bot, '_notified_orders') and isinstance(recent_filled, list):
-            pre_count = len(bot._notified_orders)
-            for o in recent_filled:
-                oid = o.get('id')
-                if oid is not None:
-                    bot._notified_orders.add(str(oid))
-            logger.info(f"Seeded notified orders with {len(bot._notified_orders) - pre_count} historical fills to prevent startup spam")
-    except Exception as seed_err:
-        logger.warning(f"Failed to seed notified orders: {seed_err}")
+    # Only do this if we have a valid selected account
+    if bot.selected_account:
+        try:
+            recent_filled = await bot.get_order_history(account_id=bot.selected_account.get('id'), limit=50)
+            if hasattr(bot, '_notified_orders') and isinstance(recent_filled, list):
+                pre_count = len(bot._notified_orders)
+                for o in recent_filled:
+                    oid = o.get('id')
+                    if oid is not None:
+                        bot._notified_orders.add(str(oid))
+                logger.info(f"Seeded notified orders with {len(bot._notified_orders) - pre_count} historical fills to prevent startup spam")
+        except Exception as seed_err:
+            logger.warning(f"Failed to seed notified orders: {seed_err}")
+    else:
+        logger.warning("Skipping order history seeding - no selected account")
     
     # Start webhook server with configuration
     webhook_server = WebhookServer(
