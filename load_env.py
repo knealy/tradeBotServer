@@ -22,7 +22,11 @@ def load_env_file():
                     os.environ[key] = value
         print("✅ Environment variables loaded successfully")
     else:
-        print("⚠️  No .env file found, using system environment variables")
+        # Check if running on Railway (Railway sets RAILWAY_ENVIRONMENT)
+        if os.getenv('RAILWAY_ENVIRONMENT'):
+            print("ℹ️  Using Railway environment variables (no .env file needed)")
+        else:
+            print("⚠️  No .env file found, using system environment variables")
 
 # Load environment variables when this module is imported
 load_env_file()

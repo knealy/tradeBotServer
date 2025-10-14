@@ -109,6 +109,30 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 logger.error(f"Debug check failed: {str(e)}")
                 self._send_response(500, {"error": str(e)})
                 
+        elif self.path == '/dashboard':
+            # Dashboard endpoint
+            try:
+                self._serve_dashboard()
+            except Exception as e:
+                logger.error(f"Dashboard error: {str(e)}")
+                self._send_response(500, {"error": str(e)})
+                
+        elif self.path.startswith('/api/'):
+            # API endpoints
+            try:
+                self._handle_api_request()
+            except Exception as e:
+                logger.error(f"API error: {str(e)}")
+                self._send_response(500, {"error": str(e)})
+                
+        elif self.path.startswith('/static/'):
+            # Static files
+            try:
+                self._serve_static_file()
+            except Exception as e:
+                logger.error(f"Static file error: {str(e)}")
+                self._send_response(404, {"error": "File not found"})
+                
         else:
             # Default response for other GET requests
             self._send_response(404, {"error": "Not found"})
@@ -589,6 +613,52 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
+    
+    def _serve_dashboard(self):
+        """Serve the dashboard HTML page"""
+        try:
+            with open('static/dashboard.html', 'r') as f:
+                content = f.read()
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(content.encode('utf-8'))
+        except FileNotFoundError:
+            self._send_response(404, {"error": "Dashboard not found"})
+    
+    def _serve_static_file(self):
+        """Serve static files (CSS, JS, etc.)"""
+        import mimetypes
+        import os
+        
+        file_path = self.path[1:]  # Remove leading slash
+        if not os.path.exists(file_path):
+            self._send_response(404, {"error": "File not found"})
+            return
+        
+        # Get MIME type
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if not mime_type:
+            mime_type = 'application/octet-stream'
+        
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            
+            self.send_response(200)
+            self.send_header('Content-type', mime_type)
+            self.send_header('Content-Length', str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            self._send_response(500, {"error": str(e)})
+    
+    def _handle_api_request(self):
+        """Handle API requests"""
+        # This will be implemented as a simple placeholder for now
+        # Full async implementation would require restructuring the HTTP handler
+        self._send_response(501, {"error": "API endpoints not yet implemented"})
     
     async def _trigger_fill_checks(self, account_id: str = None):
         """Trigger immediate fill checks after position changes"""

@@ -46,7 +46,12 @@ def _print_tradingview_instructions(host: str, port: int, account_name: str, pub
     print("2) Set 'Webhook URL' to:")
     print(f"   {url}")
     if not public_url:
-        print("   Note: Railway provides HTTPS automatically - no tunneling needed!")
+        # Check if running on Railway
+        if os.getenv('RAILWAY_ENVIRONMENT'):
+            railway_url = f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN', 'tvwebhooks.up.railway.app')}/"
+            print(f"   Railway HTTPS URL: {railway_url}")
+        else:
+            print("   Note: Railway provides HTTPS automatically - no tunneling needed!")
     print("3) Use the following JSON in the alert Message field:")
     print()
     # Example payload matching webhook_server._extract_trade_info expectations (Discord-style embed)
