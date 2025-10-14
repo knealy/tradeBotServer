@@ -109,8 +109,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 logger.error(f"Debug check failed: {str(e)}")
                 self._send_response(500, {"error": str(e)})
                 
-        elif self.path == '/dashboard':
-            # Dashboard endpoint
+        elif self.path.startswith('/dashboard'):
+            # Dashboard endpoint (handle query parameters)
             try:
                 # Check if dashboard is enabled
                 dashboard_enabled = os.getenv('DASHBOARD_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
@@ -1838,6 +1838,25 @@ class WebhookServer:
         # Increased debounce window to 5 minutes (300 seconds) to prevent rapid duplicate signals
         self.debounce_seconds = int(os.getenv('DEBOUNCE_SECONDS', '300'))
         
+        # Initialize WebSocket server
+        self.websocket_server = None
+        self._init_websocket_server()
+    
+    def _init_websocket_server(self):
+        """Initialize WebSocket server for real-time updates"""
+        try:
+            from websocket_server import WebSocketServer
+            self.websocket_server = WebSocketServer(
+                trading_bot=self.trading_bot,
+                webhook_server=self,
+                host=self.host,
+                port=self.port  # Use same port as HTTP server
+            )
+            logger.info("WebSocket server initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize WebSocket server: {e}")
+            self.websocket_server = None
+        
         # Position size validation
         self.max_position_size = int(os.getenv('MAX_POSITION_SIZE', str(position_size * 2)))
         
@@ -1883,6 +1902,14 @@ class WebhookServer:
             self.server_thread.start()
             
             logger.info("Webhook server started successfully!")
+            
+            # Start WebSocket server if available
+            if self.websocket_server:
+                try:
+                    asyncio.create_task(self.websocket_server.start())
+                    logger.info("WebSocket server started")
+                except Exception as e:
+                    logger.warning(f"Failed to start WebSocket server: {e}")
             
             # Start periodic bracket monitoring only if not startup blocked
             if not self._startup_blocked and self._bracket_monitoring_enabled:
@@ -1988,6 +2015,14 @@ class WebhookServer:
             self._fills_worker_active = False
             if self._fills_worker_thread:
                 self._fills_worker_thread.join(timeout=5)
+            
+            # Stop WebSocket server if running
+            if self.websocket_server:
+                try:
+                    asyncio.create_task(self.websocket_server.stop())
+                    logger.info("WebSocket server stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping WebSocket server: {e}")
             
             self.server.shutdown()
             self.server.server_close()

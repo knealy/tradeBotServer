@@ -66,26 +66,86 @@ class TradingDashboard {
     }
     
     connectWebSocket() {
-        // WebSocket not implemented yet, so just show connected status
-        // This will be implemented in a future update
-        console.log('WebSocket connection skipped (not implemented yet)');
-        this.updateConnectionStatus(true);
-        this.isConnected = true;
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const token = this.getAuthToken();
+        
+        if (!token) {
+            console.log('No auth token available for WebSocket');
+            this.updateConnectionStatus(false);
+            return;
+        }
+        
+        const wsUrl = `${protocol}//${window.location.host}/ws/dashboard?token=${encodeURIComponent(token)}`;
+        
+        try {
+            this.ws = new WebSocket(wsUrl);
+            
+            this.ws.onopen = () => {
+                console.log('WebSocket connected');
+                this.updateConnectionStatus(true);
+                this.isConnected = true;
+            };
+            
+            this.ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                this.handleWebSocketMessage(data);
+            };
+            
+            this.ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                this.updateConnectionStatus(false);
+                this.isConnected = false;
+                
+                // Attempt to reconnect after 5 seconds
+                setTimeout(() => {
+                    this.connectWebSocket();
+                }, 5000);
+            };
+            
+            this.ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                this.updateConnectionStatus(false);
+            };
+        } catch (error) {
+            console.error('Failed to connect WebSocket:', error);
+            this.updateConnectionStatus(false);
+        }
     }
     
     handleWebSocketMessage(data) {
         switch (data.type) {
-            case 'positions':
-                this.updatePositionsTable(data.data);
+            case 'connected':
+                console.log('WebSocket connection confirmed');
                 break;
-            case 'orders':
-                this.updateOrdersTable(data.data);
-                break;
-            case 'account':
+            case 'account_update':
                 this.updateAccountInfo(data.data);
                 break;
-            case 'stats':
+            case 'position_update':
+                this.updatePositionsTable(data.data);
+                break;
+            case 'order_update':
+                this.updateOrdersTable(data.data);
+                break;
+            case 'trade_fill':
+                this.handleTradeFill(data.data);
+                break;
+            case 'stats_update':
                 this.updatePerformanceStats(data.data);
+                break;
+            case 'log_message':
+                this.handleLogMessage(data.data);
+                break;
+            case 'health_update':
+                this.handleHealthUpdate(data.data);
+                break;
+            case 'pong':
+                // Respond to ping
+                break;
+            case 'auth_error':
+                this.showAlert('WebSocket authentication failed', 'danger');
+                break;
+            case 'error':
+                this.showAlert(`WebSocket error: ${data.message}`, 'warning');
                 break;
             default:
                 console.log('Unknown WebSocket message type:', data.type);
@@ -426,6 +486,33 @@ class TradingDashboard {
     
     clearLogs() {
         document.getElementById('logs-content').textContent = 'Logs cleared';
+    }
+    
+    handleTradeFill(tradeData) {
+        // Show notification for trade fills
+        this.showAlert(`Trade filled: ${tradeData.symbol} ${tradeData.side} ${tradeData.quantity} @ $${tradeData.price}`, 'success');
+        
+        // Refresh positions and orders
+        this.loadPositions();
+        this.loadOrders();
+    }
+    
+    handleLogMessage(logData) {
+        // Add log message to logs display
+        const logsContent = document.getElementById('logs-content');
+        const timestamp = new Date(logData.timestamp).toLocaleTimeString();
+        const newLog = `[${timestamp}] ${logData.level}: ${logData.message}\n`;
+        logsContent.textContent += newLog;
+        logsContent.scrollTop = logsContent.scrollHeight;
+    }
+    
+    handleHealthUpdate(healthData) {
+        // Update connection status based on health
+        if (healthData.status === 'healthy') {
+            this.updateConnectionStatus(true);
+        } else {
+            this.updateConnectionStatus(false);
+        }
     }
     
     showAlert(message, type) {
