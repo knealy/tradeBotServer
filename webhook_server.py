@@ -1967,16 +1967,28 @@ async def main():
             account_id_from_api = account.get('id')
             account_name = account.get('name', 'Unknown')
             
-            # Normalize both sides for comparison
+            # Normalize both sides for comparison - ensure both are strings and stripped
             api_id_str = str(account_id_from_api).strip()
             target_id_str = str(account_id).strip()
+            
+            # Also try integer comparison in case of type mismatch
+            api_id_int = None
+            target_id_int = None
+            try:
+                api_id_int = int(api_id_str)
+                target_id_int = int(target_id_str)
+            except (ValueError, TypeError):
+                pass
             
             logger.info(f"Comparing account {i+1}: {account_name}")
             logger.info(f"  API ID: {repr(api_id_str)} (type: {type(api_id_str)})")
             logger.info(f"  Target ID: {repr(target_id_str)} (type: {type(target_id_str)})")
-            logger.info(f"  Match: {api_id_str == target_id_str}")
+            logger.info(f"  String match: {api_id_str == target_id_str}")
+            if api_id_int is not None and target_id_int is not None:
+                logger.info(f"  Integer match: {api_id_int == target_id_int}")
             
-            if api_id_str == target_id_str:
+            # Check both string and integer comparison
+            if api_id_str == target_id_str or (api_id_int is not None and target_id_int is not None and api_id_int == target_id_int):
                 selected_account = account
                 logger.info(f"✅ MATCH FOUND: {account_name} (ID: {account_id_from_api})")
                 break
