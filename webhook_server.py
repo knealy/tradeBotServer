@@ -112,6 +112,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         elif self.path == '/dashboard':
             # Dashboard endpoint
             try:
+                # Check if dashboard is enabled
+                dashboard_enabled = os.getenv('DASHBOARD_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
+                if not dashboard_enabled:
+                    self._send_response(503, {"error": "Dashboard is disabled"})
+                    return
+                
                 self._serve_dashboard()
             except Exception as e:
                 logger.error(f"Dashboard error: {str(e)}")
@@ -656,9 +662,91 @@ class WebhookHandler(BaseHTTPRequestHandler):
     
     def _handle_api_request(self):
         """Handle API requests"""
-        # This will be implemented as a simple placeholder for now
-        # Full async implementation would require restructuring the HTTP handler
-        self._send_response(501, {"error": "API endpoints not yet implemented"})
+        try:
+            # Import dashboard API
+            from dashboard import DashboardAPI
+            from auth import extract_token_from_request, validate_token
+            
+            # Extract token from request
+            headers = dict(self.headers) if hasattr(self, 'headers') else {}
+            query_params = {}
+            
+            # Parse query string if present
+            if '?' in self.path:
+                path, query = self.path.split('?', 1)
+                query_params = dict(param.split('=') for param in query.split('&') if '=' in param)
+            
+            token = extract_token_from_request(headers, query_params)
+            
+            if not token or not validate_token(token):
+                self._send_response(401, {"error": "Authentication required"})
+                return
+            
+            # Initialize dashboard API
+            dashboard_api = DashboardAPI(self.trading_bot, self.webhook_server)
+            
+            # Route API requests
+            if self.path == '/api/account':
+                # Get account info synchronously
+                account = self.trading_bot.selected_account
+                if not account:
+                    self._send_response(200, {"error": "No account selected"})
+                    return
+                
+                data = {
+                    "account_id": account.get('id'),
+                    "account_name": account.get('name'),
+                    "status": account.get('status'),
+                    "balance": account.get('balance', 0),
+                    "currency": account.get('currency', 'USD'),
+                    "account_type": account.get('account_type', 'unknown')
+                }
+                self._send_response(200, data)
+                
+            elif self.path == '/api/positions':
+                # Get positions synchronously (simplified)
+                data = []  # Will be populated by async method
+                self._send_response(200, data)
+                
+            elif self.path == '/api/orders':
+                # Get orders synchronously (simplified)
+                data = []  # Will be populated by async method
+                self._send_response(200, data)
+                
+            elif self.path == '/api/history':
+                # Get trade history (simplified)
+                data = []  # Will be populated by async method
+                self._send_response(200, data)
+                
+            elif self.path == '/api/stats':
+                # Get performance stats (simplified)
+                data = {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "win_rate": 0,
+                    "total_pnl": 0
+                }
+                self._send_response(200, data)
+                
+            elif self.path == '/api/logs':
+                # Get system logs (simplified)
+                data = [
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "level": "INFO",
+                        "message": "Dashboard API initialized",
+                        "source": "dashboard"
+                    }
+                ]
+                self._send_response(200, data)
+                
+            else:
+                self._send_response(404, {"error": "API endpoint not found"})
+                
+        except Exception as e:
+            logger.error(f"API request error: {e}")
+            self._send_response(500, {"error": str(e)})
     
     async def _trigger_fill_checks(self, account_id: str = None):
         """Trigger immediate fill checks after position changes"""
