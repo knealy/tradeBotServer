@@ -47,14 +47,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 # Check if trading bot is authenticated
                 is_authenticated = self.trading_bot.session_token is not None
                 selected_account = self.trading_bot.selected_account
+                # Consistency insights
+                env_account_id = getattr(self.webhook_server, 'env_account_id', None)
+                selected_account_id = selected_account.get('id') if selected_account else None
+                consistent = (str(env_account_id) == str(selected_account_id)) if env_account_id and selected_account_id else None
                 
                 health_data = {
                     "status": "healthy" if is_authenticated else "unhealthy",
                     "authenticated": is_authenticated,
                     "selected_account": selected_account.get('name') if selected_account else None,
-                    "selected_account_id": selected_account.get('id') if selected_account else None,
+                    "selected_account_id": selected_account_id,
+                    "env_account_id": env_account_id,
+                    "account_consistent": consistent,
                     "fills_worker_active": self.webhook_server._fills_worker_active,
                     "last_fill_check_ts": self.webhook_server._last_fill_check_ts,
+                    "server_start_ts": getattr(self.webhook_server, 'server_start_ts', None),
                     "timestamp": datetime.now().isoformat(),
                     "uptime": "running"
                 }
@@ -1659,6 +1666,16 @@ class WebhookServer:
         self._fills_worker_active = False
         self._fills_worker_thread = None
         self._last_fill_check_ts = None
+        # Track server start and env/account consistency
+        try:
+            self.server_start_ts = __import__('time').time()
+        except Exception:
+            self.server_start_ts = None
+        # Cache intended env account id for consistency checks
+        try:
+            self.env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
+        except Exception:
+            self.env_account_id = None
     
     def start(self):
         """Start the webhook server"""
@@ -1731,7 +1748,23 @@ class WebhookServer:
                 while self._fills_worker_active:
                     try:
                         if hasattr(self, 'trading_bot') and self.trading_bot and self.account_id:
-                            await self.trading_bot.check_order_fills(self.account_id)
+                            # Enforce account consistency before running
+                            sel = None
+                            try:
+                                sel = (self.trading_bot.selected_account or {}).get('id')
+                            except Exception:
+                                sel = None
+                            sel_id = str(sel) if sel is not None else None
+                            env_id = str(self.env_account_id) if self.env_account_id else None
+                            acc_id = str(self.account_id)
+                            if env_id and acc_id != env_id:
+                                # Server configured with mismatched account; skip and warn
+                                logger.warning(f"Fills worker skipped: server account_id={acc_id} != env TOPSTEPX_ACCOUNT_ID={env_id}")
+                            elif sel_id and sel_id != acc_id:
+                                # Selected account mismatch; skip to avoid wrong-account notifications
+                                logger.warning(f"Fills worker skipped: selected_account={sel_id} != server account_id={acc_id}")
+                            else:
+                                await self.trading_bot.check_order_fills(self.account_id)
                             self._last_fill_check_ts = time.time()
                     except Exception as e:
                         logger.error(f"Fill checker error: {e}")
@@ -1883,6 +1916,26 @@ async def main():
     logger.info(f"Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
     logger.info(f"Position size: {position_size} contracts")
     logger.info(f"Close entire position at TP1: {close_entire_at_tp1}")
+    
+    # Hard account guard: ensure env TOPSTEPX_ACCOUNT_ID matches selected account
+    env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
+    if env_account_id and str(env_account_id) != str(bot.selected_account.get('id')):
+        logger.error(f"Account guard failed: env TOPSTEPX_ACCOUNT_ID={env_account_id} != selected_account.id={bot.selected_account.get('id')}")
+        logger.error("Refusing to start to avoid operating on the wrong account.")
+        return
+    
+    # Seed notified orders to suppress historical notifications on cold start
+    try:
+        recent_filled = await bot.get_order_history(account_id=bot.selected_account.get('id'), limit=50)
+        if hasattr(bot, '_notified_orders') and isinstance(recent_filled, list):
+            pre_count = len(bot._notified_orders)
+            for o in recent_filled:
+                oid = o.get('id')
+                if oid is not None:
+                    bot._notified_orders.add(str(oid))
+            logger.info(f"Seeded notified orders with {len(bot._notified_orders) - pre_count} historical fills to prevent startup spam")
+    except Exception as seed_err:
+        logger.warning(f"Failed to seed notified orders: {seed_err}")
     
     # Start webhook server with configuration
     webhook_server = WebhookServer(
