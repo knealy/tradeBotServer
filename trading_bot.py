@@ -754,8 +754,17 @@ class TopStepXTradingBot:
                     continue  # Already notified
                 
                 # Check if order is filled
-                status = order.get('status', '').lower()
-                if status in ['filled', 'executed', 'complete']:
+                status = order.get('status', '')
+                # Handle both string and integer status values
+                if isinstance(status, int):
+                    # Status codes: 1=Open, 2=Filled, 3=Executed, 4=Complete, 5=Cancelled
+                    is_filled = status in [2, 3, 4]
+                else:
+                    # Handle string status
+                    status_str = str(status).lower()
+                    is_filled = status_str in ['filled', 'executed', 'complete']
+                
+                if is_filled:
                     # Get order details
                     symbol = self._get_symbol_from_contract_id(order.get('contractId', ''))
                     side = 'BUY' if order.get('side', 0) == 0 else 'SELL'
@@ -890,12 +899,21 @@ class TopStepXTradingBot:
                     continue  # Already notified
                 
                 # Check if order is filled and closes a position
-                status = order.get('status', '').lower()
+                status = order.get('status', '')
                 position_disposition = order.get('positionDisposition', '')
+                
+                # Handle both string and integer status values
+                if isinstance(status, int):
+                    # Status codes: 1=Open, 2=Filled, 3=Executed, 4=Complete, 5=Cancelled
+                    is_filled = status in [2, 3, 4]
+                else:
+                    # Handle string status
+                    status_str = str(status).lower()
+                    is_filled = status_str in ['filled', 'executed', 'complete']
                 
                 logger.info(f"Checking order {order_id}: status={status}, disposition={position_disposition}")
                 
-                if status in ['filled', 'executed', 'complete'] and position_disposition == 'Closing':
+                if is_filled and position_disposition == 'Closing':
                     # This is a closing order - send notification
                     try:
                         symbol = self._get_symbol_from_contract_id(order.get('contractId', ''))
