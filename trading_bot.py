@@ -1929,33 +1929,57 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            # Get order history
+            # Use the same approach as get_open_orders but for all orders (not just open)
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            # Get orders from the last 7 days to ensure we capture recent fills
+            start_time = now - timedelta(days=7)
+            
             search_data = {
                 "accountId": int(target_account),
-                "limit": limit
+                "startTimestamp": start_time.isoformat(),
+                "endTimestamp": now.isoformat(),
+                "request": {
+                    "accountId": int(target_account),
+                    "limit": limit
+                }
             }
             
-            response = self._make_curl_request("POST", "/api/Order/history", data=search_data, headers=headers)
+            logger.info(f"Requesting order history for account {target_account} using TopStepX Gateway API")
+            logger.info(f"Request data: {search_data}")
+            
+            # Use the same endpoint as get_open_orders but without status filter
+            response = self._make_curl_request("POST", "/api/Order/search", data=search_data, headers=headers)
             
             if "error" in response:
-                logger.error(f"Failed to fetch order history: {response['error']}")
+                logger.error(f"TopStepX Gateway API failed: {response['error']}")
                 return []
             
-            # Parse orders from response
-            if isinstance(response, list):
-                orders = response
-            elif isinstance(response, dict) and "orders" in response:
-                orders = response["orders"]
-            elif isinstance(response, dict) and "data" in response:
-                orders = response["data"]
-            elif isinstance(response, dict) and "result" in response:
-                orders = response["result"]
-            else:
-                logger.warning(f"Unexpected order history response format: {response}")
-                orders = []
+            if not response.get("success"):
+                logger.error(f"TopStepX Gateway API returned error: {response}")
+                return []
             
-            logger.info(f"Found {len(orders)} historical orders")
-            return orders
+            # Check for different possible order data fields
+            orders = []
+            for field in ["orders", "data", "result", "items", "list"]:
+                if field in response and isinstance(response[field], list):
+                    orders = response[field]
+                    break
+            
+            if not orders:
+                logger.info(f"No historical orders found for account {target_account}")
+                return []
+            
+            # Filter to only filled/executed orders for history
+            filled_orders = [o for o in orders if o.get("status") in [2, 3, 4]]  # Filled, Executed, Complete
+            logger.info(f"Total orders returned: {len(orders)}; Filled orders: {len(filled_orders)}")
+            
+            # Limit results
+            if len(filled_orders) > limit:
+                filled_orders = filled_orders[:limit]
+            
+            logger.info(f"Found {len(filled_orders)} historical filled orders")
+            return filled_orders
             
         except Exception as e:
             logger.error(f"Failed to fetch order history: {str(e)}")
