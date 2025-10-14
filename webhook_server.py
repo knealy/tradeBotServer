@@ -53,7 +53,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 consistent = (str(env_account_id) == str(selected_account_id)) if env_account_id and selected_account_id else None
                 
                 health_data = {
-                    "status": "healthy" if is_authenticated else "unhealthy",
+                    "status": "healthy" if (is_authenticated and consistent and not getattr(self.webhook_server, '_startup_blocked', False)) else "unhealthy",
                     "authenticated": is_authenticated,
                     "selected_account": selected_account.get('name') if selected_account else None,
                     "selected_account_id": selected_account_id,
@@ -62,6 +62,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "fills_worker_active": self.webhook_server._fills_worker_active,
                     "last_fill_check_ts": self.webhook_server._last_fill_check_ts,
                     "server_start_ts": getattr(self.webhook_server, 'server_start_ts', None),
+                    "startup_blocked": getattr(self.webhook_server, '_startup_blocked', False),
+                    "startup_block_reason": getattr(self.webhook_server, '_startup_block_reason', None),
                     "timestamp": datetime.now().isoformat(),
                     "uptime": "running"
                 }
@@ -95,6 +97,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests from TradingView"""
         try:
+            # If startup is blocked, reject POSTs
+            if getattr(self.webhook_server, '_startup_blocked', False):
+                self._send_response(503, {"error": "Service not ready - startup blocked", "reason": self.webhook_server._startup_block_reason})
+                return
             # Get content length
             content_length = int(self.headers.get('Content-Length', 0))
             
@@ -1676,6 +1682,9 @@ class WebhookServer:
             self.env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
         except Exception:
             self.env_account_id = None
+        # Startup block controls
+        self._startup_blocked = False
+        self._startup_block_reason = None
     
     def start(self):
         """Start the webhook server"""
@@ -1696,12 +1705,20 @@ class WebhookServer:
             
             logger.info("Webhook server started successfully!")
             
-            # Start periodic bracket monitoring
-            if self._bracket_monitoring_enabled:
+            # Start periodic bracket monitoring only if not startup blocked
+            if not self._startup_blocked and self._bracket_monitoring_enabled:
                 self._start_bracket_monitoring_task()
             
-            # Start background fill checker
-            self._start_fills_worker()
+            # Start background fill checker only when consistent and not blocked
+            try:
+                sel_id = str((self.trading_bot.selected_account or {}).get('id')) if self.trading_bot and self.trading_bot.selected_account else None
+            except Exception:
+                sel_id = None
+            env_id = str(self.env_account_id) if self.env_account_id else None
+            if not self._startup_blocked and sel_id and env_id and sel_id == env_id:
+                self._start_fills_worker()
+            else:
+                logger.warning("Fills worker not started due to startup_blocked or account inconsistency")
             
         except Exception as e:
             logger.error(f"Failed to start webhook server: {str(e)}")
@@ -1897,20 +1914,37 @@ async def main():
         logger.error("No accounts available")
         return
     
-    # Select account
+    # Log all accounts returned for diagnostics
+    try:
+        logger.info("Accounts returned by API:")
+        for a in accounts:
+            logger.info(f" - {a.get('name')} (ID: {a.get('id')})")
+    except Exception:
+        pass
+
+    # Strict selection: require env account id; no fallback
     selected_account = None
     if account_id:
-        # Find account by ID
         for account in accounts:
-            if str(account['id']) == str(account_id):
+            if str(account.get('id')) == str(account_id):
                 selected_account = account
                 break
         if not selected_account:
-            logger.error(f"Account ID {account_id} not found")
-            return
+            logger.error(f"Account ID {account_id} not found in returned accounts; startup blocked")
+            # Mark startup blocked and reason; start minimal server already created
+            try:
+                # Bind a placeholder selected_account for health visibility
+                bot.selected_account = accounts[0] if accounts else None
+            except Exception:
+                pass
+            # Mark block
+            # The server will report unhealthy via /health
+            # Prevent fills worker start via flags set in WebhookServer.__init__
+            # We cannot access webhook_server instance yet; setting flag later after instantiation
+            pass
     else:
-        # Use the first account
-        selected_account = accounts[0]
+        logger.error("TOPSTEPX_ACCOUNT_ID missing; startup blocked")
+        selected_account = None
     
     bot.selected_account = selected_account
     logger.info(f"Using account: {bot.selected_account['name']} (ID: {bot.selected_account['id']})")
@@ -1946,6 +1980,12 @@ async def main():
         position_size=position_size,
         close_entire_position_at_tp1=close_entire_at_tp1
     )
+
+    # If strict selection failed, set startup_blocked and reason
+    if account_id and (not selected_account or str(selected_account.get('id')) != str(account_id)):
+        webhook_server._startup_blocked = True
+        webhook_server._startup_block_reason = f"Configured account {account_id} not found in API accounts"
+        logger.error(webhook_server._startup_block_reason)
     webhook_server.start()
     
     try:
