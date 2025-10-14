@@ -849,6 +849,7 @@ class TopStepXTradingBot:
                             }
                             
                             self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                            logger.info(f"Sent position close notification for {symbol} {position_data.get('size', 0)}")
                             
                         except Exception as notif_err:
                             logger.warning(f"Failed to send position close notification: {notif_err}")
@@ -875,13 +876,36 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.error(f"Failed to check position closes: {str(e)}")
     
+    async def check_position_closes(self, account_id: str = None) -> Dict:
+        """Check for position closes and send Discord notifications"""
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            # Check for position closes
+            await self._check_position_closes(target_account)
+            
+            return {
+                "success": True,
+                "message": "Position close check completed"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to check position closes: {str(e)}")
+            return {"error": str(e)}
+    
     async def _auto_fill_checker(self) -> None:
-        """Background task to automatically check for fills"""
+        """Background task to automatically check for fills and position closes"""
         self._auto_fills_enabled = True
         
         while self._auto_fills_enabled:
             try:
+                # Check for order fills
                 await self.check_order_fills()
+                # Check for position closes
+                await self.check_position_closes()
                 await asyncio.sleep(30)  # Check every 30 seconds
             except Exception as e:
                 logger.error(f"Auto fill checker error: {e}")
@@ -2933,17 +2957,30 @@ class TopStepXTradingBot:
                     if current_quantity > 0:
                         for order in linked_orders:
                             order_quantity = order.get("size", 0)  # Use 'size' field for order quantity
-                            if order_quantity != current_quantity:
-                                logger.info(f"Order {order.get('id')} quantity {order_quantity} != position quantity {current_quantity}")
+                            order_type = order.get("type", 0)
+                            
+                            # Only adjust stop loss orders, not take profit orders
+                            if order_quantity != current_quantity and order_type == 4:  # Stop orders only
+                                logger.info(f"Stop order {order.get('id')} quantity {order_quantity} != position quantity {current_quantity}")
                                 
-                                # Adjust the order quantity to match position
-                                adjust_result = await self.adjust_bracket_orders(position_id, current_quantity, target_account)
-                                if adjust_result.get("success"):
-                                    adjustments_made += 1
-                                    logger.info(f"Successfully adjusted bracket orders for position {position_id}")
-                                else:
-                                    logger.error(f"Failed to adjust bracket orders for position {position_id}: {adjust_result.get('error')}")
+                                # Adjust only the stop loss order quantity
+                                try:
+                                    modify_result = await self.modify_order(
+                                        order.get("id"), 
+                                        new_quantity=current_quantity, 
+                                        account_id=target_account,
+                                        order_type=order_type
+                                    )
+                                    if "error" not in modify_result:
+                                        adjustments_made += 1
+                                        logger.info(f"Successfully adjusted stop order {order.get('id')} to quantity {current_quantity}")
+                                    else:
+                                        logger.error(f"Failed to adjust stop order: {modify_result['error']}")
+                                except Exception as e:
+                                    logger.error(f"Exception adjusting stop order: {e}")
                                 break  # Only adjust once per position
+                            elif order_quantity != current_quantity and order_type == 1:  # Limit orders (take profit)
+                                logger.info(f"Take profit order {order.get('id')} quantity {order_quantity} != position quantity {current_quantity} - leaving unchanged")
                     else:
                         logger.info(f"Position {position_id} has zero quantity, skipping bracket order adjustments")
             
@@ -3696,6 +3733,7 @@ class TopStepXTradingBot:
         print("  activate_monitor - Manually activate monitoring for testing")
         print("  deactivate_monitor - Manually deactivate monitoring")
         print("  check_fills - Check for filled orders and send Discord notifications")
+        print("  check_closes - Check for position closes and send Discord notifications")
         print("  auto_fills - Enable automatic fill checking every 30 seconds")
         print("  stop_auto_fills - Disable automatic fill checking")
         print("  account_info - Get detailed account information")
@@ -3933,7 +3971,7 @@ class TopStepXTradingBot:
                     result = await self.place_market_order(symbol, side, quantity, 
                                                         stop_loss_ticks=stop_ticks, 
                                                         take_profit_ticks=profit_ticks,
-                                                        order_type="bracket")
+                                                        order_type="market")
                     if "error" in result:
                         print(f"❌ Order failed: {result['error']}")
                     else:
@@ -4422,6 +4460,15 @@ class TopStepXTradingBot:
                     # Disable automatic fill checking
                     self._auto_fills_enabled = False
                     print("✅ Automatic fill checking disabled")
+                
+                elif command_lower == "check_closes":
+                    # Check for position closes and send notifications
+                    result = await self.check_position_closes()
+                    if "error" in result:
+                        print(f"❌ Check closes failed: {result['error']}")
+                    else:
+                        print(f"✅ Position close check completed!")
+                        print(f"   {result.get('message', 'Check completed')}")
                 
                 elif command_lower == "account_info":
                     # Get detailed account information
