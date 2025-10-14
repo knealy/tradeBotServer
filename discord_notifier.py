@@ -7,6 +7,7 @@ when orders are executed or errors occur.
 
 import os
 import logging
+import time
 from typing import Dict, Optional
 import requests
 from datetime import datetime
@@ -19,13 +20,27 @@ class DiscordNotifier:
     def __init__(self, webhook_url: Optional[str] = None):
         self.webhook_url = webhook_url or os.getenv('DISCORD_WEBHOOK_URL')
         self.enabled = bool(self.webhook_url)
+        self._last_notification_time = 0
+        self._rate_limit_delay = 1.0  # 1 second between notifications
         
         if not self.enabled:
             logger.warning("Discord notifications disabled - DISCORD_WEBHOOK_URL not set")
     
+    def _rate_limit_check(self) -> bool:
+        """Check if we can send a notification (rate limiting)"""
+        current_time = time.time()
+        if current_time - self._last_notification_time < self._rate_limit_delay:
+            logger.warning("Discord notification rate limited - skipping")
+            return False
+        self._last_notification_time = current_time
+        return True
+    
     def send_order_notification(self, order_data: Dict, account_name: str) -> bool:
         """Send order execution notification to Discord"""
         if not self.enabled:
+            return False
+        
+        if not self._rate_limit_check():
             return False
         
         try:
@@ -122,6 +137,9 @@ class DiscordNotifier:
         if not self.enabled:
             return False
         
+        if not self._rate_limit_check():
+            return False
+        
         try:
             # Extract order details
             symbol = order_data.get('symbol', 'Unknown')
@@ -172,6 +190,9 @@ class DiscordNotifier:
     def send_position_close_notification(self, position_data: Dict, account_name: str) -> bool:
         """Send position close notification to Discord"""
         if not self.enabled:
+            return False
+        
+        if not self._rate_limit_check():
             return False
         
         try:

@@ -741,19 +741,19 @@ class TopStepXTradingBot:
         """Check for filled orders and send Discord notifications"""
         try:
             target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
-            
+
             if not target_account:
                 return {"error": "No account selected"}
-            
-            # Get order history to check for fills
-            orders = await self.get_order_history(target_account, limit=50)
+
+            # Get order history to check for fills - limit to recent orders only
+            orders = await self.get_order_history(target_account, limit=10)  # Reduced from 50 to 10
             filled_orders = []
-            
+
             for order in orders:
                 order_id = str(order.get('id', ''))
                 if order_id in self._notified_orders:
                     continue  # Already notified
-                
+
                 # Check if order is filled
                 status = order.get('status', '')
                 # Handle both string and integer status values
@@ -772,18 +772,18 @@ class TopStepXTradingBot:
                     quantity = order.get('size', 0)
                     fill_price = order.get('fillPrice') or order.get('executionPrice')
                     order_type = order.get('type', 0)
-                    
+
                     # Map order type to string
                     type_map = {1: 'Limit', 2: 'Market', 4: 'Stop', 5: 'Stop Limit'}
                     order_type_str = type_map.get(order_type, 'Unknown')
-                    
+
                     # Get position ID if available
                     position_id = order.get('positionId', 'Unknown')
-                    
+
                     # Send Discord notification
                     try:
                         account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                        
+
                         notification_data = {
                             'symbol': symbol,
                             'side': side,
@@ -793,27 +793,27 @@ class TopStepXTradingBot:
                             'order_id': order_id,
                             'position_id': position_id
                         }
-                        
+
                         self.discord_notifier.send_order_fill_notification(notification_data, account_name)
                         self._notified_orders.add(order_id)
                         filled_orders.append(order_id)
-                        
+
                     except Exception as notif_err:
                         logger.warning(f"Failed to send order fill notification: {notif_err}")
-            
+
             # Also check for position closes (manual closes, TP hits, stop hits)
             await self._check_position_closes(target_account)
-            
+
             # Check for any order fills that might have closed positions
             await self._check_order_fills_for_closes(target_account)
-            
+
             return {
                 "success": True,
                 "checked_orders": len(orders),
                 "filled_orders": len(filled_orders),
                 "new_fills": filled_orders
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to check order fills: {str(e)}")
             return {"error": str(e)}
@@ -920,8 +920,8 @@ class TopStepXTradingBot:
     async def _check_order_fills_for_closes(self, account_id: str) -> None:
         """Check for order fills that close positions and send notifications"""
         try:
-            # Get order history to check for fills
-            orders = await self.get_order_history(account_id, limit=50)
+            # Get order history to check for fills - limit to recent orders only
+            orders = await self.get_order_history(account_id, limit=10)
             
             for order in orders:
                 order_id = str(order.get('id', ''))
