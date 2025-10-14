@@ -1,4 +1,226 @@
-# 🚀 Deployment Guide for Fixed Trading Bot
+# 🚀 Deployment Fixes and Next Steps (Production-Ready)
+
+This guide updates the previous deployment instructions to reflect the latest production-ready changes across `trading_bot.py`, `webhook_server.py`, `requirements.txt`, and `railway.json`.
+
+## 🎯 What Changed (Production Enhancements)
+
+- Environment variable compatibility: supports both `PROJECT_X_*` and `TOPSETPX_*`.
+- Health endpoints added in `webhook_server.py`: `/health` and `/status`.
+- Configurable logging with `LOG_LEVEL` and file logging to `trading_bot.log`.
+- Railway health check now targets `/health` with tuned timeout/interval.
+- Requirements include `python-dotenv`, `urllib3`, `certifi` for production stability.
+
+---
+
+## 🚨 Before You Start
+
+1) Stop any running instances
+```bash
+pkill -f "start_webhook.py" || true
+pkill -f "webhook_server.py" || true
+```
+
+2) Ensure account is flat
+- Close open positions and cancel open orders
+- Verify in TopStepX account UI
+
+3) Backup current code (optional)
+```bash
+cp -r /Users/knealy/tradeBotServer /Users/knealy/tradeBotServer_backup_$(date +%Y%m%d)
+```
+
+---
+
+## 🔧 Environment Configuration
+
+Use either naming convention. Both work now.
+
+```bash
+# Primary (kept for backward-compatibility)
+export PROJECT_X_API_KEY=your_api_key
+export PROJECT_X_USERNAME=your_username
+
+# Alternative (used in deployment guides)
+export TOPSETPX_API_KEY=your_api_key
+export TOPSETPX_USERNAME=your_username
+export TOPSETPX_PASSWORD=your_password
+export TOPSETPX_ACCOUNT_ID=11481693
+
+# Trading controls
+export POSITION_SIZE=3
+export MAX_POSITION_SIZE=6
+export IGNORE_NON_ENTRY_SIGNALS=true
+export IGNORE_TP1_SIGNALS=true
+export DEBOUNCE_SECONDS=300
+
+# Logging
+export LOG_LEVEL=INFO
+```
+
+See `PRODUCTION_ENVIRONMENT.md` for the full list and explanations.
+
+Quick validation:
+```bash
+python3 -c "import trading_bot; print('import-ok')"
+```
+
+---
+
+## 🚀 Deployment Options
+
+### Option A: Railway.app (Recommended)
+
+1) Variables (Railway → Variables)
+```
+POSITION_SIZE=3
+MAX_POSITION_SIZE=6
+IGNORE_NON_ENTRY_SIGNALS=true
+IGNORE_TP1_SIGNALS=true
+DEBOUNCE_SECONDS=300
+TOPSETPX_USERNAME=your_username
+TOPSETPX_PASSWORD=your_password
+TOPSETPX_ACCOUNT_ID=11481693
+LOG_LEVEL=INFO
+```
+
+2) Deploy
+```bash
+git add .
+git commit -m "Production-ready updates: health checks, logging, env compat"
+git push origin main
+```
+
+3) Health check configuration
+- `railway.json` now uses `"healthcheckPath": "/health"`
+- `healthcheckTimeout`: 30, `healthcheckInterval`: 60
+
+4) Verify
+```bash
+# Replace with your Railway URL
+curl -s https://your-app.railway.app/health | jq .
+curl -s https://your-app.railway.app/status | jq .
+```
+
+### Option B: Local Development
+
+```bash
+pip install -r requirements.txt
+python3 load_env.py
+python3 start_webhook.py --position-size 3
+```
+
+---
+
+## 🧪 Testing the Fixes (incl. Health)
+
+1) Health endpoints
+```bash
+curl -s http://localhost:8080/health | jq .
+curl -s http://localhost:8080/status | jq .
+```
+
+2) Position size + signal filtering
+```bash
+curl -X POST http://localhost:8080 \
+  -H "Content-Type: application/json" \
+  -d '{"embeds": [{"title": "🚀 [MNQ1!] open long", "fields": [{"name": "Entry", "value": "25143.00"}]}]}'
+
+# Send a TP1-type signal, should be ignored
+curl -X POST http://localhost:8080 \
+  -H "Content-Type: application/json" \
+  -d '{"embeds": [{"title": "✂️📈 [MNQ1!] trim/close long", "fields": [{"name": "Entry", "value": "25143.00"}]}]}'
+```
+
+---
+
+## 📊 Monitoring & Logs
+
+- `trading_bot.log`: main application logs
+- `webhook_server.log`: webhook server logs
+- Configure via `LOG_LEVEL` (e.g., DEBUG, INFO, WARNING)
+
+Tail logs locally:
+```bash
+tail -f trading_bot.log
+tail -f webhook_server.log
+```
+
+Railway logs:
+```bash
+railway logs --follow | grep -E "ERROR|WARNING|INFO"
+```
+
+---
+
+## 🔍 Verification Checklist
+
+Before deployment
+- [ ] Bot stopped; account flat
+- [ ] Environment variables set (see above)
+- [ ] `.env` loaded if used; imports pass
+
+After deployment
+- [ ] `/health` returns HTTP 200 and `authenticated: true`
+- [ ] `/status` returns HTTP 200 with service info
+- [ ] Position limits enforced; no oversized positions
+- [ ] Non-entry signals ignored; debounce active
+
+During trading
+- [ ] Entry signals create single protected positions
+- [ ] Orders have SL/TP (OCO) when enabled in TopStepX
+
+---
+
+## 🛠️ Troubleshooting
+
+Issue: `/health` returns 503 or `authenticated: false`
+- Verify credentials (`PROJECT_X_*` or `TOPSETPX_*`)
+- Check Railway Variables; restart service
+
+Issue: No logs appear
+- Ensure `LOG_LEVEL` is set; check file permissions
+
+Issue: Webhook 400 errors
+- Validate JSON payload formatting
+- Check `IGNORE_NON_ENTRY_SIGNALS`/`IGNORE_TP1_SIGNALS`
+
+Issue: OCO/Brackets not working
+- Enable Auto OCO Brackets in TopStepX account settings
+
+---
+
+## 📁 Files Updated in this Release
+
+- `trading_bot.py`: env var compatibility; logging improvements
+- `webhook_server.py`: `/health` and `/status` endpoints
+- `requirements.txt`: add `python-dotenv`, `urllib3`, `certifi`
+- `railway.json`: health check path/timeouts
+- `PRODUCTION_ENVIRONMENT.md`: production variables and guidance
+
+---
+
+## 📈 Expected Outcomes
+
+- Stable deployments with health monitoring
+- Clear, configurable logging for diagnostics
+- Accurate environment configuration across local and Railway
+- Safer trading flow: entry-only processing, debounce, position caps
+
+---
+
+## 🚀 Next Steps
+
+1) Set variables and deploy (Railway recommended)
+2) Validate `/health` and `/status`
+3) Paper-trade to verify behavior
+4) Monitor logs; adjust `LOG_LEVEL` as needed
+5) Scale cautiously once stable
+
+For a comprehensive production reference, see `PRODUCTION_ENVIRONMENT.md`.
+
+---
+
+# Previous guide (reference)
 
 ## 🎯 **Critical Fixes Applied**
 

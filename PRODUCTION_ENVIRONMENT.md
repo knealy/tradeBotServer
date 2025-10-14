@@ -1,18 +1,29 @@
 # 🚀 Production Environment Variables
 
+## **New Features**
+
+### **Enhanced Order Management**
+- **Order Tagging**: All bot-executed orders are tagged with "TradingBot-v1.0" for easy identification
+- **Discord Notifications**: Real-time notifications for order executions and signal processing
+- **Smart TP1 Handling**: Conditional TP1 signal processing based on bracket order type
+
+### **Bracket Order Types**
+- **USE_NATIVE_BRACKETS=false** (default): Uses separate limit/stop orders, ignores TP1 signals
+- **USE_NATIVE_BRACKETS=true**: Uses TopStepX Auto OCO Brackets, processes TP1 signals
+
 ## **Required Environment Variables**
 
 ### **TopStepX API Credentials**
 ```bash
 # Primary naming convention (recommended)
+TOPSTEPX_API_KEY=your_api_key_here
+TOPSTEPX_USERNAME=your_username_here
+TOPSTEPX_ACCOUNT_ID=12694476
+
+# Legacy naming convention (for backward compatibility)
 PROJECT_X_API_KEY=your_api_key_here
 PROJECT_X_USERNAME=your_username_here
-
-# Alternative naming convention (for compatibility)
-TOPSETPX_API_KEY=your_api_key_here
-TOPSETPX_USERNAME=your_username_here
-TOPSETPX_PASSWORD=your_password_here
-TOPSETPX_ACCOUNT_ID=11481693
+PROJECT_X_ACCOUNT_ID=12694476
 ```
 
 ### **Trading Configuration**
@@ -23,11 +34,18 @@ MAX_POSITION_SIZE=6
 
 # Signal filtering
 IGNORE_NON_ENTRY_SIGNALS=true
-IGNORE_TP1_SIGNALS=true
 DEBOUNCE_SECONDS=300
+
+# Bracket order configuration
+USE_NATIVE_BRACKETS=false  # Set to true if using TopStepX Auto OCO Brackets
+CLOSE_ENTIRE_POSITION_AT_TP1=false
+TP1_FRACTION=0.75
 
 # Risk management
 ENABLE_BRACKET_ORDERS=true
+
+# Discord notifications
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your_webhook_url_here
 STOP_LOSS_TICKS=10
 TAKE_PROFIT_TICKS=20
 ```

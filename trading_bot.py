@@ -21,6 +21,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from threading import Lock
 from signalrcore.hub_connection_builder import HubConnectionBuilder
+from discord_notifier import DiscordNotifier
 from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
 
 # Load environment variables from .env file
@@ -37,6 +38,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Bot identifier for order tagging - will be made unique per order
+BOT_ORDER_TAG_PREFIX = "TradingBot-v1.0"
 
 class TopStepXTradingBot:
     """
@@ -78,6 +82,22 @@ class TopStepXTradingBot:
         self._market_hub_unsubscribe_method = os.getenv("PROJECT_X_UNSUBSCRIBE_METHOD", "UnsubscribeContractQuotes")
         self._subscribed_symbols = set()
         self._pending_symbols = set()
+        
+        # Initialize Discord notifier
+        self.discord_notifier = DiscordNotifier()
+        
+        # Order counter for unique custom tags
+        self._order_counter = 0
+        
+        # Monitoring state - only monitor after market orders are placed
+        self._monitoring_active = False
+        self._last_order_time = None
+        
+        # Track filled orders to avoid duplicate notifications
+        self._notified_orders = set()
+        
+        # Auto fills settings
+        self._auto_fills_enabled = False
 
     # ---------------------------
     # SignalR Market Hub Support
@@ -589,7 +609,7 @@ class TopStepXTradingBot:
                 return None
             
             # Use balance from selected account (already fetched during account listing)
-            if self.selected_account and self.selected_account['id'] == target_account:
+            if self.selected_account and str(self.selected_account['id']) == str(target_account):
                 balance = self.selected_account.get('balance', 0.0)
                 logger.info(f"Using cached balance for account {target_account}: ${balance:,.2f}")
                 return float(balance)
@@ -599,7 +619,7 @@ class TopStepXTradingBot:
             accounts = await self.list_accounts()
             
             for account in accounts:
-                if account['id'] == target_account:
+                if str(account['id']) == str(target_account):
                     balance = account.get('balance', 0.0)
                     logger.info(f"Found balance for account {target_account}: ${balance:,.2f}")
                     return float(balance)
@@ -701,6 +721,172 @@ class TopStepXTradingBot:
         logger.warning(f"Unknown symbol {symbol}, using generic format")
         return f"CON.F.US.{symbol}.Z25"
     
+    def _get_symbol_from_contract_id(self, contract_id: str) -> str:
+        """Get symbol from contract ID"""
+        # Reverse map contract IDs to symbols
+        contract_map = {
+            "CON.F.US.ES.Z25": "ES",
+            "CON.F.US.NQ.Z25": "NQ",
+            "CON.F.US.MNQ.Z25": "MNQ", 
+            "CON.F.US.YM.Z25": "YM",
+            "CON.F.US.MGC.Z25": "MGC",
+            "CON.F.US.MES.Z25": "MES",
+            "CON.F.US.MYM.Z25": "MYM"
+        }
+        
+        return contract_map.get(contract_id, contract_id)
+    
+    async def check_order_fills(self, account_id: str = None) -> Dict:
+        """Check for filled orders and send Discord notifications"""
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            # Get order history to check for fills
+            orders = await self.get_order_history(target_account, limit=50)
+            filled_orders = []
+            
+            for order in orders:
+                order_id = str(order.get('id', ''))
+                if order_id in self._notified_orders:
+                    continue  # Already notified
+                
+                # Check if order is filled
+                status = order.get('status', '').lower()
+                if status in ['filled', 'executed', 'complete']:
+                    # Get order details
+                    symbol = self._get_symbol_from_contract_id(order.get('contractId', ''))
+                    side = 'BUY' if order.get('side', 0) == 0 else 'SELL'
+                    quantity = order.get('size', 0)
+                    fill_price = order.get('fillPrice') or order.get('executionPrice')
+                    order_type = order.get('type', 0)
+                    
+                    # Map order type to string
+                    type_map = {1: 'Limit', 2: 'Market', 4: 'Stop', 5: 'Stop Limit'}
+                    order_type_str = type_map.get(order_type, 'Unknown')
+                    
+                    # Get position ID if available
+                    position_id = order.get('positionId', 'Unknown')
+                    
+                    # Send Discord notification
+                    try:
+                        account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                        
+                        notification_data = {
+                            'symbol': symbol,
+                            'side': side,
+                            'quantity': quantity,
+                            'fill_price': f"${float(fill_price):.2f}" if fill_price else "Unknown",
+                            'order_type': order_type_str,
+                            'order_id': order_id,
+                            'position_id': position_id
+                        }
+                        
+                        self.discord_notifier.send_order_fill_notification(notification_data, account_name)
+                        self._notified_orders.add(order_id)
+                        filled_orders.append(order_id)
+                        
+                    except Exception as notif_err:
+                        logger.warning(f"Failed to send order fill notification: {notif_err}")
+            
+            # Also check for position closes (manual closes, TP hits, stop hits)
+            await self._check_position_closes(target_account)
+            
+            return {
+                "success": True,
+                "checked_orders": len(orders),
+                "filled_orders": len(filled_orders),
+                "new_fills": filled_orders
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to check order fills: {str(e)}")
+            return {"error": str(e)}
+    
+    async def _check_position_closes(self, account_id: str) -> None:
+        """Check for position closes and send notifications"""
+        try:
+            # Get current positions
+            current_positions = await self.get_open_positions(account_id)
+            current_position_ids = {str(pos.get('id', '')) for pos in current_positions}
+            
+            # Check if we have any previously tracked positions that are now closed
+            if hasattr(self, '_tracked_positions'):
+                for tracked_id in list(self._tracked_positions):
+                    if tracked_id not in current_position_ids:
+                        # Position was closed
+                        position_data = self._tracked_positions[tracked_id]
+                        
+                        # Send close notification
+                        try:
+                            account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                            
+                            # Get current market price for exit price
+                            symbol = position_data.get('symbol', 'Unknown')
+                            exit_price = "Unknown"
+                            try:
+                                quote = await self.get_market_quote(symbol)
+                                if "error" not in quote:
+                                    if position_data.get('side', 0) == 0:  # Long position
+                                        exit_price = quote.get("bid") or quote.get("last")
+                                    else:  # Short position
+                                        exit_price = quote.get("ask") or quote.get("last")
+                                    if exit_price:
+                                        exit_price = f"${float(exit_price):.2f}"
+                            except Exception as price_err:
+                                logger.warning(f"Could not fetch exit price: {price_err}")
+                            
+                            notification_data = {
+                                'symbol': symbol,
+                                'side': 'LONG' if position_data.get('side', 0) == 0 else 'SHORT',
+                                'quantity': position_data.get('size', 0),
+                                'entry_price': f"${position_data.get('entryPrice', 0):.2f}",
+                                'exit_price': exit_price,
+                                'pnl': position_data.get('unrealizedPnl', 0),
+                                'position_id': tracked_id
+                            }
+                            
+                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                            
+                        except Exception as notif_err:
+                            logger.warning(f"Failed to send position close notification: {notif_err}")
+                        
+                        # Remove from tracked positions
+                        del self._tracked_positions[tracked_id]
+            
+            # Track new positions
+            if not hasattr(self, '_tracked_positions'):
+                self._tracked_positions = {}
+            
+            for pos in current_positions:
+                pos_id = str(pos.get('id', ''))
+                if pos_id not in self._tracked_positions:
+                    # New position - track it
+                    self._tracked_positions[pos_id] = {
+                        'symbol': self._get_symbol_from_contract_id(pos.get('contractId', '')),
+                        'side': pos.get('side', 0),
+                        'size': pos.get('size', 0),
+                        'entryPrice': pos.get('entryPrice', 0),
+                        'unrealizedPnl': pos.get('unrealizedPnl', 0)
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Failed to check position closes: {str(e)}")
+    
+    async def _auto_fill_checker(self) -> None:
+        """Background task to automatically check for fills"""
+        self._auto_fills_enabled = True
+        
+        while self._auto_fills_enabled:
+            try:
+                await self.check_order_fills()
+                await asyncio.sleep(30)  # Check every 30 seconds
+            except Exception as e:
+                logger.error(f"Auto fill checker error: {e}")
+                await asyncio.sleep(30)
+    
     async def _get_tick_size(self, symbol: str) -> float:
         """
         Get the tick size for a trading symbol.
@@ -775,6 +961,18 @@ class TopStepXTradingBot:
         logger.warning(f"Unknown symbol {symbol}, using default tick size: 0.25")
         return 0.25
     
+    def _round_to_tick_size(self, price: float, tick_size: float) -> float:
+        """Round price to nearest valid tick size."""
+        if tick_size <= 0:
+            return price
+        return round(price / tick_size) * tick_size
+    
+    def _generate_unique_custom_tag(self, order_type: str = "order") -> str:
+        """Generate a unique custom tag for orders."""
+        self._order_counter += 1
+        timestamp = int(datetime.now().timestamp())
+        return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
+
     async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
                                 stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
                                 limit_price: float = None) -> Dict:
@@ -835,7 +1033,7 @@ class TopStepXTradingBot:
                 "limitPrice": limit_price if order_type.lower() == "limit" else None,
                 "stopPrice": None,
                 "trailPrice": None,
-                "customTag": None
+                "customTag": self._generate_unique_custom_tag("market")
             }
             
             # Add bracket orders if specified
@@ -877,6 +1075,61 @@ class TopStepXTradingBot:
                 return {"error": f"Order failed: Error Code {error_code}, Message: {error_message}"}
             
             logger.info(f"Order placed successfully: {response}")
+
+            # Activate monitoring for market orders (not limit orders)
+            if order_type.lower() == "market":
+                self._monitoring_active = True
+                self._last_order_time = datetime.now()
+                logger.info("Monitoring activated for market order")
+
+            # Send Discord notification for successful order
+            try:
+                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                
+                # Get actual execution price from positions after a brief delay
+                execution_price = "Market"
+                if response.get('executionPrice'):
+                    execution_price = f"${response['executionPrice']:.2f}"
+                elif limit_price:
+                    execution_price = f"${limit_price:.2f}"
+                else:
+                    # For market orders, get current market price as entry price
+                    try:
+                        quote = await self.get_market_quote(symbol)
+                        if "error" not in quote:
+                            if side.upper() == "BUY":
+                                current_price = quote.get("ask") or quote.get("last")
+                            else:
+                                current_price = quote.get("bid") or quote.get("last")
+                            if current_price:
+                                execution_price = f"${float(current_price):.2f}"
+                                logger.info(f"Set execution price to current market price: {execution_price}")
+                    except Exception as price_err:
+                        logger.warning(f"Could not fetch current market price: {price_err}")
+                
+                # Determine order status
+                order_status = "Placed"
+                if response.get('status'):
+                    order_status = response['status']
+                
+                # Determine if this is a bracket order
+                order_type_display = order_type.capitalize()
+                if stop_loss_ticks is not None or take_profit_ticks is not None:
+                    order_type_display = "Bracket"
+                
+                notification_data = {
+                    'symbol': symbol,
+                    'side': side,
+                    'quantity': quantity,
+                    'price': execution_price,
+                    'order_type': order_type_display,
+                    'order_id': response.get('orderId', 'Unknown'),
+                    'status': order_status,
+                    'account_id': target_account
+                }
+                self.discord_notifier.send_order_notification(notification_data, account_name)
+            except Exception as notif_err:
+                logger.warning(f"Failed to send Discord notification: {notif_err}")
 
             # Cache any discovered order/position IDs for fast future cancellations/closures
             try:
@@ -1001,6 +1254,48 @@ class TopStepXTradingBot:
                 else:
                     logger.info(f"Successfully closed position {position_id}")
                     closed_positions.append(position_id)
+                    
+                    # Send Discord notification for position close
+                    try:
+                        account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                        
+                        # Get position details for notification
+                        position_details = None
+                        for pos in positions:
+                            if str(pos.get('id', '')) == str(position_id):
+                                position_details = pos
+                                break
+                        
+                        if position_details:
+                            contract_id = position_details.get('contractId')
+                            symbol = self._get_symbol_from_contract_id(contract_id)
+                            
+                            # Get current market price for exit price
+                            exit_price = "Unknown"
+                            try:
+                                quote = await self.get_market_quote(symbol)
+                                if "error" not in quote:
+                                    if position_details.get('side', 0) == 0:  # Long position
+                                        exit_price = quote.get("bid") or quote.get("last")
+                                    else:  # Short position
+                                        exit_price = quote.get("ask") or quote.get("last")
+                                    if exit_price:
+                                        exit_price = f"${float(exit_price):.2f}"
+                            except Exception as price_err:
+                                logger.warning(f"Could not fetch exit price: {price_err}")
+                            
+                            notification_data = {
+                                'symbol': symbol,
+                                'side': 'LONG' if position_details.get('side', 0) == 0 else 'SHORT',
+                                'quantity': position_details.get('size', 0),
+                                'entry_price': f"${position_details.get('entryPrice', 0):.2f}",
+                                'exit_price': exit_price,
+                                'pnl': position_details.get('unrealizedPnl', 0),
+                                'position_id': position_id
+                            }
+                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                    except Exception as notif_err:
+                        logger.warning(f"Failed to send Discord position close notification: {notif_err}")
             
             # Cancel all open orders
             logger.info("Canceling all open orders")
@@ -1266,7 +1561,7 @@ class TopStepXTradingBot:
             positions = await self.get_open_positions(target_account)
             contract_id = None
             for pos in positions:
-                if str(pos.get('id')) == str(position_id):
+                if str(pos.get('id', '')) == str(position_id):
                     contract_id = pos.get('contractId')
                     break
             
@@ -1288,6 +1583,49 @@ class TopStepXTradingBot:
                 return response
             
             logger.info(f"Position closed successfully: {response}")
+            
+            # Send Discord notification for position close
+            try:
+                # Get position details before closing for notification
+                positions = await self.get_open_positions(target_account)
+                position_details = None
+                for pos in positions:
+                    if str(pos.get('id', '')) == str(position_id):
+                        position_details = pos
+                        break
+                
+                if position_details:
+                    account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                    
+                    # Get current market price for exit price
+                    symbol = self._get_symbol_from_contract_id(contract_id)
+                    exit_price = "Unknown"
+                    try:
+                        quote = await self.get_market_quote(symbol)
+                        if "error" not in quote:
+                            if position_details.get('side', 0) == 0:  # Long position
+                                exit_price = quote.get("bid") or quote.get("last")
+                            else:  # Short position
+                                exit_price = quote.get("ask") or quote.get("last")
+                            if exit_price:
+                                exit_price = f"${float(exit_price):.2f}"
+                                logger.info(f"Set exit price to: {exit_price}")
+                    except Exception as price_err:
+                        logger.warning(f"Could not fetch exit price: {price_err}")
+                    
+                    notification_data = {
+                        'symbol': symbol,
+                        'side': 'LONG' if position_details.get('side', 0) == 0 else 'SHORT',
+                        'quantity': position_details.get('size', 0),
+                        'entry_price': f"${position_details.get('entryPrice', 0):.2f}",
+                        'exit_price': exit_price,
+                        'pnl': position_details.get('unrealizedPnl', 0),
+                        'position_id': position_id
+                    }
+                    self.discord_notifier.send_position_close_notification(notification_data, account_name)
+            except Exception as notif_err:
+                logger.warning(f"Failed to send Discord position close notification: {notif_err}")
+            
             return response
             
         except Exception as e:
@@ -1615,7 +1953,7 @@ class TopStepXTradingBot:
                 "limitPrice": None,
                 "stopPrice": None,
                 "trailPrice": None,
-                "customTag": None
+                "customTag": self._generate_unique_custom_tag("bracket")
             }
             
             # For bracket orders, we should use the entry price as the reference point
@@ -1774,6 +2112,50 @@ class TopStepXTradingBot:
             
             logger.info(f"Bracket order created successfully: {response}")
             
+            # Send Discord notification for successful bracket order
+            try:
+                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                
+                # Get actual execution price from positions after a brief delay
+                execution_price = "Market"
+                if response.get('executionPrice'):
+                    execution_price = f"${response['executionPrice']:.2f}"
+                else:
+                    # For market orders, get current market price as entry price
+                    try:
+                        quote = await self.get_market_quote(symbol)
+                        if "error" not in quote:
+                            if side.upper() == "BUY":
+                                current_price = quote.get("ask") or quote.get("last")
+                            else:
+                                current_price = quote.get("bid") or quote.get("last")
+                            if current_price:
+                                execution_price = f"${float(current_price):.2f}"
+                                logger.info(f"Set execution price to current market price: {execution_price}")
+                    except Exception as price_err:
+                        logger.warning(f"Could not fetch current market price: {price_err}")
+                
+                # Determine order status
+                order_status = "Placed"
+                if response.get('status'):
+                    order_status = response['status']
+                
+                notification_data = {
+                    'symbol': symbol,
+                    'side': side,
+                    'quantity': quantity,
+                    'price': execution_price,
+                    'order_type': 'Native Bracket',
+                    'order_id': response.get('orderId', 'Unknown'),
+                    'status': order_status,
+                    'account_id': target_account,
+                    'stop_loss': stop_loss_price,
+                    'take_profit': take_profit_price
+                }
+                self.discord_notifier.send_order_notification(notification_data, account_name)
+            except Exception as notif_err:
+                logger.warning(f"Failed to send Discord notification: {notif_err}")
+            
             # Start monitoring for this position if we have a position ID
             if "orderId" in response and response.get("success"):
                 # We need to get the position ID from the order response or by checking positions
@@ -1881,12 +2263,17 @@ class TopStepXTradingBot:
             # Create stop loss order
             stop_result = None
             if stop_loss_price:
+                # Round stop loss price to valid tick size
+                tick_size = await self._get_tick_size(symbol)
+                rounded_stop_price = self._round_to_tick_size(stop_loss_price, tick_size)
+                logger.info(f"Stop loss price: {stop_loss_price} -> {rounded_stop_price} (tick_size: {tick_size})")
+                
                 stop_side = "SELL" if side.upper() == "BUY" else "BUY"
                 stop_result = await self.place_stop_order(
                     symbol=symbol,
                     side=stop_side,
                     quantity=quantity,
-                    stop_price=stop_loss_price,
+                    stop_price=rounded_stop_price,
                     account_id=target_account
                 )
                 if "error" in stop_result:
@@ -1897,13 +2284,18 @@ class TopStepXTradingBot:
             # FIXED: Create TP1 order (partial exit) using proper limit order
             tp1_result = None
             if take_profit_1_price:
+                # Round TP1 price to valid tick size
+                tick_size = await self._get_tick_size(symbol)
+                rounded_tp1_price = self._round_to_tick_size(take_profit_1_price, tick_size)
+                logger.info(f"TP1 price: {take_profit_1_price} -> {rounded_tp1_price} (tick_size: {tick_size})")
+                
                 tp1_side = "SELL" if side.upper() == "BUY" else "BUY"
                 tp1_result = await self.place_market_order(
                     symbol=symbol,
                     side=tp1_side,
                     quantity=tp1_quantity,
                     order_type="limit",
-                    limit_price=take_profit_1_price,
+                    limit_price=rounded_tp1_price,
                     account_id=target_account
                 )
                 if "error" in tp1_result:
@@ -1914,6 +2306,11 @@ class TopStepXTradingBot:
             # FIXED: Create TP2 order (remaining position exit) using proper limit order
             tp2_result = None
             if take_profit_2_price:
+                # Round TP2 price to valid tick size
+                tick_size = await self._get_tick_size(symbol)
+                rounded_tp2_price = self._round_to_tick_size(take_profit_2_price, tick_size)
+                logger.info(f"TP2 price: {take_profit_2_price} -> {rounded_tp2_price} (tick_size: {tick_size})")
+                
                 tp2_side = "SELL" if side.upper() == "BUY" else "BUY"
                 tp2_quantity = quantity - tp1_quantity  # Remaining contracts after TP1
                 if tp2_quantity > 0:
@@ -1922,7 +2319,7 @@ class TopStepXTradingBot:
                         side=tp2_side,
                         quantity=tp2_quantity,
                         order_type="limit",
-                        limit_price=take_profit_2_price,
+                        limit_price=rounded_tp2_price,
                         account_id=target_account
                     )
                     if "error" in tp2_result:
@@ -2008,7 +2405,7 @@ class TopStepXTradingBot:
             positions = await self.get_open_positions(account_id)
             current_position = None
             for pos in positions:
-                if str(pos.get('id')) == str(position_id):
+                if str(pos.get('id', '')) == str(position_id):
                     current_position = pos
                     break
             
@@ -2294,7 +2691,7 @@ class TopStepXTradingBot:
             # Get the contract ID for the position
             positions = await self.get_open_positions(target_account)
             for pos in positions:
-                if str(pos.get('id')) == str(position_id):
+                if str(pos.get('id', '')) == str(position_id):
                     position_contract = pos.get('contractId')
                     break
             
@@ -2372,7 +2769,7 @@ class TopStepXTradingBot:
             # Get the contract ID for the position
             positions = await self.get_open_positions(target_account)
             for pos in positions:
-                if str(pos.get('id')) == str(position_id):
+                if str(pos.get('id', '')) == str(position_id):
                     position_contract = pos.get('contractId')
                     break
             
@@ -2451,6 +2848,7 @@ class TopStepXTradingBot:
         """
         Monitor position changes and automatically adjust bracket orders.
         This method should be called periodically to track position size changes.
+        Only monitors if a market order was recently placed to avoid interfering with concurrent bracket orders.
         
         Args:
             account_id: Account ID (uses selected account if not provided)
@@ -2464,13 +2862,51 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
+            # Check if monitoring should be active
+            if not self._monitoring_active:
+                logger.info("Monitoring not active - no recent market orders placed")
+                return {"positions": 0, "adjustments": 0, "message": "Monitoring not active - no recent market orders"}
+            
+            # Check if monitoring should timeout (after 30 seconds)
+            if self._last_order_time:
+                time_since_order = (datetime.now() - self._last_order_time).total_seconds()
+                if time_since_order > 30:  # 30 seconds
+                    self._monitoring_active = False
+                    logger.info("Monitoring deactivated - timeout after 30 seconds")
+                    return {"positions": 0, "adjustments": 0, "message": "Monitoring timeout - no recent market orders"}
+            
             logger.info(f"Monitoring position changes for account {target_account}")
             
             # Get current positions
             positions = await self.get_open_positions(target_account)
             
             if not positions:
-                logger.info("No open positions found")
+                logger.info("No open positions found - checking for orphaned orders")
+                
+                # Get all open orders
+                orders = await self.get_open_orders(target_account)
+                if orders:
+                    logger.info(f"Found {len(orders)} open orders with no positions - these may be orphaned")
+                    
+                    # Cancel all open orders since there are no positions
+                    cancelled_orders = 0
+                    for order in orders:
+                        order_id = order.get("id")
+                        if order_id:
+                            try:
+                                cancel_result = await self.cancel_order(order_id, target_account)
+                                if "error" not in cancel_result:
+                                    cancelled_orders += 1
+                                    logger.info(f"Cancelled orphaned order {order_id}")
+                                else:
+                                    logger.warning(f"Failed to cancel order {order_id}: {cancel_result['error']}")
+                            except Exception as e:
+                                logger.error(f"Exception cancelling order {order_id}: {e}")
+                    
+                    if cancelled_orders > 0:
+                        logger.info(f"Cancelled {cancelled_orders} orphaned orders")
+                        return {"positions": 0, "adjustments": 0, "cancelled_orders": cancelled_orders}
+                
                 return {"positions": 0, "adjustments": 0}
             
             adjustments_made = 0
@@ -2500,7 +2936,7 @@ class TopStepXTradingBot:
                             if order_quantity != current_quantity:
                                 logger.info(f"Order {order.get('id')} quantity {order_quantity} != position quantity {current_quantity}")
                                 
-                                # Adjust the order quantity
+                                # Adjust the order quantity to match position
                                 adjust_result = await self.adjust_bracket_orders(position_id, current_quantity, target_account)
                                 if adjust_result.get("success"):
                                     adjustments_made += 1
@@ -2552,7 +2988,11 @@ class TopStepXTradingBot:
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
             
-            logger.info(f"Placing stop order for {side} {quantity} {symbol} at {stop_price}")
+            # Round stop price to valid tick size
+            tick_size = await self._get_tick_size(symbol)
+            rounded_stop_price = self._round_to_tick_size(stop_price, tick_size)
+            logger.info(f"Stop price: {stop_price} -> {rounded_stop_price} (tick_size: {tick_size})")
+            logger.info(f"Placing stop order for {side} {quantity} {symbol} at {rounded_stop_price}")
             
             # Get proper contract ID
             contract_id = self._get_contract_id(symbol)
@@ -2567,7 +3007,8 @@ class TopStepXTradingBot:
                 "type": 4,  # Stop order type
                 "side": side_value,
                 "size": quantity,
-                "stopPrice": stop_price
+                "stopPrice": rounded_stop_price,
+                "customTag": self._generate_unique_custom_tag("stop")
             }
             
             headers = {
@@ -3180,14 +3621,36 @@ class TopStepXTradingBot:
         
         # Set up tab completion for commands
         def completer(text, state):
-            commands = [
-                "trade", "limit", "bracket", "native_bracket", "stop", "trail",
-                "positions", "orders", "close", "cancel", "modify", "quote", "depth", "history", "monitor", "account_info",
-                "flatten", "contracts", "accounts", "help", "quit"
-            ]
-            matches = [cmd for cmd in commands if cmd.startswith(text.lower())]
-            if state < len(matches):
-                return matches[state]
+            # Get current line to understand context
+            line = readline.get_line_buffer()
+            words = line.split()
+            
+            # If we're completing the first word (command)
+            if len(words) == 1:
+                commands = [
+                    "trade", "limit", "bracket", "native_bracket", "stop", "trail",
+                    "positions", "orders", "close", "cancel", "modify", "quote", "depth", 
+                    "history", "monitor", "bracket_monitor", "account_info", "flatten", 
+                    "contracts", "accounts", "help", "quit"
+                ]
+                matches = [cmd for cmd in commands if cmd.startswith(text.lower())]
+                if state < len(matches):
+                    return matches[state]
+            
+            # If we're completing after a command, suggest common symbols
+            elif len(words) >= 2 and words[0] in ["trade", "limit", "bracket", "native_bracket", "stop", "trail", "quote", "depth", "history"]:
+                symbols = ["MNQ", "MES", "MYM", "MGC", "ES", "NQ", "YM", "GC"]
+                matches = [sym for sym in symbols if sym.lower().startswith(text.lower())]
+                if state < len(matches):
+                    return matches[state]
+            
+            # If we're completing after symbol, suggest sides
+            elif len(words) >= 3 and words[1].upper() in ["MNQ", "MES", "MYM", "MGC", "ES", "NQ", "YM", "GC"]:
+                sides = ["buy", "sell"]
+                matches = [side for side in sides if side.startswith(text.lower())]
+                if state < len(matches):
+                    return matches[state]
+            
             return None
         
         readline.set_completer(completer)
@@ -3230,6 +3693,11 @@ class TopStepXTradingBot:
         print("  history <symbol> [timeframe] [limit] - Get historical data")
         print("  monitor - Monitor position changes and adjust bracket orders")
         print("  bracket_monitor - Monitor bracket positions and manage orders")
+        print("  activate_monitor - Manually activate monitoring for testing")
+        print("  deactivate_monitor - Manually deactivate monitoring")
+        print("  check_fills - Check for filled orders and send Discord notifications")
+        print("  auto_fills - Enable automatic fill checking every 30 seconds")
+        print("  stop_auto_fills - Disable automatic fill checking")
         print("  account_info - Get detailed account information")
         print("  flatten - Close all positions and cancel all orders")
         print("  contracts - List available contracts")
@@ -3464,7 +3932,8 @@ class TopStepXTradingBot:
                     # Place the bracket order
                     result = await self.place_market_order(symbol, side, quantity, 
                                                         stop_loss_ticks=stop_ticks, 
-                                                        take_profit_ticks=profit_ticks)
+                                                        take_profit_ticks=profit_ticks,
+                                                        order_type="bracket")
                     if "error" in result:
                         print(f"❌ Order failed: {result['error']}")
                     else:
@@ -3892,9 +4361,14 @@ class TopStepXTradingBot:
                     if "error" in result:
                         print(f"❌ Monitor failed: {result['error']}")
                     else:
-                        print(f"✅ Position monitoring completed!")
-                        print(f"   Positions checked: {result.get('positions', 0)}")
-                        print(f"   Adjustments made: {result.get('adjustments', 0)}")
+                        if result.get('message'):
+                            print(f"ℹ️  {result['message']}")
+                        else:
+                            print(f"✅ Position monitoring completed!")
+                            print(f"   Positions checked: {result.get('positions', 0)}")
+                            print(f"   Adjustments made: {result.get('adjustments', 0)}")
+                            if result.get('cancelled_orders', 0) > 0:
+                                print(f"   Orphaned orders cancelled: {result.get('cancelled_orders', 0)}")
                 
                 elif command_lower == "bracket_monitor":
                     # Monitor bracket positions and manage orders
@@ -3908,6 +4382,46 @@ class TopStepXTradingBot:
                         if result.get('results'):
                             for pos_id, pos_result in result['results'].items():
                                 print(f"   Position {pos_id}: {pos_result.get('message', 'No changes')}")
+                
+                elif command_lower == "activate_monitor":
+                    # Manually activate monitoring for testing
+                    self._monitoring_active = True
+                    self._last_order_time = datetime.now()
+                    print("✅ Monitoring manually activated")
+                    print("   Monitoring will be active for 30 seconds")
+                
+                elif command_lower == "deactivate_monitor":
+                    # Manually deactivate monitoring
+                    self._monitoring_active = False
+                    self._last_order_time = None
+                    print("✅ Monitoring manually deactivated")
+                
+                elif command_lower == "check_fills":
+                    # Check for filled orders and send notifications
+                    result = await self.check_order_fills()
+                    if "error" in result:
+                        print(f"❌ Check fills failed: {result['error']}")
+                    else:
+                        print(f"✅ Order fill check completed!")
+                        print(f"   Orders checked: {result.get('checked_orders', 0)}")
+                        print(f"   New fills found: {result.get('filled_orders', 0)}")
+                        if result.get('new_fills'):
+                            print(f"   Fill notifications sent for: {', '.join(result['new_fills'])}")
+                
+                elif command_lower == "auto_fills":
+                    # Enable automatic fill checking every 30 seconds
+                    print("✅ Automatic fill checking enabled")
+                    print("   Checking for fills every 30 seconds...")
+                    print("   Use 'stop_auto_fills' to disable")
+                    
+                    # Start background task for auto fills
+                    import asyncio
+                    asyncio.create_task(self._auto_fill_checker())
+                
+                elif command_lower == "stop_auto_fills":
+                    # Disable automatic fill checking
+                    self._auto_fills_enabled = False
+                    print("✅ Automatic fill checking disabled")
                 
                 elif command_lower == "account_info":
                     # Get detailed account information
