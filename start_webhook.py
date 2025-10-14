@@ -105,18 +105,42 @@ async def _bootstrap(args: argparse.Namespace) -> None:
         logger.error("No accounts available")
         sys.exit(1)
 
-    # Select account by --account-id or first
+    # Select account by --account-id, environment variable, or error out
+    # Railway stringifies all env vars, so normalize properly
+    account_id_to_find = args.account_id
+    if not account_id_to_find:
+        # Check environment variables (Railway deployment)
+        account_id_to_find = os.getenv('TOPSTEPX_ACCOUNT_ID') or os.getenv('PROJECT_X_ACCOUNT_ID')
+        if account_id_to_find:
+            # Railway stringifies env vars, normalize it
+            account_id_to_find = str(account_id_to_find).strip().strip('\'"').strip()
+            logger.info(f"Using account ID from environment: {account_id_to_find}")
+    
     selected = None
-    if args.account_id:
+    if account_id_to_find:
         for acct in accounts:
-            if str(acct.get("id")) == str(args.account_id):
-                selected = acct
-                break
+            # Compare as integers for Railway compatibility
+            try:
+                if int(acct.get("id")) == int(account_id_to_find):
+                    selected = acct
+                    break
+            except (ValueError, TypeError):
+                # Fallback to string comparison
+                if str(acct.get("id")) == str(account_id_to_find):
+                    selected = acct
+                    break
         if not selected:
-            logger.error(f"Account ID {args.account_id} not found")
+            logger.error(f"Account ID {account_id_to_find} not found in available accounts")
+            logger.error("Available accounts:")
+            for acct in accounts:
+                logger.error(f"  - {acct.get('name')} (ID: {acct.get('id')})")
             sys.exit(1)
     else:
-        selected = accounts[0]
+        logger.error("No account ID specified. Set TOPSTEPX_ACCOUNT_ID environment variable or use --account-id")
+        logger.error("Available accounts:")
+        for acct in accounts:
+            logger.error(f"  - {acct.get('name')} (ID: {acct.get('id')})")
+        sys.exit(1)
 
     bot.selected_account = selected
 
