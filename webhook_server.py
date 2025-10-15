@@ -713,6 +713,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             from dashboard import DashboardAPI
             from auth import extract_token_from_request, validate_token
             import asyncio
+            import os
             
             # Extract token from request
             headers = dict(self.headers) if hasattr(self, 'headers') else {}
