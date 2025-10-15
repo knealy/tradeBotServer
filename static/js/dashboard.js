@@ -122,12 +122,54 @@ class TradingDashboard {
             };
         } catch (error) {
             console.error('Failed to connect WebSocket:', error);
-            this.showAlert('WebSocket not available, using HTTP polling mode', 'info');
+            // Fallback to SSE
+            this.connectSSE();
+        }
+    }
+    
+    connectSSE() {
+        try {
+            const token = this.getAuthToken();
+            const sseUrl = `/api/stream?token=${encodeURIComponent(token)}`;
+            this.eventSource = new EventSource(sseUrl);
+
+            this.eventSource.onopen = () => {
+                console.log('📡 SSE connected');
+                this.updateConnectionStatus(true);
+                this.isConnected = true;
+                this.showAlert('Connected to real-time stream (SSE)', 'success');
+            };
+
+            this.eventSource.onerror = (e) => {
+                console.warn('SSE error, closing stream and using HTTP polling', e);
+                this.eventSource.close();
+                this.updateConnectionStatus(true);
+                this.isConnected = true;
+            };
+
+            const handler = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage({ type: event.type, data });
+                } catch (e) {
+                    console.warn('Failed to parse SSE message', e);
+                }
+            };
+
+            this.eventSource.addEventListener('account_update', handler);
+            this.eventSource.addEventListener('position_update', handler);
+            this.eventSource.addEventListener('order_update', handler);
+            this.eventSource.addEventListener('trade_fill', handler);
+            this.eventSource.addEventListener('stats_update', handler);
+            this.eventSource.addEventListener('log_message', handler);
+            this.eventSource.addEventListener('health_update', handler);
+        } catch (e) {
+            console.error('Failed to connect SSE:', e);
             this.updateConnectionStatus(true);
             this.isConnected = true;
         }
     }
-    
+
     attemptReconnection() {
         if (this.reconnectAttempts >= 5) {
             console.log('Max reconnection attempts reached, falling back to HTTP polling');

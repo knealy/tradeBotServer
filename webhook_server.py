@@ -124,6 +124,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 logger.error(f"Dashboard error: {str(e)}")
                 self._send_response(500, {"error": str(e)})
                 
+        elif self.path.startswith('/api/stream'):
+            # Server-Sent Events (SSE) stream for real-time updates on same HTTP port
+            try:
+                self._handle_sse_stream()
+            except Exception as e:
+                logger.error(f"SSE error: {str(e)}")
+                # If streaming fails, return a 500 once
+                try:
+                    self._send_response(500, {"error": str(e)})
+                except Exception:
+                    pass
+
         elif self.path.startswith('/api/'):
             # API endpoints
             try:
@@ -198,6 +210,117 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.error(f"Error processing DELETE request: {str(e)}")
             self._send_response(500, {"error": "Internal server error"})
     
+    def _handle_sse_stream(self):
+        """Stream real-time updates using Server-Sent Events (SSE)."""
+        # Basic token check (optional auth)
+        try:
+            # Parse query string for token
+            token = None
+            if '?' in self.path:
+                path_only, query = self.path.split('?', 1)
+                for kv in query.split('&'):
+                    if '=' in kv:
+                        k, v = kv.split('=', 1)
+                        if k == 'token':
+                            token = v
+                            break
+
+            expected = os.getenv('DASHBOARD_AUTH_TOKEN')
+            if expected:
+                # Require token when configured
+                if not token or token != expected:
+                    self._send_response(401, {"error": "Unauthorized"})
+                    return
+
+            # Establish SSE response
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.end_headers()
+
+            def send_event(event_type: str, data_obj: Dict):
+                try:
+                    payload = json.dumps(data_obj)
+                    self.wfile.write(f"event: {event_type}\n".encode('utf-8'))
+                    self.wfile.write(f"data: {payload}\n\n".encode('utf-8'))
+                    try:
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+                except BrokenPipeError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"SSE send error for {event_type}: {e}")
+
+            # Initial burst + short periodic updates without blocking forever
+            account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+
+            # Send initial snapshots
+            account_info = {
+                "account_id": account_id,
+                "account_name": self.trading_bot.selected_account.get('name') if self.trading_bot.selected_account else None,
+                "balance": self.trading_bot.selected_account.get('balance', 0) if self.trading_bot.selected_account else 0,
+                "status": self.trading_bot.selected_account.get('status') if self.trading_bot.selected_account else None,
+                "currency": self.trading_bot.selected_account.get('currency', 'USD') if self.trading_bot.selected_account else 'USD'
+            }
+            send_event('account_update', account_info)
+
+            try:
+                positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id)) if account_id else []
+            except Exception as e:
+                logger.warning(f"SSE positions fetch error: {e}")
+                positions = []
+            send_event('position_update', positions)
+
+            try:
+                orders = asyncio.run(self.trading_bot.get_open_orders(account_id=account_id)) if account_id else []
+            except Exception as e:
+                logger.warning(f"SSE orders fetch error: {e}")
+                orders = []
+            send_event('order_update', orders)
+
+            # Health
+            health = self.webhook_server.get_health_status() if hasattr(self.webhook_server, 'get_health_status') else {"status": "healthy"}
+            send_event('health_update', health)
+
+            # Periodic updates for a while (e.g., 120 seconds)
+            import time as _time
+            start_ts = _time.time()
+            while True:
+                # Stop after 2 minutes to avoid holding the handler forever
+                if _time.time() - start_ts > 120:
+                    break
+                try:
+                    if account_id:
+                        positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id))
+                        send_event('position_update', positions)
+                        orders = asyncio.run(self.trading_bot.get_open_orders(account_id=account_id))
+                        send_event('order_update', orders)
+                    # health
+                    health = self.webhook_server.get_health_status() if hasattr(self.webhook_server, 'get_health_status') else {"status": "healthy"}
+                    send_event('health_update', health)
+                except BrokenPipeError:
+                    # Client disconnected
+                    return
+                except Exception as e:
+                    logger.warning(f"SSE loop error: {e}")
+                # 10s cadence
+                try:
+                    _time.sleep(10)
+                except Exception:
+                    break
+
+            # Graceful end of stream
+            try:
+                self.wfile.write(b":\n\n")  # comment/keepalive end
+                self.wfile.flush()
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.error(f"SSE handler error: {e}")
+
     async def _broadcast_trade_event(self, result: Dict):
         """Broadcast trade event to WebSocket clients"""
         try:
