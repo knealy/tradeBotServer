@@ -916,6 +916,62 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         "source": "dashboard"
                     }])
                 
+            elif self.path == '/api/flatten':
+                # Flatten all positions
+                try:
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    if not account_id:
+                        self._send_response(200, {"error": "No account selected"})
+                        return
+                    
+                    result = asyncio.run(self.trading_bot.flatten_all_positions(interactive=False))
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error flattening positions: {e}")
+                    self._send_response(200, {"error": str(e)})
+                    
+            elif self.path == '/api/cancel-all-orders':
+                # Cancel all orders
+                try:
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    if not account_id:
+                        self._send_response(200, {"error": "No account selected"})
+                        return
+                    
+                    result = asyncio.run(self.trading_bot.cancel_all_orders(account_id=account_id))
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error canceling orders: {e}")
+                    self._send_response(200, {"error": str(e)})
+                    
+            elif self.path.startswith('/api/position/'):
+                # Close specific position
+                try:
+                    position_id = self.path.split('/')[-1]
+                    if not position_id:
+                        self._send_response(200, {"error": "Position ID required"})
+                        return
+                    
+                    result = asyncio.run(self.trading_bot.close_position(position_id))
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error closing position: {e}")
+                    self._send_response(200, {"error": str(e)})
+                    
+            elif self.path.startswith('/api/order/'):
+                # Cancel specific order
+                try:
+                    order_id = self.path.split('/')[-1]
+                    if not order_id:
+                        self._send_response(200, {"error": "Order ID required"})
+                        return
+                    
+                    result = asyncio.run(self.trading_bot.cancel_order(order_id))
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error canceling order: {e}")
+                    self._send_response(200, {"error": str(e)})
+                    
             else:
                 self._send_response(404, {"error": "API endpoint not found"})
                 
