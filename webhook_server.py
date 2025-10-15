@@ -950,7 +950,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         self._send_response(200, {"error": "No account selected"})
                         return
                     
-                    result = asyncio.run(self.trading_bot.cancel_all_orders(account_id=account_id))
+                    result = asyncio.run(self.trading_bot.cancel_cached_orders(account_id=account_id))
                     self._send_response(200, result)
                 except Exception as e:
                     logger.error(f"Error canceling orders: {e}")
