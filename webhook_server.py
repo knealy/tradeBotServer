@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import Dict, Optional, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -176,6 +177,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             result = self._process_webhook(payload)
             
             if result.get("success"):
+                # Broadcast trade event to WebSocket clients
+                if hasattr(self.webhook_server, 'websocket_server') and self.webhook_server.websocket_server:
+                    asyncio.create_task(self._broadcast_trade_event(result))
+                
                 self._send_response(200, {"message": "Webhook processed successfully", "result": result})
             else:
                 self._send_response(400, {"error": result.get("error", "Unknown error")})
@@ -192,6 +197,37 @@ class WebhookHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Error processing DELETE request: {str(e)}")
             self._send_response(500, {"error": "Internal server error"})
+    
+    async def _broadcast_trade_event(self, result: Dict):
+        """Broadcast trade event to WebSocket clients"""
+        try:
+            if hasattr(self.webhook_server, 'websocket_server') and self.webhook_server.websocket_server:
+                # Broadcast trade fill notification
+                await self.webhook_server.websocket_server.broadcast_trade_fill({
+                    "symbol": result.get("symbol", "Unknown"),
+                    "side": result.get("side", "Unknown"),
+                    "quantity": result.get("quantity", 0),
+                    "price": result.get("price", 0),
+                    "order_id": result.get("order_id", "Unknown"),
+                    "timestamp": time.time()
+                })
+                
+                # Broadcast position update
+                if self.trading_bot.selected_account:
+                    positions = await self.trading_bot.get_open_positions(
+                        account_id=self.trading_bot.selected_account.get('id')
+                    )
+                    await self.webhook_server.websocket_server.broadcast_position_update(positions)
+                
+                # Broadcast order update
+                if self.trading_bot.selected_account:
+                    orders = await self.trading_bot.get_open_orders(
+                        account_id=self.trading_bot.selected_account.get('id')
+                    )
+                    await self.webhook_server.websocket_server.broadcast_order_update(orders)
+                    
+        except Exception as e:
+            logger.error(f"Error broadcasting trade event: {e}")
     
     
     def _process_webhook(self, payload: Dict) -> Dict:

@@ -75,74 +75,114 @@ class TradingDashboard {
             return;
         }
         
-        // Try WebSocket on port 8081 first, fallback to same port
+        // Try WebSocket on port 8081 first, then fallback to same port
         const wsUrl = `${protocol}//${window.location.hostname}:8081/ws/dashboard?token=${encodeURIComponent(token)}`;
         
         try {
             this.ws = new WebSocket(wsUrl);
             
             this.ws.onopen = () => {
-                console.log('WebSocket connected');
+                console.log('🚀 WebSocket connected to professional trading dashboard');
                 this.updateConnectionStatus(true);
                 this.isConnected = true;
+                this.showAlert('Connected to real-time trading dashboard', 'success');
+                
+                // Send subscription message
+                this.ws.send(JSON.stringify({
+                    action: 'subscribe',
+                    payload: { types: ['all'] }
+                }));
             };
             
             this.ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                this.handleWebSocketMessage(data);
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                } catch (e) {
+                    console.error('Failed to parse WebSocket message:', e);
+                }
             };
             
-            this.ws.onclose = () => {
-                console.log('WebSocket disconnected');
+            this.ws.onclose = (event) => {
+                console.log('WebSocket disconnected:', event.code, event.reason);
                 this.updateConnectionStatus(false);
                 this.isConnected = false;
                 
-                // Don't auto-reconnect if WebSocket is disabled
-                // Just show as connected for HTTP polling
-                this.updateConnectionStatus(true);
+                // Attempt reconnection with exponential backoff
+                if (event.code !== 1000) { // Not a normal closure
+                    this.attemptReconnection();
+                }
             };
             
             this.ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
-                // If WebSocket fails, fall back to HTTP polling mode
-                console.log('WebSocket not available, using HTTP polling mode');
+                this.showAlert('WebSocket connection failed, falling back to HTTP polling', 'warning');
                 this.updateConnectionStatus(true);
                 this.isConnected = true;
             };
         } catch (error) {
             console.error('Failed to connect WebSocket:', error);
-            // Fall back to HTTP polling mode
-            console.log('WebSocket not available, using HTTP polling mode');
+            this.showAlert('WebSocket not available, using HTTP polling mode', 'info');
             this.updateConnectionStatus(true);
             this.isConnected = true;
         }
     }
     
+    attemptReconnection() {
+        if (this.reconnectAttempts >= 5) {
+            console.log('Max reconnection attempts reached, falling back to HTTP polling');
+            this.showAlert('Real-time connection lost, using HTTP polling', 'warning');
+            this.updateConnectionStatus(true);
+            this.isConnected = true;
+            return;
+        }
+        
+        this.reconnectAttempts = (this.reconnectAttempts || 0) + 1;
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        
+        console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/5)`);
+        
+        setTimeout(() => {
+            if (!this.isConnected) {
+                this.connectWebSocket();
+            }
+        }, delay);
+    }
+    
     handleWebSocketMessage(data) {
         switch (data.type) {
             case 'connected':
-                console.log('WebSocket connection confirmed');
+                console.log('✅ WebSocket connection confirmed');
+                this.showAlert(`Connected to TopStepX Trading Dashboard at ${new Date().toLocaleTimeString()}`, 'success');
                 break;
             case 'account_update':
                 this.updateAccountInfo(data.data);
+                console.log('💰 Account balance updated:', data.data.balance);
                 break;
             case 'position_update':
                 this.updatePositionsTable(data.data);
+                console.log('📊 Positions updated:', data.data.length, 'positions');
                 break;
             case 'order_update':
                 this.updateOrdersTable(data.data);
+                console.log('📋 Orders updated:', data.data.length, 'orders');
                 break;
             case 'trade_fill':
                 this.handleTradeFill(data.data);
+                console.log('🎯 Trade filled:', data.data);
                 break;
             case 'stats_update':
                 this.updatePerformanceStats(data.data);
+                console.log('📈 Performance stats updated');
                 break;
             case 'log_message':
                 this.handleLogMessage(data.data);
                 break;
             case 'health_update':
                 this.handleHealthUpdate(data.data);
+                break;
+            case 'subscription_confirmed':
+                console.log('✅ Subscribed to real-time updates:', data.subscribed_to);
                 break;
             case 'pong':
                 // Respond to ping
