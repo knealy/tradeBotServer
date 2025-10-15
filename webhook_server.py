@@ -177,6 +177,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.error(f"Error processing webhook: {str(e)}")
             self._send_response(500, {"error": "Internal server error"})
     
+    def do_DELETE(self):
+        """Handle DELETE requests for dashboard actions"""
+        try:
+            # Route DELETE requests to API handler
+            self._handle_api_request()
+        except Exception as e:
+            logger.error(f"Error processing DELETE request: {str(e)}")
+            self._send_response(500, {"error": "Internal server error"})
+    
     
     def _process_webhook(self, payload: Dict) -> Dict:
         """Process the TradingView webhook payload"""
@@ -732,6 +741,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Initialize dashboard API
             dashboard_api = DashboardAPI(self.trading_bot, self.webhook_server)
             
+            # Handle different HTTP methods
+            method = self.command if hasattr(self, 'command') else 'GET'
+            
             # Route API requests
             if self.path == '/api/account':
                 # Get account info synchronously
@@ -930,8 +942,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     logger.error(f"Error flattening positions: {e}")
                     self._send_response(200, {"error": str(e)})
                     
-            elif self.path == '/api/cancel-all-orders':
-                # Cancel all orders
+            elif self.path == '/api/orders/all' and method == 'DELETE':
+                # Cancel all orders (DELETE method as called by frontend)
                 try:
                     account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
                     if not account_id:
@@ -944,8 +956,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     logger.error(f"Error canceling orders: {e}")
                     self._send_response(200, {"error": str(e)})
                     
-            elif self.path.startswith('/api/position/'):
-                # Close specific position
+            elif self.path.startswith('/api/position/') and method == 'DELETE':
+                # Close specific position (DELETE method as called by frontend)
                 try:
                     position_id = self.path.split('/')[-1]
                     if not position_id:
@@ -958,8 +970,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     logger.error(f"Error closing position: {e}")
                     self._send_response(200, {"error": str(e)})
                     
-            elif self.path.startswith('/api/order/'):
-                # Cancel specific order
+            elif self.path.startswith('/api/order/') and method == 'DELETE':
+                # Cancel specific order (DELETE method as called by frontend)
                 try:
                     order_id = self.path.split('/')[-1]
                     if not order_id:
