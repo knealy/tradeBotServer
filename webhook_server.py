@@ -623,15 +623,33 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _serve_dashboard(self):
         """Serve the dashboard HTML page"""
         try:
-            with open('static/dashboard.html', 'r') as f:
-                content = f.read()
+            # Try multiple possible paths for the dashboard file
+            possible_paths = [
+                'static/dashboard.html',
+                '/app/static/dashboard.html',
+                './static/dashboard.html'
+            ]
+            
+            content = None
+            for path in possible_paths:
+                try:
+                    with open(path, 'r') as f:
+                        content = f.read()
+                        break
+                except FileNotFoundError:
+                    continue
+            
+            if content is None:
+                self._send_response(404, {"error": "Dashboard file not found"})
+                return
             
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(content.encode('utf-8'))
-        except FileNotFoundError:
-            self._send_response(404, {"error": "Dashboard not found"})
+        except Exception as e:
+            logger.error(f"Error serving dashboard: {e}")
+            self._send_response(500, {"error": f"Dashboard error: {str(e)}"})
     
     def _serve_static_file(self):
         """Serve static files (CSS, JS, etc.)"""
@@ -639,17 +657,31 @@ class WebhookHandler(BaseHTTPRequestHandler):
         import os
         
         file_path = self.path[1:]  # Remove leading slash
-        if not os.path.exists(file_path):
+        
+        # Try multiple possible paths for static files
+        possible_paths = [
+            file_path,
+            f'/app/{file_path}',
+            f'./{file_path}'
+        ]
+        
+        actual_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                actual_path = path
+                break
+        
+        if actual_path is None:
             self._send_response(404, {"error": "File not found"})
             return
         
         # Get MIME type
-        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type, _ = mimetypes.guess_type(actual_path)
         if not mime_type:
             mime_type = 'application/octet-stream'
         
         try:
-            with open(file_path, 'rb') as f:
+            with open(actual_path, 'rb') as f:
                 content = f.read()
             
             self.send_response(200)
@@ -658,6 +690,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
         except Exception as e:
+            logger.error(f"Error reading static file {actual_path}: {e}")
             self._send_response(500, {"error": str(e)})
     
     def _handle_api_request(self):
