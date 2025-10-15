@@ -144,12 +144,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_response(404, {"error": "Not found"})
     
     def do_POST(self):
-        """Handle POST requests from TradingView"""
+        """Handle POST requests from TradingView and API"""
         try:
             # If startup is blocked, reject POSTs
             if getattr(self.webhook_server, '_startup_blocked', False):
                 self._send_response(503, {"error": "Service not ready - startup blocked", "reason": self.webhook_server._startup_block_reason})
                 return
+            
+            # Route API requests to API handler
+            if self.path.startswith('/api/'):
+                self._handle_api_request()
+                return
+            
+            # Handle webhook requests
             # Get content length
             content_length = int(self.headers.get('Content-Length', 0))
             
@@ -174,7 +181,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._send_response(400, {"error": result.get("error", "Unknown error")})
                 
         except Exception as e:
-            logger.error(f"Error processing webhook: {str(e)}")
+            logger.error(f"Error processing POST request: {str(e)}")
             self._send_response(500, {"error": "Internal server error"})
     
     def do_DELETE(self):
