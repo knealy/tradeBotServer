@@ -627,19 +627,27 @@ class WebhookHandler(BaseHTTPRequestHandler):
             possible_paths = [
                 'static/dashboard.html',
                 '/app/static/dashboard.html',
-                './static/dashboard.html'
+                './static/dashboard.html',
+                'static/dashboard.html'
             ]
             
             content = None
             for path in possible_paths:
                 try:
+                    logger.info(f"Trying to open dashboard file: {path}")
                     with open(path, 'r') as f:
                         content = f.read()
+                        logger.info(f"Successfully loaded dashboard from: {path}")
                         break
                 except FileNotFoundError:
+                    logger.warning(f"Dashboard file not found at: {path}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error reading dashboard file {path}: {e}")
                     continue
             
             if content is None:
+                logger.error("Dashboard file not found in any location")
                 self._send_response(404, {"error": "Dashboard file not found"})
                 return
             
@@ -667,11 +675,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
         
         actual_path = None
         for path in possible_paths:
+            logger.info(f"Trying to find static file: {path}")
             if os.path.exists(path):
                 actual_path = path
+                logger.info(f"Found static file at: {path}")
                 break
+            else:
+                logger.warning(f"Static file not found at: {path}")
         
         if actual_path is None:
+            logger.error(f"Static file not found: {file_path}")
             self._send_response(404, {"error": "File not found"})
             return
         
