@@ -1887,30 +1887,6 @@ class WebhookServer:
         # Initialize WebSocket server
         self.websocket_server = None
         self._init_websocket_server()
-    
-    def _init_websocket_server(self):
-        """Initialize WebSocket server for real-time updates"""
-        try:
-            # Check if WebSocket is enabled via environment variable
-            websocket_enabled = os.getenv('WEBSOCKET_ENABLED', 'false').lower() in ('true', '1', 'yes', 'on')
-            if not websocket_enabled:
-                logger.info("WebSocket server disabled via WEBSOCKET_ENABLED=false")
-                self.websocket_server = None
-                return
-                
-            from websocket_server import WebSocketServer
-            # Use a different port for WebSocket to avoid conflicts
-            websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
-            self.websocket_server = WebSocketServer(
-                trading_bot=self.trading_bot,
-                webhook_server=self,
-                host=self.host,
-                port=websocket_port
-            )
-            logger.info(f"WebSocket server initialized on port {websocket_port}")
-        except Exception as e:
-            logger.warning(f"Failed to initialize WebSocket server: {e}")
-            self.websocket_server = None
         
         # Position size validation
         self.max_position_size = int(os.getenv('MAX_POSITION_SIZE', str(position_size * 2)))
@@ -1938,6 +1914,30 @@ class WebhookServer:
         # Startup block controls
         self._startup_blocked = False
         self._startup_block_reason = None
+    
+    def _init_websocket_server(self):
+        """Initialize WebSocket server for real-time updates"""
+        try:
+            # Check if WebSocket is enabled via environment variable
+            websocket_enabled = os.getenv('WEBSOCKET_ENABLED', 'false').lower() in ('true', '1', 'yes', 'on')
+            if not websocket_enabled:
+                logger.info("WebSocket server disabled via WEBSOCKET_ENABLED=false")
+                self.websocket_server = None
+                return
+                
+            from websocket_server import WebSocketServer
+            # Use a different port for WebSocket to avoid conflicts
+            websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
+            self.websocket_server = WebSocketServer(
+                trading_bot=self.trading_bot,
+                webhook_server=self,
+                host=self.host,
+                port=websocket_port
+            )
+            logger.info(f"WebSocket server initialized on port {websocket_port}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize WebSocket server: {e}")
+            self.websocket_server = None
     
     def start(self):
         """Start the webhook server"""
