@@ -712,6 +712,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Import dashboard API
             from dashboard import DashboardAPI
             from auth import extract_token_from_request, validate_token
+            import asyncio
             
             # Extract token from request
             headers = dict(self.headers) if hasattr(self, 'headers') else {}
@@ -750,42 +751,170 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._send_response(200, data)
                 
             elif self.path == '/api/positions':
-                # Get positions synchronously (simplified)
-                data = []  # Will be populated by async method
-                self._send_response(200, data)
+                # Get positions from trading bot
+                try:
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    if account_id:
+                        positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id))
+                        self._send_response(200, positions)
+                    else:
+                        self._send_response(200, [])
+                except Exception as e:
+                    logger.error(f"Error fetching positions: {e}")
+                    self._send_response(200, [])
                 
             elif self.path == '/api/orders':
-                # Get orders synchronously (simplified)
-                data = []  # Will be populated by async method
-                self._send_response(200, data)
+                # Get orders from trading bot
+                try:
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    if account_id:
+                        orders = asyncio.run(self.trading_bot.get_open_orders(account_id=account_id))
+                        self._send_response(200, orders)
+                    else:
+                        self._send_response(200, [])
+                except Exception as e:
+                    logger.error(f"Error fetching orders: {e}")
+                    self._send_response(200, [])
                 
-            elif self.path == '/api/history':
-                # Get trade history (simplified)
-                data = []  # Will be populated by async method
-                self._send_response(200, data)
+            elif self.path.startswith('/api/history'):
+                # Get trade history with date range support
+                try:
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    if not account_id:
+                        self._send_response(200, [])
+                        return
+                    
+                    # Parse date range from query parameters
+                    start_date = query_params.get('start')
+                    end_date = query_params.get('end')
+                    
+                    if start_date and end_date:
+                        history = asyncio.run(self.trading_bot.get_order_history(
+                            account_id=account_id,
+                            start_timestamp=start_date,
+                            end_timestamp=end_date,
+                            limit=100
+                        ))
+                    else:
+                        # Default to last 7 days
+                        from datetime import datetime, timedelta
+                        end_date = datetime.now().isoformat()
+                        start_date = (datetime.now() - timedelta(days=7)).isoformat()
+                        history = asyncio.run(self.trading_bot.get_order_history(
+                            account_id=account_id,
+                            start_timestamp=start_date,
+                            end_timestamp=end_date,
+                            limit=100
+                        ))
+                    self._send_response(200, history)
+                except Exception as e:
+                    logger.error(f"Error fetching history: {e}")
+                    self._send_response(200, [])
                 
             elif self.path == '/api/stats':
-                # Get performance stats (simplified)
-                data = {
-                    "total_trades": 0,
-                    "winning_trades": 0,
-                    "losing_trades": 0,
-                    "win_rate": 0,
-                    "total_pnl": 0
-                }
-                self._send_response(200, data)
+                # Get performance stats from trading bot
+                try:
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    if not account_id:
+                        self._send_response(200, {
+                            "total_trades": 0,
+                            "winning_trades": 0,
+                            "losing_trades": 0,
+                            "win_rate": 0,
+                            "total_pnl": 0
+                        })
+                        return
+                    
+                    # Get recent trade history to calculate stats
+                    from datetime import datetime, timedelta
+                    end_date = datetime.now().isoformat()
+                    start_date = (datetime.now() - timedelta(days=30)).isoformat()
+                    
+                    history = asyncio.run(self.trading_bot.get_order_history(
+                        account_id=account_id,
+                        start_timestamp=start_date,
+                        end_timestamp=end_date,
+                        limit=1000
+                    ))
+                    
+                    # Calculate stats from history
+                    total_trades = len(history)
+                    winning_trades = 0
+                    losing_trades = 0
+                    total_pnl = 0
+                    
+                    for trade in history:
+                        if trade.get('status') == 'filled':
+                            pnl = trade.get('realized_pnl', 0)
+                            total_pnl += pnl
+                            if pnl > 0:
+                                winning_trades += 1
+                            elif pnl < 0:
+                                losing_trades += 1
+                    
+                    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                    
+                    data = {
+                        "total_trades": total_trades,
+                        "winning_trades": winning_trades,
+                        "losing_trades": losing_trades,
+                        "win_rate": round(win_rate, 2),
+                        "total_pnl": round(total_pnl, 2)
+                    }
+                    self._send_response(200, data)
+                except Exception as e:
+                    logger.error(f"Error calculating stats: {e}")
+                    self._send_response(200, {
+                        "total_trades": 0,
+                        "winning_trades": 0,
+                        "losing_trades": 0,
+                        "win_rate": 0,
+                        "total_pnl": 0
+                    })
                 
             elif self.path == '/api/logs':
-                # Get system logs (simplified)
-                data = [
-                    {
+                # Get system logs from webhook server log file
+                try:
+                    import os
+                    import re
+                    from datetime import datetime
+                    
+                    logs = []
+                    log_file = 'webhook_server.log'
+                    
+                    if os.path.exists(log_file):
+                        with open(log_file, 'r') as f:
+                            lines = f.readlines()
+                            # Get last 50 lines
+                            for line in lines[-50:]:
+                                # Parse log line format: timestamp - level - message
+                                match = re.match(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - (\w+) - (.*)', line.strip())
+                                if match:
+                                    logs.append({
+                                        "timestamp": match.group(1),
+                                        "level": match.group(2),
+                                        "message": match.group(3),
+                                        "source": "server"
+                                    })
+                    
+                    # If no logs found, return a default message
+                    if not logs:
+                        logs = [{
+                            "timestamp": datetime.now().isoformat(),
+                            "level": "INFO",
+                            "message": "No log file found or empty logs",
+                            "source": "dashboard"
+                        }]
+                    
+                    self._send_response(200, logs)
+                except Exception as e:
+                    logger.error(f"Error reading logs: {e}")
+                    self._send_response(200, [{
                         "timestamp": datetime.now().isoformat(),
-                        "level": "INFO",
-                        "message": "Dashboard API initialized",
+                        "level": "ERROR",
+                        "message": f"Error reading logs: {str(e)}",
                         "source": "dashboard"
-                    }
-                ]
-                self._send_response(200, data)
+                    }])
                 
             else:
                 self._send_response(404, {"error": "API endpoint not found"})
