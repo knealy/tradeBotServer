@@ -18,7 +18,7 @@ class TradingDashboard {
     
     init() {
         this.setupEventListeners();
-        this.connectWebSocket();
+        // Skip WebSocket for Railway deployment - use HTTP polling only
         this.loadInitialData();
         this.startPeriodicUpdates();
     }
@@ -713,12 +713,10 @@ class TradingDashboard {
     }
     
     startPeriodicUpdates() {
-        // Update data every 30 seconds
+        // Update data every 10 seconds for HTTP polling mode
         this.updateInterval = setInterval(() => {
-            if (this.isConnected) {
-                this.loadInitialData();
-            }
-        }, 30000);
+            this.loadInitialData();
+        }, 10000);
     }
     
     initCharts() {
@@ -735,9 +733,10 @@ class TradingDashboard {
                 this.accounts = data;
                 this.updateAccountDropdown();
                 
-                // Auto-select first account if none selected
-                if (!this.selectedAccount && this.accounts.length > 0) {
-                    this.switchAccount(this.accounts[0].id);
+                // Don't auto-switch accounts, just show current account
+                if (this.accounts.length > 0) {
+                    this.selectedAccount = this.accounts[0].id;
+                    this.updateAccountDropdown();
                 }
             } else {
                 this.showAlert('Failed to load accounts', 'warning');
