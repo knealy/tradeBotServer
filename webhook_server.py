@@ -191,7 +191,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
             if result.get("success"):
                 # Broadcast trade event to WebSocket clients
                 if hasattr(self.webhook_server, 'websocket_server') and self.webhook_server.websocket_server:
-                    asyncio.create_task(self._broadcast_trade_event(result))
+                    try:
+                        # Get or create event loop for this thread
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(self._broadcast_trade_event(result))
+                        else:
+                            # If no running loop, run in a new thread
+                            import threading
+                            def run_broadcast():
+                                new_loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(new_loop)
+                                new_loop.run_until_complete(self._broadcast_trade_event(result))
+                                new_loop.close()
+                            threading.Thread(target=run_broadcast, daemon=True).start()
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast trade event: {e}")
                 
                 self._send_response(200, {"message": "Webhook processed successfully", "result": result})
             else:
