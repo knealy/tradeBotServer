@@ -13,6 +13,7 @@ class TradingDashboard {
         this.charts = {};
         this.accounts = [];
         this.selectedAccount = null;
+        this.demoModeEnabled = false;
         
         this.init();
     }
@@ -37,6 +38,14 @@ class TradingDashboard {
         document.getElementById('refresh-data-btn').addEventListener('click', () => {
             this.loadInitialData();
         });
+        
+        // Demo mode button
+        const demoBtn = document.getElementById('demo-mode-btn');
+        if (demoBtn) {
+            demoBtn.addEventListener('click', () => {
+                this.toggleDemoMode();
+            });
+        }
         
         // Tab switching
         document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
@@ -458,9 +467,106 @@ class TradingDashboard {
             if (data) {
                 this.updatePositionsTable(data);
                 document.getElementById('positions-count').textContent = data.length;
+                
+                // Show demo data if no real data and demo mode is enabled
+                if (data.length === 0 && this.demoModeEnabled) {
+                    const demoPositions = [
+                        {
+                            id: 'demo-1',
+                            symbol: 'NQ',
+                            side: 'long',
+                            quantity: 2,
+                            entry_price: 18500.50,
+                            current_price: 18525.75,
+                            unrealized_pnl: 50.50,
+                            stop_loss: 18450.00,
+                            take_profit: 18600.00
+                        }
+                    ];
+                    this.updatePositionsTable(demoPositions);
+                    document.getElementById('positions-count').textContent = demoPositions.length;
+                }
             }
         } catch (error) {
             console.error('Error loading positions:', error);
+        }
+    }
+    
+    // Demo mode - show sample data when no real data is available
+    showDemoData() {
+        // Show demo positions
+        const demoPositions = [
+            {
+                id: 'demo-1',
+                symbol: 'NQ',
+                side: 'long',
+                quantity: 2,
+                entry_price: 18500.50,
+                current_price: 18525.75,
+                unrealized_pnl: 50.50,
+                stop_loss: 18450.00,
+                take_profit: 18600.00
+            },
+            {
+                id: 'demo-2', 
+                symbol: 'ES',
+                side: 'short',
+                quantity: 1,
+                entry_price: 4550.25,
+                current_price: 4545.00,
+                unrealized_pnl: 26.25,
+                stop_loss: 4560.00,
+                take_profit: 4530.00
+            }
+        ];
+        
+        // Show demo history
+        const demoHistory = [
+            {
+                id: 'demo-trade-1',
+                symbol: 'MNQ',
+                side: 'buy',
+                quantity: 1,
+                price: 18500.00,
+                pnl: 25.00,
+                timestamp: new Date(Date.now() - 3600000).toISOString(),
+                status: 'filled'
+            },
+            {
+                id: 'demo-trade-2',
+                symbol: 'MES', 
+                side: 'sell',
+                quantity: 2,
+                price: 4550.00,
+                pnl: -15.00,
+                timestamp: new Date(Date.now() - 7200000).toISOString(),
+                status: 'filled'
+            }
+        ];
+        
+        // Update tables with demo data
+        this.updatePositionsTable(demoPositions);
+        this.updateHistoryTable(demoHistory);
+        
+        // Update counts
+        document.getElementById('positions-count').textContent = demoPositions.length;
+        
+        // Show demo mode indicator
+        this.showAlert('Demo Mode: Showing sample data. Real data will appear when you have active positions and trade history.', 'info');
+    }
+    
+    toggleDemoMode() {
+        this.demoModeEnabled = !this.demoModeEnabled;
+        const demoBtn = document.getElementById('demo-mode-btn');
+        
+        if (this.demoModeEnabled) {
+            this.showDemoData();
+            demoBtn.innerHTML = '<i class="bi bi-stop-circle"></i> Exit Demo';
+            demoBtn.className = 'btn btn-warning';
+        } else {
+            this.loadInitialData();
+            demoBtn.innerHTML = '<i class="bi bi-play-circle"></i> Demo Mode';
+            demoBtn.className = 'btn btn-info';
         }
     }
     
@@ -490,6 +596,23 @@ class TradingDashboard {
             console.log('History data:', data);
             if (data) {
                 this.updateHistoryTable(data);
+                
+                // Show demo data if no real data and demo mode is enabled
+                if (data.length === 0 && this.demoModeEnabled) {
+                    const demoHistory = [
+                        {
+                            id: 'demo-trade-1',
+                            symbol: 'MNQ',
+                            side: 'buy',
+                            quantity: 1,
+                            price: 18500.00,
+                            pnl: 25.00,
+                            timestamp: new Date(Date.now() - 3600000).toISOString(),
+                            status: 'filled'
+                        }
+                    ];
+                    this.updateHistoryTable(demoHistory);
+                }
             }
         } catch (error) {
             console.error('Error loading trade history:', error);
@@ -532,7 +655,7 @@ class TradingDashboard {
         tbody.innerHTML = '';
         
         if (!positions || positions.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No open positions</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted"><i class="bi bi-info-circle me-2"></i>No open positions - Start trading to see positions here</td></tr>';
             return;
         }
         
@@ -596,7 +719,7 @@ class TradingDashboard {
         tbody.innerHTML = '';
         
         if (!history || history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No trade history found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted"><i class="bi bi-info-circle me-2"></i>No trade history found - Complete some trades to see history here</td></tr>';
             return;
         }
         
