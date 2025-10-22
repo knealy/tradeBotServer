@@ -948,13 +948,39 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 try:
                     account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
                     if account_id:
-                        positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id))
+                        # Use asyncio.create_task to avoid event loop conflicts
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                # If loop is running, create a task
+                                import threading
+                                import concurrent.futures
+                                
+                                def run_async():
+                                    new_loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(new_loop)
+                                    try:
+                                        return new_loop.run_until_complete(self.trading_bot.get_open_positions(account_id=account_id))
+                                    finally:
+                                        new_loop.close()
+                                
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(run_async)
+                                    positions = future.result(timeout=10)
+                            else:
+                                positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id))
+                        except Exception as async_error:
+                            logger.error(f"Async error fetching positions: {async_error}")
+                            positions = []
+                        
+                        logger.info(f"Fetched {len(positions)} positions for dashboard")
                         self._send_response(200, positions)
                     else:
+                        logger.warning("No account selected for positions API")
                         self._send_response(200, [])
                 except Exception as e:
                     logger.error(f"Error fetching positions: {e}")
-                    self._send_response(200, [])
+                    self._send_response(500, {"error": str(e)})
                 
             elif self.path == '/api/orders':
                 # Get orders from trading bot
@@ -1315,32 +1341,46 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             self.webhook_server._last_open_signal_ts[(symbol, "LONG")] = now
             
-            # FIXED: Use single position with proper staged exits
-            if close_entire_at_tp1:
-                # Close entire position at TP1 (single native bracket with TP1)
-                result = await self.trading_bot.create_bracket_order(
-                    symbol=symbol,
-                    side="BUY",
-                    quantity=position_size,
-                    stop_loss_price=stop_loss,
-                    take_profit_price=take_profit_1,
-                    account_id=self.webhook_server.account_id
-                )
-                logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+            # Check bracket type configuration
+            use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
+            
+            if use_native_brackets:
+                # Using TopStepX Auto OCO Brackets - create bracket orders
+                if close_entire_at_tp1:
+                    # Close entire position at TP1 (single native bracket with TP1)
+                    result = await self.trading_bot.create_bracket_order(
+                        symbol=symbol,
+                        side="BUY",
+                        quantity=position_size,
+                        stop_loss_price=stop_loss,
+                        take_profit_price=take_profit_1,
+                        account_id=self.webhook_server.account_id
+                    )
+                    logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+                else:
+                    # Create single position with staged exit management
+                    result = await self.trading_bot.create_partial_tp_bracket_order(
+                        symbol=symbol,
+                        side="BUY",
+                        quantity=position_size,
+                        stop_loss_price=stop_loss,
+                        take_profit_1_price=take_profit_1,
+                        take_profit_2_price=take_profit_2,
+                        tp1_quantity=max(1, int(round(position_size * 0.75))),  # 75% at TP1
+                        account_id=self.webhook_server.account_id
+                    )
+                    logger.info(f"Created single position with staged exits: {position_size} contracts, TP1: {take_profit_1}, TP2: {take_profit_2}")
             else:
-                # FIXED: Create single position with staged exit management
-                # Use the partial TP bracket order which handles staged exits properly
-                result = await self.trading_bot.create_partial_tp_bracket_order(
+                # Using TopStepX Position Brackets - place simple market order
+                # TopStepX will automatically manage brackets based on account settings
+                result = await self.trading_bot.place_market_order(
                     symbol=symbol,
                     side="BUY",
                     quantity=position_size,
-                    stop_loss_price=stop_loss,
-                    take_profit_1_price=take_profit_1,
-                    take_profit_2_price=take_profit_2,
-                    tp1_quantity=max(1, int(round(position_size * 0.75))),  # 75% at TP1
                     account_id=self.webhook_server.account_id
                 )
-                logger.info(f"Created single position with staged exits: {position_size} contracts, TP1: {take_profit_1}, TP2: {take_profit_2}")
+                logger.info(f"Placed simple market order for Position Brackets mode: {position_size} contracts")
+                logger.info("TopStepX will automatically manage stop loss and take profit based on account settings")
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
@@ -1435,32 +1475,46 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             self.webhook_server._last_open_signal_ts[(symbol, "SHORT")] = now
             
-            # FIXED: Use single position with proper staged exits
-            if close_entire_at_tp1:
-                # Close entire position at TP1 (single native bracket with TP1)
-                result = await self.trading_bot.create_bracket_order(
-                    symbol=symbol,
-                    side="SELL",
-                    quantity=position_size,
-                    stop_loss_price=stop_loss,
-                    take_profit_price=take_profit_1,
-                    account_id=self.webhook_server.account_id
-                )
-                logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+            # Check bracket type configuration
+            use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
+            
+            if use_native_brackets:
+                # Using TopStepX Auto OCO Brackets - create bracket orders
+                if close_entire_at_tp1:
+                    # Close entire position at TP1 (single native bracket with TP1)
+                    result = await self.trading_bot.create_bracket_order(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position_size,
+                        stop_loss_price=stop_loss,
+                        take_profit_price=take_profit_1,
+                        account_id=self.webhook_server.account_id
+                    )
+                    logger.info(f"Placed single OCO bracket: size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+                else:
+                    # Create single position with staged exit management
+                    result = await self.trading_bot.create_partial_tp_bracket_order(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position_size,
+                        stop_loss_price=stop_loss,
+                        take_profit_1_price=take_profit_1,
+                        take_profit_2_price=take_profit_2,
+                        tp1_quantity=max(1, int(round(position_size * 0.75))),  # 75% at TP1
+                        account_id=self.webhook_server.account_id
+                    )
+                    logger.info(f"Created single position with staged exits: {position_size} contracts, TP1: {take_profit_1}, TP2: {take_profit_2}")
             else:
-                # FIXED: Create single position with staged exit management
-                # Use the partial TP bracket order which handles staged exits properly
-                result = await self.trading_bot.create_partial_tp_bracket_order(
+                # Using TopStepX Position Brackets - place simple market order
+                # TopStepX will automatically manage brackets based on account settings
+                result = await self.trading_bot.place_market_order(
                     symbol=symbol,
                     side="SELL",
                     quantity=position_size,
-                    stop_loss_price=stop_loss,
-                    take_profit_1_price=take_profit_1,
-                    take_profit_2_price=take_profit_2,
-                    tp1_quantity=max(1, int(round(position_size * 0.75))),  # 75% at TP1
                     account_id=self.webhook_server.account_id
                 )
-                logger.info(f"Created single position with staged exits: {position_size} contracts, TP1: {take_profit_1}, TP2: {take_profit_2}")
+                logger.info(f"Placed simple market order for Position Brackets mode: {position_size} contracts")
+                logger.info("TopStepX will automatically manage stop loss and take profit based on account settings")
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
