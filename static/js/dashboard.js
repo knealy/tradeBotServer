@@ -14,6 +14,7 @@ class TradingDashboard {
         this.accounts = [];
         this.selectedAccount = null;
         this.demoModeEnabled = false;
+        this.isLoading = false;
         
         this.init();
     }
@@ -367,6 +368,14 @@ class TradingDashboard {
     }
     
     async loadInitialData() {
+        // Prevent multiple simultaneous loads
+        if (this.isLoading) {
+            console.log('Already loading data, skipping...');
+            return;
+        }
+        
+        this.isLoading = true;
+        
         try {
             // Check if we have a token first
             const token = this.getAuthToken();
@@ -378,20 +387,21 @@ class TradingDashboard {
             // Load accounts first, then other data
             await this.loadAccounts();
             
-            await Promise.all([
-                this.loadAccountInfo(),
-                this.loadPositions(),
-                this.loadOrders(),
-                this.loadTradeHistory(),
-                this.loadPerformanceStats(),
-                this.loadSystemLogs()
-            ]);
+            // Load data sequentially to avoid race conditions
+            await this.loadAccountInfo();
+            await this.loadPositions();
+            await this.loadOrders();
+            await this.loadTradeHistory();
+            await this.loadPerformanceStats();
+            await this.loadSystemLogs();
             
             this.updateConnectionStatus(true);
         } catch (error) {
             console.error('Failed to load initial data:', error);
             this.showAlert('Failed to load dashboard data', 'danger');
             this.updateConnectionStatus(false);
+        } finally {
+            this.isLoading = false;
         }
     }
     
@@ -913,10 +923,10 @@ class TradingDashboard {
     }
     
     startPeriodicUpdates() {
-        // Update data every 10 seconds for HTTP polling mode
+        // Update data every 30 seconds for HTTP polling mode to reduce race conditions
         this.updateInterval = setInterval(() => {
             this.loadInitialData();
-        }, 10000);
+        }, 30000);
     }
     
     initCharts() {

@@ -1217,12 +1217,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         "total_pnl": 0
                     })
                 
-            elif self.path == '/api/logs':
+            elif self.path.startswith('/api/logs'):
                 # Get system logs from webhook server log file
                 try:
                     import os
                     import re
                     from datetime import datetime
+                    
+                    # Parse query parameters
+                    level_filter = query_params.get('level', 'ALL')
                     
                     logs = []
                     log_file = 'webhook_server.log'
@@ -1235,9 +1238,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                                 # Parse log line format: timestamp - level - message
                                 match = re.match(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - (\w+) - (.*)', line.strip())
                                 if match:
-                                    logs.append({
-                                        "timestamp": match.group(1),
-                                        "level": match.group(2),
+                                    log_level = match.group(2)
+                                    # Filter by level if specified
+                                    if level_filter == 'ALL' or log_level.upper() == level_filter.upper():
+                                        logs.append({
+                                            "timestamp": match.group(1),
+                                            "level": log_level,
                                         "message": match.group(3),
                                         "source": "server"
                                     })
