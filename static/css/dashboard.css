@@ -300,6 +300,176 @@ canvas {
     vertical-align: -0.125em;
 }
 
+/* Trading Form Enhancements */
+#order-form {
+    background-color: #f8f9fa;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid #dee2e6;
+}
+
+#order-form .form-label {
+    font-weight: 600;
+    color: #495057;
+    margin-bottom: 0.5rem;
+}
+
+#order-form .form-control,
+#order-form .form-select {
+    border: 2px solid #e9ecef;
+    transition: all 0.15s ease-in-out;
+}
+
+#order-form .form-control:focus,
+#order-form .form-select:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+    transform: translateY(-1px);
+}
+
+/* Market Data Styling */
+#market-data {
+    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+    border-radius: 0.5rem;
+    padding: 1rem;
+}
+
+#market-data .badge {
+    font-size: 1rem;
+    padding: 0.5rem 0.75rem;
+}
+
+/* Quick Actions */
+.btn-success, .btn-danger, .btn-warning {
+    transition: all 0.15s ease-in-out;
+    transform: translateY(0);
+}
+
+.btn-success:hover, .btn-danger:hover, .btn-warning:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Account Selector */
+#account-selector {
+    background: linear-gradient(135deg, #6c757d, #495057);
+    border: none;
+    color: white;
+    font-weight: 500;
+    transition: all 0.15s ease-in-out;
+}
+
+#account-selector:hover {
+    background: linear-gradient(135deg, #495057, #343a40);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.dropdown-menu {
+    border: none;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0;
+}
+
+.dropdown-item {
+    padding: 0.75rem 1rem;
+    transition: all 0.15s ease-in-out;
+}
+
+.dropdown-item:hover {
+    background-color: #f8f9fa;
+    transform: translateX(4px);
+}
+
+/* Chart Containers */
+.chart-container {
+    position: relative;
+    height: 300px;
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Enhanced Table Styling */
+.table-striped > tbody > tr:nth-of-type(odd) > td {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(13, 110, 253, 0.1);
+    transform: scale(1.01);
+    transition: all 0.15s ease-in-out;
+}
+
+/* Status Badges */
+.badge.bg-success {
+    background: linear-gradient(135deg, #198754, #157347) !important;
+}
+
+.badge.bg-danger {
+    background: linear-gradient(135deg, #dc3545, #b02a37) !important;
+}
+
+.badge.bg-warning {
+    background: linear-gradient(135deg, #ffc107, #ffca2c) !important;
+    color: #000 !important;
+}
+
+.badge.bg-info {
+    background: linear-gradient(135deg, #0dcaf0, #0aa2c0) !important;
+}
+
+/* Loading Animations */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+/* Connection Status Enhancements */
+#connection-status {
+    position: relative;
+}
+
+#connection-status .bi-circle-fill {
+    animation: pulse 2s infinite;
+}
+
+#connection-status.connected .bi-circle-fill {
+    animation: none;
+    color: var(--success-color) !important;
+}
+
+#connection-status.disconnected .bi-circle-fill {
+    animation: pulse 1s infinite;
+    color: var(--danger-color) !important;
+}
+
+/* Enhanced Cards */
+.card {
+    transition: all 0.15s ease-in-out;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Trading Controls */
+.form-check-input:checked {
+    background-color: var(--success-color);
+    border-color: var(--success-color);
+}
+
+.form-check-input:focus {
+    box-shadow: 0 0 0 0.2rem rgba(25, 135, 84, 0.25);
+}
+
 /* Dark mode support (optional) */
 @media (prefers-color-scheme: dark) {
     :root {
@@ -320,5 +490,14 @@ canvas {
     .table th {
         background-color: #343a40;
         color: #fff;
+    }
+    
+    #order-form {
+        background-color: #343a40;
+        border-color: #495057;
+    }
+    
+    #market-data {
+        background: linear-gradient(135deg, #343a40, #495057);
     }
 }

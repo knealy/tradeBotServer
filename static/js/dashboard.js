@@ -10,6 +10,8 @@ class TradingDashboard {
         this.isConnected = false;
         this.updateInterval = null;
         this.charts = {};
+        this.accounts = [];
+        this.selectedAccount = null;
         
         this.init();
     }
@@ -63,6 +65,24 @@ class TradingDashboard {
         document.getElementById('clear-logs-btn').addEventListener('click', () => {
             this.clearLogs();
         });
+        
+        // Trading form
+        document.getElementById('order-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.placeOrder();
+        });
+        
+        // Order type change handler
+        document.getElementById('order-type').addEventListener('change', (e) => {
+            this.togglePriceFields(e.target.value);
+        });
+        
+        // Symbol change handler for market data
+        document.getElementById('order-symbol').addEventListener('change', (e) => {
+            if (e.target.value) {
+                this.loadMarketData(e.target.value);
+            }
+        });
     }
     
     connectWebSocket() {
@@ -75,8 +95,8 @@ class TradingDashboard {
             return;
         }
         
-        // Try WebSocket on port 8081 first, then fallback to same port
-        const wsUrl = `${protocol}//${window.location.hostname}:8081/ws/dashboard?token=${encodeURIComponent(token)}`;
+        // Try WebSocket on same port as dashboard first, then fallback to 8081
+        const wsUrl = `${protocol}//${window.location.host}/ws/dashboard?token=${encodeURIComponent(token)}`;
         
         try {
             this.ws = new WebSocket(wsUrl);
@@ -116,13 +136,74 @@ class TradingDashboard {
             
             this.ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
-                this.showAlert('WebSocket connection failed, falling back to HTTP polling', 'warning');
-                this.updateConnectionStatus(true);
-                this.isConnected = true;
+                // Try fallback to port 8081
+                this.tryFallbackWebSocket();
             };
         } catch (error) {
             console.error('Failed to connect WebSocket:', error);
-            // Fallback to SSE
+            // Try fallback to port 8081
+            this.tryFallbackWebSocket();
+        }
+    }
+    
+    tryFallbackWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const token = this.getAuthToken();
+        
+        if (!token) {
+            this.connectSSE();
+            return;
+        }
+        
+        // Try WebSocket on port 8081 as fallback
+        const wsUrl = `${protocol}//${window.location.hostname}:8081/ws/dashboard?token=${encodeURIComponent(token)}`;
+        
+        try {
+            console.log('Trying fallback WebSocket connection to port 8081...');
+            this.ws = new WebSocket(wsUrl);
+            
+            this.ws.onopen = () => {
+                console.log('🚀 Fallback WebSocket connected to port 8081');
+                this.updateConnectionStatus(true);
+                this.isConnected = true;
+                this.showAlert('Connected to real-time trading dashboard (fallback)', 'success');
+                
+                // Send subscription message
+                this.ws.send(JSON.stringify({
+                    action: 'subscribe',
+                    payload: { types: ['all'] }
+                }));
+            };
+            
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                } catch (e) {
+                    console.error('Failed to parse WebSocket message:', e);
+                }
+            };
+            
+            this.ws.onclose = (event) => {
+                console.log('Fallback WebSocket disconnected:', event.code, event.reason);
+                this.updateConnectionStatus(false);
+                this.isConnected = false;
+                
+                // Attempt reconnection with exponential backoff
+                if (event.code !== 1000) { // Not a normal closure
+                    this.attemptReconnection();
+                }
+            };
+            
+            this.ws.onerror = (error) => {
+                console.error('Fallback WebSocket error:', error);
+                this.showAlert('WebSocket connection failed, falling back to HTTP polling', 'warning');
+                this.updateConnectionStatus(true);
+                this.isConnected = true;
+                this.connectSSE();
+            };
+        } catch (error) {
+            console.error('Failed to connect fallback WebSocket:', error);
             this.connectSSE();
         }
     }
@@ -267,6 +348,9 @@ class TradingDashboard {
                 this.updateConnectionStatus(false);
                 return;
             }
+            
+            // Load accounts first, then other data
+            await this.loadAccounts();
             
             await Promise.all([
                 this.loadAccountInfo(),
@@ -485,8 +569,10 @@ class TradingDashboard {
             `$${stats.total_pnl?.toFixed(2) || '0.00'}`;
         
         // Update charts if they exist
-        if (this.charts.winrate) {
-            this.updateWinRateChart(stats);
+        if (window.tradingCharts) {
+            window.tradingCharts.updatePnLChart(stats);
+            window.tradingCharts.updateWinRateChart(stats);
+            window.tradingCharts.updateTradeDistributionChart(stats);
         }
     }
     
@@ -637,6 +723,256 @@ class TradingDashboard {
         // Initialize charts when charts tab is activated
         if (typeof initCharts === 'function') {
             initCharts();
+        }
+    }
+    
+    async loadAccounts() {
+        try {
+            const data = await this.apiCall('/accounts');
+            if (data && !data.error) {
+                this.accounts = data;
+                this.updateAccountDropdown();
+                
+                // Auto-select first account if none selected
+                if (!this.selectedAccount && this.accounts.length > 0) {
+                    this.switchAccount(this.accounts[0].id);
+                }
+            } else {
+                this.showAlert('Failed to load accounts', 'warning');
+            }
+        } catch (error) {
+            console.error('Failed to load accounts:', error);
+            this.showAlert('Failed to load accounts', 'danger');
+        }
+    }
+    
+    updateAccountDropdown() {
+        const dropdown = document.getElementById('account-dropdown');
+        const currentAccountSpan = document.getElementById('current-account');
+        
+        // Clear existing options (except refresh button and divider)
+        const refreshItem = dropdown.querySelector('a[onclick*="loadAccounts"]');
+        const divider = dropdown.querySelector('hr');
+        dropdown.innerHTML = '';
+        
+        // Add refresh button back
+        if (refreshItem) {
+            dropdown.appendChild(refreshItem);
+        }
+        if (divider) {
+            dropdown.appendChild(divider);
+        }
+        
+        // Add account options
+        this.accounts.forEach(account => {
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.className = 'dropdown-item';
+            a.href = '#';
+            a.innerHTML = `
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <strong>${account.name || account.id}</strong>
+                        <br>
+                        <small class="text-muted">${account.account_type || 'Trading Account'}</small>
+                    </div>
+                    <div class="text-end">
+                        <small>$${account.balance?.toFixed(2) || '0.00'}</small>
+                        <br>
+                        <span class="badge bg-${account.status === 'active' ? 'success' : 'secondary'}">${account.status}</span>
+                    </div>
+                </div>
+            `;
+            a.onclick = (e) => {
+                e.preventDefault();
+                this.switchAccount(account.id);
+            };
+            li.appendChild(a);
+            dropdown.appendChild(li);
+        });
+        
+        // Update current account display
+        if (this.selectedAccount) {
+            const account = this.accounts.find(acc => acc.id === this.selectedAccount);
+            if (account) {
+                currentAccountSpan.textContent = account.name || account.id;
+            }
+        }
+    }
+    
+    async switchAccount(accountId) {
+        try {
+            this.selectedAccount = accountId;
+            this.updateAccountDropdown();
+            
+            // Switch account on backend
+            const result = await this.apiCall(`/accounts/${accountId}/switch`, 'POST');
+            if (result && !result.error) {
+                this.showAlert(`Switched to account: ${this.accounts.find(acc => acc.id === accountId)?.name || accountId}`, 'success');
+                
+                // Reload all data for the new account
+                await Promise.all([
+                    this.loadAccountInfo(),
+                    this.loadPositions(),
+                    this.loadOrders(),
+                    this.loadTradeHistory(),
+                    this.loadPerformanceStats()
+                ]);
+            } else {
+                this.showAlert(`Failed to switch account: ${result?.error || 'Unknown error'}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to switch account:', error);
+            this.showAlert(`Error switching account: ${error.message}`, 'danger');
+        }
+    }
+    
+    togglePriceFields(orderType) {
+        const priceFields = document.getElementById('price-fields');
+        const priceInput = document.getElementById('order-price');
+        const stopPriceInput = document.getElementById('order-stop-price');
+        
+        if (orderType === 'limit' || orderType === 'stop_limit') {
+            priceFields.style.display = 'block';
+            priceInput.required = true;
+        } else if (orderType === 'stop') {
+            priceFields.style.display = 'block';
+            priceInput.required = false;
+            stopPriceInput.required = true;
+        } else {
+            priceFields.style.display = 'none';
+            priceInput.required = false;
+            stopPriceInput.required = false;
+        }
+    }
+    
+    async placeOrder() {
+        const symbol = document.getElementById('order-symbol').value;
+        const side = document.getElementById('order-side').value;
+        const quantity = parseInt(document.getElementById('order-quantity').value);
+        const orderType = document.getElementById('order-type').value;
+        const price = parseFloat(document.getElementById('order-price').value) || null;
+        const stopPrice = parseFloat(document.getElementById('order-stop-price').value) || null;
+        const stopLossTicks = parseInt(document.getElementById('stop-loss-ticks').value) || null;
+        const takeProfitTicks = parseInt(document.getElementById('take-profit-ticks').value) || null;
+        
+        if (!symbol || !side || !quantity) {
+            this.showAlert('Please fill in all required fields', 'warning');
+            return;
+        }
+        
+        try {
+            const orderData = {
+                symbol,
+                side,
+                quantity,
+                order_type: orderType,
+                price,
+                stop_price: stopPrice,
+                stop_loss_ticks: stopLossTicks,
+                take_profit_ticks: takeProfitTicks
+            };
+            
+            const result = await this.apiCall('/orders/place', 'POST', orderData);
+            if (result && !result.error) {
+                this.showAlert(`Order placed successfully: ${result.order_id || 'Order ID not returned'}`, 'success');
+                this.loadOrders();
+                this.loadPositions();
+            } else {
+                this.showAlert(`Failed to place order: ${result?.error || 'Unknown error'}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Error placing order:', error);
+            this.showAlert(`Error placing order: ${error.message}`, 'danger');
+        }
+    }
+    
+    async placeQuickOrder(side, quantity) {
+        const symbol = document.getElementById('order-symbol').value;
+        if (!symbol) {
+            this.showAlert('Please select a symbol first', 'warning');
+            return;
+        }
+        
+        try {
+            const orderData = {
+                symbol,
+                side,
+                quantity,
+                order_type: 'market'
+            };
+            
+            const result = await this.apiCall('/orders/place', 'POST', orderData);
+            if (result && !result.error) {
+                this.showAlert(`Quick ${side} order placed for ${quantity} ${symbol}`, 'success');
+                this.loadOrders();
+                this.loadPositions();
+            } else {
+                this.showAlert(`Failed to place quick order: ${result?.error || 'Unknown error'}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Error placing quick order:', error);
+            this.showAlert(`Error placing quick order: ${error.message}`, 'danger');
+        }
+    }
+    
+    async loadMarketData(symbol) {
+        try {
+            const data = await this.apiCall(`/market/${symbol}`);
+            if (data && !data.error) {
+                this.updateMarketDataDisplay(data);
+            } else {
+                document.getElementById('market-data').innerHTML = 
+                    `<p class="text-muted">No market data available for ${symbol}</p>`;
+            }
+        } catch (error) {
+            console.error('Error loading market data:', error);
+            document.getElementById('market-data').innerHTML = 
+                `<p class="text-danger">Error loading market data for ${symbol}</p>`;
+        }
+    }
+    
+    updateMarketDataDisplay(data) {
+        const marketDataDiv = document.getElementById('market-data');
+        marketDataDiv.innerHTML = `
+            <div class="row">
+                <div class="col-6">
+                    <h6>Bid</h6>
+                    <span class="badge bg-success fs-6">$${data.bid?.toFixed(2) || 'N/A'}</span>
+                </div>
+                <div class="col-6">
+                    <h6>Ask</h6>
+                    <span class="badge bg-danger fs-6">$${data.ask?.toFixed(2) || 'N/A'}</span>
+                </div>
+            </div>
+            <hr>
+            <div class="row">
+                <div class="col-6">
+                    <h6>Last Price</h6>
+                    <span class="badge bg-primary fs-6">$${data.last?.toFixed(2) || 'N/A'}</span>
+                </div>
+                <div class="col-6">
+                    <h6>Volume</h6>
+                    <span class="text-muted">${data.volume || 'N/A'}</span>
+                </div>
+            </div>
+            <hr>
+            <div class="row">
+                <div class="col-6">
+                    <h6>High</h6>
+                    <span class="text-success">$${data.high?.toFixed(2) || 'N/A'}</span>
+                </div>
+                <div class="col-6">
+                    <h6>Low</h6>
+                    <span class="text-danger">$${data.low?.toFixed(2) || 'N/A'}</span>
+                </div>
+            </div>
+        `;
+        
+        // Update market data chart if it exists
+        if (window.tradingCharts) {
+            const symbol = document.getElementById('order-symbol').value;
+            window.tradingCharts.updateMarketDataChart(symbol, data);
         }
     }
 }

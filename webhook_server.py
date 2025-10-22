@@ -916,8 +916,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             token = extract_token_from_request(headers, query_params)
             
-            # Temporarily disable authentication for testing
-            logger.info("Dashboard API access allowed (authentication disabled for testing)")
+            # Check authentication
+            if not token or not validate_token(token):
+                logger.warning("Dashboard API access denied: Invalid or missing token")
+                self._send_response(401, {"error": "Authentication required"})
+                return
+            
+            logger.info("Dashboard API access allowed (authentication successful)")
             
             # Initialize dashboard API
             dashboard_api = DashboardAPI(self.trading_bot, self.webhook_server)
@@ -926,7 +931,118 @@ class WebhookHandler(BaseHTTPRequestHandler):
             method = self.command if hasattr(self, 'command') else 'GET'
             
             # Route API requests
-            if self.path == '/api/account':
+            if self.path == '/api/accounts':
+                # Get all available accounts
+                try:
+                    # Use asyncio.create_task to avoid event loop conflicts
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, create a task
+                            import threading
+                            import concurrent.futures
+                            
+                            def run_async():
+                                new_loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(new_loop)
+                                try:
+                                    return new_loop.run_until_complete(self.trading_bot.list_accounts())
+                                finally:
+                                    new_loop.close()
+                            
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(run_async)
+                                accounts = future.result(timeout=10)
+                        else:
+                            accounts = loop.run_until_complete(self.trading_bot.list_accounts())
+                    except Exception as e:
+                        logger.error(f"Error getting accounts: {e}")
+                        self._send_response(500, {"error": str(e)})
+                        return
+                    
+                    self._send_response(200, accounts)
+                except Exception as e:
+                    logger.error(f"Error getting accounts: {e}")
+                    self._send_response(500, {"error": str(e)})
+                    
+            elif self.path.startswith('/api/accounts/') and self.path.endswith('/switch') and method == 'POST':
+                # Switch to a different account
+                try:
+                    account_id = self.path.split('/')[-2]  # Get account ID from path
+                    
+                    # Use asyncio.create_task to avoid event loop conflicts
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, create a task
+                            import threading
+                            import concurrent.futures
+                            
+                            def run_async():
+                                new_loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(new_loop)
+                                try:
+                                    # Get all accounts first
+                                    accounts = new_loop.run_until_complete(self.trading_bot.list_accounts())
+                                    # Find the target account
+                                    target_account = None
+                                    for account in accounts:
+                                        if account.get('id') == account_id:
+                                            target_account = account
+                                            break
+                                    
+                                    if not target_account:
+                                        return {"error": "Account not found"}
+                                    
+                                    # Switch to the account
+                                    self.trading_bot.selected_account = target_account
+                                    
+                                    return {
+                                        "success": True,
+                                        "account_id": account_id,
+                                        "account_name": target_account.get('name'),
+                                        "message": f"Switched to account: {target_account.get('name', account_id)}"
+                                    }
+                                finally:
+                                    new_loop.close()
+                            
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(run_async)
+                                result = future.result(timeout=10)
+                        else:
+                            # Get all accounts first
+                            accounts = loop.run_until_complete(self.trading_bot.list_accounts())
+                            # Find the target account
+                            target_account = None
+                            for account in accounts:
+                                if account.get('id') == account_id:
+                                    target_account = account
+                                    break
+                            
+                            if not target_account:
+                                self._send_response(404, {"error": "Account not found"})
+                                return
+                            
+                            # Switch to the account
+                            self.trading_bot.selected_account = target_account
+                            
+                            result = {
+                                "success": True,
+                                "account_id": account_id,
+                                "account_name": target_account.get('name'),
+                                "message": f"Switched to account: {target_account.get('name', account_id)}"
+                            }
+                    except Exception as e:
+                        logger.error(f"Error switching account: {e}")
+                        self._send_response(500, {"error": str(e)})
+                        return
+                    
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error switching account: {e}")
+                    self._send_response(500, {"error": str(e)})
+                    
+            elif self.path == '/api/account':
                 # Get account info synchronously
                 account = self.trading_bot.selected_account
                 if not account:
@@ -1190,6 +1306,46 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"Error canceling order: {e}")
                     self._send_response(200, {"error": str(e)})
+                    
+            elif self.path == '/api/orders/place' and method == 'POST':
+                # Place new order
+                try:
+                    import json
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    post_data = self.rfile.read(content_length)
+                    order_data = json.loads(post_data.decode('utf-8'))
+                    
+                    account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    
+                    result = asyncio.run(
+                        self.trading_bot.place_market_order(
+                            symbol=order_data.get('symbol'),
+                            side=order_data.get('side'),
+                            quantity=order_data.get('quantity'),
+                            account_id=account_id,
+                            stop_loss_ticks=order_data.get('stop_loss_ticks'),
+                            take_profit_ticks=order_data.get('take_profit_ticks'),
+                            order_type=order_data.get('order_type', 'market'),
+                            limit_price=order_data.get('price')
+                        )
+                    )
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error placing order: {e}")
+                    self._send_response(500, {"error": str(e)})
+                    
+            elif self.path.startswith('/api/market/') and method == 'GET':
+                # Get market data for symbol
+                try:
+                    symbol = self.path.split('/')[-1]
+                    
+                    result = asyncio.run(
+                        self.trading_bot.get_market_quote(symbol)
+                    )
+                    self._send_response(200, result)
+                except Exception as e:
+                    logger.error(f"Error getting market data: {e}")
+                    self._send_response(500, {"error": str(e)})
                     
             else:
                 self._send_response(404, {"error": "API endpoint not found"})

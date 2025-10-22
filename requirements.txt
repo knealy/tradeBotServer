@@ -5,7 +5,7 @@
 requests>=2.31.0
 
 # Real-time data streaming
-websockets>=11.0.0  # For real-time data streaming (SignalR transport)
+websockets>=12.0  # For real-time data streaming and WebSocket server
 signalrcore==0.9.5  # SignalR client for Python to consume ProjectX Market Hub
 
 # Public tunneling (optional, used by start_webhook.py --tunnel ngrok)
@@ -16,16 +16,15 @@ python-dotenv>=1.0.0  # For .env file loading
 urllib3>=1.26.0      # For HTTP requests
 certifi>=2023.0.0    # For SSL certificates
 
+# Dashboard dependencies
+aiohttp>=3.9.0    # For async HTTP handling
+jinja2>=3.1.0     # For HTML templating
+
 # Optional: For enhanced functionality
 # pandas>=2.0.0       # For data analysis
 # numpy>=1.24.0       # For numerical operations
 # matplotlib>=3.7.0   # For plotting and visualization
 # ta>=0.10.0          # For technical analysis indicators
-
-# Dashboard dependencies
-websockets>=12.0  # For WebSocket server
-aiohttp>=3.9.0    # For async HTTP handling
-jinja2>=3.1.0     # For HTML templating
 
 # Development and testing (optional)
 # pytest>=7.0.0

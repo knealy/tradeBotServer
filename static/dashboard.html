@@ -22,6 +22,18 @@
                 <i class="bi bi-graph-up"></i> TopStepX Trading Dashboard
             </span>
             <div class="d-flex">
+                <div class="dropdown me-3">
+                    <button class="btn btn-outline-light dropdown-toggle" type="button" id="account-selector" data-bs-toggle="dropdown">
+                        <i class="bi bi-person-circle"></i> <span id="current-account">Select Account</span>
+                    </button>
+                    <ul class="dropdown-menu" id="account-dropdown">
+                        <li><a class="dropdown-item" href="#" onclick="dashboard.loadAccounts()">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh Accounts
+                        </a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><span class="dropdown-item-text">Loading accounts...</span></li>
+                    </ul>
+                </div>
                 <span class="navbar-text me-3" id="connection-status">
                     <i class="bi bi-circle-fill text-warning"></i> Connecting...
                 </span>
@@ -141,6 +153,11 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="trading-tab" data-bs-toggle="tab" data-bs-target="#trading" type="button">
+                    <i class="bi bi-graph-up-arrow"></i> Trading
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="history-tab" data-bs-toggle="tab" data-bs-target="#history" type="button">
                     <i class="bi bi-clock-history"></i> History
                 </button>
@@ -215,6 +232,128 @@
                                     <!-- Orders will be populated by JavaScript -->
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trading Tab -->
+            <div class="tab-pane fade" id="trading" role="tabpanel">
+                <div class="row mt-3">
+                    <!-- Order Placement -->
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5><i class="bi bi-graph-up-arrow"></i> Place Order</h5>
+                            </div>
+                            <div class="card-body">
+                                <form id="order-form">
+                                    <div class="row mb-3">
+                                        <div class="col-md-6">
+                                            <label for="order-symbol" class="form-label">Symbol</label>
+                                            <select class="form-select" id="order-symbol" required>
+                                                <option value="">Select Symbol</option>
+                                                <option value="ES">ES (E-mini S&P 500)</option>
+                                                <option value="NQ">NQ (E-mini NASDAQ)</option>
+                                                <option value="YM">YM (E-mini Dow)</option>
+                                                <option value="RTY">RTY (E-mini Russell 2000)</option>
+                                                <option value="CL">CL (Crude Oil)</option>
+                                                <option value="GC">GC (Gold)</option>
+                                                <option value="SI">SI (Silver)</option>
+                                                <option value="ZB">ZB (30-Year Treasury Bond)</option>
+                                                <option value="ZN">ZN (10-Year Treasury Note)</option>
+                                                <option value="ZF">ZF (5-Year Treasury Note)</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="order-side" class="form-label">Side</label>
+                                            <select class="form-select" id="order-side" required>
+                                                <option value="">Select Side</option>
+                                                <option value="buy">Buy (Long)</option>
+                                                <option value="sell">Sell (Short)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="row mb-3">
+                                        <div class="col-md-6">
+                                            <label for="order-quantity" class="form-label">Quantity</label>
+                                            <input type="number" class="form-control" id="order-quantity" min="1" value="1" required>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="order-type" class="form-label">Order Type</label>
+                                            <select class="form-select" id="order-type" required>
+                                                <option value="market">Market</option>
+                                                <option value="limit">Limit</option>
+                                                <option value="stop">Stop</option>
+                                                <option value="stop_limit">Stop Limit</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="row mb-3" id="price-fields" style="display: none;">
+                                        <div class="col-md-6">
+                                            <label for="order-price" class="form-label">Price</label>
+                                            <input type="number" class="form-control" id="order-price" step="0.01" placeholder="Enter price">
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="order-stop-price" class="form-label">Stop Price</label>
+                                            <input type="number" class="form-control" id="order-stop-price" step="0.01" placeholder="Enter stop price">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="row mb-3">
+                                        <div class="col-md-6">
+                                            <label for="stop-loss-ticks" class="form-label">Stop Loss (Ticks)</label>
+                                            <input type="number" class="form-control" id="stop-loss-ticks" min="0" placeholder="Optional">
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="take-profit-ticks" class="form-label">Take Profit (Ticks)</label>
+                                            <input type="number" class="form-control" id="take-profit-ticks" min="0" placeholder="Optional">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="d-grid">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="bi bi-send"></i> Place Order
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Market Data -->
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5><i class="bi bi-graph-up"></i> Market Data</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="market-data">
+                                    <p class="text-muted">Select a symbol to view market data</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Quick Actions -->
+                        <div class="card mt-3">
+                            <div class="card-header">
+                                <h5><i class="bi bi-lightning"></i> Quick Actions</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-success" onclick="dashboard.placeQuickOrder('buy', 1)">
+                                        <i class="bi bi-arrow-up"></i> Quick Buy 1
+                                    </button>
+                                    <button class="btn btn-danger" onclick="dashboard.placeQuickOrder('sell', 1)">
+                                        <i class="bi bi-arrow-down"></i> Quick Sell 1
+                                    </button>
+                                    <button class="btn btn-warning" onclick="dashboard.flattenAllPositions()">
+                                        <i class="bi bi-exclamation-triangle"></i> Flatten All
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>

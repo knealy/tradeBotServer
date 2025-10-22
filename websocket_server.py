@@ -223,19 +223,70 @@ class WebSocketServer:
         while self.running:
             try:
                 if self.clients:
-                    # Send account balance update
+                    # Send comprehensive account update
                     if self.trading_bot.selected_account:
+                        try:
+                            # Get current balance
+                            balance = await self.trading_bot.get_account_balance()
+                            await self.broadcast({
+                                "type": "account_update",
+                                "data": {
+                                    "account_id": self.trading_bot.selected_account.get('id'),
+                                    "account_name": self.trading_bot.selected_account.get('name'),
+                                    "balance": balance,
+                                    "status": self.trading_bot.selected_account.get('status'),
+                                    "currency": self.trading_bot.selected_account.get('currency', 'USD'),
+                                    "account_type": self.trading_bot.selected_account.get('account_type', 'unknown')
+                                },
+                                "timestamp": time.time()
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to get account balance for broadcast: {e}")
+                    
+                    # Send positions update
+                    try:
+                        positions = await self.trading_bot.get_open_positions()
                         await self.broadcast({
-                            "type": "account_update",
+                            "type": "position_update",
+                            "data": positions,
+                            "timestamp": time.time()
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to get positions for broadcast: {e}")
+                    
+                    # Send orders update
+                    try:
+                        orders = await self.trading_bot.get_open_orders()
+                        await self.broadcast({
+                            "type": "order_update",
+                            "data": orders,
+                            "timestamp": time.time()
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to get orders for broadcast: {e}")
+                    
+                    # Send performance stats
+                    try:
+                        # Get recent trade history for stats
+                        history = await self.trading_bot.get_order_history(limit=50)
+                        total_trades = len(history)
+                        winning_trades = len([t for t in history if t.get('pnl', 0) > 0])
+                        total_pnl = sum(t.get('pnl', 0) for t in history)
+                        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                        
+                        await self.broadcast({
+                            "type": "stats_update",
                             "data": {
-                                "account_id": self.trading_bot.selected_account.get('id'),
-                                "account_name": self.trading_bot.selected_account.get('name'),
-                                "balance": self.trading_bot.selected_account.get('balance', 0),
-                                "status": self.trading_bot.selected_account.get('status'),
-                                "currency": self.trading_bot.selected_account.get('currency', 'USD')
+                                "total_trades": total_trades,
+                                "winning_trades": winning_trades,
+                                "win_rate": round(win_rate, 2),
+                                "total_pnl": total_pnl,
+                                "daily_pnl": total_pnl  # Simplified for now
                             },
                             "timestamp": time.time()
                         })
+                    except Exception as e:
+                        logger.warning(f"Failed to get performance stats for broadcast: {e}")
                     
                     # Send health status
                     health_status = self.webhook_server.get_health_status() if hasattr(self.webhook_server, 'get_health_status') else {"status": "healthy"}
@@ -245,8 +296,8 @@ class WebSocketServer:
                         "timestamp": time.time()
                     })
                 
-                # Wait 30 seconds before next update
-                await asyncio.sleep(30)
+                # Wait 10 seconds before next update (more frequent updates)
+                await asyncio.sleep(10)
                 
             except Exception as e:
                 logger.error(f"Error in periodic updates: {e}")

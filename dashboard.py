@@ -20,8 +20,35 @@ class DashboardAPI:
         self.webhook_server = webhook_server
         self.websocket_clients = set()
     
+    async def get_accounts(self) -> List[Dict[str, Any]]:
+        """Get all available accounts"""
+        try:
+            accounts = await self.trading_bot.list_accounts()
+            formatted_accounts = []
+            
+            for account in accounts:
+                # Get current balance for each account
+                try:
+                    balance = await self.trading_bot.get_account_balance(account.get('id'))
+                except:
+                    balance = account.get('balance', 0)
+                
+                formatted_accounts.append({
+                    "id": account.get('id'),
+                    "name": account.get('name'),
+                    "status": account.get('status'),
+                    "balance": balance,
+                    "currency": account.get('currency', 'USD'),
+                    "account_type": account.get('account_type', 'unknown')
+                })
+            
+            return formatted_accounts
+        except Exception as e:
+            logger.error(f"Error getting accounts: {e}")
+            return []
+
     async def get_account_info(self) -> Dict[str, Any]:
-        """Get account information"""
+        """Get current account information"""
         try:
             account = self.trading_bot.selected_account
             if not account:
@@ -40,6 +67,33 @@ class DashboardAPI:
             }
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
+            return {"error": str(e)}
+    
+    async def switch_account(self, account_id: str) -> Dict[str, Any]:
+        """Switch to a different account"""
+        try:
+            # Find the account
+            accounts = await self.trading_bot.list_accounts()
+            target_account = None
+            for account in accounts:
+                if account.get('id') == account_id:
+                    target_account = account
+                    break
+            
+            if not target_account:
+                return {"error": "Account not found"}
+            
+            # Switch to the account
+            self.trading_bot.selected_account = target_account
+            
+            return {
+                "success": True,
+                "account_id": account_id,
+                "account_name": target_account.get('name'),
+                "message": f"Switched to account: {target_account.get('name', account_id)}"
+            }
+        except Exception as e:
+            logger.error(f"Error switching account: {e}")
             return {"error": str(e)}
     
     async def get_positions(self) -> List[Dict[str, Any]]:
