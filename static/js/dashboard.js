@@ -95,10 +95,11 @@ class TradingDashboard {
             return;
         }
         
-        // Try WebSocket on same port as dashboard first, then fallback to 8081
+        // Try WebSocket on same port as dashboard (Railway compatible)
         const wsUrl = `${protocol}//${window.location.host}/ws/dashboard?token=${encodeURIComponent(token)}`;
         
         try {
+            console.log('Attempting WebSocket connection to:', wsUrl);
             this.ws = new WebSocket(wsUrl);
             
             this.ws.onopen = () => {
@@ -197,10 +198,11 @@ class TradingDashboard {
             
             this.ws.onerror = (error) => {
                 console.error('Fallback WebSocket error:', error);
-                this.showAlert('WebSocket connection failed, falling back to HTTP polling', 'warning');
+                this.showAlert('WebSocket connection failed, using HTTP polling mode', 'warning');
                 this.updateConnectionStatus(true);
                 this.isConnected = true;
-                this.connectSSE();
+                // Don't try SSE, just use HTTP polling
+                this.startPeriodicUpdates();
             };
         } catch (error) {
             console.error('Failed to connect fallback WebSocket:', error);

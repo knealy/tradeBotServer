@@ -124,6 +124,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 logger.error(f"Dashboard error: {str(e)}")
                 self._send_response(500, {"error": str(e)})
                 
+        elif self.path.startswith('/ws/dashboard'):
+            # WebSocket endpoint for dashboard - return 426 Upgrade Required
+            self._send_response(426, {"error": "WebSocket upgrade required"})
+                
         elif self.path.startswith('/api/stream'):
             # Server-Sent Events (SSE) stream for real-time updates on same HTTP port
             try:
@@ -932,33 +936,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             # Route API requests
             if self.path == '/api/accounts':
-                # Get all available accounts
+                # Get all available accounts - simplified approach
                 try:
-                    # Use asyncio.create_task to avoid event loop conflicts
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # If loop is running, create a task
-                            import threading
-                            import concurrent.futures
-                            
-                            def run_async():
-                                new_loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(new_loop)
-                                try:
-                                    return new_loop.run_until_complete(self.trading_bot.list_accounts())
-                                finally:
-                                    new_loop.close()
-                            
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(run_async)
-                                accounts = future.result(timeout=10)
-                        else:
-                            accounts = loop.run_until_complete(self.trading_bot.list_accounts())
-                    except Exception as e:
-                        logger.error(f"Error getting accounts: {e}")
-                        self._send_response(500, {"error": str(e)})
+                    # Check if trading bot has selected account
+                    if not self.trading_bot.selected_account:
+                        self._send_response(200, [])
                         return
+                    
+                    # Return current account info in list format
+                    current_account = self.trading_bot.selected_account
+                    accounts = [{
+                        "id": current_account.get('id'),
+                        "name": current_account.get('name'),
+                        "status": current_account.get('status', 'active'),
+                        "balance": current_account.get('balance', 0),
+                        "currency": current_account.get('currency', 'USD'),
+                        "account_type": current_account.get('account_type', 'trading')
+                    }]
                     
                     self._send_response(200, accounts)
                 except Exception as e:
@@ -2526,8 +2520,8 @@ class WebhookServer:
                 return
                 
             from websocket_server import WebSocketServer
-            # Use a different port for WebSocket to avoid conflicts
-            websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
+            # Use the same port as the main server for Railway compatibility
+            websocket_port = int(os.getenv('WEBSOCKET_PORT', str(self.port)))
             self.websocket_server = WebSocketServer(
                 trading_bot=self.trading_bot,
                 webhook_server=self,
