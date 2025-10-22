@@ -9,6 +9,7 @@ class TradingDashboard {
         this.authToken = null;
         this.isConnected = false;
         this.updateInterval = null;
+        this.marketDataInterval = null;
         this.charts = {};
         this.accounts = [];
         this.selectedAccount = null;
@@ -81,6 +82,10 @@ class TradingDashboard {
         document.getElementById('order-symbol').addEventListener('change', (e) => {
             if (e.target.value) {
                 this.loadMarketData(e.target.value);
+                // Start auto-refresh for market data
+                this.startMarketDataRefresh(e.target.value);
+            } else {
+                this.stopMarketDataRefresh();
             }
         });
     }
@@ -874,6 +879,22 @@ class TradingDashboard {
             return;
         }
         
+        // Validate order type specific requirements
+        if (orderType === 'limit' && !price) {
+            this.showAlert('Price is required for limit orders', 'warning');
+            return;
+        }
+        
+        if (orderType === 'stop' && !stopPrice) {
+            this.showAlert('Stop price is required for stop orders', 'warning');
+            return;
+        }
+        
+        if (orderType === 'stop_limit' && (!price || !stopPrice)) {
+            this.showAlert('Both price and stop price are required for stop-limit orders', 'warning');
+            return;
+        }
+        
         try {
             const orderData = {
                 symbol,
@@ -886,9 +907,17 @@ class TradingDashboard {
                 take_profit_ticks: takeProfitTicks
             };
             
+            console.log('Placing order:', orderData);
+            
             const result = await this.apiCall('/orders/place', 'POST', orderData);
             if (result && !result.error) {
                 this.showAlert(`Order placed successfully: ${result.order_id || 'Order ID not returned'}`, 'success');
+                
+                // Clear the form
+                document.getElementById('order-form').reset();
+                document.getElementById('price-fields').style.display = 'none';
+                
+                // Refresh data
                 this.loadOrders();
                 this.loadPositions();
             } else {
@@ -947,37 +976,49 @@ class TradingDashboard {
     
     updateMarketDataDisplay(data) {
         const marketDataDiv = document.getElementById('market-data');
+        
+        // Calculate spread
+        const spread = data.bid && data.ask ? (data.ask - data.bid).toFixed(2) : 'N/A';
+        
         marketDataDiv.innerHTML = `
-            <div class="row">
+            <div class="row mb-2">
                 <div class="col-6">
-                    <h6>Bid</h6>
+                    <h6 class="mb-1">Bid</h6>
                     <span class="badge bg-success fs-6">$${data.bid?.toFixed(2) || 'N/A'}</span>
                 </div>
                 <div class="col-6">
-                    <h6>Ask</h6>
+                    <h6 class="mb-1">Ask</h6>
                     <span class="badge bg-danger fs-6">$${data.ask?.toFixed(2) || 'N/A'}</span>
                 </div>
             </div>
-            <hr>
-            <div class="row">
+            <div class="row mb-2">
                 <div class="col-6">
-                    <h6>Last Price</h6>
+                    <h6 class="mb-1">Last</h6>
                     <span class="badge bg-primary fs-6">$${data.last?.toFixed(2) || 'N/A'}</span>
                 </div>
                 <div class="col-6">
-                    <h6>Volume</h6>
-                    <span class="text-muted">${data.volume || 'N/A'}</span>
+                    <h6 class="mb-1">Spread</h6>
+                    <span class="badge bg-info fs-6">$${spread}</span>
                 </div>
             </div>
-            <hr>
-            <div class="row">
+            <div class="row mb-2">
                 <div class="col-6">
-                    <h6>High</h6>
-                    <span class="text-success">$${data.high?.toFixed(2) || 'N/A'}</span>
+                    <h6 class="mb-1">High</h6>
+                    <span class="text-success fw-bold">$${data.high?.toFixed(2) || 'N/A'}</span>
                 </div>
                 <div class="col-6">
-                    <h6>Low</h6>
-                    <span class="text-danger">$${data.low?.toFixed(2) || 'N/A'}</span>
+                    <h6 class="mb-1">Low</h6>
+                    <span class="text-danger fw-bold">$${data.low?.toFixed(2) || 'N/A'}</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-6">
+                    <h6 class="mb-1">Volume</h6>
+                    <span class="text-muted">${data.volume?.toLocaleString() || 'N/A'}</span>
+                </div>
+                <div class="col-6">
+                    <h6 class="mb-1">Change</h6>
+                    <span class="text-${data.change >= 0 ? 'success' : 'danger'}">${data.change >= 0 ? '+' : ''}${data.change?.toFixed(2) || 'N/A'}</span>
                 </div>
             </div>
         `;
@@ -986,6 +1027,22 @@ class TradingDashboard {
         if (window.tradingCharts) {
             const symbol = document.getElementById('order-symbol').value;
             window.tradingCharts.updateMarketDataChart(symbol, data);
+        }
+    }
+    
+    startMarketDataRefresh(symbol) {
+        this.stopMarketDataRefresh(); // Clear any existing interval
+        
+        // Refresh market data every 5 seconds
+        this.marketDataInterval = setInterval(() => {
+            this.loadMarketData(symbol);
+        }, 5000);
+    }
+    
+    stopMarketDataRefresh() {
+        if (this.marketDataInterval) {
+            clearInterval(this.marketDataInterval);
+            this.marketDataInterval = null;
         }
     }
 }

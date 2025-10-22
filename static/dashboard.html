@@ -253,16 +253,41 @@
                                             <label for="order-symbol" class="form-label">Symbol</label>
                                             <select class="form-select" id="order-symbol" required>
                                                 <option value="">Select Symbol</option>
-                                                <option value="ES">ES (E-mini S&P 500)</option>
-                                                <option value="NQ">NQ (E-mini NASDAQ)</option>
-                                                <option value="YM">YM (E-mini Dow)</option>
-                                                <option value="RTY">RTY (E-mini Russell 2000)</option>
-                                                <option value="CL">CL (Crude Oil)</option>
-                                                <option value="GC">GC (Gold)</option>
-                                                <option value="SI">SI (Silver)</option>
-                                                <option value="ZB">ZB (30-Year Treasury Bond)</option>
-                                                <option value="ZN">ZN (10-Year Treasury Note)</option>
-                                                <option value="ZF">ZF (5-Year Treasury Note)</option>
+                                                <optgroup label="E-mini Index Futures">
+                                                    <option value="ES">ES (E-mini S&P 500)</option>
+                                                    <option value="NQ">NQ (E-mini NASDAQ)</option>
+                                                    <option value="YM">YM (E-mini Dow)</option>
+                                                    <option value="RTY">RTY (E-mini Russell 2000)</option>
+                                                </optgroup>
+                                                <optgroup label="Micro E-mini Index Futures">
+                                                    <option value="MES">MES (Micro E-mini S&P 500)</option>
+                                                    <option value="MNQ">MNQ (Micro E-mini NASDAQ)</option>
+                                                    <option value="MYM">MYM (Micro E-mini Dow)</option>
+                                                    <option value="M2K">M2K (Micro E-mini Russell 2000)</option>
+                                                </optgroup>
+                                                <optgroup label="Energy Futures">
+                                                    <option value="CL">CL (Crude Oil)</option>
+                                                    <option value="MCL">MCL (Micro Crude Oil)</option>
+                                                    <option value="NG">NG (Natural Gas)</option>
+                                                    <option value="MNG">MNG (Micro Natural Gas)</option>
+                                                </optgroup>
+                                                <optgroup label="Metals Futures">
+                                                    <option value="GC">GC (Gold)</option>
+                                                    <option value="MGC">MGC (Micro Gold)</option>
+                                                    <option value="SI">SI (Silver)</option>
+                                                    <option value="MSI">MSI (Micro Silver)</option>
+                                                </optgroup>
+                                                <optgroup label="Currency Futures">
+                                                    <option value="6E">6E (Euro)</option>
+                                                    <option value="6J">6J (Japanese Yen)</option>
+                                                    <option value="6B">6B (British Pound)</option>
+                                                    <option value="6A">6A (Australian Dollar)</option>
+                                                </optgroup>
+                                                <optgroup label="Bond Futures">
+                                                    <option value="ZB">ZB (30-Year Treasury Bond)</option>
+                                                    <option value="ZN">ZN (10-Year Treasury Note)</option>
+                                                    <option value="ZF">ZF (5-Year Treasury Note)</option>
+                                                </optgroup>
                                             </select>
                                         </div>
                                         <div class="col-md-6">
