@@ -936,50 +936,96 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             # Route API requests
             if self.path == '/api/accounts':
-                # Get all available accounts - simplified approach
+                # Get all available accounts using async approach
                 try:
-                    # Check if trading bot has selected account
-                    if not self.trading_bot.selected_account:
-                        self._send_response(200, [])
-                        return
+                    import asyncio
+                    import threading
+                    import concurrent.futures
                     
-                    # Return current account info in list format
-                    current_account = self.trading_bot.selected_account
-                    accounts = [{
-                        "id": current_account.get('id'),
-                        "name": current_account.get('name'),
-                        "status": current_account.get('status', 'active'),
-                        "balance": current_account.get('balance', 0),
-                        "currency": current_account.get('currency', 'USD'),
-                        "account_type": current_account.get('account_type', 'trading')
-                    }]
+                    def run_async():
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(self.trading_bot.list_accounts())
+                        finally:
+                            new_loop.close()
                     
-                    self._send_response(200, accounts)
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(run_async)
+                        accounts = future.result(timeout=15)
+                    
+                    # Format accounts for dashboard
+                    formatted_accounts = []
+                    for account in accounts:
+                        formatted_accounts.append({
+                            "id": account.get('id'),
+                            "name": account.get('name'),
+                            "status": account.get('status', 'active'),
+                            "balance": account.get('balance', 0),
+                            "currency": account.get('currency', 'USD'),
+                            "account_type": account.get('account_type', 'trading')
+                        })
+                    
+                    self._send_response(200, formatted_accounts)
                 except Exception as e:
                     logger.error(f"Error getting accounts: {e}")
-                    self._send_response(500, {"error": str(e)})
+                    # Fallback to current account if API fails
+                    if self.trading_bot.selected_account:
+                        current_account = self.trading_bot.selected_account
+                        accounts = [{
+                            "id": current_account.get('id'),
+                            "name": current_account.get('name'),
+                            "status": current_account.get('status', 'active'),
+                            "balance": current_account.get('balance', 0),
+                            "currency": current_account.get('currency', 'USD'),
+                            "account_type": current_account.get('account_type', 'trading')
+                        }]
+                        self._send_response(200, accounts)
+                    else:
+                        self._send_response(500, {"error": str(e)})
                     
             elif self.path.startswith('/api/accounts/') and self.path.endswith('/switch') and method == 'POST':
-                # Switch to a different account - simplified for single account
+                # Switch to a different account
                 try:
                     account_id = self.path.split('/')[-2]  # Get account ID from path
                     
-                    # For now, just confirm the switch (since we only have one account)
-                    current_account = self.trading_bot.selected_account
-                    if current_account and str(current_account.get('id')) == str(account_id):
-                        result = {
-                            "success": True,
-                            "account_id": account_id,
-                            "account_name": current_account.get('name'),
-                            "message": f"Already using account: {current_account.get('name', account_id)}"
-                        }
-                    else:
-                        result = {
-                            "success": True,
-                            "account_id": account_id,
-                            "account_name": "Current Account",
-                            "message": f"Switched to account: {account_id}"
-                        }
+                    # Get all accounts to find the target account
+                    import asyncio
+                    import threading
+                    import concurrent.futures
+                    
+                    def run_async():
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(self.trading_bot.list_accounts())
+                        finally:
+                            new_loop.close()
+                    
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(run_async)
+                        accounts = future.result(timeout=15)
+                    
+                    # Find the target account
+                    target_account = None
+                    for account in accounts:
+                        if str(account.get('id')) == str(account_id):
+                            target_account = account
+                            break
+                    
+                    if not target_account:
+                        self._send_response(404, {"error": "Account not found"})
+                        return
+                    
+                    # Switch to the account
+                    self.trading_bot.selected_account = target_account
+                    
+                    result = {
+                        "success": True,
+                        "account_id": account_id,
+                        "account_name": target_account.get('name'),
+                        "message": f"Switched to account: {target_account.get('name', account_id)}"
+                    }
                     
                     self._send_response(200, result)
                 except Exception as e:

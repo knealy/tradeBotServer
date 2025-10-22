@@ -576,6 +576,19 @@ class TradingDashboard {
             window.tradingCharts.updateWinRateChart(stats);
             window.tradingCharts.updateTradeDistributionChart(stats);
         }
+        
+        // Initialize charts with sample data if no real data
+        if (!stats.total_pnl && window.tradingCharts) {
+            const sampleStats = {
+                total_pnl: 0,
+                total_trades: 0,
+                winning_trades: 0,
+                win_rate: 0
+            };
+            window.tradingCharts.updatePnLChart(sampleStats);
+            window.tradingCharts.updateWinRateChart(sampleStats);
+            window.tradingCharts.updateTradeDistributionChart(sampleStats);
+        }
     }
     
     updateLogsDisplay(logs) {
@@ -733,10 +746,9 @@ class TradingDashboard {
                 this.accounts = data;
                 this.updateAccountDropdown();
                 
-                // Don't auto-switch accounts, just show current account
-                if (this.accounts.length > 0) {
-                    this.selectedAccount = this.accounts[0].id;
-                    this.updateAccountDropdown();
+                // Auto-select first account if none selected
+                if (!this.selectedAccount && this.accounts.length > 0) {
+                    this.switchAccount(this.accounts[0].id);
                 }
             } else {
                 this.showAlert('Failed to load accounts', 'warning');
