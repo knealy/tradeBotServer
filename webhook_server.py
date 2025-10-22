@@ -1053,40 +1053,49 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 # Get positions from trading bot
                 try:
                     account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
-                    if account_id:
-                        # Use asyncio.create_task to avoid event loop conflicts
-                        try:
-                            loop = asyncio.get_event_loop()
-                            if loop.is_running():
-                                # If loop is running, create a task
-                                import threading
-                                import concurrent.futures
-                                
-                                def run_async():
-                                    new_loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(new_loop)
-                                    try:
-                                        return new_loop.run_until_complete(self.trading_bot.get_open_positions(account_id=account_id))
-                                    finally:
-                                        new_loop.close()
-                                
-                                with concurrent.futures.ThreadPoolExecutor() as executor:
-                                    future = executor.submit(run_async)
-                                    positions = future.result(timeout=10)
-                            else:
-                                positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id))
-                        except Exception as async_error:
-                            logger.error(f"Async error fetching positions: {async_error}")
-                            positions = []
-                        
-                        logger.info(f"Fetched {len(positions)} positions for dashboard")
-                        self._send_response(200, positions)
-                    else:
-                        logger.warning("No account selected for positions API")
+                    logger.info(f"Dashboard requesting positions for account: {account_id}")
+                    
+                    if not account_id:
+                        logger.warning("No account ID available for positions request")
                         self._send_response(200, [])
+                        return
+                    
+                    if not self.trading_bot.session_token:
+                        logger.warning("No session token available for positions request")
+                        self._send_response(200, [])
+                        return
+                    
+                    # Use asyncio.create_task to avoid event loop conflicts
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If loop is running, create a task
+                            import threading
+                            import concurrent.futures
+                            
+                            def run_async():
+                                new_loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(new_loop)
+                                try:
+                                    return new_loop.run_until_complete(self.trading_bot.get_open_positions(account_id=account_id))
+                                finally:
+                                    new_loop.close()
+                            
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(run_async)
+                                positions = future.result(timeout=10)
+                        else:
+                            positions = asyncio.run(self.trading_bot.get_open_positions(account_id=account_id))
+                    except Exception as async_error:
+                        logger.error(f"Async error fetching positions: {async_error}")
+                        positions = []
+                    
+                    logger.info(f"Fetched {len(positions)} positions for dashboard")
+                    logger.info(f"Positions data: {positions}")
+                    self._send_response(200, positions)
                 except Exception as e:
                     logger.error(f"Error fetching positions: {e}")
-                    self._send_response(500, {"error": str(e)})
+                    self._send_response(200, [])
                 
             elif self.path == '/api/orders':
                 # Get orders from trading bot
@@ -1105,7 +1114,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 # Get trade history with date range support
                 try:
                     account_id = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                    logger.info(f"Dashboard requesting history for account: {account_id}")
+                    
                     if not account_id:
+                        logger.warning("No account ID available for history request")
+                        self._send_response(200, [])
+                        return
+                    
+                    if not self.trading_bot.session_token:
+                        logger.warning("No session token available for history request")
                         self._send_response(200, [])
                         return
                     
@@ -1131,6 +1148,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
                             end_timestamp=end_date,
                             limit=100
                         ))
+                    
+                    logger.info(f"Fetched {len(history)} history records for dashboard")
+                    logger.info(f"History data: {history}")
                     self._send_response(200, history)
                 except Exception as e:
                     logger.error(f"Error fetching history: {e}")
