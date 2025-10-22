@@ -1283,15 +1283,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Enhanced debounce with position size validation
             from datetime import datetime, timezone, timedelta
             now = datetime.now(timezone.utc)
-            last_ts = self.webhook_server._last_open_signal_ts.get((symbol, "LONG"))
-            if last_ts and (now - last_ts).total_seconds() < self.webhook_server.debounce_seconds:
-                wait_left = int(self.webhook_server.debounce_seconds - (now - last_ts).total_seconds())
-                logger.warning(f"Debounced duplicate open_long for {symbol}; received too soon. Wait {wait_left}s")
-                return {"success": True, "action": "open_long", "debounced": True, "reason": "duplicate within debounce window"}
             
-            # FIXED: Enhanced position size validation to prevent oversized positions
+            # Check for existing positions first
             existing_positions = await self.trading_bot.get_open_positions(account_id=self.webhook_server.account_id)
             symbol_positions = [pos for pos in existing_positions if pos.get('contractId') == self.trading_bot._get_contract_id(symbol)]
+            
+            # Only debounce if there are existing positions OR if we recently placed an order
+            last_ts = self.webhook_server._last_open_signal_ts.get((symbol, "LONG"))
+            if last_ts and (now - last_ts).total_seconds() < self.webhook_server.debounce_seconds:
+                # If no existing positions, allow the trade (debounce only applies when positions exist)
+                if not symbol_positions:
+                    logger.info(f"Allowing open_long for {symbol} - no existing positions despite recent signal")
+                else:
+                    wait_left = int(self.webhook_server.debounce_seconds - (now - last_ts).total_seconds())
+                    logger.warning(f"Debounced duplicate open_long for {symbol}; received too soon. Wait {wait_left}s")
+                    return {"success": True, "action": "open_long", "debounced": True, "reason": "duplicate within debounce window"}
             
             if symbol_positions:
                 total_existing = sum(pos.get('quantity', 0) for pos in symbol_positions)
@@ -1397,15 +1403,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Enhanced debounce with position size validation
             from datetime import datetime, timezone, timedelta
             now = datetime.now(timezone.utc)
-            last_ts = self.webhook_server._last_open_signal_ts.get((symbol, "SHORT"))
-            if last_ts and (now - last_ts).total_seconds() < self.webhook_server.debounce_seconds:
-                wait_left = int(self.webhook_server.debounce_seconds - (now - last_ts).total_seconds())
-                logger.warning(f"Debounced duplicate open_short for {symbol}; received too soon. Wait {wait_left}s")
-                return {"success": True, "action": "open_short", "debounced": True, "reason": "duplicate within debounce window"}
             
-            # FIXED: Enhanced position size validation to prevent oversized positions
+            # Check for existing positions first
             existing_positions = await self.trading_bot.get_open_positions(account_id=self.webhook_server.account_id)
             symbol_positions = [pos for pos in existing_positions if pos.get('contractId') == self.trading_bot._get_contract_id(symbol)]
+            
+            # Only debounce if there are existing positions OR if we recently placed an order
+            last_ts = self.webhook_server._last_open_signal_ts.get((symbol, "SHORT"))
+            if last_ts and (now - last_ts).total_seconds() < self.webhook_server.debounce_seconds:
+                # If no existing positions, allow the trade (debounce only applies when positions exist)
+                if not symbol_positions:
+                    logger.info(f"Allowing open_short for {symbol} - no existing positions despite recent signal")
+                else:
+                    wait_left = int(self.webhook_server.debounce_seconds - (now - last_ts).total_seconds())
+                    logger.warning(f"Debounced duplicate open_short for {symbol}; received too soon. Wait {wait_left}s")
+                    return {"success": True, "action": "open_short", "debounced": True, "reason": "duplicate within debounce window"}
             
             if symbol_positions:
                 total_existing = sum(pos.get('quantity', 0) for pos in symbol_positions)
