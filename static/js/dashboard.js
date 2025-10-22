@@ -42,7 +42,17 @@ class TradingDashboard {
         document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
             tab.addEventListener('shown.bs.tab', (e) => {
                 const target = e.target.getAttribute('data-bs-target');
-                if (target === '#charts') {
+                console.log('Tab switched to:', target);
+                
+                if (target === '#positions') {
+                    this.loadPositions();
+                } else if (target === '#orders') {
+                    this.loadOrders();
+                } else if (target === '#history') {
+                    this.loadTradeHistory();
+                } else if (target === '#logs') {
+                    this.loadSystemLogs();
+                } else if (target === '#charts') {
                     this.initCharts();
                 }
             });
@@ -441,10 +451,16 @@ class TradingDashboard {
     }
     
     async loadPositions() {
-        const data = await this.apiCall('/positions');
-        if (data) {
-            this.updatePositionsTable(data);
-            document.getElementById('positions-count').textContent = data.length;
+        try {
+            console.log('Loading positions...');
+            const data = await this.apiCall('/positions');
+            console.log('Positions data:', data);
+            if (data) {
+                this.updatePositionsTable(data);
+                document.getElementById('positions-count').textContent = data.length;
+            }
+        } catch (error) {
+            console.error('Error loading positions:', error);
         }
     }
     
@@ -457,20 +473,26 @@ class TradingDashboard {
     }
     
     async loadTradeHistory() {
-        const startDate = document.getElementById('start-date').value;
-        const endDate = document.getElementById('end-date').value;
-        
-        let endpoint = '/history';
-        if (startDate || endDate) {
-            const params = new URLSearchParams();
-            if (startDate) params.append('start', startDate);
-            if (endDate) params.append('end', endDate);
-            endpoint += `?${params.toString()}`;
-        }
-        
-        const data = await this.apiCall(endpoint);
-        if (data) {
-            this.updateHistoryTable(data);
+        try {
+            console.log('Loading trade history...');
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+            
+            let endpoint = '/history';
+            if (startDate || endDate) {
+                const params = new URLSearchParams();
+                if (startDate) params.append('start', startDate);
+                if (endDate) params.append('end', endDate);
+                endpoint += `?${params.toString()}`;
+            }
+            
+            const data = await this.apiCall(endpoint);
+            console.log('History data:', data);
+            if (data) {
+                this.updateHistoryTable(data);
+            }
+        } catch (error) {
+            console.error('Error loading trade history:', error);
         }
     }
     
@@ -482,21 +504,37 @@ class TradingDashboard {
     }
     
     async loadSystemLogs() {
-        const level = document.getElementById('log-level').value;
-        let endpoint = '/logs';
-        if (level) {
-            endpoint += `?level=${level}`;
-        }
-        
-        const data = await this.apiCall(endpoint);
-        if (data) {
-            this.updateLogsDisplay(data);
+        try {
+            console.log('Loading system logs...');
+            const level = document.getElementById('log-level').value;
+            let endpoint = '/logs';
+            if (level) {
+                endpoint += `?level=${level}`;
+            }
+            
+            const data = await this.apiCall(endpoint);
+            console.log('Logs data:', data);
+            if (data) {
+                this.updateLogsDisplay(data);
+            }
+        } catch (error) {
+            console.error('Error loading system logs:', error);
         }
     }
     
     updatePositionsTable(positions) {
+        console.log('Updating positions table with:', positions);
         const tbody = document.getElementById('positions-tbody');
+        if (!tbody) {
+            console.error('Positions tbody element not found');
+            return;
+        }
         tbody.innerHTML = '';
+        
+        if (!positions || positions.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No open positions</td></tr>';
+            return;
+        }
         
         positions.forEach(position => {
             const row = document.createElement('tr');
@@ -549,8 +587,18 @@ class TradingDashboard {
     }
     
     updateHistoryTable(history) {
+        console.log('Updating history table with:', history);
         const tbody = document.getElementById('history-tbody');
+        if (!tbody) {
+            console.error('History tbody element not found');
+            return;
+        }
         tbody.innerHTML = '';
+        
+        if (!history || history.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No trade history found</td></tr>';
+            return;
+        }
         
         history.forEach(trade => {
             const row = document.createElement('tr');
@@ -597,7 +645,18 @@ class TradingDashboard {
     }
     
     updateLogsDisplay(logs) {
+        console.log('Updating logs display with:', logs);
         const content = document.getElementById('logs-content');
+        if (!content) {
+            console.error('Logs content element not found');
+            return;
+        }
+        
+        if (!logs || logs.length === 0) {
+            content.textContent = 'No logs available';
+            return;
+        }
+        
         const logText = logs.map(log => 
             `[${log.timestamp}] ${log.level}: ${log.message}`
         ).join('\n');
