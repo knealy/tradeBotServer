@@ -621,7 +621,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             # For now, we'll place a simple market order
             # In the future, we can implement more sophisticated order types
-            quantity = 1  # Default quantity
+            quantity = int(os.getenv('POSITION_SIZE', '1'))  # Use Railway POSITION_SIZE
             
             logger.info(f"Executing trade: {direction} {quantity} {symbol} @ {entry}")
             
@@ -1396,7 +1396,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             critical_exit_signals = ["stop_out_long", "stop_out_short", "session_close"]
             
             # Check if we should ignore non-entry signals
-            ignore_non_entry = os.getenv('IGNORE_NON_ENTRY_SIGNALS', 'true').lower() in ('true','1','yes','on')
+            ignore_non_entry = os.getenv('IGNORE_NON_ENTRY_SIGNALS', 'false').lower() in ('true','1','yes','on')
             logger.info(f"IGNORE_NON_ENTRY_SIGNALS environment variable: {os.getenv('IGNORE_NON_ENTRY_SIGNALS')}")
             logger.info(f"ignore_non_entry setting: {ignore_non_entry}")
             logger.info(f"Processing signal: {signal_type}")
