@@ -227,7 +227,7 @@ async def _bootstrap(args: argparse.Namespace) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start TradingView webhook server with TopStepX bot")
     parser.add_argument("--account-id", type=str, help="Account ID to trade on (optional)")
-    parser.add_argument("--position-size", type=int, default=1, help="Contracts per position (default: 1)")
+    parser.add_argument("--position-size", type=int, default=int(os.getenv("POSITION_SIZE", "1")), help="Contracts per position (default: from POSITION_SIZE env var)")
     parser.add_argument("--close-entire-at-tp1", action='store_true', help="Flatten position at TP1 instead of partial")
     parser.add_argument("--host", type=str, default=os.getenv("WEBHOOK_HOST", "0.0.0.0"), help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=int(os.getenv("WEBHOOK_PORT", "8080")), help="Bind port (default: 8080)")

@@ -1397,6 +1397,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             # Check if we should ignore non-entry signals
             ignore_non_entry = os.getenv('IGNORE_NON_ENTRY_SIGNALS', 'true').lower() in ('true','1','yes','on')
+            logger.info(f"IGNORE_NON_ENTRY_SIGNALS environment variable: {os.getenv('IGNORE_NON_ENTRY_SIGNALS')}")
+            logger.info(f"ignore_non_entry setting: {ignore_non_entry}")
+            logger.info(f"Processing signal: {signal_type}")
             
             if ignore_non_entry and signal_type not in entry_signals + critical_exit_signals:
                 logger.info(f"Ignoring non-entry signal: {signal_type} (IGNORE_NON_ENTRY_SIGNALS=true)")
@@ -1538,7 +1541,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         stop_loss_price=stop_loss,
                         take_profit_1_price=take_profit_1,
                         take_profit_2_price=take_profit_2,
-                        tp1_quantity=max(1, int(round(position_size * 0.75))),  # 75% at TP1
+                        tp1_quantity=max(1, int(round(position_size * float(os.getenv('TP1_FRACTION', '0.75'))))),  # Use TP1_FRACTION env var
                         account_id=self.webhook_server.account_id
                     )
                     logger.info(f"Created single position with staged exits: {position_size} contracts, TP1: {take_profit_1}, TP2: {take_profit_2}")
@@ -1672,7 +1675,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         stop_loss_price=stop_loss,
                         take_profit_1_price=take_profit_1,
                         take_profit_2_price=take_profit_2,
-                        tp1_quantity=max(1, int(round(position_size * 0.75))),  # 75% at TP1
+                        tp1_quantity=max(1, int(round(position_size * float(os.getenv('TP1_FRACTION', '0.75'))))),  # Use TP1_FRACTION env var
                         account_id=self.webhook_server.account_id
                     )
                     logger.info(f"Created single position with staged exits: {position_size} contracts, TP1: {take_profit_1}, TP2: {take_profit_2}")
@@ -1890,11 +1893,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
             position_size = await self._get_position_size("BUY", trade_info.get("symbol", ""))
             
             if position_size > 1:
-                # Partial close: close 75% of the position (round up)
-                contracts_to_close = int(position_size * 0.75)
+                # Get TP1 fraction from environment variable
+                try:
+                    tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75'))
+                    if not (0.0 < tp1_fraction < 1.0):
+                        tp1_fraction = 0.75
+                        logger.warning("Invalid TP1_FRACTION, using default 0.75")
+                except (ValueError, TypeError):
+                    tp1_fraction = 0.75
+                    logger.warning("Invalid TP1_FRACTION, using default 0.75")
+                
+                # Partial close: close TP1_FRACTION of the position (round up)
+                contracts_to_close = int(position_size * tp1_fraction)
                 if contracts_to_close == 0:
                     contracts_to_close = 1  # At least close 1 contract
-                logger.info(f"Trimming {contracts_to_close} contracts from {position_size} total long position (75% close)")
+                logger.info(f"Trimming {contracts_to_close} contracts from {position_size} total long position ({tp1_fraction*100:.0f}% close)")
                 
                 # Place sell order to close partial position
                 result = await self.trading_bot.place_market_order(
@@ -1943,11 +1956,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
             position_size = await self._get_position_size("SELL", trade_info.get("symbol", ""))
             
             if position_size > 1:
-                # Partial close: close 75% of the position (round up)
-                contracts_to_close = int(position_size * 0.75)
+                # Get TP1 fraction from environment variable
+                try:
+                    tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75'))
+                    if not (0.0 < tp1_fraction < 1.0):
+                        tp1_fraction = 0.75
+                        logger.warning("Invalid TP1_FRACTION, using default 0.75")
+                except (ValueError, TypeError):
+                    tp1_fraction = 0.75
+                    logger.warning("Invalid TP1_FRACTION, using default 0.75")
+                
+                # Partial close: close TP1_FRACTION of the position (round up)
+                contracts_to_close = int(position_size * tp1_fraction)
                 if contracts_to_close == 0:
                     contracts_to_close = 1  # At least close 1 contract
-                logger.info(f"Trimming {contracts_to_close} contracts from {position_size} total short position (75% close)")
+                logger.info(f"Trimming {contracts_to_close} contracts from {position_size} total short position ({tp1_fraction*100:.0f}% close)")
                 
                 # Place buy order to close partial position
                 result = await self.trading_bot.place_market_order(
@@ -2197,11 +2220,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     position_size = await self._get_position_size("BUY", trade_info.get("symbol", ""))
                     
                     if position_size > 1:
-                        # Partial close: close 75% of the position (round up)
-                        contracts_to_close = int(position_size * 0.75)
+                        # Partial close: close TP1_FRACTION of the position (round up)
+                        tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75'))
+                        contracts_to_close = int(position_size * tp1_fraction)
                         if contracts_to_close == 0:
                             contracts_to_close = 1  # At least close 1 contract
-                        logger.info(f"TP1 hit: closing {contracts_to_close} contracts from {position_size} total long position (75% close)")
+                        logger.info(f"TP1 hit: closing {contracts_to_close} contracts from {position_size} total long position ({tp1_fraction*100:.0f}% close)")
                         
                         # Place sell order to close partial position
                         result = await self.trading_bot.place_market_order(
@@ -2264,11 +2288,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     position_size = await self._get_position_size("SELL", trade_info.get("symbol", ""))
                     
                     if position_size > 1:
-                        # Partial close: close 75% of the position (round up)
-                        contracts_to_close = int(position_size * 0.75)
+                        # Partial close: close TP1_FRACTION of the position (round up)
+                        tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75'))
+                        contracts_to_close = int(position_size * tp1_fraction)
                         if contracts_to_close == 0:
                             contracts_to_close = 1  # At least close 1 contract
-                        logger.info(f"TP1 hit: closing {contracts_to_close} contracts from {position_size} total short position (75% close)")
+                        logger.info(f"TP1 hit: closing {contracts_to_close} contracts from {position_size} total short position ({tp1_fraction*100:.0f}% close)")
                         
                         # Place buy order to close partial position
                         result = await self.trading_bot.place_market_order(
@@ -2483,16 +2508,16 @@ class WebhookServer:
     """TradingView webhook server"""
     
     def __init__(self, trading_bot: TopStepXTradingBot, host: str = "localhost", port: int = 8080, 
-                 account_id: str = None, position_size: int = 1, close_entire_position_at_tp1: bool = False):
+                 account_id: str = None, position_size: int = None, close_entire_position_at_tp1: bool = False):
         self.trading_bot = trading_bot
         self.host = host
         self.port = port
         self.server = None
         self.server_thread = None
         
-        # Trading configuration
+        # Trading configuration - use environment variables if not provided
         self.account_id = account_id
-        self.position_size = position_size
+        self.position_size = position_size if position_size is not None else int(os.getenv('POSITION_SIZE', '1'))
         self.close_entire_position_at_tp1 = close_entire_position_at_tp1
         
         # FIXED: Enhanced debounce control to prevent duplicate opens
@@ -2790,7 +2815,12 @@ async def main():
         logger.info(f"Account ID type: {type(account_id)}, length: {len(account_id)}")
     else:
         logger.warning("No account ID found in environment variables")
+    # Debug environment variables
+    pos_size_env = os.getenv('POSITION_SIZE')
+    logger.info(f"POSITION_SIZE environment variable: {repr(pos_size_env)}")
     position_size = int(os.getenv('POSITION_SIZE', '1'))
+    logger.info(f"Final position_size: {position_size}")
+    
     close_entire_at_tp1 = os.getenv('CLOSE_ENTIRE_POSITION_AT_TP1', 'false').lower() in ('true', '1', 'yes', 'on')
     use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
     # TP1 split fraction (0.0-1.0). Default 0.75
@@ -2939,7 +2969,7 @@ async def main():
         host=host, 
         port=port,
         account_id=account_id,
-        position_size=position_size,
+        position_size=position_size,  # This will use env var if None
         close_entire_position_at_tp1=close_entire_at_tp1
     )
 

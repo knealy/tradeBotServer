@@ -53,7 +53,7 @@ class DeploymentValidator:
                 host="localhost",
                 port=8080,
                 account_id=os.getenv('TOPSETPX_ACCOUNT_ID', '11481693'),
-                position_size=int(os.getenv('POSITION_SIZE', '3')),
+                position_size=int(os.getenv('POSITION_SIZE', '6')),
                 close_entire_position_at_tp1=False  # Use staged exits
             )
             

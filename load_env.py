@@ -25,6 +25,10 @@ def load_env_file():
         # Check if running on Railway (Railway sets RAILWAY_ENVIRONMENT)
         if os.getenv('RAILWAY_ENVIRONMENT'):
             print("ℹ️  Using Railway environment variables (no .env file needed)")
+            # Debug: Print some key environment variables
+            print(f"🔍 POSITION_SIZE: {os.getenv('POSITION_SIZE')}")
+            print(f"🔍 IGNORE_NON_ENTRY_SIGNALS: {os.getenv('IGNORE_NON_ENTRY_SIGNALS')}")
+            print(f"🔍 TP1_FRACTION: {os.getenv('TP1_FRACTION')}")
         else:
             print("⚠️  No .env file found, using system environment variables")
 
