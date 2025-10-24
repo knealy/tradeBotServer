@@ -1,6 +1,6 @@
 {
   "name": "TopStepX Trading Bot Development Guidelines",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Comprehensive guidelines for AI assistants working on the TopStepX Trading Bot project",
   "project_overview": {
     "purpose": "Automated trading bot that receives TradingView webhook signals and executes trades on TopStepX platform",
@@ -21,6 +21,7 @@
         "POSITION_SIZE - Controls order quantity (default: 1)",
         "IGNORE_NON_ENTRY_SIGNALS - Controls trim/close signal processing (default: false)",
         "TP1_FRACTION - Controls partial close percentage (default: 0.75)",
+        "USE_NATIVE_BRACKETS - Controls bracket mode (default: false)",
         "TOPSTEPX_ACCOUNT_ID - Required for order placement",
         "TOPSTEPX_USERNAME - Required for authentication",
         "TOPSTEPX_PASSWORD - Required for authentication"
@@ -28,11 +29,12 @@
       "enforcement": "All hardcoded values must be replaced with os.getenv() calls with proper defaults"
     },
     "order_validation": {
-      "description": "ALL order placements must be validated before considering successful",
+      "description": "Order validation must be conditional based on bracket mode",
       "requirements": [
         "Check API response structure and success field",
         "Verify order ID is returned",
-        "Confirm order exists in TopStepX open orders",
+        "Position Brackets (USE_NATIVE_BRACKETS=false): Trust API response, no complex verification",
+        "OCO Brackets (USE_NATIVE_BRACKETS=true): Verify orders exist for bracket management",
         "Log full API request/response for debugging",
         "Send Discord notifications ONLY for verified successful orders"
       ]
@@ -105,6 +107,26 @@
         "Return immediate response to TradingView",
         "Handle errors gracefully without blocking"
       ]
+    },
+    "tp1_partial_close_failures": {
+      "description": "TP1 signals close entire position instead of partial close",
+      "prevention": [
+        "Ensure order verification is conditional based on USE_NATIVE_BRACKETS",
+        "Position Brackets: Trust API response, avoid complex verification",
+        "OCO Brackets: Verify orders exist for bracket management",
+        "Never trigger 'flatten all positions' for successful partial closes",
+        "Check that TP1_FRACTION is properly applied to position calculations"
+      ]
+    },
+    "order_verification_false_failures": {
+      "description": "Order verification fails for market orders that fill immediately",
+      "prevention": [
+        "Market orders often fill immediately and won't appear in open orders",
+        "Order history API may have delays showing newly placed orders",
+        "For Position Brackets mode, trust API response if success=true and orderId exists",
+        "Only verify orders when necessary for bracket management (OCO mode)",
+        "Avoid triggering fallback logic for normal market order behavior"
+      ]
     }
   },
   "testing_strategy": {
@@ -167,13 +189,19 @@
       "No historical orders found",
       "Failed to broadcast trade event",
       "Order verification failed",
-      "API returned non-dict response"
+      "API returned non-dict response",
+      "TP1 partial close failed, flattening all positions",
+      "⚠️ ORDER VERIFICATION FAILED: Order ID not found",
+      "⚠️ FLATTEN ALL POSITIONS"
     ],
     "success_indicators": [
       "Order placed successfully with ID:",
       "✅ Order verified:",
       "Order placed and verified successfully",
-      "Discord notification sent successfully"
+      "Discord notification sent successfully",
+      "✅ Position Brackets mode: Trusting API response",
+      "TP1 hit: closing X contracts from Y total position",
+      "TopStepX will automatically manage stop/take profit orders"
     ]
   },
   "deployment_checklist": {
@@ -211,7 +239,59 @@
       "2. Verify async background processing is working",
       "3. Look for blocking API calls",
       "4. Check for infinite loops or hangs"
+    ],
+    "tp1_partial_close_issues": [
+      "1. Check if TP1 signals are being ignored (IGNORE_NON_ENTRY_SIGNALS=false)",
+      "2. Verify TP1_FRACTION is correctly applied to position calculations",
+      "3. Look for 'TP1 partial close failed, flattening all positions' errors",
+      "4. Check if order verification is failing for market orders",
+      "5. Verify USE_NATIVE_BRACKETS setting matches verification logic"
+    ],
+    "order_verification_failures": [
+      "1. Check if verification is appropriate for bracket mode",
+      "2. Position Brackets: Trust API response, avoid complex verification",
+      "3. OCO Brackets: Verify orders exist for bracket management",
+      "4. Look for '⚠️ ORDER VERIFICATION FAILED' in logs",
+      "5. Check if market orders are filling immediately (normal behavior)"
     ]
+  },
+  "critical_insights": {
+    "bracket_mode_understanding": {
+      "description": "Order verification must be conditional based on bracket mode",
+      "key_points": [
+        "Position Brackets (USE_NATIVE_BRACKETS=false): TopStepX automatically manages stop/take profit orders",
+        "OCO Brackets (USE_NATIVE_BRACKETS=true): Manual bracket management requires order verification",
+        "Never apply complex verification to Position Brackets mode",
+        "Trust API response for Position Brackets if success=true and orderId exists"
+      ]
+    },
+    "tp1_partial_close_logic": {
+      "description": "TP1 signals must respect partial close logic without triggering fallbacks",
+      "key_points": [
+        "TP1_FRACTION controls partial close percentage (default: 0.75)",
+        "Calculate partial close: int(position_size * TP1_FRACTION)",
+        "Never trigger 'flatten all positions' for successful partial closes",
+        "Position Brackets automatically adjust remaining brackets"
+      ]
+    },
+    "market_order_behavior": {
+      "description": "Market orders have different verification requirements than limit orders",
+      "key_points": [
+        "Market orders often fill immediately and won't appear in open orders",
+        "Order history API may have delays showing newly placed orders",
+        "This is normal behavior, not a failure",
+        "Avoid false 'order verification failed' triggers"
+      ]
+    },
+    "environment_variable_precedence": {
+      "description": "Railway environment variables must always take precedence",
+      "key_points": [
+        "Check all hardcoded values in deployment configs (railway.json, Procfile)",
+        "Remove hardcoded --position-size arguments from start commands",
+        "Use os.getenv() with proper defaults throughout codebase",
+        "Test with different environment variable values to verify precedence"
+      ]
+    }
   },
   "best_practices": {
     "code_quality": [
@@ -232,6 +312,12 @@
       "Use async operations for API calls",
       "Implement proper caching for frequently accessed data",
       "Monitor memory usage and resource consumption"
+    ],
+    "bracket_mode_handling": [
+      "Always check USE_NATIVE_BRACKETS before applying verification logic",
+      "Position Brackets: Trust API response, minimal verification",
+      "OCO Brackets: Verify orders exist for bracket management",
+      "Never apply OCO verification logic to Position Brackets mode"
     ]
   },
   "contact_and_support": {
