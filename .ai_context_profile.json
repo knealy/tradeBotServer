@@ -1,0 +1,242 @@
+{
+  "name": "TopStepX Trading Bot Development Guidelines",
+  "version": "1.0.0",
+  "description": "Comprehensive guidelines for AI assistants working on the TopStepX Trading Bot project",
+  "project_overview": {
+    "purpose": "Automated trading bot that receives TradingView webhook signals and executes trades on TopStepX platform",
+    "architecture": "Webhook server receives JSON payloads from TradingView, processes signals, and places orders via TopStepX API",
+    "deployment": "Railway.app with environment variables for configuration"
+  },
+  "critical_priorities": {
+    "1": "NEVER break the core webhook functionality - webhook server MUST always respond to TradingView signals",
+    "2": "NEVER deploy changes that could cause silent order failures - all orders must be properly validated",
+    "3": "ALWAYS respect Railway environment variables over hardcoded values",
+    "4": "ALWAYS test order placement validation before deploying",
+    "5": "NEVER modify core trading logic without comprehensive testing"
+  },
+  "non_negotiable_rules": {
+    "environment_variables": {
+      "description": "Railway environment variables ALWAYS take precedence over hardcoded values",
+      "critical_vars": [
+        "POSITION_SIZE - Controls order quantity (default: 1)",
+        "IGNORE_NON_ENTRY_SIGNALS - Controls trim/close signal processing (default: false)",
+        "TP1_FRACTION - Controls partial close percentage (default: 0.75)",
+        "TOPSTEPX_ACCOUNT_ID - Required for order placement",
+        "TOPSTEPX_USERNAME - Required for authentication",
+        "TOPSTEPX_PASSWORD - Required for authentication"
+      ],
+      "enforcement": "All hardcoded values must be replaced with os.getenv() calls with proper defaults"
+    },
+    "order_validation": {
+      "description": "ALL order placements must be validated before considering successful",
+      "requirements": [
+        "Check API response structure and success field",
+        "Verify order ID is returned",
+        "Confirm order exists in TopStepX open orders",
+        "Log full API request/response for debugging",
+        "Send Discord notifications ONLY for verified successful orders"
+      ]
+    },
+    "error_handling": {
+      "description": "Comprehensive error handling prevents silent failures",
+      "requirements": [
+        "Log all API responses with full details",
+        "Validate response structure before processing",
+        "Check for explicit error fields in responses",
+        "Verify order placement with post-placement checks",
+        "Handle network timeouts and API errors gracefully"
+      ]
+    }
+  },
+  "development_guidelines": {
+    "before_making_changes": [
+      "1. Read and understand the current codebase structure",
+      "2. Identify all environment variables used in the change",
+      "3. Check for existing hardcoded values that should use env vars",
+      "4. Plan comprehensive testing strategy",
+      "5. Consider impact on webhook response times"
+    ],
+    "during_development": [
+      "1. Add extensive debug logging for API calls",
+      "2. Validate all environment variable usage",
+      "3. Test error handling paths",
+      "4. Ensure backward compatibility",
+      "5. Document any new environment variables needed"
+    ],
+    "before_deployment": [
+      "1. Verify all hardcoded values are replaced with env vars",
+      "2. Test order placement with real API calls",
+      "3. Validate error handling with simulated failures",
+      "4. Check webhook response times",
+      "5. Review all logging output for clarity"
+    ],
+    "after_deployment": [
+      "1. Monitor logs for API response patterns",
+      "2. Verify orders are actually placing in TopStepX",
+      "3. Check Discord notifications are accurate",
+      "4. Monitor for any silent failures",
+      "5. Validate environment variables are being used correctly"
+    ]
+  },
+  "common_pitfalls": {
+    "silent_failures": {
+      "description": "API returns success but doesn't actually place orders",
+      "prevention": [
+        "Always validate API response structure",
+        "Check for order ID in response",
+        "Verify order exists in TopStepX after placement",
+        "Log full API request/response for debugging"
+      ]
+    },
+    "environment_variable_override": {
+      "description": "Hardcoded values override Railway environment variables",
+      "prevention": [
+        "Search codebase for hardcoded numbers",
+        "Replace all defaults with os.getenv() calls",
+        "Test with different environment variable values",
+        "Verify Railway deployment config doesn't override env vars"
+      ]
+    },
+    "webhook_timeout": {
+      "description": "Webhook processing takes too long and times out",
+      "prevention": [
+        "Keep webhook processing under 30 seconds",
+        "Use async background processing for long operations",
+        "Return immediate response to TradingView",
+        "Handle errors gracefully without blocking"
+      ]
+    }
+  },
+  "testing_strategy": {
+    "unit_tests": [
+      "Test environment variable loading",
+      "Test API response validation",
+      "Test error handling paths",
+      "Test order verification logic"
+    ],
+    "integration_tests": [
+      "Test webhook signal processing",
+      "Test order placement with real API",
+      "Test Discord notification accuracy",
+      "Test error recovery scenarios"
+    ],
+    "deployment_tests": [
+      "Verify Railway environment variables are loaded",
+      "Test with actual TradingView webhook",
+      "Confirm orders appear in TopStepX",
+      "Validate Discord notifications are sent"
+    ]
+  },
+  "file_structure": {
+    "core_files": {
+      "webhook_server.py": "Main webhook server handling TradingView signals",
+      "trading_bot.py": "Core trading logic and TopStepX API integration",
+      "discord_notifier.py": "Discord notification system",
+      "load_env.py": "Environment variable loading for Railway"
+    },
+    "configuration_files": {
+      "railway.json": "Railway deployment configuration",
+      "Procfile": "Railway process configuration",
+      "requirements.txt": "Python dependencies"
+    },
+    "critical_sections": {
+      "webhook_server.py": [
+        "_execute_signal_action - Main signal processing",
+        "_execute_open_long/_execute_open_short - Order execution",
+        "_execute_trim_long/_execute_trim_short - Partial closes",
+        "_execute_tp1_hit_long/_execute_tp1_hit_short - TP1 processing"
+      ],
+      "trading_bot.py": [
+        "place_market_order - Core order placement",
+        "get_open_orders - Order verification",
+        "get_order_history - Historical order data"
+      ]
+    }
+  },
+  "monitoring_and_debugging": {
+    "key_log_patterns": [
+      "===== ORDER PLACEMENT DEBUG =====",
+      "===== API RESPONSE =====",
+      "✅ Order verified:",
+      "⚠️ ORDER VERIFICATION FAILED:",
+      "Order placed successfully with ID:",
+      "API returned success but NO order ID!"
+    ],
+    "error_indicators": [
+      "No open positions found",
+      "No historical orders found",
+      "Failed to broadcast trade event",
+      "Order verification failed",
+      "API returned non-dict response"
+    ],
+    "success_indicators": [
+      "Order placed successfully with ID:",
+      "✅ Order verified:",
+      "Order placed and verified successfully",
+      "Discord notification sent successfully"
+    ]
+  },
+  "deployment_checklist": {
+    "pre_deployment": [
+      "✓ All hardcoded values replaced with environment variables",
+      "✓ API response validation implemented",
+      "✓ Order verification logic added",
+      "✓ Error handling comprehensive",
+      "✓ Debug logging added for troubleshooting"
+    ],
+    "post_deployment": [
+      "✓ Monitor logs for API response patterns",
+      "✓ Verify orders appear in TopStepX",
+      "✓ Check Discord notifications accuracy",
+      "✓ Validate environment variables are loaded",
+      "✓ Test with actual TradingView webhook"
+    ]
+  },
+  "emergency_procedures": {
+    "silent_order_failures": [
+      "1. Check logs for '===== API RESPONSE =====' patterns",
+      "2. Look for 'API returned success but NO order ID!' errors",
+      "3. Verify TopStepX API hasn't changed response format",
+      "4. Check session token validity",
+      "5. Validate account permissions"
+    ],
+    "environment_variable_issues": [
+      "1. Check Railway deployment settings",
+      "2. Verify os.getenv() calls have correct defaults",
+      "3. Look for hardcoded values in deployment configs",
+      "4. Test with different environment variable values"
+    ],
+    "webhook_timeouts": [
+      "1. Check for long-running operations in signal processing",
+      "2. Verify async background processing is working",
+      "3. Look for blocking API calls",
+      "4. Check for infinite loops or hangs"
+    ]
+  },
+  "best_practices": {
+    "code_quality": [
+      "Always use type hints for function parameters",
+      "Add comprehensive docstrings for complex functions",
+      "Use meaningful variable names",
+      "Add debug logging for critical operations",
+      "Handle exceptions gracefully with specific error messages"
+    ],
+    "security": [
+      "Never log sensitive information (passwords, tokens)",
+      "Use environment variables for all configuration",
+      "Validate all input data from webhooks",
+      "Implement proper error handling to prevent information leakage"
+    ],
+    "performance": [
+      "Keep webhook processing under 30 seconds",
+      "Use async operations for API calls",
+      "Implement proper caching for frequently accessed data",
+      "Monitor memory usage and resource consumption"
+    ]
+  },
+  "contact_and_support": {
+    "documentation": "See README.md and DEPLOYMENT_GUIDE.md for detailed setup instructions",
+    "logs": "Check webhook_server.log and trading_bot.log for detailed execution logs",
+    "monitoring": "Use Railway dashboard to monitor deployment status and logs"
+  }
+}

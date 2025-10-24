@@ -1169,6 +1169,14 @@ class TopStepXTradingBot:
                         "reduceOnly": True
                     }
             
+            # EMERGENCY DEBUG LOGGING
+            logger.info(f"===== ORDER PLACEMENT DEBUG =====")
+            logger.info(f"Symbol: {symbol}, Side: {side}, Quantity: {quantity}")
+            logger.info(f"Account ID: {target_account}")
+            logger.info(f"Contract ID: {contract_id}")
+            logger.info(f"Order Data: {json.dumps(order_data, indent=2)}")
+            logger.info(f"=================================")
+            
             # Make real API call to place order using session token
             headers = {
                 "accept": "text/plain",
@@ -1178,24 +1186,72 @@ class TopStepXTradingBot:
             
             response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
+            # Log FULL API response
+            logger.info(f"===== API RESPONSE =====")
+            logger.info(f"Response Type: {type(response)}")
+            logger.info(f"Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
+            logger.info(f"Full Response: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
+            logger.info(f"========================")
+            
+            # Check for explicit errors first
             if "error" in response:
-                logger.error(f"Failed to place order: {response['error']}")
+                logger.error(f"API returned error: {response['error']}")
                 return response
-            
-            # Check if order was actually successful
-            if response.get("success") == False:
+
+            # Validate response structure
+            if not isinstance(response, dict):
+                logger.error(f"API returned non-dict response: {type(response)}")
+                return {"error": f"Invalid API response type: {type(response)}"}
+
+            # Check success field explicitly
+            success = response.get("success")
+            if success is False or success is None or success == "false":
                 error_code = response.get("errorCode", "Unknown")
-                error_message = response.get("errorMessage", "No error message")
-                logger.error(f"Order failed: Error Code {error_code}, Message: {error_message}")
-                return {"error": f"Order failed: Error Code {error_code}, Message: {error_message}"}
-            
-            logger.info(f"Order placed successfully: {response}")
+                error_message = response.get("errorMessage", response.get("message", "No error message"))
+                logger.error(f"Order failed - success={success}, errorCode={error_code}, message={error_message}")
+                logger.error(f"Full response: {json.dumps(response, indent=2)}")
+                return {"error": f"Order failed: {error_message} (Code: {error_code})"}
+
+            # Check for order ID - real orders always have IDs
+            order_id = response.get("orderId") or response.get("id") or response.get("data", {}).get("orderId")
+            if not order_id:
+                logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
+                return {"error": "Order rejected: No order ID returned", "api_response": response}
+
+            logger.info(f"Order placed successfully with ID: {order_id}")
+            logger.info(f"Full response: {json.dumps(response, indent=2)}")
 
             # Activate monitoring for market orders (not limit orders)
             if order_type.lower() == "market":
                 self._monitoring_active = True
                 self._last_order_time = datetime.now()
                 logger.info("Monitoring activated for market order")
+
+            # Verify order was actually placed
+            try:
+                await asyncio.sleep(0.5)  # Brief delay for API consistency
+                open_orders = await self.get_open_orders(account_id=target_account)
+                
+                if "error" not in open_orders:
+                    # Check if our order exists
+                    our_order = None
+                    for order in open_orders:
+                        if order.get("customTag") == order_data.get("customTag"):
+                            our_order = order
+                            break
+                    
+                    if not our_order:
+                        logger.error(f"⚠️ ORDER VERIFICATION FAILED: Order ID {order_id} not found in open orders!")
+                        logger.error(f"Expected customTag: {order_data.get('customTag')}")
+                        logger.error(f"Open orders: {json.dumps(open_orders, indent=2)}")
+                        return {"error": "Order verification failed - order not found", "order_id": order_id}
+                    else:
+                        logger.info(f"✅ Order verified: ID {order_id} found in open orders")
+                else:
+                    logger.warning(f"Could not verify order - failed to get open orders: {open_orders.get('error')}")
+            except Exception as verify_err:
+                logger.warning(f"Could not verify order placement: {verify_err}")
+                # Don't fail the order, just log the warning
 
             # Send Discord notification for successful order
             try:
