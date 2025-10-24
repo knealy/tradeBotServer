@@ -66,7 +66,7 @@ class DiscordNotifier:
                     {"name": "Side", "value": side, "inline": True},
                     {"name": "Quantity", "value": str(quantity), "inline": True},
                     {"name": "Type", "value": order_type, "inline": True},
-                    {"name": "Entry Price", "value": str(price), "inline": True},
+                    {"name": "Fill Price", "value": str(price), "inline": True},
                     {"name": "Order ID", "value": str(order_id), "inline": True},
                     {"name": "Status", "value": status, "inline": True},
                     {"name": "Timestamp", "value": datetime.utcnow().strftime("%H:%M:%S UTC"), "inline": True}
@@ -200,11 +200,19 @@ class DiscordNotifier:
             symbol = position_data.get('symbol', 'Unknown')
             side = position_data.get('side', 'Unknown')
             quantity = position_data.get('quantity', 0)
-            entry_price = position_data.get('entry_price', 'Unknown')
-            exit_price = position_data.get('exit_price', 'Unknown')
-            pnl = position_data.get('pnl', 0)
-            close_method = position_data.get('close_method', 'Unknown')
+            entry_price = position_data.get('entry_price', 0)
+            exit_price = position_data.get('exit_price', 0)
+            close_method = position_data.get('close_method', 'Market Close')
             position_id = position_data.get('position_id', 'Unknown')
+            
+            # Calculate P&L if we have both prices
+            if entry_price and exit_price and entry_price != 0:
+                if side.upper() == 'LONG':
+                    pnl = (exit_price - entry_price) * quantity
+                else:  # SHORT
+                    pnl = (entry_price - exit_price) * quantity
+            else:
+                pnl = 0
             
             # Create embed
             embed = {
@@ -215,8 +223,8 @@ class DiscordNotifier:
                     {"name": "Symbol", "value": symbol, "inline": True},
                     {"name": "Side", "value": side, "inline": True},
                     {"name": "Quantity", "value": str(quantity), "inline": True},
-                    {"name": "Entry Price", "value": str(entry_price), "inline": True},
-                    {"name": "Exit Price", "value": str(exit_price), "inline": True},
+                    {"name": "Entry Price", "value": f"${entry_price:.2f}" if entry_price else "Unknown", "inline": True},
+                    {"name": "Exit Price", "value": f"${exit_price:.2f}" if exit_price else "Unknown", "inline": True},
                     {"name": "P&L", "value": f"${pnl:.2f}", "inline": True},
                     {"name": "Close Method", "value": str(close_method), "inline": True},
                     {"name": "Position ID", "value": str(position_id), "inline": True},

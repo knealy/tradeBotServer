@@ -784,6 +784,11 @@ class TopStepXTradingBot:
                     try:
                         account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
 
+                        # Only notify for orders we placed (with customTag)
+                        custom_tag = order.get('customTag', '')
+                        if not custom_tag or not custom_tag.startswith('TradingBot-v1.0'):
+                            continue  # Skip orders not placed by our bot
+                            
                         notification_data = {
                             'symbol': symbol,
                             'side': side,
@@ -1170,12 +1175,12 @@ class TopStepXTradingBot:
                     }
             
             # EMERGENCY DEBUG LOGGING
-            logger.info(f"===== ORDER PLACEMENT DEBUG =====")
+            logger.info("===== ORDER PLACEMENT DEBUG =====")
             logger.info(f"Symbol: {symbol}, Side: {side}, Quantity: {quantity}")
             logger.info(f"Account ID: {target_account}")
             logger.info(f"Contract ID: {contract_id}")
             logger.info(f"Order Data: {json.dumps(order_data, indent=2)}")
-            logger.info(f"=================================")
+            logger.info("=================================")
             
             # Make real API call to place order using session token
             headers = {
@@ -1187,11 +1192,11 @@ class TopStepXTradingBot:
             response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
             # Log FULL API response
-            logger.info(f"===== API RESPONSE =====")
+            logger.info("===== API RESPONSE =====")
             logger.info(f"Response Type: {type(response)}")
             logger.info(f"Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
             logger.info(f"Full Response: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
-            logger.info(f"========================")
+            logger.info("========================")
             
             # Check for explicit errors first
             if "error" in response:
