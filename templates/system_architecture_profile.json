@@ -1,0 +1,237 @@
+{
+  "system_name": "TopStepX Trading Bot with Professional Dashboard",
+  "version": "2.0.0",
+  "created": "2025-10-24",
+  "purpose": "Template for rebuilding or creating similar trading systems",
+  
+  "architecture": {
+    "description": "Multi-service trading system with webhook receiver, API backend, and modern dashboard",
+    "components": [
+      {
+        "name": "Webhook Server",
+        "technology": "Python WebSocket Server",
+        "port": 8080,
+        "purpose": "Receives TradingView webhook signals for automated trading",
+        "critical": true,
+        "files": ["webhook_server.py", "start_webhook.py"],
+        "dependencies": ["trading_bot.py", "discord_notifier.py"]
+      },
+      {
+        "name": "Trading Bot Core",
+        "technology": "Python",
+        "purpose": "Core trading logic and TopStepX API integration",
+        "critical": true,
+        "files": ["trading_bot.py"],
+        "api_integration": "TopStepX API (REST + SignalR)",
+        "features": [
+          "Order placement and management",
+          "Position tracking",
+          "Real-time market data streaming",
+          "Bracket order management"
+        ]
+      },
+      {
+        "name": "FastAPI Backend",
+        "technology": "FastAPI",
+        "port": 8001,
+        "purpose": "REST API for dashboard and external integrations",
+        "files": ["backend/main.py", "backend/api/routes/*"],
+        "endpoints": [
+          "/api/accounts",
+          "/api/positions",
+          "/api/orders",
+          "/api/trades",
+          "/api/market-data",
+          "/api/system"
+        ]
+      },
+      {
+        "name": "React Dashboard",
+        "technology": "React + Vite + Tailwind CSS",
+        "port": 5173,
+        "purpose": "Professional trading dashboard UI",
+        "files": ["frontend/src/*"],
+        "features": [
+          "Real-time position monitoring",
+          "TradingView charts integration",
+          "Order management interface",
+          "Performance analytics"
+        ]
+      },
+      {
+        "name": "Database",
+        "technology": "PostgreSQL + TimescaleDB",
+        "port": 5432,
+        "purpose": "Store trading history and OHLCV data",
+        "features": [
+          "Time-series data optimization",
+          "Automatic timeframe aggregation",
+          "Trade history storage"
+        ]
+      }
+    ]
+  },
+  
+  "deployment": {
+    "platform": "Railway.app",
+    "strategy": "Git-based continuous deployment",
+    "services": [
+      {
+        "name": "Main App",
+        "command": "python3 start_webhook.py & uvicorn backend.main:app --host 0.0.0.0 --port $PORT",
+        "build": "npm install --prefix frontend && npm run build --prefix frontend && pip install -r requirements.txt"
+      },
+      {
+        "name": "PostgreSQL",
+        "type": "Database",
+        "plugin": "TimescaleDB extension"
+      }
+    ],
+    "environment_variables": {
+      "critical": [
+        "TOPSTEPX_USERNAME",
+        "TOPSTEPX_PASSWORD",
+        "TOPSTEPX_ACCOUNT_ID",
+        "DATABASE_URL"
+      ],
+      "configuration": [
+        "POSITION_SIZE",
+        "IGNORE_NON_ENTRY_SIGNALS",
+        "TP1_FRACTION",
+        "USE_NATIVE_BRACKETS"
+      ]
+    }
+  },
+  
+  "tech_stack": {
+    "backend": {
+      "language": "Python 3.13",
+      "frameworks": ["FastAPI", "WebSockets"],
+      "libraries": [
+        "requests - HTTP client",
+        "signalrcore - Real-time data",
+        "sqlalchemy - ORM",
+        "asyncpg - Async PostgreSQL"
+      ]
+    },
+    "frontend": {
+      "framework": "React 18",
+      "build_tool": "Vite",
+      "styling": "Tailwind CSS",
+      "charts": "TradingView Lightweight Charts",
+      "http_client": "Axios"
+    },
+    "database": {
+      "primary": "PostgreSQL 15",
+      "extension": "TimescaleDB",
+      "features": ["Hypertables", "Continuous aggregates"]
+    },
+    "infrastructure": {
+      "hosting": "Railway.app",
+      "container": "Docker",
+      "orchestration": "docker-compose (local)"
+    }
+  },
+  
+  "data_flow": {
+    "trading_signals": [
+      "TradingView Alert → Webhook (port 8080)",
+      "Webhook validates signal → Trading Bot",
+      "Trading Bot → TopStepX API",
+      "Order execution → Database storage",
+      "Real-time broadcast → WebSocket → Dashboard"
+    ],
+    "dashboard_queries": [
+      "User interaction → React Frontend",
+      "API call → FastAPI Backend (port 8001)",
+      "Backend → Database OR Trading Bot",
+      "Response → Frontend update"
+    ],
+    "market_data": [
+      "TopStepX SignalR Hub → Trading Bot",
+      "Trading Bot → Database (OHLCV storage)",
+      "TimescaleDB aggregation → Multiple timeframes",
+      "Backend API → Frontend charts"
+    ]
+  },
+  
+  "critical_patterns": {
+    "environment_variable_precedence": {
+      "description": "Always use os.getenv() with defaults, never hardcode values",
+      "example": "position_size = int(os.getenv('POSITION_SIZE', '1'))"
+    },
+    "order_verification": {
+      "description": "Conditional verification based on bracket mode",
+      "modes": {
+        "position_brackets": "Trust API response if success=true",
+        "oco_brackets": "Verify orders exist for bracket management"
+      }
+    },
+    "error_handling": {
+      "description": "Comprehensive logging and graceful degradation",
+      "requirements": [
+        "Log all API requests/responses",
+        "Discord notifications for critical failures",
+        "Never fail silently"
+      ]
+    },
+    "websocket_broadcasting": {
+      "description": "Real-time updates to all connected clients",
+      "pattern": "Event → Webhook → Trading Bot → WebSocket broadcast → Dashboard"
+    }
+  },
+  
+  "rebuild_instructions": {
+    "from_scratch": [
+      "1. Clone repository or create from this template",
+      "2. Copy .ai_context_profile.json to project root",
+      "3. Copy Makefile.template to Makefile",
+      "4. Run 'make install' to setup environment",
+      "5. Configure environment variables (see ENVIRONMENT_VARIABLES_FIXED.md)",
+      "6. Run 'make db-start' to start local database",
+      "7. Run 'make dev' to start development servers",
+      "8. Deploy to Railway with 'make deploy-prod'"
+    ],
+    "from_backup": [
+      "1. List available backups: 'make list-backups'",
+      "2. Extract desired backup to new directory",
+      "3. Run 'make install' to restore dependencies",
+      "4. Restore database if needed: 'make restore-db'",
+      "5. Update environment variables",
+      "6. Run 'make dev' to verify system works"
+    ]
+  },
+  
+  "testing_protocols": {
+    "pre_deployment": [
+      "make test-webhook - Verify webhook receives signals",
+      "make test-api - Verify API endpoints respond",
+      "make test-integration - Full system integration test",
+      "Manual: Place test order on demo account"
+    ],
+    "post_deployment": [
+      "Verify webhook health: curl https://domain/health",
+      "Check logs: railway logs",
+      "Monitor first 5 signals for correct execution",
+      "Verify Discord notifications",
+      "Check database connections"
+    ]
+  },
+  
+  "disaster_recovery": {
+    "backup_frequency": "Daily automatic backups",
+    "backup_retention": "30 days",
+    "rollback_procedures": [
+      "Railway UI: Redeploy previous deployment (fastest)",
+      "Git: Revert to backup branch and push",
+      "Local: Restore from tar.gz backup",
+      "Database: Restore from pg_dump backup"
+    ],
+    "monitoring": [
+      "Railway deployment status",
+      "Webhook response times",
+      "Order placement success rate",
+      "Discord notification for critical errors"
+    ]
+  }
+}

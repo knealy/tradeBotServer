@@ -1,0 +1,219 @@
+# Trading Bot System - Comprehensive Makefile Template
+# This template documents the entire build, test, deploy, and maintenance workflow
+# Use this as reference for rebuilding or creating similar systems
+
+.PHONY: help install test deploy backup restore clean
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+PROJECT_NAME := tradeBotServer
+PYTHON := python3
+PIP := pip3
+VENV := venv
+BACKUP_DIR := ~/$(PROJECT_NAME)-backups
+RAILWAY_APP := your-railway-app-name
+
+# =============================================================================
+# HELP
+# =============================================================================
+help:
+	@echo "Trading Bot System - Available Commands"
+	@echo "========================================"
+	@echo ""
+	@echo "Setup & Installation:"
+	@echo "  make install          - Install all dependencies"
+	@echo "  make install-dev      - Install dev dependencies"
+	@echo "  make venv             - Create Python virtual environment"
+	@echo ""
+	@echo "Development:"
+	@echo "  make dev              - Run development servers (webhook + FastAPI + frontend)"
+	@echo "  make dev-webhook      - Run webhook server only"
+	@echo "  make dev-api          - Run FastAPI backend only"
+	@echo "  make dev-frontend     - Run React frontend only"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test             - Run all tests"
+	@echo "  make test-webhook     - Test webhook endpoint"
+	@echo "  make test-api         - Test API endpoints"
+	@echo "  make test-integration - Run integration tests"
+	@echo ""
+	@echo "Database:"
+	@echo "  make db-start         - Start local PostgreSQL + TimescaleDB"
+	@echo "  make db-stop          - Stop database"
+	@echo "  make db-migrate       - Run database migrations"
+	@echo "  make db-seed          - Seed database with test data"
+	@echo ""
+	@echo "Build & Deploy:"
+	@echo "  make build            - Build frontend for production"
+	@echo "  make deploy-staging   - Deploy to staging environment"
+	@echo "  make deploy-prod      - Deploy to production (Railway)"
+	@echo ""
+	@echo "Backup & Restore:"
+	@echo "  make backup           - Create full project backup"
+	@echo "  make backup-db        - Backup database only"
+	@echo "  make restore          - Restore from latest backup"
+	@echo "  make list-backups     - List all available backups"
+	@echo ""
+	@echo "Maintenance:"
+	@echo "  make logs             - Tail all log files"
+	@echo "  make clean            - Remove build artifacts"
+	@echo "  make clean-all        - Remove everything (including venv)"
+	@echo "  make update-deps      - Update all dependencies"
+
+# =============================================================================
+# INSTALLATION
+# =============================================================================
+install: venv
+	$(VENV)/bin/$(PIP) install -r requirements.txt
+	cd frontend && npm install
+	@echo "✅ All dependencies installed"
+
+install-dev: install
+	$(VENV)/bin/$(PIP) install pytest pytest-asyncio black flake8
+	@echo "✅ Dev dependencies installed"
+
+venv:
+	$(PYTHON) -m venv $(VENV)
+	@echo "✅ Virtual environment created"
+
+# =============================================================================
+# DEVELOPMENT
+# =============================================================================
+dev: db-start
+	@echo "🚀 Starting full development environment..."
+	@$(MAKE) dev-webhook &
+	@$(MAKE) dev-api &
+	@$(MAKE) dev-frontend &
+	@echo "✅ All services started"
+	@echo "  - Webhook: http://localhost:8080"
+	@echo "  - API: http://localhost:8001"
+	@echo "  - Frontend: http://localhost:5173"
+
+dev-webhook:
+	$(VENV)/bin/$(PYTHON) start_webhook.py
+
+dev-api:
+	cd backend && $(VENV)/bin/uvicorn main:app --reload --port 8001
+
+dev-frontend:
+	cd frontend && npm run dev
+
+# =============================================================================
+# TESTING
+# =============================================================================
+test: test-webhook test-api
+
+test-webhook:
+	@echo "🧪 Testing webhook server..."
+	$(VENV)/bin/$(PYTHON) test_webhook.py
+	@echo "✅ Webhook tests passed"
+
+test-api:
+	@echo "🧪 Testing API endpoints..."
+	curl -s http://localhost:8001/api/health || echo "❌ API not running"
+
+test-integration:
+	@echo "🧪 Running integration tests..."
+	$(VENV)/bin/pytest tests/
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+db-start:
+	docker-compose up -d
+	@echo "✅ Database started"
+
+db-stop:
+	docker-compose down
+	@echo "✅ Database stopped"
+
+db-migrate:
+	cd backend && $(VENV)/bin/alembic upgrade head
+	@echo "✅ Database migrations applied"
+
+db-seed:
+	$(VENV)/bin/$(PYTHON) scripts/seed_database.py
+	@echo "✅ Database seeded"
+
+# =============================================================================
+# BUILD & DEPLOY
+# =============================================================================
+build:
+	cd frontend && npm run build
+	mkdir -p backend/static
+	cp -r frontend/dist/* backend/static/
+	@echo "✅ Frontend built for production"
+
+deploy-staging: test build
+	@echo "🚀 Deploying to staging..."
+	# Add staging deployment commands
+
+deploy-prod: test build backup
+	@echo "🚀 Deploying to Railway production..."
+	git push railway main
+	@echo "✅ Deployed to production"
+
+# =============================================================================
+# BACKUP & RESTORE
+# =============================================================================
+backup:
+	@mkdir -p $(BACKUP_DIR)
+	@TIMESTAMP=$$(date +%Y%m%d-%H%M%S); \
+	tar -czf $(BACKUP_DIR)/$(PROJECT_NAME)-backup-$$TIMESTAMP.tar.gz \
+		--exclude='venv' \
+		--exclude='node_modules' \
+		--exclude='__pycache__' \
+		--exclude='*.pyc' \
+		--exclude='.git' \
+		.; \
+	echo "✅ Backup created: $(BACKUP_DIR)/$(PROJECT_NAME)-backup-$$TIMESTAMP.tar.gz"
+
+backup-db:
+	@TIMESTAMP=$$(date +%Y%m%d-%H%M%S); \
+	docker exec -t $$(docker-compose ps -q postgres) pg_dumpall -c -U postgres > $(BACKUP_DIR)/db-backup-$$TIMESTAMP.sql; \
+	echo "✅ Database backup created"
+
+list-backups:
+	@ls -lh $(BACKUP_DIR)/
+
+restore:
+	@echo "⚠️  This will restore from the latest backup"
+	@echo "Press Ctrl+C to cancel, or Enter to continue..."
+	@read confirm
+	@LATEST=$$(ls -t $(BACKUP_DIR)/$(PROJECT_NAME)-backup-*.tar.gz | head -1); \
+	tar -xzf $$LATEST; \
+	echo "✅ Restored from $$LATEST"
+
+# =============================================================================
+# MAINTENANCE
+# =============================================================================
+logs:
+	tail -f webhook_server.log trading_bot.log
+
+clean:
+	rm -rf frontend/dist
+	rm -rf backend/static
+	rm -rf frontend/node_modules/.cache
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete
+	@echo "✅ Build artifacts cleaned"
+
+clean-all: clean
+	rm -rf $(VENV)
+	rm -rf frontend/node_modules
+	@echo "✅ Everything cleaned"
+
+update-deps:
+	$(VENV)/bin/$(PIP) install --upgrade pip
+	$(VENV)/bin/$(PIP) install --upgrade -r requirements.txt
+	cd frontend && npm update
+	@echo "✅ Dependencies updated"
+
+stop:
+	@echo "🛑 Stopping all services..."
+	pkill -f "start_webhook.py" || true
+	pkill -f "uvicorn main:app" || true
+	pkill -f "npm run dev" || true
+	docker-compose down
+	@echo "✅ All services stopped"

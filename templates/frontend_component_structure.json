@@ -1,0 +1,57 @@
+{
+  "component_architecture": {
+    "design_system": {
+      "color_scheme": {
+        "primary": "linear-gradient(135deg, #0d47a1, #1976d2)",
+        "success": "linear-gradient(135deg, #0097a7, #00bcd4)",
+        "warning": "linear-gradient(135deg, #f57f17, #ffb300)",
+        "background": "#000000",
+        "text": "#ffffff"
+      },
+      "reusable_components": [
+        "KPICard - Gradient card with metrics",
+        "DataTable - Sortable/filterable table",
+        "ActionButton - Consistent button styling",
+        "StatusBadge - Color-coded status indicators",
+        "Chart - Wrapper for TradingView charts"
+      ]
+    },
+    "pages": [
+      {
+        "name": "Dashboard",
+        "route": "/",
+        "components": ["MetricsOverview", "PositionsTable", "RecentTrades"]
+      },
+      {
+        "name": "Trading",
+        "route": "/trading",
+        "components": ["OrderForm", "MarketData", "QuickActions"]
+      },
+      {
+        "name": "Charts",
+        "route": "/charts",
+        "components": ["TradingViewChart", "TimeframeSelector", "TradeMarkers"]
+      },
+      {
+        "name": "History",
+        "route": "/history",
+        "components": ["TradeHistoryTable", "PerformanceCharts", "DateFilter"]
+      },
+      {
+        "name": "Settings",
+        "route": "/settings",
+        "components": ["AccountSelector", "SystemSettings", "Logs"]
+      }
+    ],
+    "state_management": {
+      "global_state": ["User account", "WebSocket connection", "System status"],
+      "hooks": [
+        "useWebSocket - WebSocket connection management",
+        "usePositions - Real-time position updates",
+        "useOrders - Order management",
+        "useMarketData - Real-time quotes",
+        "useTradeHistory - Historical trades with pagination"
+      ]
+    }
+  }
+}

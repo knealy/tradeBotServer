@@ -1,0 +1,109 @@
+{
+  "api_version": "1.0.0",
+  "base_url": "http://localhost:8001/api",
+  "authentication": "Bearer token (future implementation)",
+  
+  "endpoints": {
+    "accounts": {
+      "list": {
+        "method": "GET",
+        "path": "/accounts",
+        "description": "List all available trading accounts",
+        "response": {"type": "array", "items": "Account"}
+      },
+      "switch": {
+        "method": "POST",
+        "path": "/accounts/{id}/switch",
+        "description": "Switch to a different trading account",
+        "params": {"id": "string"},
+        "response": {"success": "boolean", "message": "string"}
+      }
+    },
+    "positions": {
+      "list": {
+        "method": "GET",
+        "path": "/positions",
+        "description": "Get all open positions",
+        "response": {"type": "array", "items": "Position"}
+      },
+      "close": {
+        "method": "POST",
+        "path": "/positions/{id}/close",
+        "description": "Close a specific position",
+        "params": {"id": "string"},
+        "response": {"success": "boolean", "order_id": "string"}
+      },
+      "flatten_all": {
+        "method": "POST",
+        "path": "/positions/flatten-all",
+        "description": "Emergency close all positions",
+        "response": {"closed": "number", "failed": "array"}
+      }
+    },
+    "orders": {
+      "list": {
+        "method": "GET",
+        "path": "/orders",
+        "description": "Get all open orders",
+        "response": {"type": "array", "items": "Order"}
+      },
+      "create": {
+        "method": "POST",
+        "path": "/orders",
+        "description": "Place a new order",
+        "body": {
+          "symbol": "string",
+          "side": "buy|sell",
+          "quantity": "number",
+          "type": "market|limit",
+          "price": "number (optional)"
+        },
+        "response": {"order_id": "string", "status": "string"}
+      },
+      "cancel": {
+        "method": "DELETE",
+        "path": "/orders/{id}",
+        "description": "Cancel a specific order",
+        "params": {"id": "string"},
+        "response": {"success": "boolean"}
+      }
+    },
+    "market_data": {
+      "ohlcv": {
+        "method": "GET",
+        "path": "/market-data/{symbol}/ohlcv",
+        "description": "Get OHLCV data for charts",
+        "params": {
+          "symbol": "string",
+          "timeframe": "1m|5m|15m|1h|4h|1d",
+          "limit": "number"
+        },
+        "response": {"type": "array", "items": "Candlestick"}
+      },
+      "quote": {
+        "method": "GET",
+        "path": "/market-data/{symbol}/quote",
+        "description": "Get real-time quote",
+        "params": {"symbol": "string"},
+        "response": {"bid": "number", "ask": "number", "last": "number"}
+      }
+    },
+    "websocket": {
+      "updates": {
+        "url": "ws://localhost:8001/ws/updates",
+        "description": "Real-time dashboard updates",
+        "events": [
+          "position_update",
+          "order_update",
+          "trade_execution",
+          "balance_update"
+        ]
+      },
+      "market_data": {
+        "url": "ws://localhost:8001/ws/market-data",
+        "description": "Real-time market data stream",
+        "events": ["quote_update", "depth_update"]
+      }
+    }
+  }
+}
