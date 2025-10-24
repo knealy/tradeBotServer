@@ -1227,26 +1227,44 @@ class TopStepXTradingBot:
                 self._last_order_time = datetime.now()
                 logger.info("Monitoring activated for market order")
 
-            # Verify order was actually placed
+            # Verify order was actually placed (check both open orders and recent fills)
             try:
                 await asyncio.sleep(0.5)  # Brief delay for API consistency
+                
+                # First check open orders
                 open_orders = await self.get_open_orders(account_id=target_account)
+                order_found = False
                 
                 if "error" not in open_orders:
-                    # Check if our order exists
-                    our_order = None
+                    # Check if our order exists in open orders
                     for order in open_orders:
                         if order.get("customTag") == order_data.get("customTag"):
-                            our_order = order
+                            logger.info(f"✅ Order verified: ID {order_id} found in open orders")
+                            order_found = True
                             break
+                
+                # If not found in open orders, check if it was filled immediately
+                if not order_found:
+                    logger.info(f"Order {order_id} not in open orders, checking if it was filled immediately...")
                     
-                    if not our_order:
-                        logger.error(f"⚠️ ORDER VERIFICATION FAILED: Order ID {order_id} not found in open orders!")
+                    # Check recent order history for our order
+                    try:
+                        recent_orders = await self.get_order_history(account_id=target_account, limit=10)
+                        if "error" not in recent_orders and isinstance(recent_orders, list):
+                            for order in recent_orders:
+                                if str(order.get("id")) == str(order_id):
+                                    logger.info(f"✅ Order verified: ID {order_id} found in recent fills (immediate fill)")
+                                    order_found = True
+                                    break
+                    except Exception as history_err:
+                        logger.warning(f"Could not check order history for verification: {history_err}")
+                    
+                    # If still not found, this might be a real failure
+                    if not order_found:
+                        logger.error(f"⚠️ ORDER VERIFICATION FAILED: Order ID {order_id} not found in open orders or recent fills!")
                         logger.error(f"Expected customTag: {order_data.get('customTag')}")
                         logger.error(f"Open orders: {json.dumps(open_orders, indent=2)}")
                         return {"error": "Order verification failed - order not found", "order_id": order_id}
-                    else:
-                        logger.info(f"✅ Order verified: ID {order_id} found in open orders")
                 else:
                     logger.warning(f"Could not verify order - failed to get open orders: {open_orders.get('error')}")
             except Exception as verify_err:
