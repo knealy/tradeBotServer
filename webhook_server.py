@@ -2243,9 +2243,52 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         logger.info("TP1 hit: single contract or no position, flattening all positions")
                         result = await self.trading_bot.flatten_all_positions(interactive=False)
             else:
-                # Using separate limit orders - ignore TP1 signal
-                logger.info("Ignoring TP1 LONG signal (USE_NATIVE_BRACKETS=false). Limit orders manage exits.")
-                return {"success": True, "action": "tp1_hit_long", "ignored": True, "reason": "Using separate limit orders"}
+                # Using Position Brackets - check if we should process TP1 signals
+                ignore_non_entry = os.getenv('IGNORE_NON_ENTRY_SIGNALS', 'false').lower() in ('true','1','yes','on')
+                
+                if ignore_non_entry:
+                    # Ignore TP1 signal when IGNORE_NON_ENTRY_SIGNALS=true
+                    logger.info("Ignoring TP1 LONG signal (IGNORE_NON_ENTRY_SIGNALS=true). Position Brackets manage exits.")
+                    return {"success": True, "action": "tp1_hit_long", "ignored": True, "reason": "IGNORE_NON_ENTRY_SIGNALS=true"}
+                else:
+                    # Process TP1 signal even with Position Brackets when IGNORE_NON_ENTRY_SIGNALS=false
+                    logger.info("Processing TP1 LONG signal (USE_NATIVE_BRACKETS=false, IGNORE_NON_ENTRY_SIGNALS=false)")
+                    close_entire_at_tp1 = self.webhook_server.close_entire_position_at_tp1
+                    
+                    if close_entire_at_tp1:
+                        # Conservative mode: flatten all positions at TP1
+                        logger.info("Executing tp1 hit long: flattening all positions (--close-entire-at-tp1=True)")
+                        result = await self.trading_bot.flatten_all_positions(interactive=False)
+                    else:
+                        # Profit-taking mode: partial close for initial profits
+                        logger.info("Executing tp1 hit long: checking position size and partial closing (--close-entire-at-tp1=False)")
+                        
+                        # Get current position size
+                        position_size = await self._get_position_size("BUY", trade_info.get("symbol", ""))
+                        
+                        if position_size > 1:
+                            # Partial close: close TP1_FRACTION of the position (round up)
+                            tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75'))
+                            contracts_to_close = int(position_size * tp1_fraction)
+                            if contracts_to_close == 0:
+                                contracts_to_close = 1  # At least close 1 contract
+                            logger.info(f"TP1 hit: closing {contracts_to_close} contracts from {position_size} total long position ({tp1_fraction*100:.0f}% close)")
+                            
+                            # Place sell order to close partial position
+                            result = await self.trading_bot.place_market_order(
+                                symbol=trade_info.get("symbol", ""),
+                                side="SELL",
+                                quantity=contracts_to_close,
+                                account_id=self.trading_bot.selected_account.get("id")
+                            )
+                            
+                            if "error" in result:
+                                logger.warning(f"TP1 partial close failed, flattening all positions: {result['error']}")
+                                result = await self.trading_bot.flatten_all_positions(interactive=False)
+                        else:
+                            # Single contract or no position, flatten all
+                            logger.info("TP1 hit: single contract or no position, flattening all positions")
+                            result = await self.trading_bot.flatten_all_positions(interactive=False)
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
@@ -2311,9 +2354,52 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         logger.info("TP1 hit: single contract or no position, flattening all positions")
                         result = await self.trading_bot.flatten_all_positions(interactive=False)
             else:
-                # Using separate limit orders - ignore TP1 signal
-                logger.info("Ignoring TP1 SHORT signal (USE_NATIVE_BRACKETS=false). Limit orders manage exits.")
-                return {"success": True, "action": "tp1_hit_short", "ignored": True, "reason": "Using separate limit orders"}
+                # Using Position Brackets - check if we should process TP1 signals
+                ignore_non_entry = os.getenv('IGNORE_NON_ENTRY_SIGNALS', 'false').lower() in ('true','1','yes','on')
+                
+                if ignore_non_entry:
+                    # Ignore TP1 signal when IGNORE_NON_ENTRY_SIGNALS=true
+                    logger.info("Ignoring TP1 SHORT signal (IGNORE_NON_ENTRY_SIGNALS=true). Position Brackets manage exits.")
+                    return {"success": True, "action": "tp1_hit_short", "ignored": True, "reason": "IGNORE_NON_ENTRY_SIGNALS=true"}
+                else:
+                    # Process TP1 signal even with Position Brackets when IGNORE_NON_ENTRY_SIGNALS=false
+                    logger.info("Processing TP1 SHORT signal (USE_NATIVE_BRACKETS=false, IGNORE_NON_ENTRY_SIGNALS=false)")
+                    close_entire_at_tp1 = self.webhook_server.close_entire_position_at_tp1
+                    
+                    if close_entire_at_tp1:
+                        # Conservative mode: flatten all positions at TP1
+                        logger.info("Executing tp1 hit short: flattening all positions (--close-entire-at-tp1=True)")
+                        result = await self.trading_bot.flatten_all_positions(interactive=False)
+                    else:
+                        # Profit-taking mode: partial close for initial profits
+                        logger.info("Executing tp1 hit short: checking position size and partial closing (--close-entire-at-tp1=False)")
+                        
+                        # Get current position size
+                        position_size = await self._get_position_size("SELL", trade_info.get("symbol", ""))
+                        
+                        if position_size > 1:
+                            # Partial close: close TP1_FRACTION of the position (round up)
+                            tp1_fraction = float(os.getenv('TP1_FRACTION', '0.75'))
+                            contracts_to_close = int(position_size * tp1_fraction)
+                            if contracts_to_close == 0:
+                                contracts_to_close = 1  # At least close 1 contract
+                            logger.info(f"TP1 hit: closing {contracts_to_close} contracts from {position_size} total short position ({tp1_fraction*100:.0f}% close)")
+                            
+                            # Place buy order to close partial position
+                            result = await self.trading_bot.place_market_order(
+                                symbol=trade_info.get("symbol", ""),
+                                side="BUY",
+                                quantity=contracts_to_close,
+                                account_id=self.trading_bot.selected_account.get("id")
+                            )
+                            
+                            if "error" in result:
+                                logger.warning(f"TP1 partial close failed, flattening all positions: {result['error']}")
+                                result = await self.trading_bot.flatten_all_positions(interactive=False)
+                        else:
+                            # Single contract or no position, flatten all
+                            logger.info("TP1 hit: single contract or no position, flattening all positions")
+                            result = await self.trading_bot.flatten_all_positions(interactive=False)
             
             if "error" in result:
                 return {"success": False, "error": result["error"]}
