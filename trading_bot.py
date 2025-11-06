@@ -517,7 +517,7 @@ class TopStepXTradingBot:
         
         return session
     
-    def _make_curl_request(self, method: str, endpoint: str, data: Dict = None, headers: Dict = None, skip_rate_limit: bool = False) -> Dict:
+    def _make_curl_request(self, method: str, endpoint: str, data: Dict = None, headers: Dict = None, skip_rate_limit: bool = False, suppress_errors: bool = False) -> Dict:
         """
         Make HTTP request using requests library with connection pooling and rate limiting.
         
@@ -531,6 +531,7 @@ class TopStepXTradingBot:
             data: Request data (for POST requests)
             headers: Request headers
             skip_rate_limit: If True, skip rate limiting (for critical operations)
+            suppress_errors: If True, log errors as debug instead of error (for expected failures)
             
         Returns:
             Dict: Response data
@@ -570,7 +571,10 @@ class TopStepXTradingBot:
             try:
                 response.raise_for_status()  # Raise exception for bad status codes
             except requests.exceptions.HTTPError as e:
-                logger.error(f"HTTP error {response.status_code}: {e}")
+                if suppress_errors:
+                    logger.debug(f"HTTP error {response.status_code}: {e}")
+                else:
+                    logger.error(f"HTTP error {response.status_code}: {e}")
                 return {"error": f"HTTP {response.status_code}: {str(e)}"}
             
             # Parse JSON response
@@ -951,21 +955,32 @@ class TopStepXTradingBot:
             
             for endpoint in endpoints_to_try:
                 try:
-                    logger.info(f"Trying account info endpoint: {endpoint}")
-                    response = self._make_curl_request("GET", endpoint, headers=headers)
+                    logger.debug(f"Trying account info endpoint: {endpoint}")
+                    response = self._make_curl_request("GET", endpoint, headers=headers, suppress_errors=True)
                     
                     if "error" not in response and response:
-                        logger.info(f"Found account info from {endpoint}: {response}")
+                        logger.info(f"Found account info from {endpoint}")
                         return response
                     else:
-                        logger.warning(f"Endpoint {endpoint} failed: {response}")
+                        logger.debug(f"Endpoint {endpoint} failed: {response.get('error', 'Unknown error')}")
                         continue
                         
                 except Exception as e:
                     logger.warning(f"Endpoint {endpoint} failed with exception: {e}")
                     continue
             
-            return {"error": "Could not fetch account info from any endpoint"}
+            # If no endpoint worked, return minimal info from cached account data
+            logger.debug("All account info endpoints failed - using cached account data")
+            if self.selected_account:
+                return {
+                    "id": self.selected_account.get('id'),
+                    "name": self.selected_account.get('name', 'Unknown'),
+                    "balance": self.selected_account.get('balance', 0),
+                    "status": self.selected_account.get('status', 'unknown'),
+                    "type": self.selected_account.get('type', 'unknown'),
+                    "note": "Detailed account info endpoints not available - showing cached basic info"
+                }
+            return {"error": "Could not fetch account info - no API endpoints available"}
             
         except Exception as e:
             logger.error(f"Failed to fetch account info: {str(e)}")
@@ -1743,9 +1758,9 @@ class TopStepXTradingBot:
                 attempts += 1
                 try:
                     if method == "GET":
-                        response = self._make_curl_request(method, endpoint, headers=headers)
+                        response = self._make_curl_request(method, endpoint, headers=headers, suppress_errors=True)
                     else:
-                        response = self._make_curl_request(method, endpoint, data=data, headers=headers)
+                        response = self._make_curl_request(method, endpoint, data=data, headers=headers, suppress_errors=True)
                     
                     if "error" not in response:
                         logger.debug(f"Contract fetch succeeded: {method} {endpoint}")
@@ -5087,12 +5102,22 @@ class TopStepXTradingBot:
         try:
             logger.info(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
             
-            # Check cache first - use dynamic TTL based on market hours
-            cache_key = self._get_cache_key(symbol, timeframe)
-            cached_data = self._load_from_cache(cache_key, max_age_minutes=None)
-            if cached_data is not None and len(cached_data) >= limit:
-                logger.info(f"Using cached data ({len(cached_data)} bars available)")
-                return cached_data[-limit:] if len(cached_data) > limit else cached_data
+            # For small limits (1-5 bars) on short timeframes (1m, 5m), bypass cache or use very short TTL
+            # This ensures real-time monitoring gets fresh data
+            use_fresh_data = False
+            if limit <= 5 and timeframe in ['1m', '5m']:
+                use_fresh_data = True
+                logger.debug(f"Small limit ({limit}) on short timeframe ({timeframe}) - fetching fresh data")
+            
+            # Check cache first - use dynamic TTL based on market hours (unless we need fresh data)
+            if not use_fresh_data:
+                cache_key = self._get_cache_key(symbol, timeframe)
+                cached_data = self._load_from_cache(cache_key, max_age_minutes=None)
+                if cached_data is not None and len(cached_data) >= limit:
+                    logger.info(f"Using cached data ({len(cached_data)} bars available)")
+                    return cached_data[-limit:] if len(cached_data) > limit else cached_data
+            else:
+                cache_key = self._get_cache_key(symbol, timeframe)
             
             # Ensure we have a valid JWT token
             if not await self._ensure_valid_token():
@@ -6718,7 +6743,18 @@ class TopStepXTradingBot:
                             print(f"{'Time':<26} {'Open':<12} {'High':<12} {'Low':<12} {'Close':<12} {'Volume':<10}")
                             print("-" * 100)
                             for bar in result[-limit:]:  # Show exactly requested bars
-                                time = bar.get('time', 'N/A')
+                                # Get timestamp - try both 'time' and 'timestamp' keys
+                                time = bar.get('time') or bar.get('timestamp', 'N/A')
+                                # Format timestamp nicely (just date and time, no microseconds)
+                                if time and time != 'N/A' and len(time) > 19:
+                                    try:
+                                        # Parse ISO format and format nicely
+                                        from datetime import datetime
+                                        dt = datetime.fromisoformat(time.replace('Z', '+00:00'))
+                                        time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                    except Exception:
+                                        # Keep original if parsing fails
+                                        time = time[:19] if len(time) > 19 else time
                                 open_price = bar.get('open', 0)
                                 high = bar.get('high', 0)
                                 low = bar.get('low', 0)
@@ -6823,8 +6859,21 @@ class TopStepXTradingBot:
                     if "error" in result:
                         print(f"❌ Account info failed: {result['error']}")
                     else:
-                        print(f"✅ Account info retrieved successfully!")
-                        print(f"   Response: {result}")
+                        print(f"\n📊 Account Information:")
+                        print(f"   Account ID: {result.get('id', 'N/A')}")
+                        print(f"   Name: {result.get('name', 'N/A')}")
+                        print(f"   Balance: ${result.get('balance', 0):,.2f}")
+                        print(f"   Status: {result.get('status', 'unknown')}")
+                        print(f"   Type: {result.get('type', 'unknown')}")
+                        if 'note' in result:
+                            print(f"\n   ℹ️  {result['note']}")
+                        # Show any additional fields that were returned
+                        extra_fields = {k: v for k, v in result.items() 
+                                      if k not in ['id', 'name', 'balance', 'status', 'type', 'note', 'error']}
+                        if extra_fields:
+                            print(f"\n   Additional Info:")
+                            for key, value in extra_fields.items():
+                                print(f"   - {key}: {value}")
                 
                 elif command_lower in ["drawdown", "max_loss", "risk"]:
                     # Show max loss limit and drawdown information
