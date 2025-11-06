@@ -5201,16 +5201,21 @@ class TopStepXTradingBot:
                     logger.debug(f"Sample bar data: {bar}")
                 
                 # API returns: time, open, high, low, close, volume (check field names)
-                timestamp_str = bar.get("time", "") or bar.get("timestamp", "")
+                timestamp_str = bar.get("time") or bar.get("timestamp") or bar.get("Time") or bar.get("Timestamp") or ""
                 
                 # Parse and convert to local timezone
-                try:
-                    dt_utc = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                    local_tz = datetime.now().astimezone().tzinfo
-                    dt_local = dt_utc.astimezone(local_tz)
-                    timestamp_local = dt_local.isoformat()
-                except Exception:
-                    timestamp_local = timestamp_str
+                timestamp_local = ""
+                if timestamp_str:
+                    try:
+                        dt_utc = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                        local_tz = datetime.now().astimezone().tzinfo
+                        dt_local = dt_utc.astimezone(local_tz)
+                        timestamp_local = dt_local.isoformat()
+                    except Exception as e:
+                        logger.debug(f"Failed to parse timestamp '{timestamp_str}': {e}")
+                        timestamp_local = timestamp_str
+                else:
+                    logger.warning(f"No timestamp found in bar data. Bar keys: {list(bar.keys())}")
                 
                 # Handle case-insensitive field names
                 def get_field(field_names):
@@ -6744,17 +6749,24 @@ class TopStepXTradingBot:
                             print("-" * 100)
                             for bar in result[-limit:]:  # Show exactly requested bars
                                 # Get timestamp - try both 'time' and 'timestamp' keys
-                                time = bar.get('time') or bar.get('timestamp', 'N/A')
+                                time = bar.get('time') or bar.get('timestamp') or bar.get('Time') or bar.get('Timestamp') or ''
+                                
                                 # Format timestamp nicely (just date and time, no microseconds)
-                                if time and time != 'N/A' and len(time) > 19:
-                                    try:
-                                        # Parse ISO format and format nicely
-                                        from datetime import datetime
-                                        dt = datetime.fromisoformat(time.replace('Z', '+00:00'))
-                                        time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                                    except Exception:
-                                        # Keep original if parsing fails
-                                        time = time[:19] if len(time) > 19 else time
+                                if time:
+                                    if len(time) > 19:
+                                        try:
+                                            # Parse ISO format and format nicely
+                                            from datetime import datetime as _dt
+                                            dt = _dt.fromisoformat(time.replace('Z', '+00:00'))
+                                            time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                        except Exception as e:
+                                            # Keep original if parsing fails
+                                            logger.debug(f"Failed to format timestamp {time}: {e}")
+                                            time = time[:19] if len(time) > 19 else time
+                                else:
+                                    time = "N/A"
+                                    logger.warning(f"Empty timestamp in bar display. Bar data: {bar}")
+                                
                                 open_price = bar.get('open', 0)
                                 high = bar.get('high', 0)
                                 low = bar.get('low', 0)
