@@ -1,0 +1,152 @@
+move away from the json/webhook parsing for trade orders
+- implement full overnight range break strategy directly into bot :
+-- track highest price / lowest price between 6pm and 9:30am EST (set in env)
+-- set stop bracket orders for these range breaks 
+
+
+go over @PERFORMANCE_FAQ.md and make sure we have implemented all optimizations before advanced ones
+- then consider implementing the advanced improvements one by one 
+
+Go over options for fast reliable/scalable database structure and start to set up
+
+lay the groundwork for showing a full working tradingview chart from the historical data
+- should be real data, interactive, and able to switch between 1m,5m,15m,30m, etc. 
+
+go over options for fastest / most effecient frontend - bridge - backend structures and tech stack 
+- make a plan to port / convert (probably to Go + React + JS) 
+
+
+current bracket order implementation needs help 
+- make a stop_bracket command
+- want to make it use stop order instead of market order and takes an entry price then modify the stop/take profit to desired prices
+
+
+2025-11-05 11:42:35,374 - __main__ - ERROR - HTTP error 400: 400 Client Error: Bad Request for url: https://api.topstepx.com/api/Contract/search
+2025-11-05 11:42:35,527 - __main__ - ERROR - HTTP error 400: 400 Client Error: Bad Request for url: https://api.topstepx.com/api/Contract/search
+2025-11-05 11:42:35,675 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract/list
+2025-11-05 11:42:35,823 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract/getAll
+2025-11-05 11:42:35,972 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract
+2025-11-05 11:42:36,077 - __main__ - ERROR - Failed to fetch contracts: HTTP 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract
+
+
+Enter command: contracts
+2025-11-05 11:43:30,152 - __main__ - INFO - Fetching available contracts...
+2025-11-05 11:43:30,203 - __main__ - ERROR - HTTP error 400: 400 Client Error: Bad Request for url: https://api.topstepx.com/api/Contract/search
+2025-11-05 11:43:30,349 - __main__ - ERROR - HTTP error 400: 400 Client Error: Bad Request for url: https://api.topstepx.com/api/Contract/search
+2025-11-05 11:43:30,496 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract/list
+2025-11-05 11:43:30,641 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract/getAll
+2025-11-05 11:43:30,784 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract
+2025-11-05 11:43:30,886 - __main__ - ERROR - Failed to fetch contracts: HTTP 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Contract
+❌ No contracts available
+
+Enter command:
+
+@orders_export (4).csv
+@trades_export.csv
+
+trades command is still not showing correct info
+
+
+📊 Open Positions (1):
+ID           Symbol   Side   Quantity   Price        Stop         TP           P&L
+------------------------------------------------------------------------------------------
+2025-11-05 11:49:17,836 - __main__ - INFO - Fetching linked orders for position 429204570
+2025-11-05 11:49:17,836 - __main__ - INFO - Requesting linked orders for position 429204570 using TopStepX Gateway API
+2025-11-05 11:49:17,837 - __main__ - INFO - Request data: {'accountId': 12694476, 'startTimestamp': '2025-11-05T00:00:00+00:00', 'endTimestamp': '2025-11-05T16:49:17.836874+00:00', 'request': {'accountId': 12694476, 'status': 'Open'}}
+2025-11-05 11:49:17,883 - __main__ - INFO - Fetching open positions for account 12694476
+2025-11-05 11:49:17,884 - __main__ - INFO - Requesting open positions for account 12694476 using TopStepX Gateway API
+2025-11-05 11:49:17,884 - __main__ - INFO - Request data: {'accountId': 12694476}
+2025-11-05 11:49:17,927 - __main__ - INFO - Successfully found 1 open positions from TopStepX Gateway API
+2025-11-05 11:49:17,927 - __main__ - INFO - Positions data: [{'id': 429204570, 'accountId': 12694476, 'contractId': 'CON.F.US.MNQ.Z25', 'creationTimestamp': '2025-11-05T16:49:15.621332+00:00', 'type': 1, 'size': 1, 'averagePrice': 25778.0}]
+2025-11-05 11:49:17,927 - __main__ - ERROR - Failed to fetch linked orders: argument of type 'NoneType' is not iterable
+429204570    MNQ      LONG   1          $25778.00    N/A          N/A          $8.00
+
+Enter command:
+
+still failing to fetch the linked orders ( but it works when OCO orders are enabled)
+- probably need to use tags when position brackets enabled 
+
+Enter command: drawdown
+2025-11-05 11:50:24,150 - __main__ - INFO - Fetching account info for account 12694476
+2025-11-05 11:50:24,151 - __main__ - INFO - Trying account info endpoint: /api/Account/12694476
+2025-11-05 11:50:24,199 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476
+2025-11-05 11:50:24,199 - __main__ - WARNING - Endpoint /api/Account/12694476 failed: {'error': 'HTTP 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476'}
+2025-11-05 11:50:24,200 - __main__ - INFO - Trying account info endpoint: /api/Account/12694476/info
+2025-11-05 11:50:24,241 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476/info
+2025-11-05 11:50:24,242 - __main__ - WARNING - Endpoint /api/Account/12694476/info failed: {'error': 'HTTP 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476/info'}
+2025-11-05 11:50:24,242 - __main__ - INFO - Trying account info endpoint: /api/Account/12694476/details
+2025-11-05 11:50:24,291 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476/details
+2025-11-05 11:50:24,295 - __main__ - WARNING - Endpoint /api/Account/12694476/details failed: {'error': 'HTTP 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476/details'}
+2025-11-05 11:50:24,295 - __main__ - INFO - Trying account info endpoint: /api/Account/12694476/summary
+2025-11-05 11:50:24,348 - __main__ - ERROR - HTTP error 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476/summary
+2025-11-05 11:50:24,349 - __main__ - WARNING - Endpoint /api/Account/12694476/summary failed: {'error': 'HTTP 404: 404 Client Error: Not Found for url: https://api.topstepx.com/api/Account/12694476/summary'}
+2025-11-05 11:50:24,350 - __main__ - INFO - Using cached balance for account 12694476: $158,289.04
+
+📉 Risk & Drawdown Information:
+   Account: PRAC-V2-14334-56363256
+   Current Balance: $158,289.04
+2025-11-05 11:50:24,351 - __main__ - INFO - Fetching open positions for account 12694476
+2025-11-05 11:50:24,352 - __main__ - INFO - Requesting open positions for account 12694476 using TopStepX Gateway API
+2025-11-05 11:50:24,352 - __main__ - INFO - Request data: {'accountId': 12694476}
+2025-11-05 11:50:24,395 - __main__ - INFO - Successfully found 1 open positions from TopStepX Gateway API
+2025-11-05 11:50:24,396 - __main__ - INFO - Positions data: [{'id': 429204570, 'accountId': 12694476, 'contractId': 'CON.F.US.MNQ.Z25', 'creationTimestamp': '2025-11-05T16:49:15.621332+00:00', 'type': 1, 'size': 1, 'averagePrice': 25778.0}]
+
+Enter command:
+
+still failing to get account info like max drawdown/risk 
+
+Enter command: trail mnq buy 1 25.00
+
+⚠️  CONFIRM TRAILING STOP ORDER:
+   Symbol: MNQ
+   Side: BUY
+   Quantity: 1
+   Trail Amount: $25.0
+   Account: PRAC-V2-14334-56363256
+   ⚠️  This uses SDK native trailing stop (automatically adjusts with price)
+   Confirm? (y/N): y
+2025-11-05 11:51:52,536 - __main__ - INFO - Placing trailing stop order for buy 1 mnq with trail $25.0
+2025-11-05 11:51:52,537 - __main__ - INFO - ✅ Attempting SDK native trailing stop via TradingSuite
+2025-11-05 11:51:52,541 - sdk_adapter - INFO - Creating cached SDK order suite for mnq...
+2025-11-05 11:51:53,118 - httpx - INFO - HTTP Request: POST https://api.topstepx.com/api/Auth/loginKey "HTTP/2 200 OK"
+2025-11-05 11:51:53,170 - httpx - INFO - HTTP Request: POST https://api.topstepx.com/api/Account/search "HTTP/2 200 OK"
+2025-11-05 11:51:53,173 - project_x_py.realtime.core - INFO - AsyncProjectX real-time client initialized
+2025-11-05 11:51:53,174 - project_x_py.realtime.core - INFO - User Hub: https://rtc.topstepx.com/hubs/user
+2025-11-05 11:51:53,174 - project_x_py.realtime.core - INFO - Market Hub: https://rtc.topstepx.com/hubs/market
+2025-11-05 11:51:53,218 - httpx - INFO - HTTP Request: POST https://api.topstepx.com/api/Contract/search "HTTP/2 200 OK"
+2025-11-05 11:51:53,223 - project_x_py.realtime_data_manager.dst_handling.dst - INFO - DST handling initialized for timezone: UTC
+{"timestamp":"2025-11-05T16:51:53.308436Z","level":"INFO","logger":"project_x_py.statistics.bounded_statistics.bounded_stats","module":"dynamic_resource_limits","function":"configure_dynamic_resources","line":297,"message":"Dynamic resource configuration updated: memory_target=15.0%, memory_pressure=0.8, monitoring_interval=30.0s","taskName":"Task-6"}
+{"timestamp":"2025-11-05T16:51:53.308634Z","level":"INFO","logger":"project_x_py.statistics.bounded_statistics.bounded_stats","module":"core","function":"__init__","line":591,"message":"Dynamic resource limits enabled","taskName":"Task-6"}
+{"timestamp":"2025-11-05T16:51:53.308693Z","level":"INFO","logger":"project_x_py.statistics.bounded_statistics.bounded_stats","module":"core","function":"__init__","line":595,"message":"RealtimeDataManager initialized","taskName":"Task-6","instrument":"mnq"}
+{"timestamp":"2025-11-05T16:51:53.309544Z","level":"INFO","logger":"project_x_py.order_manager.core","module":"core","function":"__init__","line":220,"message":"AsyncOrderManager initialized","taskName":"Task-6"}
+{"timestamp":"2025-11-05T16:51:53.310098Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"__init__","line":298,"message":"Manager initialized","taskName":"Task-6","manager":"PositionManager"}
+{"timestamp":"2025-11-05T16:51:53.310496Z","level":"INFO","logger":"project_x_py.trading_suite","module":"trading_suite","function":"__init__","line":443,"message":"TradingSuite created for ['mnq'] with features: []","taskName":"Task-1"}
+{"timestamp":"2025-11-05T16:51:53.310672Z","level":"INFO","logger":"project_x_py.trading_suite","module":"trading_suite","function":"_initialize","line":840,"message":"Connecting to real-time feeds...","taskName":"Task-1"}
+{"timestamp":"2025-11-05T16:51:53.310848Z","level":"INFO","logger":"project_x_py.realtime.connection_management","module":"connection_management","function":"setup_connections","line":145,"message":"Using URL query parameter for JWT authentication (ProjectX Gateway requirement)","taskName":"Task-1","operation":"setup_connections","user_hub":"https://rtc.topstepx.com/hubs/user","market_hub":"https://rtc.topstepx.com/hubs/market"}
+2025-11-05 11:51:53,783 - project_x_py.realtime.core - INFO - ✅ User hub connected
+2025-11-05 11:51:54,081 - project_x_py.realtime.core - INFO - ✅ Market hub connected
+{"timestamp":"2025-11-05T16:51:57.919825Z","level":"INFO","logger":"project_x_py.order_manager.core","module":"core","function":"initialize","line":314,"message":"📡 Real-time client already connected and subscribed","taskName":"Task-9"}
+{"timestamp":"2025-11-05T16:51:57.920071Z","level":"INFO","logger":"project_x_py.order_manager.core","module":"core","function":"initialize","line":319,"message":"✅ AsyncOrderManager initialized with real-time capabilities","taskName":"Task-9"}
+2025-11-05 11:51:57,920 - project_x_py.order_manager.tracking - INFO - Started order tracking cleanup task
+{"timestamp":"2025-11-05T16:51:57.921073Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"tracking","function":"_start_position_processor","line":161,"message":"📋 Position queue processor started","taskName":"Task-9"}
+{"timestamp":"2025-11-05T16:51:57.925775Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"tracking","function":"_setup_realtime_callbacks","line":152,"message":"🔄 Real-time position callbacks registered","taskName":"Task-9"}
+{"timestamp":"2025-11-05T16:51:57.926095Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"initialize","line":384,"message":"Manager initialized","taskName":"Task-9","manager":"PositionManager","mode":"realtime"}
+{"timestamp":"2025-11-05T16:51:57.926274Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"initialize","line":398,"message":"Manager initialized","taskName":"Task-9","feature":"order_synchronization","enabled":true}
+{"timestamp":"2025-11-05T16:51:57.926467Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"refresh_positions","line":602,"message":"Refreshing positions","taskName":"Task-9","account_id":null}
+{"timestamp":"2025-11-05T16:51:57.926643Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"get_all_positions","line":451,"message":"Searching positions","taskName":"Task-9","account_id":null}
+2025-11-05 11:51:57,969 - httpx - INFO - HTTP Request: POST https://api.topstepx.com/api/Position/searchOpen "HTTP/2 200 OK"
+{"timestamp":"2025-11-05T16:51:57.971345Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"get_all_positions","line":497,"message":"Position updated","taskName":"Task-9","position_count":1}
+{"timestamp":"2025-11-05T16:51:57.971473Z","level":"INFO","logger":"project_x_py.position_manager.core","module":"core","function":"refresh_positions","line":607,"message":"Position updated","taskName":"Task-9","refreshed_count":1}
+2025-11-05 11:51:58,052 - httpx - INFO - HTTP Request: POST https://api.topstepx.com/api/History/retrieveBars "HTTP/2 200 OK"
+{"timestamp":"2025-11-05T16:51:58.217382Z","level":"WARNING","logger":"project_x_py.statistics.bounded_statistics.bounded_stats","module":"core","function":"_load_timeframe_data","line":931,"message":"Historical data for 5min ends at 2025-11-05 10:45:00-06:00, 7.0 minutes ago. Gap will be filled when real-time data arrives.","taskName":"Task-9","operation":"initialize","instrument":"mnq","initial_days":5}
+{"timestamp":"2025-11-05T16:51:58.217834Z","level":"INFO","logger":"project_x_py.statistics.bounded_statistics","module":"bounded_statistics","function":"start","line":540,"message":"Cleanup scheduler started","taskName":"Task-9"}
+{"timestamp":"2025-11-05T16:51:58.221306Z","level":"INFO","logger":"project_x_py.statistics.bounded_statistics.bounded_stats","module":"dynamic_resource_limits","function":"start_resource_monitoring","line":768,"message":"Started dynamic resource monitoring","taskName":"Task-9","operation":"start_realtime_feed","instrument":"mnq","contract_id":"CON.F.US.MNQ.Z25"}
+{"timestamp":"2025-11-05T16:51:58.329104Z","level":"INFO","logger":"project_x_py.trading_suite","module":"trading_suite","function":"_initialize","line":853,"message":"TradingSuite initialization complete","taskName":"Task-1"}
+2025-11-05 11:51:58,329 - sdk_adapter - INFO - ✅ Order suite cache initialized successfully
+2025-11-05 11:51:58,334 - __main__ - WARNING - SDK TradingSuite doesn't have orders property
+❌ Order failed: SDK TradingSuite orders unavailable
+
+Enter command:
+
+
+trail command still failing due to SDK tradingSuite improper usage 

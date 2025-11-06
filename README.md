@@ -31,6 +31,9 @@ cd projectXbot
 # Install dependencies
 pip install -r requirements.txt
 
+# (Optional) Enable ProjectX SDK for data
+export USE_PROJECTX_SDK=1
+
 # Set up environment
 ./setup_env.sh
 ```
@@ -166,10 +169,36 @@ projectXbot/
 ### **Environment Variables**
 - `PROJECT_X_API_KEY` - Your TopStepX API key
 - `PROJECT_X_USERNAME` - Your TopStepX username
+- `USE_PROJECTX_SDK` - Set to `1` to use official SDK for market data
+
+### **Official SDK Docs**
+- Installation: https://project-x-py.readthedocs.io/en/latest/installation.html
+- Market Data Guide: https://project-x-py.readthedocs.io/en/latest/user_guide/market_data.html
 
 ### **Log Files**
 - `trading_bot.log` - Trading bot activity log
 - `webhook_server.log` - Webhook server activity log
+
+## ⚡ Performance Notes
+
+### **Current Architecture (Python)**
+- Historical data fetches: ~10-15 seconds (SDK initialization overhead)
+- Real-time operations: Adequate for most trading strategies
+- Webhook latency: <100ms typical
+- **Optimization**: Install `psutil` for SDK performance: `pip install psutil`
+
+### **Performance Limitations**
+- SDK's TradingSuite initialization adds ~10s overhead per historical fetch
+- Python's async I/O is sufficient for most use cases but not sub-millisecond
+- Network latency dominates actual trading operations
+
+### **Future Considerations**
+For sub-millisecond latency requirements (HFT, ultra-low-latency trading):
+- **Go/Rust**: Consider porting critical paths to Go or Rust
+- **Architecture**: Frontend (React/Next.js) → Backend (Go gRPC) → Bridge (WebSocket) → Trading Engine
+- **Current**: Python is optimal for rapid development and API integration
+
+**Note**: Most retail/prop firm trading strategies don't require sub-ms latency. The current Python implementation handles 99% of use cases efficiently.
 
 ## 🚨 Important Notes
 

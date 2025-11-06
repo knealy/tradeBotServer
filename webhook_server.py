@@ -21,12 +21,17 @@ import urllib.parse
 from trading_bot import TopStepXTradingBot
 from discord_notifier import DiscordNotifier
 
-# Configure logging
+# Configure logging with rotation
+from logging.handlers import RotatingFileHandler
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('webhook_server.log'),
+        RotatingFileHandler(
+            'webhook_server.log',
+            maxBytes=10*1024*1024,  # 10MB per file
+            backupCount=5  # Keep 5 backup files (50MB total)
+        ),
         logging.StreamHandler()
     ]
 )

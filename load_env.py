@@ -19,6 +19,9 @@ def load_env_file():
                     key, value = line.split('=', 1)
                     # Remove quotes if present
                     value = value.strip('\'"')
+                    # Strip inline comments (everything after #)
+                    if '#' in value:
+                        value = value.split('#')[0].strip()
                     os.environ[key] = value
         print("✅ Environment variables loaded successfully")
     else:
@@ -31,6 +34,40 @@ def load_env_file():
             print(f"🔍 TP1_FRACTION: {os.getenv('TP1_FRACTION')}")
         else:
             print("⚠️  No .env file found, using system environment variables")
+
+    # Set safe defaults for new SDK feature toggles
+    # Only set default if not already loaded from .env
+    if 'USE_PROJECTX_SDK' not in os.environ:
+        os.environ['USE_PROJECTX_SDK'] = '0'
+        print(f"ℹ️  USE_PROJECTX_SDK not found in .env, defaulting to '0'")
+    else:
+        print(f"✅ USE_PROJECTX_SDK={os.environ.get('USE_PROJECTX_SDK')} (from .env or environment)")
+    
+    # Set cache expiration defaults (in minutes)
+    if 'CACHE_TTL_MARKET_HOURS' not in os.environ:
+        os.environ['CACHE_TTL_MARKET_HOURS'] = '2'  # 2 minutes during market hours (high volatility)
+    if 'CACHE_TTL_OFF_HOURS' not in os.environ:
+        os.environ['CACHE_TTL_OFF_HOURS'] = '15'  # 15 minutes during off-hours (low volatility)
+    if 'CACHE_TTL_DEFAULT' not in os.environ:
+        os.environ['CACHE_TTL_DEFAULT'] = '5'  # 5 minutes default fallback
+    
+    # Set cache format and memory cache defaults
+    if 'CACHE_FORMAT' not in os.environ:
+        os.environ['CACHE_FORMAT'] = 'parquet'  # Use Parquet for faster caching (or 'pickle' for compatibility)
+    if 'MEMORY_CACHE_MAX_SIZE' not in os.environ:
+        os.environ['MEMORY_CACHE_MAX_SIZE'] = '50'  # Cache up to 50 symbol/timeframe combinations in memory
+    
+    # Set WebSocket connection pool defaults
+    if 'WEBSOCKET_POOL_MAX_SIZE' not in os.environ:
+        os.environ['WEBSOCKET_POOL_MAX_SIZE'] = '5'  # Max 5 concurrent WebSocket connections in pool
+    
+    # Set prefetch defaults
+    if 'PREFETCH_ENABLED' not in os.environ:
+        os.environ['PREFETCH_ENABLED'] = 'true'  # Enable prefetch for common symbols/timeframes
+    if 'PREFETCH_SYMBOLS' not in os.environ:
+        os.environ['PREFETCH_SYMBOLS'] = 'MNQ,ES,NQ,MES'  # Common symbols to prefetch
+    if 'PREFETCH_TIMEFRAMES' not in os.environ:
+        os.environ['PREFETCH_TIMEFRAMES'] = '1m,5m'  # Common timeframes to prefetch
 
 # Load environment variables when this module is imported
 load_env_file()

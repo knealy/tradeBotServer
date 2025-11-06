@@ -70,6 +70,14 @@ market_data/
 positions.json
 orders.json
 
+# Cache files
+.cache/
+*.parquet
+*.pkl
+
+# CSV exports (generated on-demand)
+*.csv
+
 # Backup files
 *.bak
 *.backup

@@ -8,6 +8,12 @@ requests>=2.31.0
 websockets>=12.0  # For real-time data streaming and WebSocket server
 signalrcore==0.9.5  # SignalR client for Python to consume ProjectX Market Hub
 
+# ProjectX official SDK (OPTIONAL - for advanced realtime features only)
+# The bot now uses direct REST API calls and does NOT require this SDK
+# Only needed for: advanced WebSocket streaming, some realtime features
+# Uncomment below line if you want these optional features on Python 3.12+
+# project-x-py[realtime] ; python_version >= "3.12"
+
 # Public tunneling (optional, used by start_webhook.py --tunnel ngrok)
 pyngrok>=7.1.0
 
@@ -15,10 +21,14 @@ pyngrok>=7.1.0
 python-dotenv>=1.0.0  # For .env file loading
 urllib3>=1.26.0      # For HTTP requests
 certifi>=2023.0.0    # For SSL certificates
+PyJWT>=2.8.0         # For JWT token parsing and expiration checking
 
 # Dashboard dependencies
 aiohttp>=3.9.0    # For async HTTP handling
 jinja2>=3.1.0     # For HTML templating
+
+# Performance optimization
+psutil>=5.9.0  # For efficient SDK resource monitoring (significantly improves performance)
 
 # Optional: For enhanced functionality
 # pandas>=2.0.0       # For data analysis
@@ -26,8 +36,9 @@ jinja2>=3.1.0     # For HTML templating
 # matplotlib>=3.7.0   # For plotting and visualization
 # ta>=0.10.0          # For technical analysis indicators
 
-# Development and testing (optional)
-# pytest>=7.0.0
-# pytest-asyncio>=0.21.0
+# Development and testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.10.0  # For better mocking support
 # black>=23.0.0
 # flake8>=6.0.0
