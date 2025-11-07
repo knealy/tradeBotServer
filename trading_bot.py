@@ -2799,6 +2799,10 @@ class TopStepXTradingBot:
                 # Debug logging for order details
                 logger.debug(f"Processing order: side={side}, qty={quantity}, price={price}, timestamp={timestamp}, order_keys={list(order.keys())}")
                 
+                # Temporary: Log full order if price is 0 to debug
+                if price == 0.0 or price is None:
+                    logger.info(f"⚠️  Order with zero/null price detected: {order}")
+                
                 if side == 0:  # BUY
                     # First, try to close short positions
                     remaining_qty = quantity
