@@ -35,11 +35,13 @@ At market open, the strategy automatically:
 - Take Profit: Entry - (Daily ATR × 2.0)
 - Type: Stop-market order with OCO brackets
 
-### Phase 4: Breakeven Management (Continuous)
-- Monitors positions every 10 seconds
-- When position reaches +15 pts profit (configurable):
-  - Moves stop loss to entry price (breakeven)
-  - Protects against giving back gains
+### Phase 4: Breakeven Management (Optional, Auto-Start/Stop)
+- **Optional**: Can be disabled via `BREAKEVEN_ENABLED` env variable
+- **Auto-starts** when position opens (stop entry order fills)
+- **Auto-stops** when:
+  - Position reaches +15 pts profit (moves stop to BE, stops monitoring)
+  - Position closes (SL/TP hit, cleans up monitoring)
+- Zero overhead when disabled or no positions open
 
 ## Commands
 
@@ -102,6 +104,7 @@ TP_ATR_MULTIPLIER=2.0             # Take profit distance (ATR zones)
 
 ### Risk Management
 ```bash
+BREAKEVEN_ENABLED=true            # Enable/disable breakeven feature (optional)
 BREAKEVEN_PROFIT_POINTS=15.0      # Profit threshold for breakeven stop
 RANGE_BREAK_OFFSET=0.25           # Offset from range high/low ($)
 STRATEGY_QUANTITY=1               # Position size (contracts)
@@ -229,10 +232,14 @@ STRATEGY_SYMBOLS=MNQ,MES          # Comma-separated list of symbols
 - Tighter stops in low volatility
 - Wider stops in high volatility
 
-### 2. Breakeven Protection
-- Automatically locks in profit
-- Moves stop to entry after +15 pts
+### 2. Breakeven Protection (Optional)
+- **Optional feature** - can be disabled via env variable
+- **Auto-starts** when position opens (no manual intervention)
+- **Auto-stops** after triggering or position closes
+- Automatically locks in profit after +15 pts
+- Moves stop to entry price (risk-free trade)
 - Prevents profitable trades from becoming losers
+- Zero overhead when disabled or no positions exist
 
 ### 3. Range-Based Entry
 - Only trades real overnight range breaks
@@ -270,6 +277,68 @@ STOP_ATR_MULTIPLIER=1.5           # 1.5x ATR stop
 BREAKEVEN_PROFIT_POINTS=20.0      # Breakeven at +20 pts
 RANGE_BREAK_OFFSET=0.50           # More confirmation needed
 ```
+
+## Breakeven Auto-Start/Stop Behavior
+
+The breakeven monitoring feature is **intelligent and autonomous**:
+
+### When It Auto-Starts
+```
+09:30am: Place stop bracket orders
+         → Orders waiting for entry
+         
+10:15am: Stop entry order fills (position opened)
+         → 🎯 AUTO-START monitoring
+         → Log: "Position MNQ LONG opened at 21425.25 - AUTO-STARTED breakeven monitoring"
+```
+
+### When It Auto-Stops (Scenario 1: Profit Target)
+```
+10:15am: Position opened, monitoring active
+10:45am: Position reaches +16 pts profit
+         → Move stop to breakeven (21425.25)
+         → ✅ AUTO-STOP monitoring
+         → Log: "Breakeven triggered for MNQ - AUTO-STOPPING monitoring"
+         → Position removed from monitoring (cleanup)
+```
+
+### When It Auto-Stops (Scenario 2: Position Closed)
+```
+10:15am: Position opened, monitoring active
+10:30am: Take profit hit (position closed)
+         → Detect position no longer exists
+         → ✅ AUTO-STOP monitoring
+         → Log: "Position MNQ closed - auto-stopping breakeven monitoring"
+         → Position removed from monitoring (cleanup)
+```
+
+### Monitoring States
+```
+⏸ Waiting for fill           # Order placed, not filled yet
+                             # Zero API calls, no overhead
+
+⏳ Monitoring (position filled) # Position open, checking P&L
+                               # Active checks every 10 seconds
+
+✓ At Breakeven                # Stop moved to BE, will be removed
+                             # Cleanup on next iteration
+
+(removed)                     # Position closed or BE complete
+                             # No longer in monitoring dict
+```
+
+### Disabling Breakeven
+To completely disable the feature:
+```bash
+# In .env file
+BREAKEVEN_ENABLED=false
+```
+
+When disabled:
+- No monitoring setup at all
+- Zero overhead
+- Orders still placed with SL/TP
+- Just no automatic BE adjustment
 
 ## Troubleshooting
 
