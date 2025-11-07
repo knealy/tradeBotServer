@@ -2790,70 +2790,162 @@ class TopStepXTradingBot:
                 price = order.get('executionPrice') or order.get('limitPrice') or order.get('stopPrice') or 0.0
                 timestamp = order.get('executionTimestamp') or order.get('creationTimestamp', '')
                 
-                if side == 0:  # BUY - opening long positions
-                    open_positions.append({
-                        'entry_order': order,
-                        'entry_price': price,
-                        'entry_time': timestamp,
-                        'remaining_qty': quantity,
-                        'side': 'LONG'
-                    })
-                elif side == 1:  # SELL - could be closing long or opening short
-                    # First, try to close long positions
-                    remaining_to_close = quantity
+                # Debug logging for order details
+                logger.debug(f"Processing order: side={side}, qty={quantity}, price={price}, timestamp={timestamp}")
+                
+                if side == 0:  # BUY
+                    # First, try to close short positions
+                    remaining_qty = quantity
                     
-                    while remaining_to_close > 0 and open_positions:
-                        # Check if we have long positions to close
-                        if open_positions[0]['side'] == 'LONG':
-                            position = open_positions[0]
-                            closed_qty = min(remaining_to_close, position['remaining_qty'])
-                            
-                            # Calculate P&L for this trade
-                            entry_price = position['entry_price']
-                            exit_price = price
-                            point_value = self._get_point_value(symbol)
-                            pnl = (exit_price - entry_price) * closed_qty * point_value
-                            
-                            # Create consolidated trade
-                            trade = {
-                                'symbol': symbol,
-                                'side': 'LONG',
-                                'quantity': closed_qty,
-                                'entry_price': entry_price,
-                                'exit_price': exit_price,
-                                'entry_time': position['entry_time'],
-                                'exit_time': timestamp,
-                                'pnl': pnl,
-                                'entry_order_id': position['entry_order'].get('id'),
-                                'exit_order_id': order.get('id')
-                            }
-                            consolidated_trades.append(trade)
-                            
-                            # Update remaining quantities
-                            position['remaining_qty'] -= closed_qty
-                            remaining_to_close -= closed_qty
-                            
-                            # Remove position if fully closed
-                            if position['remaining_qty'] <= 0:
-                                open_positions.pop(0)
-                        else:
-                            # No more long positions, this is a new short position
-                            break
+                    while remaining_qty > 0 and open_positions and open_positions[0]['side'] == 'SHORT':
+                        position = open_positions[0]
+                        closed_qty = min(remaining_qty, position['remaining_qty'])
+                        
+                        # Calculate P&L for closing short: profit when buy price < sell price
+                        entry_price = position['entry_price']
+                        exit_price = price
+                        point_value = self._get_point_value(symbol)
+                        pnl = (entry_price - exit_price) * closed_qty * point_value  # Reversed for short
+                        
+                        # Create consolidated trade
+                        trade = {
+                            'symbol': symbol,
+                            'side': 'SHORT',
+                            'quantity': closed_qty,
+                            'entry_price': entry_price,
+                            'exit_price': exit_price,
+                            'entry_time': position['entry_time'],
+                            'exit_time': timestamp,
+                            'pnl': pnl,
+                            'entry_order_id': position['entry_order'].get('id'),
+                            'exit_order_id': order.get('id')
+                        }
+                        consolidated_trades.append(trade)
+                        logger.debug(f"Created SHORT trade: {closed_qty} @ ${entry_price:.2f} → ${exit_price:.2f}, P&L: ${pnl:.2f}")
+                        
+                        # Update remaining quantities
+                        position['remaining_qty'] -= closed_qty
+                        remaining_qty -= closed_qty
+                        
+                        # Remove position if fully closed
+                        if position['remaining_qty'] <= 0:
+                            open_positions.pop(0)
                     
-                    # If there's still quantity remaining after closing longs, it's a new short position
-                    if remaining_to_close > 0:
+                    # If there's still quantity remaining after closing shorts, it's a new long position
+                    if remaining_qty > 0:
                         open_positions.append({
                             'entry_order': order,
                             'entry_price': price,
                             'entry_time': timestamp,
-                            'remaining_qty': remaining_to_close,
+                            'remaining_qty': remaining_qty,
+                            'side': 'LONG'
+                        })
+                        logger.debug(f"Opened LONG position: {remaining_qty} @ ${price:.2f}")
+                        
+                elif side == 1:  # SELL
+                    # First, try to close long positions
+                    remaining_qty = quantity
+                    
+                    while remaining_qty > 0 and open_positions and open_positions[0]['side'] == 'LONG':
+                        position = open_positions[0]
+                        closed_qty = min(remaining_qty, position['remaining_qty'])
+                        
+                        # Calculate P&L for closing long: profit when sell price > buy price
+                        entry_price = position['entry_price']
+                        exit_price = price
+                        point_value = self._get_point_value(symbol)
+                        pnl = (exit_price - entry_price) * closed_qty * point_value
+                        
+                        # Create consolidated trade
+                        trade = {
+                            'symbol': symbol,
+                            'side': 'LONG',
+                            'quantity': closed_qty,
+                            'entry_price': entry_price,
+                            'exit_price': exit_price,
+                            'entry_time': position['entry_time'],
+                            'exit_time': timestamp,
+                            'pnl': pnl,
+                            'entry_order_id': position['entry_order'].get('id'),
+                            'exit_order_id': order.get('id')
+                        }
+                        consolidated_trades.append(trade)
+                        logger.debug(f"Created LONG trade: {closed_qty} @ ${entry_price:.2f} → ${exit_price:.2f}, P&L: ${pnl:.2f}")
+                        
+                        # Update remaining quantities
+                        position['remaining_qty'] -= closed_qty
+                        remaining_qty -= closed_qty
+                        
+                        # Remove position if fully closed
+                        if position['remaining_qty'] <= 0:
+                            open_positions.pop(0)
+                    
+                    # If there's still quantity remaining after closing longs, it's a new short position
+                    if remaining_qty > 0:
+                        open_positions.append({
+                            'entry_order': order,
+                            'entry_price': price,
+                            'entry_time': timestamp,
+                            'remaining_qty': remaining_qty,
                             'side': 'SHORT'
                         })
+                        logger.debug(f"Opened SHORT position: {remaining_qty} @ ${price:.2f}")
         
         # Sort consolidated trades by exit time
         consolidated_trades.sort(key=lambda x: x.get('exit_time', ''))
         
+        # Log summary of consolidation
+        logger.info(f"Consolidated {len(orders)} orders into {len(consolidated_trades)} completed trades")
+        if consolidated_trades:
+            logger.debug(f"Trades summary: {[(t['symbol'], t['side'], t['quantity'], t['pnl']) for t in consolidated_trades]}")
+        
         return consolidated_trades
+    
+    def _get_point_value(self, symbol: str) -> float:
+        """
+        Get the dollar value per point move for a symbol.
+        
+        Args:
+            symbol: Symbol/contract code
+            
+        Returns:
+            float: Dollar value per point
+        """
+        symbol_upper = symbol.upper()
+        
+        # Micro contracts
+        if 'MNQ' in symbol_upper:
+            return 2.0  # $2 per point
+        elif 'MES' in symbol_upper:
+            return 5.0  # $5 per point
+        elif 'MYM' in symbol_upper:
+            return 0.5  # $0.50 per point
+        elif 'M2K' in symbol_upper or 'MRTYZ' in symbol_upper:
+            return 0.5  # $0.50 per point
+        
+        # Full-size contracts
+        elif 'NQ' in symbol_upper and 'MNQ' not in symbol_upper:
+            return 20.0  # $20 per point
+        elif 'ES' in symbol_upper and 'MES' not in symbol_upper:
+            return 50.0  # $50 per point
+        elif 'YM' in symbol_upper and 'MYM' not in symbol_upper:
+            return 5.0  # $5 per point
+        elif 'RTY' in symbol_upper or 'M2K' in symbol_upper:
+            return 50.0  # $50 per point (full-size Russell)
+        
+        # Commodities
+        elif 'CL' in symbol_upper:
+            return 1000.0  # $1000 per point for crude oil
+        elif 'GC' in symbol_upper:
+            return 100.0  # $100 per point for gold
+        elif 'SI' in symbol_upper:
+            return 5000.0  # $5000 per point for silver
+        elif '6E' in symbol_upper:
+            return 125000.0  # $125,000 per point for Euro FX
+        
+        # Default fallback
+        logger.warning(f"Unknown symbol {symbol}, using default point value $1")
+        return 1.0
     
     def _calculate_trade_statistics(self, trades: List[Dict]) -> Dict:
         """
