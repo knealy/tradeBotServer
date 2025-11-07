@@ -1523,9 +1523,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             # Check bracket type configuration
             use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
+            use_stop_entry = os.getenv('USE_STOP_ENTRY', 'true').lower() in ('true', '1', 'yes', 'on')
             
-            if use_native_brackets:
-                # Using TopStepX Auto OCO Brackets - create bracket orders
+            # Decide whether to use stop orders or market orders for entry
+            if use_stop_entry:
+                # Use stop bracket orders for entry (waits for price to reach entry level)
+                logger.info(f"Using stop entry orders at ${entry}")
+                result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=position_size,
+                    entry_price=entry,
+                    stop_loss_price=stop_loss,
+                    take_profit_price=take_profit_1,  # Use TP1 for single exit
+                    account_id=self.webhook_server.account_id
+                )
+                logger.info(f"Placed stop bracket: entry=${entry}, size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+            elif use_native_brackets:
+                # Using TopStepX Auto OCO Brackets - create bracket orders with market entry
                 if close_entire_at_tp1:
                     # Close entire position at TP1 (single native bracket with TP1)
                     result = await self.trading_bot.create_bracket_order(
@@ -1657,9 +1672,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             # Check bracket type configuration
             use_native_brackets = os.getenv('USE_NATIVE_BRACKETS', 'false').lower() in ('true', '1', 'yes', 'on')
+            use_stop_entry = os.getenv('USE_STOP_ENTRY', 'true').lower() in ('true', '1', 'yes', 'on')
             
-            if use_native_brackets:
-                # Using TopStepX Auto OCO Brackets - create bracket orders
+            # Decide whether to use stop orders or market orders for entry
+            if use_stop_entry:
+                # Use stop bracket orders for entry (waits for price to reach entry level)
+                logger.info(f"Using stop entry orders at ${entry}")
+                result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=position_size,
+                    entry_price=entry,
+                    stop_loss_price=stop_loss,
+                    take_profit_price=take_profit_1,  # Use TP1 for single exit
+                    account_id=self.webhook_server.account_id
+                )
+                logger.info(f"Placed stop bracket: entry=${entry}, size={position_size}, SL={stop_loss}, TP={take_profit_1}")
+            elif use_native_brackets:
+                # Using TopStepX Auto OCO Brackets - create bracket orders with market entry
                 if close_entire_at_tp1:
                     # Close entire position at TP1 (single native bracket with TP1)
                     result = await self.trading_bot.create_bracket_order(
