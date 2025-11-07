@@ -1,91 +1,97 @@
-# Comprehensive Timeframe Support
+# Timeframe Support (TopStepX API Limitations)
 
 ## Overview
-The `history` command now supports a wide range of timeframes from 1-second bars up to monthly data.
+The `history` command supports various timeframes, but **TopStepX API has significant limitations** that restrict what's actually available.
 
-## Supported Timeframes
-
-### Seconds (Sub-Minute)
-- `1s` - 1 second bars
-- `5s` - 5 second bars
-- `10s` - 10 second bars
-- `15s` - 15 second bars
-- `30s` - 30 second bars
+## ✅ Supported Timeframes (Confirmed Working)
 
 ### Minutes
-- `1m` - 1 minute bars
-- `2m` - 2 minute bars
-- `3m` - 3 minute bars
-- `5m` - 5 minute bars
-- `10m` - 10 minute bars
-- `15m` - 15 minute bars
-- `30m` - 30 minute bars
-- `45m` - 45 minute bars
-
-### Hours
-- `1h` - 1 hour bars
-- `2h` - 2 hour bars
-- `3h` - 3 hour bars
-- `4h` - 4 hour bars
-- `6h` - 6 hour bars
-- `8h` - 8 hour bars
-- `12h` - 12 hour bars
+- `1m` - 1 minute bars ✅
+- `2m` - 2 minute bars ✅
+- `3m` - 3 minute bars ✅
+- `5m` - 5 minute bars ✅
+- `10m` - 10 minute bars ✅
+- `15m` - 15 minute bars ✅
+- `30m` - 30 minute bars ✅
+- `45m` - 45 minute bars ✅
+- `60m` or `1h` - 1 hour bars ✅
 
 ### Days
-- `1d` - Daily bars
-- `2d` - 2-day bars
-- `3d` - 3-day bars
+- `1d` - Daily bars ✅
 
 ### Weeks
-- `1w` - Weekly bars
-- `2w` - 2-week bars
+- `1w` - Weekly bars ✅
 
 ### Months
-- `1M` - Monthly bars (note: capital M for months)
-- `3M` - Quarterly bars
-- `6M` - Semi-annual bars
+- `1M` - Monthly bars ✅ (note: capital M for months)
+- `3M` - Quarterly bars ✅
+- `6M` - Semi-annual bars ✅
+
+## ❌ NOT Supported (API Limitations)
+
+### Seconds (All Sub-Minute)
+- `1s`, `5s`, `10s`, `15s`, `30s` - **NOT SUPPORTED**
+- API returns `errorCode: 2` 
+- TopStepX does not provide second-level historical data
+
+### Multi-Hour Timeframes
+- `2h`, `3h`, `4h`, `6h`, `8h`, `12h` - **NOT SUPPORTED**
+- API only supports up to `1h` (60-minute) bars
+- Requesting 2h, 4h, etc will fall back to 1h bars with a warning
+- Timestamps will be 1 hour apart, not your requested interval
+
+### Multi-Day Timeframes
+- `2d`, `3d` - **MAY NOT WORK**
+- Most APIs only support `1d` for daily data
+- Use `1d` and aggregate manually if needed
+
+### Multi-Week Timeframes
+- `2w` - **MAY NOT WORK**
+- Stick with `1w` for weekly analysis
 
 ## Usage Examples
 
-### Intraday Scalping (Seconds)
+### ❌ Seconds DON'T WORK (API Limitation)
 ```bash
-history mnq 1s 60      # Last 60 seconds of 1-second bars
-history mnq 5s 120     # Last 10 minutes in 5-second bars
-history mnq 15s 240    # Last hour in 15-second bars
-history mnq 30s 120    # Last hour in 30-second bars
+history mnq 1s 60      # ❌ Returns errorCode: 2
+history mnq 5s 120     # ❌ Returns errorCode: 2
+history mnq 15s 240    # ❌ Returns errorCode: 2
+```
+**TopStepX API does not support second-level historical data.**
+
+### ✅ Day Trading (Minutes) - WORKS
+```bash
+history mnq 1m 60      # ✅ Last hour in 1-minute bars
+history mnq 2m 195     # ✅ Last 6.5 hours in 2-minute bars
+history mnq 5m 78      # ✅ Last 6.5 hours in 5-minute bars
+history mnq 15m 26     # ✅ Last 6.5 hours in 15-minute bars
+history mnq 30m 13     # ✅ Last 6.5 hours in 30-minute bars
 ```
 
-### Day Trading (Minutes)
+### ⚠️ Hours - Only 1h Works
 ```bash
-history mnq 1m 60      # Last hour in 1-minute bars
-history mnq 2m 195     # Last 6.5 hours in 2-minute bars
-history mnq 5m 78      # Last 6.5 hours in 5-minute bars
-history mnq 15m 26     # Last 6.5 hours in 15-minute bars
-history mnq 30m 13     # Last 6.5 hours in 30-minute bars
+history mnq 1h 24      # ✅ Last 24 hours (works!)
+history mnq 60m 24     # ✅ Same as 1h (works!)
+
+history mnq 2h 84      # ❌ Falls back to 1h bars (with warning)
+history mnq 4h 42      # ❌ Falls back to 1h bars (with warning)
+history mnq 8h 21      # ❌ Falls back to 1h bars (with warning)
+```
+**API only supports up to 1h bars. For longer timeframes, use 1d.**
+
+### ✅ Position Trading (Days/Weeks) - WORKS
+```bash
+history mnq 1d 30      # ✅ Last 30 days
+history mnq 1d 90      # ✅ Last 90 days (quarter)
+history mnq 1w 52      # ✅ Last 52 weeks (year)
 ```
 
-### Swing Trading (Hours)
+### ✅ Long-term Analysis (Months) - WORKS
 ```bash
-history mnq 1h 24      # Last 24 hours
-history mnq 2h 84      # Last week in 2-hour bars
-history mnq 4h 42      # Last week in 4-hour bars
-history mnq 8h 21      # Last week in 8-hour bars
-```
-
-### Position Trading (Days/Weeks)
-```bash
-history mnq 1d 30      # Last 30 days
-history mnq 1d 90      # Last 90 days (quarter)
-history mnq 1w 52      # Last 52 weeks (year)
-history mnq 1w 104     # Last 2 years
-```
-
-### Long-term Analysis (Months)
-```bash
-history mnq 1M 12      # Last 12 months (year)
-history mnq 1M 24      # Last 24 months (2 years)
-history mnq 3M 20      # Last 5 years in quarterly bars
-history mnq 6M 10      # Last 5 years in semi-annual bars
+history mnq 1M 12      # ✅ Last 12 months (year)
+history mnq 1M 24      # ✅ Last 24 months (2 years)
+history mnq 3M 20      # ✅ Last 5 years in quarterly bars
+history mnq 6M 10      # ✅ Last 5 years in semi-annual bars
 ```
 
 ## Technical Details
@@ -241,25 +247,27 @@ history mnq 5M       # ✅ 5 month bars (capital M!)
 
 ## Comparison with TradingView
 
-| TradingView | Our Bot | Notes |
-|-------------|---------|-------|
-| 1s          | 1s      | ✅ Supported |
-| 5s          | 5s      | ✅ Supported |
-| 15s         | 15s     | ✅ Supported |
-| 30s         | 30s     | ✅ Supported |
-| 1m          | 1m      | ✅ Supported |
-| 3m          | 3m      | ✅ Supported |
-| 5m          | 5m      | ✅ Supported |
-| 15m         | 15m     | ✅ Supported |
-| 30m         | 30m     | ✅ Supported |
-| 45m         | 45m     | ✅ Supported |
-| 1h          | 1h      | ✅ Supported |
-| 2h          | 2h      | ✅ Supported |
-| 3h          | 3h      | ✅ Supported |
-| 4h          | 4h      | ✅ Supported |
-| 1D          | 1d      | ✅ Supported |
-| 1W          | 1w      | ✅ Supported |
-| 1M          | 1M      | ✅ Supported |
+| TradingView | Our Bot | Status | Notes |
+|-------------|---------|--------|-------|
+| 1s          | 1s      | ❌ NOT SUPPORTED | TopStepX API errorCode: 2 |
+| 5s          | 5s      | ❌ NOT SUPPORTED | TopStepX API errorCode: 2 |
+| 15s         | 15s     | ❌ NOT SUPPORTED | TopStepX API errorCode: 2 |
+| 30s         | 30s     | ❌ NOT SUPPORTED | TopStepX API errorCode: 2 |
+| 1m          | 1m      | ✅ Supported | Works perfectly |
+| 3m          | 3m      | ✅ Supported | Works perfectly |
+| 5m          | 5m      | ✅ Supported | Works perfectly |
+| 15m         | 15m     | ✅ Supported | Works perfectly |
+| 30m         | 30m     | ✅ Supported | Works perfectly |
+| 45m         | 45m     | ✅ Supported | Works perfectly |
+| 1h          | 1h      | ✅ Supported | Works perfectly |
+| 2h          | 2h      | ❌ Falls back to 1h | API limitation |
+| 3h          | 3h      | ❌ Falls back to 1h | API limitation |
+| 4h          | 4h      | ❌ Falls back to 1h | API limitation |
+| 1D          | 1d      | ✅ Supported | Works perfectly |
+| 1W          | 1w      | ✅ Supported | Works perfectly |
+| 1M          | 1M      | ✅ Supported | Works perfectly |
+
+**Summary**: TopStepX API only supports minute-level data up to 1h, then daily/weekly/monthly. No second-level or multi-hour data.
 
 ## Testing
 
