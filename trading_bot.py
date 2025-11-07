@@ -1754,68 +1754,26 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            # Try multiple contract endpoints in order of preference
-            # 1. Contract/search (POST) - preferred method
-            # 2. Contract/list (GET) - older method
-            # 3. Contract/getAll (GET) - alternative
-            attempts = 0
-            last_error = None
-            response = None
-            endpoint_methods = [
-                ("POST", "/api/Contract/search", {}),
-                ("POST", "/api/Contract/search", {"request": {}}),
-                ("GET", "/api/Contract/list", None),
-                ("GET", "/api/Contract/getAll", None),
-                ("GET", "/api/Contract", None),
-            ]
+            # Use correct endpoint per API documentation:
+            # https://gateway.docs.projectx.com/docs/api-reference/market-data/available-contracts/
+            # POST /api/Contract/available with { "live": false }
             
-            for method, endpoint, data in endpoint_methods:
-                attempts += 1
-                try:
-                    if method == "GET":
-                        response = self._make_curl_request(method, endpoint, headers=headers, suppress_errors=True)
-                    else:
-                        response = self._make_curl_request(method, endpoint, data=data, headers=headers, suppress_errors=True)
-                    
-                    if "error" not in response:
-                        logger.debug(f"Contract fetch succeeded: {method} {endpoint}")
-                        break
-                    
-                    # Log error and try next method
-                    err_msg = str(response.get("error", ""))
-                    last_error = err_msg
-                    logger.debug(f"Contract attempt {attempts} failed ({method} {endpoint}): {err_msg}")
-                    time.sleep(0.1)
-                except Exception as e:
-                    logger.debug(f"Contract attempt {attempts} exception ({method} {endpoint}): {e}")
-                    last_error = str(e)
-                    time.sleep(0.1)
-                    continue
+            response = self._make_curl_request(
+                "POST",
+                "/api/Contract/available",
+                data={"live": False},  # Use False for simulation/paper trading contracts
+                headers=headers
+            )
             
+            # Check if API returned an error
             if "error" in response or not response:
-                logger.warning(f"All contract API endpoints failed, using fallback approach")
-                # Return cached data if available, even if expired
+                logger.warning(f"Contract API returned error or empty response")
+                # Return cached data if available
                 if use_cache:
                     with self._contract_cache_lock:
                         if self._contract_cache is not None:
                             logger.warning(f"API error, returning stale cached contracts ({len(self._contract_cache['contracts'])} contracts)")
                             return self._contract_cache['contracts'].copy()
-                
-                # Try SDK if available
-                use_sdk = os.getenv("USE_PROJECTX_SDK", "0").lower() in ("1", "true", "yes")
-                if use_sdk and sdk_adapter is not None and sdk_adapter.is_sdk_available():
-                    try:
-                        logger.info("Attempting to fetch contracts via SDK...")
-                        # Use SDK to get contracts
-                        suite = await sdk_adapter.get_or_create_order_suite("MNQ")
-                        if hasattr(suite, 'client') and suite.client:
-                            # Try to get contracts from client
-                            contracts_result = await suite.client.get_contracts()
-                            if contracts_result:
-                                logger.info(f"✅ Retrieved {len(contracts_result)} contracts via SDK")
-                                return contracts_result
-                    except Exception as sdk_err:
-                        logger.debug(f"SDK contract fetch failed: {sdk_err}")
                 
                 # Fallback to hardcoded common contracts
                 logger.warning("Using fallback hardcoded contract list")
@@ -1834,6 +1792,19 @@ class TopStepXTradingBot:
                     {"symbol": "6E", "name": "Euro FX", "contractId": "CON.F.US.6E"},
                 ]
                 return fallback_contracts
+            
+            # Check API success field (per API docs, response includes success boolean)
+            if isinstance(response, dict) and response.get('success') == False:
+                error_code = response.get('errorCode', 'Unknown')
+                error_msg = response.get('errorMessage', 'No error message')
+                logger.error(f"API returned error: Code {error_code}, Message: {error_msg}")
+                # Try cached data first
+                if use_cache:
+                    with self._contract_cache_lock:
+                        if self._contract_cache is not None:
+                            logger.warning(f"Using stale cached contracts due to API error")
+                            return self._contract_cache['contracts'].copy()
+                return []
             
             # Parse contracts from response
             # Contract/search endpoint may return different formats
