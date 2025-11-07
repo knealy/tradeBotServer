@@ -5618,14 +5618,94 @@ class TopStepXTradingBot:
             logger.error(f"Failed to export CSV: {e}")
             return None
     
+    def _parse_timeframe(self, timeframe: str):
+        """
+        Parse timeframe string to API unit format.
+        
+        Supports comprehensive timeframes:
+        - Seconds: 1s, 5s, 10s, 15s, 30s
+        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m
+        - Hours: 1h, 2h, 3h, 4h, 6h, 8h, 12h
+        - Days: 1d, 2d, 3d
+        - Weeks: 1w, 2w
+        - Months: 1M, 3M, 6M
+        
+        Args:
+            timeframe: String like "1m", "5s", "4h", etc.
+            
+        Returns:
+            Tuple[int, int, Callable]: (unit, unitNumber, time_delta_function)
+                - unit: API unit type (0=Second, 2=Minute, 3=Day, 4=Week, 5=Month)
+                - unitNumber: Number of units
+                - time_delta_function: Function to calculate timedelta for the given bar count
+        """
+        import re
+        from datetime import timedelta
+        
+        # Parse timeframe string (e.g., "5m" -> number=5, unit="m")
+        match = re.match(r'^(\d+)([smhdwM])$', timeframe)
+        if not match:
+            logger.error(f"Invalid timeframe format: {timeframe}. Use format like: 1s, 5m, 1h, 1d, 1w, 1M")
+            return None, None, None
+        
+        number = int(match.group(1))
+        unit_char = match.group(2)
+        
+        # Map to API units and create time delta function
+        # API units: 0=Second, 1=Tick, 2=Minute, 3=Day, 4=Week, 5=Month
+        if unit_char == 's':
+            # Seconds
+            api_unit = 0
+            api_unit_number = number
+            time_delta_func = lambda bars: timedelta(seconds=number * bars)
+        elif unit_char == 'm':
+            # Minutes
+            api_unit = 2
+            api_unit_number = number
+            time_delta_func = lambda bars: timedelta(minutes=number * bars)
+        elif unit_char == 'h':
+            # Hours - convert to minutes for API
+            api_unit = 2
+            api_unit_number = number * 60
+            time_delta_func = lambda bars: timedelta(hours=number * bars)
+        elif unit_char == 'd':
+            # Days
+            api_unit = 3
+            api_unit_number = number
+            time_delta_func = lambda bars: timedelta(days=number * bars)
+        elif unit_char == 'w':
+            # Weeks
+            api_unit = 4
+            api_unit_number = number
+            time_delta_func = lambda bars: timedelta(weeks=number * bars)
+        elif unit_char == 'M':
+            # Months (approximate as 30 days)
+            api_unit = 5
+            api_unit_number = number
+            time_delta_func = lambda bars: timedelta(days=30 * number * bars)
+        else:
+            logger.error(f"Unknown timeframe unit: {unit_char}")
+            return None, None, None
+        
+        logger.debug(f"Parsed timeframe '{timeframe}' -> unit={api_unit}, unitNumber={api_unit_number}")
+        return api_unit, api_unit_number, time_delta_func
+    
     async def get_historical_data(self, symbol: str, timeframe: str = "1m", 
                                  limit: int = 100) -> List[Dict]:
         """
         Get historical price data for a symbol using direct REST API.
         
+        Supports comprehensive timeframes:
+        - Seconds: 1s, 5s, 10s, 15s, 30s
+        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m
+        - Hours: 1h, 2h, 3h, 4h, 6h, 8h, 12h
+        - Days: 1d, 2d, 3d
+        - Weeks: 1w, 2w
+        - Months: 1M, 3M, 6M
+        
         Args:
             symbol: Trading symbol (e.g., "MNQ", "MES")
-            timeframe: Timeframe (1m, 5m, 15m, 1h, 1d)
+            timeframe: Timeframe (e.g., "1s", "5m", "1h", "4h", "1d", "1w")
             limit: Number of bars to return
             
         Returns:
@@ -5634,10 +5714,11 @@ class TopStepXTradingBot:
         try:
             logger.info(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
             
-            # For small limits (1-5 bars) on short timeframes (1m, 5m), bypass cache or use very short TTL
+            # For small limits (1-5 bars) on short timeframes, bypass cache or use very short TTL
             # This ensures real-time monitoring gets fresh data
             use_fresh_data = False
-            if limit <= 5 and timeframe in ['1m', '5m']:
+            short_timeframes = ['1s', '5s', '10s', '15s', '30s', '1m', '2m', '3m', '5m', '10m', '15m']
+            if limit <= 5 and timeframe in short_timeframes:
                 use_fresh_data = True
                 logger.debug(f"Small limit ({limit}) on short timeframe ({timeframe}) - fetching fresh data")
             
@@ -5656,9 +5737,13 @@ class TopStepXTradingBot:
                 logger.error("Failed to authenticate - cannot fetch historical data")
                 return []
             
-            # Map timeframe to API format
-            tf_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1d": 1440}
-            unit_number = tf_map.get(timeframe, 1)
+            # Parse timeframe to API format
+            # Supports: 1s, 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w, etc.
+            unit, unit_number, time_delta_func = self._parse_timeframe(timeframe)
+            
+            if unit is None:
+                logger.error(f"Invalid timeframe: {timeframe}")
+                return []
             
             # Get contract ID for the symbol
             contract_id = self._get_contract_id(symbol)
@@ -5667,8 +5752,8 @@ class TopStepXTradingBot:
             from datetime import datetime, timedelta, timezone
             end_time = datetime.now(timezone.utc)
             # Request more data than needed to account for market closures/gaps
-            window_minutes = int(unit_number * max(limit * 3, limit + 100))
-            start_time = end_time - timedelta(minutes=window_minutes)
+            # Use the time_delta_func to calculate proper lookback period
+            start_time = end_time - time_delta_func(max(limit * 3, limit + 100))
             
             # Format timestamps for API (ISO 8601)
             start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -5680,7 +5765,7 @@ class TopStepXTradingBot:
                 "live": False,
                 "startTime": start_str,
                 "endTime": end_str,
-                "unit": 2,  # 2 = Minutes (1=Tick, 2=Minute, 3=Day, 4=Week, etc.)
+                "unit": unit,  # 0=Second, 1=Tick, 2=Minute, 3=Day, 4=Week
                 "unitNumber": unit_number,
                 "limit": limit * 3,  # Request extra to handle gaps
                 "includePartialBar": True  # Include current incomplete bar for real-time monitoring
