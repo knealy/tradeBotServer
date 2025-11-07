@@ -2788,20 +2788,22 @@ class TopStepXTradingBot:
                 side = order.get('side', -1)  # 0=BUY, 1=SELL
                 quantity = order.get('size', 0)
                 # Try multiple field names for price (API returns different fields)
-                price = (order.get('executionPrice') or 
+                # Note: 'filledPrice' is the correct field from TopStepX API for filled orders
+                price = (order.get('filledPrice') or  # ← Primary field for filled orders
+                        order.get('executionPrice') or 
                         order.get('averagePrice') or 
-                        order.get('fillPrice') or 
                         order.get('price') or 
                         order.get('limitPrice') or 
                         order.get('stopPrice') or 0.0)
                 timestamp = order.get('executionTimestamp') or order.get('creationTimestamp', '')
                 
-                # Debug logging for order details
-                logger.debug(f"Processing order: side={side}, qty={quantity}, price={price}, timestamp={timestamp}, order_keys={list(order.keys())}")
+                # Debug logging for order details (only if verbose logging enabled)
+                if logger.level <= logging.DEBUG:
+                    logger.debug(f"Processing order: side={side}, qty={quantity}, price={price}, timestamp={timestamp}")
                 
-                # Temporary: Log full order if price is 0 to debug
+                # Log warning if price is still 0 after all attempts
                 if price == 0.0 or price is None:
-                    logger.info(f"⚠️  Order with zero/null price detected: {order}")
+                    logger.warning(f"⚠️  Order {order.get('id')} has no price in any expected field. Available fields: {list(order.keys())}")
                 
                 if side == 0:  # BUY
                     # First, try to close short positions
