@@ -4435,6 +4435,281 @@ class TopStepXTradingBot:
             logger.error(f"Failed to place stop order: {str(e)}")
             return {"error": str(e)}
     
+    async def place_oco_bracket_with_stop_entry(self, symbol: str, side: str, quantity: int,
+                                                entry_price: float, stop_loss_price: float,
+                                                take_profit_price: float, account_id: str = None) -> Dict:
+        """
+        Place OCO bracket order with stop order as entry.
+        
+        Uses TopstepX's native OCO bracket functionality. If OCO brackets are not enabled
+        in the platform, falls back to hybrid approach (stop order + auto-bracket on fill).
+        
+        Args:
+            symbol: Trading symbol (e.g., "MNQ", "ES")
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            entry_price: Stop price for entry
+            stop_loss_price: Stop loss price
+            take_profit_price: Take profit price
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: OCO bracket response or error
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            
+            if not target_account:
+                return {"error": "No account selected"}
+            
+            if side.upper() not in ["BUY", "SELL"]:
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            # Ensure valid token
+            await self._ensure_valid_token()
+            
+            logger.info(f"Placing OCO bracket with stop entry:")
+            logger.info(f"  Symbol: {symbol}")
+            logger.info(f"  Side: {side}")
+            logger.info(f"  Quantity: {quantity}")
+            logger.info(f"  Entry (stop): ${entry_price:.2f}")
+            logger.info(f"  Stop Loss: ${stop_loss_price:.2f}")
+            logger.info(f"  Take Profit: ${take_profit_price:.2f}")
+            
+            # Get proper contract ID
+            contract_id = self._get_contract_id(symbol)
+            
+            # Convert side to numeric value
+            side_value = 0 if side.upper() == "BUY" else 1
+            
+            # Prepare OCO bracket order data
+            # Try TopStepX's native OCO bracket API
+            bracket_data = {
+                "accountId": int(target_account),
+                "contractId": contract_id,
+                "side": side_value,
+                "quantity": quantity,
+                "entryOrder": {
+                    "type": 4,  # Stop order for entry
+                    "stopPrice": entry_price
+                },
+                "stopLossPrice": stop_loss_price,
+                "takeProfitPrice": take_profit_price,
+                "bracketType": "OCO",  # One-Cancels-Other
+                "customTag": self._generate_unique_custom_tag("oco_bracket")
+            }
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.session_token}"
+            }
+            
+            # Try the OCO bracket endpoint
+            response = self._make_curl_request("POST", "/api/Order/bracketOrder", 
+                                              data=bracket_data, headers=headers, suppress_errors=True)
+            
+            # Check if OCO brackets are supported/enabled
+            if "error" in response:
+                error_msg = response.get("error", "").lower()
+                
+                # Check for OCO not enabled errors
+                if any(keyword in error_msg for keyword in ["oco", "bracket", "not enabled", "not supported", "disabled"]):
+                    logger.warning("OCO brackets not enabled in TopStepX platform, falling back to hybrid approach")
+                    print("⚠️  OCO brackets not enabled in your TopStepX account")
+                    print("   Falling back to hybrid approach: stop order + auto-bracket on fill")
+                    
+                    # Fall back to hybrid approach
+                    return await self._stop_bracket_hybrid(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=entry_price,
+                        stop_loss_price=stop_loss_price,
+                        take_profit_price=take_profit_price,
+                        account_id=target_account
+                    )
+                else:
+                    # Other error
+                    logger.error(f"OCO bracket order failed: {response['error']}")
+                    return response
+            
+            if not response.get("success"):
+                logger.error(f"OCO bracket order returned error: {response}")
+                return {"error": f"OCO bracket failed: {response}"}
+            
+            # Update order activity timestamp
+            self._update_order_activity()
+            
+            logger.info(f"OCO bracket order placed successfully: {response}")
+            return {
+                "success": True,
+                "orderId": response.get("orderId"),
+                "method": "oco_native",
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "stop_loss": stop_loss_price,
+                "take_profit": take_profit_price,
+                **response
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to place OCO bracket order: {str(e)}")
+            # Fall back to hybrid on any exception
+            logger.info("Falling back to hybrid approach due to exception")
+            return await self._stop_bracket_hybrid(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                account_id=account_id
+            )
+    
+    async def _stop_bracket_hybrid(self, symbol: str, side: str, quantity: int,
+                                  entry_price: float, stop_loss_price: float,
+                                  take_profit_price: float, account_id: str = None) -> Dict:
+        """
+        Hybrid stop bracket: place stop order for entry, then auto-bracket on fill.
+        
+        This is a fallback when OCO brackets are not enabled in TopStepX platform.
+        
+        Args:
+            symbol: Trading symbol
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            entry_price: Stop price for entry
+            stop_loss_price: Stop loss price
+            take_profit_price: Take profit price
+            account_id: Account ID
+            
+        Returns:
+            Dict: Order response
+        """
+        try:
+            logger.info("Using hybrid approach: stop order + auto-bracket")
+            
+            # 1. Place stop order for entry
+            stop_result = await self.place_stop_order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                stop_price=entry_price,
+                account_id=account_id
+            )
+            
+            if "error" in stop_result:
+                return {"error": f"Stop order failed: {stop_result['error']}"}
+            
+            order_id = stop_result.get('orderId')
+            logger.info(f"Stop order placed: {order_id}")
+            
+            # 2. Start background monitor for fill
+            async def monitor_and_bracket():
+                """Monitor stop order and place brackets when filled."""
+                max_wait_time = 3600  # 1 hour max
+                check_interval = 1  # Check every second
+                elapsed_time = 0
+                
+                while elapsed_time < max_wait_time:
+                    try:
+                        # Check order status
+                        orders = await self.get_open_orders(account_id=account_id)
+                        
+                        # Check if our order is filled
+                        order_found = False
+                        order_filled = False
+                        
+                        for order in orders:
+                            if order.get('id') == order_id or str(order.get('id')) == str(order_id):
+                                order_found = True
+                                status = order.get('status', -1)
+                                
+                                # Status 2, 3, 4 = Filled/Executed/Complete
+                                if status in [2, 3, 4]:
+                                    order_filled = True
+                                    logger.info(f"Stop order {order_id} filled! Placing brackets")
+                                    break
+                                # Status 3, 5, 6 = Cancelled/Rejected
+                                elif status in [5, 6]:
+                                    logger.warning(f"Stop order {order_id} was cancelled/rejected")
+                                    return
+                        
+                        if order_filled:
+                            # Wait a moment for position to register
+                            await asyncio.sleep(0.5)
+                            
+                            # Get position
+                            positions = await self.get_open_positions(account_id=account_id)
+                            position_id = None
+                            
+                            for pos in positions:
+                                pos_symbol = pos.get('symbol', '').upper()
+                                if symbol.upper() in pos_symbol or pos_symbol in symbol.upper():
+                                    position_id = pos.get('id')
+                                    logger.info(f"Found position {position_id} for {symbol}")
+                                    break
+                            
+                            if position_id:
+                                # Place brackets
+                                logger.info(f"Placing brackets on position {position_id}")
+                                
+                                sl_result = await self.modify_stop_loss(position_id, stop_loss_price, account_id)
+                                if "error" not in sl_result:
+                                    logger.info(f"Stop loss set at ${stop_loss_price:.2f}")
+                                else:
+                                    logger.error(f"Stop loss failed: {sl_result['error']}")
+                                
+                                tp_result = await self.modify_take_profit(position_id, take_profit_price, account_id)
+                                if "error" not in tp_result:
+                                    logger.info(f"Take profit set at ${take_profit_price:.2f}")
+                                else:
+                                    logger.error(f"Take profit failed: {tp_result['error']}")
+                                
+                                print(f"\n✅ Brackets placed on position {position_id}")
+                                print(f"   Stop Loss: ${stop_loss_price:.2f}")
+                                print(f"   Take Profit: ${take_profit_price:.2f}")
+                            else:
+                                logger.error(f"Position not found for {symbol} after fill")
+                            
+                            return
+                        
+                        if not order_found:
+                            # Order might have been filled and closed already
+                            logger.info(f"Order {order_id} not found in open orders, may have filled and closed")
+                            return
+                        
+                    except Exception as e:
+                        logger.error(f"Error in bracket monitor: {e}")
+                    
+                    await asyncio.sleep(check_interval)
+                    elapsed_time += check_interval
+                
+                logger.warning(f"Bracket monitor timed out after {max_wait_time}s")
+            
+            # Start monitoring in background
+            asyncio.create_task(monitor_and_bracket())
+            
+            return {
+                "success": True,
+                "orderId": order_id,
+                "method": "hybrid_auto_bracket",
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "stop_loss": stop_loss_price,
+                "take_profit": take_profit_price,
+                "message": "Stop order placed, will auto-bracket on fill"
+            }
+            
+        except Exception as e:
+            logger.error(f"Hybrid bracket failed: {str(e)}")
+            return {"error": str(e)}
+    
     async def place_trailing_stop_order(self, symbol: str, side: str, quantity: int, 
                                        trail_amount: float, account_id: str = None) -> Dict:
         """
@@ -6274,23 +6549,46 @@ class TopStepXTradingBot:
                         print("❌ Order cancelled")
                         continue
                     
-                    # Place the stop entry order
-                    result = await self.place_stop_order(symbol, side, quantity, entry_price)
+                    # Place the OCO bracket with stop entry
+                    print(f"\n🚀 Placing OCO bracket order with stop entry...")
+                    result = await self.place_oco_bracket_with_stop_entry(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=entry_price,
+                        stop_loss_price=stop_price,
+                        take_profit_price=profit_price
+                    )
+                    
                     if "error" in result:
-                        print(f"❌ Stop order failed: {result['error']}")
+                        print(f"❌ Stop bracket failed: {result['error']}")
                         continue
                     
                     entry_order_id = result.get('orderId')
-                    print(f"✅ Stop entry order placed: ID {entry_order_id}")
-                    print(f"   Waiting for fill to attach bracket orders...")
+                    method = result.get('method', 'unknown')
                     
-                    # Monitor for fill and then place bracket orders
-                    # For now, just note that manual bracket placement will be needed
-                    print(f"\n💡 Note: Once the stop entry order fills at ${entry_price}:")
-                    print(f"   - A stop loss order will be needed at ${stop_price}")
-                    print(f"   - A take profit order will be needed at ${profit_price}")
-                    print(f"   Use 'modify_stop' and 'modify_tp' commands to manage them")
-                    print(f"   Or enable 'Position Brackets' in your TopStepX account for automatic brackets")
+                    if method == "oco_native":
+                        print(f"✅ OCO bracket order placed successfully!")
+                        print(f"   Order ID: {entry_order_id}")
+                        print(f"   Method: Native OCO (atomic)")
+                        print(f"   Entry: ${entry_price} (stop order)")
+                        print(f"   Stop Loss: ${stop_price}")
+                        print(f"   Take Profit: ${profit_price}")
+                        print(f"   📝 All orders linked - one fills, others cancel automatically")
+                    elif method == "hybrid_auto_bracket":
+                        print(f"✅ Stop entry order placed with auto-bracketing!")
+                        print(f"   Order ID: {entry_order_id}")
+                        print(f"   Method: Hybrid (auto-bracket on fill)")
+                        print(f"   Entry: ${entry_price} (stop order)")
+                        print(f"   Stop Loss: ${stop_price}")
+                        print(f"   Take Profit: ${profit_price}")
+                        print(f"   📝 Brackets will be placed automatically when stop order fills")
+                    else:
+                        print(f"✅ Stop bracket order placed!")
+                        print(f"   Order ID: {entry_order_id}")
+                        print(f"   Entry: ${entry_price}")
+                        print(f"   Stop Loss: ${stop_price}")
+                        print(f"   Take Profit: ${profit_price}")
                 
                 elif command_lower.startswith("stop "):
                     parts = command.split()
