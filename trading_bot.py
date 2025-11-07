@@ -6105,9 +6105,12 @@ class TopStepXTradingBot:
             if contracts:
                 print(f"\n📋 Available Contracts: {len(contracts)} found")
                 for contract in contracts[:5]:  # Show first 5
-                    print(f"  - {contract.get('symbol', 'Unknown')}: {contract.get('name', 'No name')}")
+                    symbol = contract.get('name', 'Unknown')
+                    description = contract.get('description', 'No description')
+                    desc_short = description[:50] + "..." if len(description) > 50 else description
+                    print(f"  - {symbol:8s} {desc_short}")
                 if len(contracts) > 5:
-                    print(f"  ... and {len(contracts) - 5} more")
+                    print(f"  ... and {len(contracts) - 5} more (use 'contracts' command to see all)")
             
             # Step 7: Cache initialization is now LAZY (initialized on first history command)
             # This saves ~10s at startup and only initializes when actually needed
@@ -6281,7 +6284,21 @@ class TopStepXTradingBot:
                     if contracts:
                         print(f"\n📋 Available Contracts ({len(contracts)}):")
                         for contract in contracts:
-                            print(f"  - {contract.get('symbol', 'Unknown')}: {contract.get('name', 'No name')}")
+                            # API returns: name (symbol), description (full name), tickSize, tickValue, activeContract
+                            symbol = contract.get('name', 'Unknown')
+                            description = contract.get('description', 'No description')
+                            tick_size = contract.get('tickSize')
+                            tick_value = contract.get('tickValue')
+                            active = contract.get('activeContract', False)
+                            
+                            # Format display with symbol and description
+                            status = "✓" if active else "○"
+                            desc_short = description[:60] + "..." if len(description) > 60 else description
+                            print(f"  {status} {symbol:8s} - {desc_short}")
+                            
+                            # Show tick info if available
+                            if tick_size and tick_value:
+                                print(f"    {'':8s}   Tick: ${tick_size:.4f} = ${tick_value:.2f}")
                     else:
                         print("❌ No contracts available")
                 elif command_lower == "accounts":
