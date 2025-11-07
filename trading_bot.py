@@ -5195,29 +5195,47 @@ class TopStepXTradingBot:
             # Convert API response to our standard format
             parsed_bars: List[Dict] = []
             for i, bar in enumerate(bars_data):
-                # Debug: log first bar to see actual field names
+                # Debug: log first bar to see actual field names and values
                 if i == 0:
-                    logger.debug(f"Sample bar keys: {list(bar.keys())}")
-                    logger.debug(f"Sample bar data: {bar}")
+                    logger.info(f"Sample bar keys: {list(bar.keys())}")
+                    logger.info(f"Sample bar data: {bar}")
+                    logger.info(f"Timestamp field 't' value: {bar.get('t')} (type: {type(bar.get('t'))})")
                 
-                # API returns: time, open, high, low, close, volume (check field names)
-                timestamp_str = bar.get("time") or bar.get("timestamp") or bar.get("Time") or bar.get("Timestamp") or ""
+                # API returns single-letter keys: t, o, h, l, c, v
+                # Also check for full names as fallback
+                timestamp_val = bar.get("t") or bar.get("time") or bar.get("timestamp") or bar.get("Time") or bar.get("Timestamp")
                 
                 # Parse and convert to local timezone
                 timestamp_local = ""
-                if timestamp_str:
+                if timestamp_val:
                     try:
-                        dt_utc = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                        local_tz = datetime.now().astimezone().tzinfo
-                        dt_local = dt_utc.astimezone(local_tz)
-                        timestamp_local = dt_local.isoformat()
+                        # Try parsing as ISO string first
+                        if isinstance(timestamp_val, str):
+                            dt_utc = datetime.fromisoformat(timestamp_val.replace("Z", "+00:00"))
+                        # Try parsing as Unix timestamp (seconds since epoch)
+                        elif isinstance(timestamp_val, (int, float)):
+                            # Could be seconds or milliseconds
+                            if timestamp_val > 10000000000:  # Milliseconds
+                                dt_utc = datetime.fromtimestamp(timestamp_val / 1000, tz=timezone.utc)
+                            else:  # Seconds
+                                dt_utc = datetime.fromtimestamp(timestamp_val, tz=timezone.utc)
+                        else:
+                            logger.warning(f"Unknown timestamp type: {type(timestamp_val)}, value: {timestamp_val}")
+                            timestamp_local = str(timestamp_val)
+                            dt_utc = None
+                        
+                        if dt_utc:
+                            local_tz = datetime.now().astimezone().tzinfo
+                            dt_local = dt_utc.astimezone(local_tz)
+                            timestamp_local = dt_local.isoformat()
                     except Exception as e:
-                        logger.debug(f"Failed to parse timestamp '{timestamp_str}': {e}")
-                        timestamp_local = timestamp_str
+                        logger.debug(f"Failed to parse timestamp '{timestamp_val}': {e}")
+                        timestamp_local = str(timestamp_val) if timestamp_val else ""
                 else:
                     logger.warning(f"No timestamp found in bar data. Bar keys: {list(bar.keys())}")
                 
                 # Handle case-insensitive field names
+                # API uses single-letter keys (t, o, h, l, c, v), but check full names as fallback
                 def get_field(field_names):
                     """Get field value trying multiple name variations."""
                     for name in field_names:
@@ -5229,11 +5247,11 @@ class TopStepXTradingBot:
                 parsed_bar = {
                     "timestamp": timestamp_local,
                     "time": timestamp_local,
-                    "open": float(get_field(["open", "Open", "o", "O"])),
-                    "high": float(get_field(["high", "High", "h", "H"])),
-                    "low": float(get_field(["low", "Low", "l", "L"])),
-                    "close": float(get_field(["close", "Close", "c", "C"])),
-                    "volume": int(get_field(["volume", "Volume", "v", "V", "vol", "Vol"]))
+                    "open": float(get_field(["o", "open", "Open", "O"])),
+                    "high": float(get_field(["h", "high", "High", "H"])),
+                    "low": float(get_field(["l", "low", "Low", "L"])),
+                    "close": float(get_field(["c", "close", "Close", "C"])),
+                    "volume": int(get_field(["v", "volume", "Volume", "V", "vol", "Vol"]))
                 }
                 parsed_bars.append(parsed_bar)
             
@@ -6748,24 +6766,24 @@ class TopStepXTradingBot:
                             print(f"{'Time':<26} {'Open':<12} {'High':<12} {'Low':<12} {'Close':<12} {'Volume':<10}")
                             print("-" * 100)
                             for bar in result[-limit:]:  # Show exactly requested bars
-                                # Get timestamp - try both 'time' and 'timestamp' keys
-                                time = bar.get('time') or bar.get('timestamp') or bar.get('Time') or bar.get('Timestamp') or ''
+                                # Get timestamp - prioritize parsed 'time'/'timestamp' keys
+                                time = bar.get('time') or bar.get('timestamp') or ''
                                 
                                 # Format timestamp nicely (just date and time, no microseconds)
                                 if time:
-                                    if len(time) > 19:
+                                    if len(str(time)) > 19:
                                         try:
                                             # Parse ISO format and format nicely
                                             from datetime import datetime as _dt
-                                            dt = _dt.fromisoformat(time.replace('Z', '+00:00'))
+                                            dt = _dt.fromisoformat(str(time).replace('Z', '+00:00'))
                                             time = dt.strftime('%Y-%m-%d %H:%M:%S')
                                         except Exception as e:
                                             # Keep original if parsing fails
                                             logger.debug(f"Failed to format timestamp {time}: {e}")
-                                            time = time[:19] if len(time) > 19 else time
+                                            time = str(time)[:19] if len(str(time)) > 19 else str(time)
                                 else:
                                     time = "N/A"
-                                    logger.warning(f"Empty timestamp in bar display. Bar data: {bar}")
+                                    logger.debug(f"Empty timestamp in bar display. Bar keys: {list(bar.keys())}")
                                 
                                 open_price = bar.get('open', 0)
                                 high = bar.get('high', 0)
