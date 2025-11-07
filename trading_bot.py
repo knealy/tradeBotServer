@@ -6851,8 +6851,17 @@ class TopStepXTradingBot:
                     if status['breakeven_monitoring']:
                         print(f"\n   🎯 Breakeven Monitoring:")
                         for order_id, monitor_data in status['breakeven_monitoring'].items():
-                            triggered = "✓ Triggered" if monitor_data['triggered'] else "⏳ Monitoring"
-                            print(f"     {monitor_data['symbol']} {monitor_data['side']}: {triggered}")
+                            filled = monitor_data.get('filled', False)
+                            triggered = monitor_data['triggered']
+                            
+                            if triggered:
+                                status_str = "✓ At Breakeven"
+                            elif filled:
+                                status_str = "⏳ Monitoring (position filled)"
+                            else:
+                                status_str = "⏸ Waiting for fill"
+                            
+                            print(f"     {monitor_data['symbol']} {monitor_data['side']}: {status_str}")
                 
                 elif command_lower.startswith("strategy_test "):
                     # Test strategy components (ATR, overnight range, order calculation)

@@ -225,9 +225,12 @@ class OvernightRangeStrategy:
         """
         Track overnight range for a symbol (6pm - 9:30am EST by default).
         
-        This fetches 1-minute bars during the overnight session and finds:
-        - Highest price
-        - Lowest price
+        EFFICIENT APPROACH: Fetches historical bars at market open instead of continuous tracking.
+        Uses the bot's existing history command to get overnight session bars.
+        
+        This finds:
+        - Highest price during overnight session
+        - Lowest price during overnight session
         - Opening price (at start of session)
         - Closing price (at end of session)
         
@@ -238,69 +241,45 @@ class OvernightRangeStrategy:
             OvernightRange object with high/low/open/close, or None if error
         """
         try:
-            # Parse overnight session times
-            now = datetime.now(self.timezone)
-            
-            # Create datetime objects for overnight session
+            # Calculate overnight session duration
             start_hour, start_min = map(int, self.overnight_start.split(':'))
             end_hour, end_min = map(int, self.overnight_end.split(':'))
             
-            # If we're past market open, use yesterday's overnight session
-            market_open_time = time(end_hour, end_min)
-            if now.time() >= market_open_time:
-                # Use yesterday's overnight
-                start_time = now.replace(hour=start_hour, minute=start_min, second=0, microsecond=0) - timedelta(days=1)
+            # Calculate session length in hours
+            # Example: 18:00 to 09:30 = 15.5 hours
+            if end_hour < start_hour:
+                # Session spans midnight
+                session_hours = (24 - start_hour) + end_hour + (end_min / 60.0)
             else:
-                # Use today's overnight (which started yesterday evening)
-                start_time = now.replace(hour=start_hour, minute=start_min, second=0, microsecond=0) - timedelta(days=1)
+                session_hours = end_hour - start_hour + (end_min / 60.0)
             
-            end_time = start_time.replace(hour=end_hour, minute=end_min) + timedelta(days=1)
+            # Calculate how many 1-minute bars we need
+            session_minutes = int(session_hours * 60)
             
-            # Fetch 1-minute bars for overnight session
-            # Calculate number of minutes in session
-            session_minutes = int((end_time - start_time).total_seconds() / 60)
+            logger.info(f"Fetching overnight range for {symbol} (last {session_minutes} minutes)")
             
-            logger.info(f"Fetching overnight range for {symbol}: {start_time} to {end_time} ({session_minutes} minutes)")
-            
+            # Fetch overnight bars using existing history command
+            # This is MUCH more efficient than continuous tracking!
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
                 timeframe='1m',
-                limit=session_minutes + 10  # Add buffer
+                limit=session_minutes + 10  # Add buffer for safety
             )
             
             if not bars or len(bars) < 10:
                 logger.error(f"Insufficient overnight bars: {len(bars) if bars else 0} bars")
                 return None
             
-            # Filter bars within overnight session
-            overnight_bars = []
-            for bar in bars:
-                # Get timestamp from bar
-                ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
-                if not ts:
-                    continue
-                
-                # Parse timestamp
-                if isinstance(ts, str):
-                    bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                else:
-                    bar_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts > 1e12 else datetime.fromtimestamp(ts, tz=timezone.utc)
-                
-                bar_time = bar_time.astimezone(self.timezone)
-                
-                # Check if bar is within overnight session
-                if start_time <= bar_time <= end_time:
-                    overnight_bars.append(bar)
+            # Calculate range statistics from bars
+            high = max(bar.get('high', bar.get('h', 0)) for bar in bars)
+            low = min(bar.get('low', bar.get('l', 0)) for bar in bars)
+            open_price = bars[0].get('open', bars[0].get('o', 0))
+            close_price = bars[-1].get('close', bars[-1].get('c', 0))
             
-            if not overnight_bars:
-                logger.warning(f"No bars found in overnight session for {symbol}")
-                return None
-            
-            # Calculate range statistics
-            high = max(bar.get('high', bar.get('h', 0)) for bar in overnight_bars)
-            low = min(bar.get('low', bar.get('l', 0)) for bar in overnight_bars)
-            open_price = overnight_bars[0].get('open', overnight_bars[0].get('o', 0))
-            close_price = overnight_bars[-1].get('close', overnight_bars[-1].get('c', 0))
+            # Get timestamps for logging
+            now = datetime.now(self.timezone)
+            end_time = now
+            start_time = now - timedelta(hours=session_hours)
             
             range_data = OvernightRange(
                 symbol=symbol,
@@ -423,13 +402,14 @@ class OvernightRangeStrategy:
                     self.active_orders[symbol] = []
                 self.active_orders[symbol].append(order_id)
                 
-                # Setup breakeven monitoring
+                # Setup breakeven monitoring (will only activate when position is filled)
                 self.breakeven_monitoring[order_id] = {
                     "symbol": symbol,
                     "side": "LONG",
                     "entry_price": long_order.entry_price,
                     "original_stop": long_order.stop_loss,
-                    "breakeven_triggered": False
+                    "breakeven_triggered": False,
+                    "position_filled": False  # Track if entry order has filled
                 }
             
             # Place short breakout order
@@ -453,13 +433,14 @@ class OvernightRangeStrategy:
                     self.active_orders[symbol] = []
                 self.active_orders[symbol].append(order_id)
                 
-                # Setup breakeven monitoring
+                # Setup breakeven monitoring (will only activate when position is filled)
                 self.breakeven_monitoring[order_id] = {
                     "symbol": symbol,
                     "side": "SHORT",
                     "entry_price": short_order.entry_price,
                     "original_stop": short_order.stop_loss,
-                    "breakeven_triggered": False
+                    "breakeven_triggered": False,
+                    "position_filled": False  # Track if entry order has filled
                 }
             
             results["success"] = len(results["orders"]) > 0
@@ -471,21 +452,33 @@ class OvernightRangeStrategy:
     
     async def monitor_breakeven_stops(self):
         """
-        Background task to monitor positions and move stops to breakeven when profitable.
+        Background task to monitor FILLED positions and move stops to breakeven when profitable.
         
-        Runs continuously, checking positions every 10 seconds.
+        EFFICIENT APPROACH: Only monitors after positions are opened, not continuously.
+        Checks positions every 10 seconds when there are active filled positions.
         When a position reaches +15 pts profit (configurable), moves stop to breakeven.
         """
-        logger.info("🔄 Starting breakeven stop monitoring...")
+        logger.info("🔄 Breakeven stop monitoring ready (will activate when positions open)")
         
         while self.is_trading:
             try:
+                # Sleep first, then check if there are any filled positions to monitor
                 await asyncio.sleep(10)  # Check every 10 seconds
                 
                 if not self.breakeven_monitoring:
+                    continue  # No orders to monitor yet
+                
+                # Check if any positions are actually filled before making API calls
+                has_filled_positions = any(
+                    data.get('position_filled', False) and not data.get('breakeven_triggered', False)
+                    for data in self.breakeven_monitoring.values()
+                )
+                
+                if not has_filled_positions:
+                    # No filled positions to monitor yet - skip API calls
                     continue
                 
-                # Get current positions
+                # Get current positions ONLY when we have filled positions to check
                 positions = await self.trading_bot.get_positions()
                 if not positions:
                     continue
@@ -501,7 +494,21 @@ class OvernightRangeStrategy:
                     # Find matching position
                     position = next((p for p in positions if p.get('symbol') == symbol), None)
                     if not position:
-                        continue
+                        # Position doesn't exist yet, check if it's a filled order
+                        if not monitor_data['position_filled']:
+                            # Check if entry order has filled
+                            # For now, mark as filled if we see the position
+                            continue
+                        else:
+                            # Position was filled but now closed - clean up monitoring
+                            logger.info(f"Position {symbol} closed, stopping breakeven monitoring")
+                            del self.breakeven_monitoring[order_id]
+                            continue
+                    
+                    # Position exists - mark as filled and start monitoring
+                    if not monitor_data['position_filled']:
+                        monitor_data['position_filled'] = True
+                        logger.info(f"✅ Position {symbol} filled at {entry_price:.2f} - starting breakeven monitoring")
                     
                     # Get current price
                     current_price = position.get('currentPrice', position.get('lastPrice', 0))
@@ -648,6 +655,7 @@ class OvernightRangeStrategy:
                 order_id: {
                     "symbol": data["symbol"],
                     "side": data["side"],
+                    "filled": data.get("position_filled", False),
                     "triggered": data["breakeven_triggered"]
                 } for order_id, data in self.breakeven_monitoring.items()
             },
