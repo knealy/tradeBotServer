@@ -31,6 +31,7 @@ from urllib3.util.retry import Retry
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 from discord_notifier import DiscordNotifier
 from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
+from account_tracker import AccountTracker
 
 # Optional ProjectX SDK adapter
 try:
@@ -194,6 +195,10 @@ class TopStepXTradingBot:
         
         # Initialize Discord notifier
         self.discord_notifier = DiscordNotifier()
+        
+        # Initialize real-time account state tracker
+        self.account_tracker = AccountTracker()
+        logger.debug("Account tracker initialized")
         
         # Order counter for unique custom tags
         self._order_counter = 0
@@ -866,6 +871,16 @@ class TopStepXTradingBot:
                     print(f"  Account ID: {selected_account['id']}")
                     print(f"  Balance: ${selected_account.get('balance', 0):,.2f}")
                     print(f"  Status: {selected_account.get('status', 'N/A')}")
+                    
+                    # Initialize account tracker with this account
+                    account_balance = selected_account.get('balance', 0)
+                    account_type = selected_account.get('type', 'unknown')
+                    self.account_tracker.initialize(
+                        account_id=selected_account['id'],
+                        starting_balance=account_balance,
+                        account_type=account_type
+                    )
+                    logger.info(f"Account tracker initialized for {selected_account['name']} (${account_balance:,.2f})")
                     
                     return selected_account
                 else:
@@ -2978,6 +2993,48 @@ class TopStepXTradingBot:
             # Filter to only filled/executed orders for history
             filled_orders = [o for o in orders if o.get("status") in [2, 3, 4]]  # Filled, Executed, Complete
             logger.info(f"Total orders returned: {len(orders)}; Filled orders: {len(filled_orders)}")
+            
+            # If no filled orders found, try the Fill API endpoint
+            if not filled_orders:
+                logger.info("No filled orders from Order/search, trying Fill/search endpoint")
+                
+                fill_search_data = {
+                    "accountId": int(target_account),
+                    "startTime": start_time.isoformat(),
+                    "endTime": end_time.isoformat(),
+                    "limit": limit
+                }
+                
+                fill_response = self._make_curl_request("POST", "/api/Fill/search", data=fill_search_data, headers=headers, suppress_errors=True)
+                
+                if fill_response and not "error" in fill_response and fill_response.get("success"):
+                    # Check for fills in response
+                    fills = []
+                    for field in ["fills", "data", "result", "items", "list"]:
+                        if field in fill_response and isinstance(fill_response[field], list):
+                            fills = fill_response[field]
+                            break
+                    
+                    if fills:
+                        logger.info(f"Found {len(fills)} fills from Fill/search endpoint")
+                        # Convert fills to order format for consistency
+                        for fill in fills:
+                            filled_orders.append({
+                                'id': fill.get('id') or fill.get('fillId'),
+                                'symbol': fill.get('symbol') or fill.get('contractId'),
+                                'side': fill.get('side'),
+                                'quantity': fill.get('quantity') or fill.get('qty'),
+                                'price': fill.get('price') or fill.get('fillPrice'),
+                                'timestamp': fill.get('timestamp') or fill.get('fillTime'),
+                                'status': 4,  # Mark as filled
+                                'orderId': fill.get('orderId'),
+                                'type': 'fill',
+                                **fill  # Include all original fill data
+                            })
+                    else:
+                        logger.info("Fill/search also returned no results")
+                else:
+                    logger.debug("Fill/search endpoint not available or returned error")
             
             # Limit results
             if len(filled_orders) > limit:
@@ -5402,6 +5459,45 @@ class TopStepXTradingBot:
                 logger.error(f"Auto fill checker error: {e}")
                 await asyncio.sleep(self._fill_check_interval)
     
+    async def _eod_scheduler(self) -> None:
+        """
+        Background task to update account tracker at end of day (midnight UTC).
+        Updates highest EOD balance for trailing drawdown calculations.
+        """
+        import asyncio
+        from datetime import datetime, time as dt_time, timedelta
+        
+        logger.info("EOD scheduler started - will update balance at midnight UTC")
+        
+        while True:
+            try:
+                # Calculate time until next midnight UTC
+                now = datetime.utcnow()
+                midnight = datetime.combine(now.date() + timedelta(days=1), dt_time.min)
+                seconds_until_midnight = (midnight - now).total_seconds()
+                
+                logger.debug(f"EOD scheduler: Next update in {seconds_until_midnight/3600:.1f} hours")
+                
+                # Wait until midnight
+                await asyncio.sleep(seconds_until_midnight)
+                
+                # Update EOD balance if account is selected
+                if self.selected_account:
+                    account_id = self.selected_account['id']
+                    balance = await self.get_account_balance(account_id)
+                    
+                    if balance:
+                        self.account_tracker.update_eod_balance(balance)
+                        logger.info(f"EOD balance updated: ${balance:,.2f}")
+                        print(f"\n💰 End-of-Day balance updated: ${balance:,.2f}")
+                    else:
+                        logger.warning("Could not fetch balance for EOD update")
+                
+            except Exception as e:
+                logger.error(f"EOD scheduler error: {e}")
+                # On error, wait 1 hour before retrying
+                await asyncio.sleep(3600)
+    
     async def run(self):
         """
         Main bot execution flow with parallel initialization and performance timing.
@@ -5481,6 +5577,10 @@ class TopStepXTradingBot:
             # Step 8: Start background prefetch (if enabled)
             if self._prefetch_enabled:
                 self._start_prefetch_task()
+            
+            # Step 8b: Start EOD scheduler for account tracking
+            asyncio.create_task(self._eod_scheduler())
+            logger.info("EOD scheduler background task started")
             
             # Step 9: Trading interface
             print(f"\n🎯 Ready to trade on account: {selected_account['name']}")
@@ -5603,6 +5703,9 @@ class TopStepXTradingBot:
         print("  auto_fills - Enable automatic fill checking every 30 seconds")
         print("  stop_auto_fills - Disable automatic fill checking")
         print("  account_info - Get detailed account information")
+        print("  account_state - Show real-time account state (balance, PnL, positions)")
+        print("  compliance - Check account compliance status (DLL, MLL, trailing drawdown)")
+        print("  risk - Show current risk metrics and limits")
         print("  drawdown - Show max loss limit and drawdown information (also: max_loss, risk)")
         print("  switch_account [account_id] - Switch to a different account without restarting")
         print("  trades [start_date] [end_date] - List trades between dates (default: current session)")
@@ -5675,9 +5778,19 @@ class TopStepXTradingBot:
                             # Clear account-specific caches
                             self._cached_order_ids = {}
                             self._cached_position_ids = {}
+                            
+                            # Reinitialize account tracker for new account
+                            balance = await self.get_account_balance()
+                            if balance:
+                                self.account_tracker.initialize(
+                                    account_id=target_account['id'],
+                                    starting_balance=balance,
+                                    account_type=target_account.get('type', 'unknown')
+                                )
+                                logger.info(f"Account tracker reinitialized for {target_account.get('name')} (${balance:,.2f})")
+                            
                             print(f"✅ Switched from {old_account.get('name', 'N/A')} to {target_account.get('name')}")
                             print(f"   Account ID: {target_account.get('id')}")
-                            balance = await self.get_account_balance()
                             if balance:
                                 print(f"   Balance: ${balance:,.2f}")
                         else:
@@ -5717,9 +5830,19 @@ class TopStepXTradingBot:
                             # Clear account-specific caches
                             self._cached_order_ids = {}
                             self._cached_position_ids = {}
+                            
+                            # Reinitialize account tracker for new account
+                            balance = await self.get_account_balance()
+                            if balance:
+                                self.account_tracker.initialize(
+                                    account_id=target_account['id'],
+                                    starting_balance=balance,
+                                    account_type=target_account.get('type', 'unknown')
+                                )
+                                logger.info(f"Account tracker reinitialized for {target_account.get('name')} (${balance:,.2f})")
+                            
                             print(f"\n✅ Switched from {old_account.get('name', 'N/A') if old_account else 'None'} to {target_account.get('name')}")
                             print(f"   Account ID: {target_account.get('id')}")
-                            balance = await self.get_account_balance()
                             if balance:
                                 print(f"   Balance: ${balance:,.2f}")
                         else:
@@ -6905,7 +7028,102 @@ class TopStepXTradingBot:
                             for key, value in extra_fields.items():
                                 print(f"   - {key}: {value}")
                 
-                elif command_lower in ["drawdown", "max_loss", "risk"]:
+                elif command_lower == "account_state":
+                    # Show real-time account state from tracker
+                    state = self.account_tracker.get_state()
+                    
+                    print(f"\n📊 Real-Time Account State:")
+                    print(f"   Account ID: {state['account_id']}")
+                    print(f"   Starting Balance: ${state['starting_balance']:,.2f}")
+                    print(f"   Current Balance: ${state['current_balance']:,.2f}")
+                    print(f"   Realized PnL: ${state['realized_pnl']:,.2f}")
+                    print(f"   Unrealized PnL: ${state['unrealized_pnl']:,.2f}")
+                    print(f"   Total PnL: ${state['total_pnl']:,.2f}")
+                    print(f"   Highest EOD Balance: ${state['highest_eod_balance']:,.2f}")
+                    print(f"\n   Open Positions: {state['position_count']}")
+                    if state['positions']:
+                        print(f"   Position Details:")
+                        for symbol, pos in state['positions'].items():
+                            print(f"      {symbol}: {pos['quantity']} @ ${pos['entry_price']:.2f} (PnL: ${pos['unrealized_pnl']:.2f})")
+                    
+                    print(f"\n   Last Updated: {state['last_update']}")
+                    print(f"   📝 Note: Real-time tracking based on local state + API data")
+                
+                elif command_lower == "compliance":
+                    # Check compliance status
+                    compliance = self.account_tracker.check_compliance()
+                    state = self.account_tracker.get_state()
+                    
+                    print(f"\n✅ Compliance Status:")
+                    print(f"   Account Type: {state['account_type']}")
+                    print(f"   Is Compliant: {'✓ YES' if compliance['is_compliant'] else '❌ NO'}")
+                    
+                    print(f"\n   Daily Loss Limit (DLL):")
+                    if compliance['dll_limit']:
+                        print(f"      Limit: ${compliance['dll_limit']:,.2f}")
+                        print(f"      Used: ${compliance['dll_used']:,.2f}")
+                        print(f"      Remaining: ${compliance['dll_remaining']:,.2f}")
+                        print(f"      Status: {'✓ OK' if not compliance['dll_violated'] else '❌ VIOLATED'}")
+                    else:
+                        print(f"      No DLL limit set")
+                    
+                    print(f"\n   Maximum Loss Limit (MLL):")
+                    if compliance['mll_limit']:
+                        print(f"      Limit: ${compliance['mll_limit']:,.2f}")
+                        print(f"      Used: ${compliance['mll_used']:,.2f}")
+                        print(f"      Remaining: ${compliance['mll_remaining']:,.2f}")
+                        print(f"      Status: {'✓ OK' if not compliance['mll_violated'] else '❌ VIOLATED'}")
+                    else:
+                        print(f"      No MLL limit set")
+                    
+                    print(f"\n   Trailing Drawdown:")
+                    print(f"      Highest EOD Balance: ${state['highest_eod_balance']:,.2f}")
+                    print(f"      Current Balance: ${state['current_balance']:,.2f}")
+                    print(f"      Trailing Loss: ${compliance['trailing_loss']:,.2f}")
+                    
+                    if compliance['violations']:
+                        print(f"\n   ⚠️  Violations:")
+                        for violation in compliance['violations']:
+                            print(f"      - {violation}")
+                
+                elif command_lower == "risk":
+                    # Show risk metrics
+                    state = self.account_tracker.get_state()
+                    compliance = self.account_tracker.check_compliance()
+                    
+                    print(f"\n⚠️  Risk Metrics:")
+                    print(f"   Account: {self.selected_account.get('name', 'N/A')}")
+                    print(f"   Current Balance: ${state['current_balance']:,.2f}")
+                    print(f"   Total PnL: ${state['total_pnl']:,.2f} ({(state['total_pnl'] / state['starting_balance'] * 100):.2f}%)")
+                    
+                    print(f"\n   Daily Loss:")
+                    if compliance['dll_limit']:
+                        dll_pct = (compliance['dll_used'] / compliance['dll_limit'] * 100) if compliance['dll_limit'] else 0
+                        print(f"      Used: ${compliance['dll_used']:,.2f} / ${compliance['dll_limit']:,.2f} ({dll_pct:.1f}%)")
+                        print(f"      Remaining: ${compliance['dll_remaining']:,.2f}")
+                    else:
+                        print(f"      No limit set")
+                    
+                    print(f"\n   Maximum Loss:")
+                    if compliance['mll_limit']:
+                        mll_pct = (compliance['mll_used'] / compliance['mll_limit'] * 100) if compliance['mll_limit'] else 0
+                        print(f"      Used: ${compliance['mll_used']:,.2f} / ${compliance['mll_limit']:,.2f} ({mll_pct:.1f}%)")
+                        print(f"      Remaining: ${compliance['mll_remaining']:,.2f}")
+                    else:
+                        print(f"      No limit set")
+                    
+                    print(f"\n   Open Positions Risk:")
+                    print(f"      Position Count: {state['position_count']}")
+                    print(f"      Unrealized PnL: ${state['unrealized_pnl']:,.2f}")
+                    
+                    if state['position_count'] > 0:
+                        total_exposure = sum(abs(pos['quantity'] * pos['entry_price']) for pos in state['positions'].values())
+                        print(f"      Total Exposure: ${total_exposure:,.2f}")
+                        if state['current_balance'] > 0:
+                            leverage = total_exposure / state['current_balance']
+                            print(f"      Leverage: {leverage:.2f}x")
+                
+                elif command_lower in ["drawdown", "max_loss"]:
                     # Show max loss limit and drawdown information
                     account_id = self.selected_account['id'] if self.selected_account else None
                     if not account_id:
@@ -7108,7 +7326,8 @@ class TopStepXTradingBot:
                 else:
                     print("❌ Unknown command. Available commands:")
                     print("   trade, limit, bracket, native_bracket, stop_bracket, stop, trail, positions, orders,")
-                    print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts, switch_account, drawdown, trades, help, quit")
+                    print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts,")
+                    print("   switch_account, account_info, account_state, compliance, risk, drawdown, trades, help, quit")
                     print("   Use ↑/↓ arrows for command history, Tab for completion")
                     print("   Type 'help' for detailed command information")
                     
@@ -7123,6 +7342,22 @@ def main():
     """
     Main entry point for the trading bot.
     """
+    import argparse
+    
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='TopStepX Trading Bot - Real API Version')
+    parser.add_argument('-v', '--verbose', action='store_true', 
+                       help='Enable verbose/debug logging')
+    args = parser.parse_args()
+    
+    # Reconfigure logging if verbose mode is enabled
+    if args.verbose:
+        # Set all loggers to DEBUG level
+        logging.getLogger().setLevel(logging.DEBUG)
+        for handler in logging.getLogger().handlers:
+            handler.setLevel(logging.DEBUG)
+        logger.info("Verbose logging enabled")
+    
     print("TopStepX Trading Bot - Real API Version")
     print("=======================================")
     print()

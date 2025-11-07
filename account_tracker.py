@@ -104,6 +104,7 @@ class AccountTracker:
         self.state_file = Path(state_file)
         self.accounts: Dict[str, AccountState] = {}
         self.lock = Lock()
+        self.current_account_id: Optional[str] = None  # Track current active account
         
         # Load persisted state if available
         self._load_state()
@@ -420,15 +421,137 @@ class AccountTracker:
             
             return state
     
-    def get_state(self, account_id: str) -> Optional[AccountState]:
-        """Get current state for an account."""
+    def get_state(self, account_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get current state for an account.
+        
+        Args:
+            account_id: Account ID (uses current account if None)
+            
+        Returns:
+            Dict with account state or None if not found
+        """
         with self.lock:
-            return self.accounts.get(account_id)
+            target_id = account_id or self.current_account_id
+            if not target_id or target_id not in self.accounts:
+                # Return empty state if not initialized
+                return {
+                    'account_id': target_id or 'unknown',
+                    'starting_balance': 0.0,
+                    'current_balance': 0.0,
+                    'realized_pnl': 0.0,
+                    'unrealized_pnl': 0.0,
+                    'total_pnl': 0.0,
+                    'highest_eod_balance': 0.0,
+                    'position_count': 0,
+                    'positions': {},
+                    'last_update': datetime.now(timezone.utc).isoformat(),
+                    'account_type': 'unknown'
+                }
+            
+            state = self.accounts[target_id]
+            return {
+                'account_id': state.account_id,
+                'starting_balance': state.starting_balance,
+                'current_balance': state.current_balance,
+                'realized_pnl': state.realised_PnL,
+                'unrealized_pnl': state.unrealised_PnL,
+                'total_pnl': state.net_PnL,
+                'highest_eod_balance': state.highest_EOD_balance,
+                'position_count': 0,  # TODO: Track positions
+                'positions': {},  # TODO: Track positions
+                'last_update': state.last_update,
+                'account_type': state.account_type
+            }
     
     def get_all_states(self) -> Dict[str, AccountState]:
         """Get all tracked account states."""
         with self.lock:
             return self.accounts.copy()
+    
+    def initialize(self, account_id: str, starting_balance: float, account_type: str) -> None:
+        """
+        Convenience method to initialize account tracking.
+        
+        Args:
+            account_id: Account ID
+            starting_balance: Starting balance
+            account_type: Account type
+        """
+        account_name = f"Account-{account_id}"
+        self.current_account_id = str(account_id)
+        self.initialize_account(
+            account_id=str(account_id),
+            account_name=account_name,
+            account_type=account_type,
+            starting_balance=starting_balance
+        )
+    
+    def check_compliance(self, account_id: Optional[str] = None) -> Dict:
+        """
+        Check compliance for current or specified account.
+        
+        Args:
+            account_id: Account ID (uses current account if None)
+            
+        Returns:
+            Dict with compliance status
+        """
+        with self.lock:
+            target_id = account_id or self.current_account_id
+            if not target_id or target_id not in self.accounts:
+                return {
+                    'is_compliant': True,
+                    'dll_limit': None,
+                    'dll_used': 0.0,
+                    'dll_remaining': 0.0,
+                    'dll_violated': False,
+                    'mll_limit': None,
+                    'mll_used': 0.0,
+                    'mll_remaining': 0.0,
+                    'mll_violated': False,
+                    'trailing_loss': 0.0,
+                    'violations': []
+                }
+            
+            state = self.accounts[target_id]
+            daily_pnl = state.net_PnL
+            dll_violated = daily_pnl <= -state.daily_loss_limit
+            
+            trailing_loss = state.drawdown_from_high
+            mll_violated = state.current_balance <= state.drawdown_threshold
+            
+            violations = []
+            if dll_violated:
+                violations.append(f"Daily loss limit exceeded: ${daily_pnl:.2f}")
+            if mll_violated:
+                violations.append(f"Maximum loss limit exceeded: ${trailing_loss:.2f}")
+            
+            return {
+                'is_compliant': state.is_compliant,
+                'dll_limit': state.daily_loss_limit,
+                'dll_used': abs(min(0, daily_pnl)),
+                'dll_remaining': max(0, state.daily_loss_limit + daily_pnl),
+                'dll_violated': dll_violated,
+                'mll_limit': state.maximum_loss_limit,
+                'mll_used': trailing_loss,
+                'mll_remaining': max(0, state.maximum_loss_limit - trailing_loss),
+                'mll_violated': mll_violated,
+                'trailing_loss': trailing_loss,
+                'violations': violations
+            }
+    
+    def update_eod_balance(self, balance: float, account_id: Optional[str] = None) -> None:
+        """
+        Update end-of-day balance for current or specified account.
+        
+        Args:
+            balance: New balance
+            account_id: Account ID (uses current account if None)
+        """
+        target_id = account_id or self.current_account_id
+        if target_id:
+            self.update_EOD(str(target_id))
     
     def _save_state(self) -> None:
         """Persist account state to disk."""
