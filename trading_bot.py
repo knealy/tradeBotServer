@@ -5151,7 +5151,7 @@ class TopStepXTradingBot:
                 "unit": 2,  # 2 = Minutes (1=Tick, 2=Minute, 3=Day, 4=Week, etc.)
                 "unitNumber": unit_number,
                 "limit": limit * 3,  # Request extra to handle gaps
-                "includePartialBar": False
+                "includePartialBar": True  # Include current incomplete bar for real-time monitoring
             }
             
             # Set headers with JWT token
@@ -5195,11 +5195,11 @@ class TopStepXTradingBot:
             # Convert API response to our standard format
             parsed_bars: List[Dict] = []
             for i, bar in enumerate(bars_data):
-                # Debug: log first bar to see actual field names and values
+                # Debug: log first bar to see actual field names and values (only with -v flag)
                 if i == 0:
-                    logger.info(f"Sample bar keys: {list(bar.keys())}")
-                    logger.info(f"Sample bar data: {bar}")
-                    logger.info(f"Timestamp field 't' value: {bar.get('t')} (type: {type(bar.get('t'))})")
+                    logger.debug(f"Sample bar keys: {list(bar.keys())}")
+                    logger.debug(f"Sample bar data: {bar}")
+                    logger.debug(f"Timestamp field 't' value: {bar.get('t')} (type: {type(bar.get('t'))})")
                 
                 # API returns single-letter keys: t, o, h, l, c, v
                 # Also check for full names as fallback
@@ -5259,7 +5259,7 @@ class TopStepXTradingBot:
             parsed_bars.sort(key=lambda b: b.get("timestamp", ""))
             result_bars = parsed_bars[-limit:] if len(parsed_bars) > limit else parsed_bars
             
-            logger.info(f"[REST API] Found {len(result_bars)} historical bars")
+            logger.debug(f"[REST API] Found {len(result_bars)} historical bars")
             
             # Save to cache for future use
             if parsed_bars:
