@@ -88,6 +88,9 @@ class OvernightRangeStrategy:
         self.active_orders: Dict[str, List[str]] = {}  # symbol -> [order_ids]
         self.breakeven_monitoring: Dict[str, Dict] = {}  # order_id -> monitoring data
         
+        # Tick size cache: {symbol: tick_size}
+        self._tick_size_cache: Dict[str, float] = {}
+        
         # Load configuration from environment
         self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
         self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '09:30')  # 9:30am EST
@@ -125,6 +128,91 @@ class OvernightRangeStrategy:
             logger.info(f"   Breakeven: ENABLED (+{self.breakeven_profit_points} pts to trigger)")
         else:
             logger.info(f"   Breakeven: DISABLED")
+    
+    async def get_tick_size(self, symbol: str) -> float:
+        """
+        Get the tick size for a symbol from contract info.
+        
+        Args:
+            symbol: Trading symbol (e.g., "MNQ", "ES")
+        
+        Returns:
+            Tick size (e.g., 0.25 for MNQ, 0.25 for ES)
+        """
+        # Check cache first
+        if symbol in self._tick_size_cache:
+            return self._tick_size_cache[symbol]
+        
+        try:
+            # Get contracts from trading bot
+            contracts = await self.trading_bot.get_available_contracts()
+            
+            # Find matching contract
+            for contract in contracts:
+                contract_symbol = contract.get('name', '').upper()
+                # Match base symbol (e.g., "MNQ" matches "MNQZ5")
+                if symbol.upper() in contract_symbol or contract_symbol.startswith(symbol.upper()):
+                    tick_size = contract.get('tickSize', 0.25)  # Default to 0.25
+                    logger.debug(f"Tick size for {symbol}: {tick_size}")
+                    self._tick_size_cache[symbol] = tick_size
+                    return tick_size
+            
+            # Default tick sizes if not found
+            defaults = {
+                'MNQ': 0.25,
+                'MES': 0.25,
+                'ES': 0.25,
+                'NQ': 0.25,
+                'MYM': 1.0,
+                'YM': 1.0,
+                'M2K': 0.10,
+                'RTY': 0.10,
+            }
+            
+            tick_size = defaults.get(symbol.upper(), 0.25)
+            logger.warning(f"Using default tick size for {symbol}: {tick_size}")
+            self._tick_size_cache[symbol] = tick_size
+            return tick_size
+            
+        except Exception as e:
+            logger.error(f"Error getting tick size for {symbol}: {e}")
+            # Default to 0.25 (most common for micro futures)
+            return 0.25
+    
+    def round_to_tick(self, price: float, tick_size: float) -> float:
+        """
+        Round price to nearest valid tick size.
+        
+        Args:
+            price: Price to round
+            tick_size: Tick size for the symbol
+        
+        Returns:
+            Price rounded to nearest tick
+        
+        Examples:
+            round_to_tick(25299.80, 0.25) -> 25299.75
+            round_to_tick(25299.87, 0.25) -> 25300.00
+        """
+        if tick_size <= 0:
+            return price
+        
+        # Round to nearest tick
+        rounded = round(price / tick_size) * tick_size
+        
+        # Ensure proper decimal places based on tick size
+        if tick_size >= 1.0:
+            # Whole number ticks (e.g., YM)
+            return round(rounded, 0)
+        elif tick_size >= 0.1:
+            # One decimal place (e.g., RTY)
+            return round(rounded, 1)
+        elif tick_size >= 0.01:
+            # Two decimal places (e.g., most futures)
+            return round(rounded, 2)
+        else:
+            # Three or more decimal places
+            return round(rounded, 4)
     
     async def calculate_atr(self, symbol: str, period: int = None, timeframe: str = None) -> Optional[ATRData]:
         """
@@ -311,6 +399,8 @@ class OvernightRangeStrategy:
         """
         Calculate range breakout orders (long and short) based on overnight range and ATR.
         
+        All prices are rounded to valid tick sizes to prevent order rejections.
+        
         Returns:
             Tuple of (long_order, short_order) or (None, None) if error
         """
@@ -328,10 +418,19 @@ class OvernightRangeStrategy:
                 logger.error(f"Failed to calculate ATR for {symbol}")
                 return None, None
             
+            # Get tick size for proper price rounding
+            tick_size = await self.get_tick_size(symbol)
+            logger.info(f"Using tick size {tick_size} for {symbol}")
+            
             # Calculate long breakout order (above overnight high)
-            long_entry = range_data.high + self.range_break_offset
-            long_stop = long_entry - (atr_data.current_atr * self.stop_atr_multiplier)
-            long_tp = long_entry + (atr_data.daily_atr * self.tp_atr_multiplier)
+            long_entry_raw = range_data.high + self.range_break_offset
+            long_stop_raw = long_entry_raw - (atr_data.current_atr * self.stop_atr_multiplier)
+            long_tp_raw = long_entry_raw + (atr_data.daily_atr * self.tp_atr_multiplier)
+            
+            # Round to valid tick sizes
+            long_entry = self.round_to_tick(long_entry_raw, tick_size)
+            long_stop = self.round_to_tick(long_stop_raw, tick_size)
+            long_tp = self.round_to_tick(long_tp_raw, tick_size)
             
             long_order = RangeBreakOrder(
                 symbol=symbol,
@@ -345,9 +444,14 @@ class OvernightRangeStrategy:
             )
             
             # Calculate short breakout order (below overnight low)
-            short_entry = range_data.low - self.range_break_offset
-            short_stop = short_entry + (atr_data.current_atr * self.stop_atr_multiplier)
-            short_tp = short_entry - (atr_data.daily_atr * self.tp_atr_multiplier)
+            short_entry_raw = range_data.low - self.range_break_offset
+            short_stop_raw = short_entry_raw + (atr_data.current_atr * self.stop_atr_multiplier)
+            short_tp_raw = short_entry_raw - (atr_data.daily_atr * self.tp_atr_multiplier)
+            
+            # Round to valid tick sizes
+            short_entry = self.round_to_tick(short_entry_raw, tick_size)
+            short_stop = self.round_to_tick(short_stop_raw, tick_size)
+            short_tp = self.round_to_tick(short_tp_raw, tick_size)
             
             short_order = RangeBreakOrder(
                 symbol=symbol,
@@ -360,9 +464,35 @@ class OvernightRangeStrategy:
                 atr_data=atr_data
             )
             
-            logger.info(f"🎯 Range break orders for {symbol}:")
+            # Validate prices are reasonable
+            # Check that stop/TP prices make sense relative to entry
+            if long_stop >= long_entry:
+                logger.error(f"Invalid LONG order: Stop ({long_stop}) must be below entry ({long_entry})")
+                return None, None
+            if long_tp <= long_entry:
+                logger.error(f"Invalid LONG order: TP ({long_tp}) must be above entry ({long_entry})")
+                return None, None
+            if short_stop <= short_entry:
+                logger.error(f"Invalid SHORT order: Stop ({short_stop}) must be above entry ({short_entry})")
+                return None, None
+            if short_tp >= short_entry:
+                logger.error(f"Invalid SHORT order: TP ({short_tp}) must be below entry ({short_entry})")
+                return None, None
+            
+            # Check that prices aren't too extreme (within 20% of overnight range midpoint)
+            midpoint = range_data.midpoint
+            max_deviation = midpoint * 0.20  # 20% deviation limit
+            
+            if abs(long_entry - midpoint) > max_deviation:
+                logger.warning(f"LONG entry {long_entry} is very far from range midpoint {midpoint}")
+            if abs(short_entry - midpoint) > max_deviation:
+                logger.warning(f"SHORT entry {short_entry} is very far from range midpoint {midpoint}")
+            
+            logger.info(f"🎯 Range break orders for {symbol} (tick size: {tick_size}):")
             logger.info(f"   LONG: Entry={long_entry:.2f}, SL={long_stop:.2f}, TP={long_tp:.2f}")
             logger.info(f"   SHORT: Entry={short_entry:.2f}, SL={short_stop:.2f}, TP={short_tp:.2f}")
+            logger.info(f"   LONG Risk: {long_entry - long_stop:.2f} pts, Reward: {long_tp - long_entry:.2f} pts")
+            logger.info(f"   SHORT Risk: {short_stop - short_entry:.2f} pts, Reward: {short_entry - short_tp:.2f} pts")
             
             return long_order, short_order
             
