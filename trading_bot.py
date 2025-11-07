@@ -6803,7 +6803,10 @@ class TopStepXTradingBot:
                     print(f"   Overnight: {self.overnight_strategy.overnight_start} - {self.overnight_strategy.overnight_end}")
                     print(f"   Market Open: {self.overnight_strategy.market_open_time}")
                     print(f"   ATR Period: {self.overnight_strategy.atr_period} ({self.overnight_strategy.atr_timeframe})")
-                    print(f"   Breakeven: +{self.overnight_strategy.breakeven_profit_points} pts")
+                    if self.overnight_strategy.breakeven_enabled:
+                        print(f"   Breakeven: ENABLED (+{self.overnight_strategy.breakeven_profit_points} pts)")
+                    else:
+                        print(f"   Breakeven: DISABLED")
                     
                     confirm = input("\n   Start strategy? (y/N): ").strip().lower()
                     if confirm != 'y':
@@ -6848,20 +6851,25 @@ class TopStepXTradingBot:
                         for symbol, order_ids in status['active_orders'].items():
                             print(f"     {symbol}: {len(order_ids)} orders")
                     
-                    if status['breakeven_monitoring']:
-                        print(f"\n   🎯 Breakeven Monitoring:")
-                        for order_id, monitor_data in status['breakeven_monitoring'].items():
-                            filled = monitor_data.get('filled', False)
-                            triggered = monitor_data['triggered']
-                            
-                            if triggered:
-                                status_str = "✓ At Breakeven"
-                            elif filled:
-                                status_str = "⏳ Monitoring (position filled)"
-                            else:
-                                status_str = "⏸ Waiting for fill"
-                            
-                            print(f"     {monitor_data['symbol']} {monitor_data['side']}: {status_str}")
+                    if status['config']['breakeven_enabled']:
+                        if status['breakeven_monitoring']:
+                            print(f"\n   🎯 Breakeven Monitoring:")
+                            for order_id, monitor_data in status['breakeven_monitoring'].items():
+                                filled = monitor_data.get('filled', False)
+                                triggered = monitor_data['triggered']
+                                
+                                if triggered:
+                                    status_str = "✓ At Breakeven"
+                                elif filled:
+                                    status_str = "⏳ Monitoring (position filled)"
+                                else:
+                                    status_str = "⏸ Waiting for fill"
+                                
+                                print(f"     {monitor_data['symbol']} {monitor_data['side']}: {status_str}")
+                        else:
+                            print(f"\n   🎯 Breakeven Monitoring: No active positions")
+                    else:
+                        print(f"\n   🎯 Breakeven Monitoring: DISABLED")
                 
                 elif command_lower.startswith("strategy_test "):
                     # Test strategy components (ATR, overnight range, order calculation)

@@ -101,6 +101,9 @@ class OvernightRangeStrategy:
         # Risk management
         self.stop_atr_multiplier = float(os.getenv('STOP_ATR_MULTIPLIER', '1.25'))  # 1.0-1.5 ATR
         self.tp_atr_multiplier = float(os.getenv('TP_ATR_MULTIPLIER', '2.0'))  # Daily ATR zone
+        
+        # Breakeven management (optional)
+        self.breakeven_enabled = os.getenv('BREAKEVEN_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
         self.breakeven_profit_points = float(os.getenv('BREAKEVEN_PROFIT_POINTS', '15.0'))  # +15 pts
         
         # Order placement
@@ -118,7 +121,10 @@ class OvernightRangeStrategy:
         logger.info(f"   Market Open: {self.market_open_time} {self.timezone}")
         logger.info(f"   ATR Period: {self.atr_period} bars ({self.atr_timeframe})")
         logger.info(f"   Stop: {self.stop_atr_multiplier}x ATR, TP: {self.tp_atr_multiplier}x ATR")
-        logger.info(f"   Breakeven: +{self.breakeven_profit_points} pts")
+        if self.breakeven_enabled:
+            logger.info(f"   Breakeven: ENABLED (+{self.breakeven_profit_points} pts to trigger)")
+        else:
+            logger.info(f"   Breakeven: DISABLED")
     
     async def calculate_atr(self, symbol: str, period: int = None, timeframe: str = None) -> Optional[ATRData]:
         """
@@ -402,15 +408,17 @@ class OvernightRangeStrategy:
                     self.active_orders[symbol] = []
                 self.active_orders[symbol].append(order_id)
                 
-                # Setup breakeven monitoring (will only activate when position is filled)
-                self.breakeven_monitoring[order_id] = {
-                    "symbol": symbol,
-                    "side": "LONG",
-                    "entry_price": long_order.entry_price,
-                    "original_stop": long_order.stop_loss,
-                    "breakeven_triggered": False,
-                    "position_filled": False  # Track if entry order has filled
-                }
+                # Setup breakeven monitoring ONLY if enabled
+                if self.breakeven_enabled:
+                    self.breakeven_monitoring[order_id] = {
+                        "symbol": symbol,
+                        "side": "LONG",
+                        "entry_price": long_order.entry_price,
+                        "original_stop": long_order.stop_loss,
+                        "breakeven_triggered": False,
+                        "position_filled": False  # Track if entry order has filled
+                    }
+                    logger.debug(f"Breakeven monitoring setup for order {order_id}")
             
             # Place short breakout order
             short_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
@@ -433,15 +441,17 @@ class OvernightRangeStrategy:
                     self.active_orders[symbol] = []
                 self.active_orders[symbol].append(order_id)
                 
-                # Setup breakeven monitoring (will only activate when position is filled)
-                self.breakeven_monitoring[order_id] = {
-                    "symbol": symbol,
-                    "side": "SHORT",
-                    "entry_price": short_order.entry_price,
-                    "original_stop": short_order.stop_loss,
-                    "breakeven_triggered": False,
-                    "position_filled": False  # Track if entry order has filled
-                }
+                # Setup breakeven monitoring ONLY if enabled
+                if self.breakeven_enabled:
+                    self.breakeven_monitoring[order_id] = {
+                        "symbol": symbol,
+                        "side": "SHORT",
+                        "entry_price": short_order.entry_price,
+                        "original_stop": short_order.stop_loss,
+                        "breakeven_triggered": False,
+                        "position_filled": False  # Track if entry order has filled
+                    }
+                    logger.debug(f"Breakeven monitoring setup for order {order_id}")
             
             results["success"] = len(results["orders"]) > 0
             return results
@@ -455,10 +465,19 @@ class OvernightRangeStrategy:
         Background task to monitor FILLED positions and move stops to breakeven when profitable.
         
         EFFICIENT APPROACH: Only monitors after positions are opened, not continuously.
-        Checks positions every 10 seconds when there are active filled positions.
-        When a position reaches +15 pts profit (configurable), moves stop to breakeven.
+        
+        Auto-start when: Position is opened (stop entry order filled)
+        Auto-stop when: 
+            - P&L >= threshold (move stop to BE, then stop monitoring this position)
+            - Position is closed (SL/TP hit, clean up monitoring)
+        
+        Optional: Can be disabled via BREAKEVEN_ENABLED env variable
         """
-        logger.info("🔄 Breakeven stop monitoring ready (will activate when positions open)")
+        if not self.breakeven_enabled:
+            logger.info("🔄 Breakeven monitoring DISABLED (set BREAKEVEN_ENABLED=true to enable)")
+            return
+        
+        logger.info(f"🔄 Breakeven monitoring ACTIVE (+{self.breakeven_profit_points} pts threshold)")
         
         while self.is_trading:
             try:
@@ -468,47 +487,48 @@ class OvernightRangeStrategy:
                 if not self.breakeven_monitoring:
                     continue  # No orders to monitor yet
                 
-                # Check if any positions are actually filled before making API calls
-                has_filled_positions = any(
+                # Check if any positions are actually filled and not yet at breakeven
+                has_active_monitoring = any(
                     data.get('position_filled', False) and not data.get('breakeven_triggered', False)
                     for data in self.breakeven_monitoring.values()
                 )
                 
-                if not has_filled_positions:
-                    # No filled positions to monitor yet - skip API calls
+                if not has_active_monitoring:
+                    # No active positions to monitor - skip API calls
                     continue
                 
-                # Get current positions ONLY when we have filled positions to check
+                # Get current positions ONLY when we have active monitoring
                 positions = await self.trading_bot.get_positions()
-                if not positions:
-                    continue
                 
                 for order_id, monitor_data in list(self.breakeven_monitoring.items()):
                     if monitor_data['breakeven_triggered']:
-                        continue  # Already moved to breakeven
+                        # Already at breakeven - stop monitoring this position
+                        logger.debug(f"Removing completed breakeven monitoring for {monitor_data['symbol']}")
+                        del self.breakeven_monitoring[order_id]
+                        continue
                     
                     symbol = monitor_data['symbol']
                     side = monitor_data['side']
                     entry_price = monitor_data['entry_price']
                     
                     # Find matching position
-                    position = next((p for p in positions if p.get('symbol') == symbol), None)
+                    position = next((p for p in positions if p.get('symbol') == symbol), None) if positions else None
+                    
                     if not position:
-                        # Position doesn't exist yet, check if it's a filled order
+                        # Position doesn't exist
                         if not monitor_data['position_filled']:
-                            # Check if entry order has filled
-                            # For now, mark as filled if we see the position
+                            # Not filled yet - keep waiting
                             continue
                         else:
-                            # Position was filled but now closed - clean up monitoring
-                            logger.info(f"Position {symbol} closed, stopping breakeven monitoring")
+                            # Position was filled but now closed (SL/TP hit) - AUTO-STOP
+                            logger.info(f"✅ Position {symbol} closed - auto-stopping breakeven monitoring")
                             del self.breakeven_monitoring[order_id]
                             continue
                     
-                    # Position exists - mark as filled and start monitoring
+                    # Position exists - check if this is first time seeing it (AUTO-START)
                     if not monitor_data['position_filled']:
                         monitor_data['position_filled'] = True
-                        logger.info(f"✅ Position {symbol} filled at {entry_price:.2f} - starting breakeven monitoring")
+                        logger.info(f"🎯 Position {symbol} {side} opened at {entry_price:.2f} - AUTO-STARTED breakeven monitoring")
                     
                     # Get current price
                     current_price = position.get('currentPrice', position.get('lastPrice', 0))
@@ -529,11 +549,13 @@ class OvernightRangeStrategy:
                         # This would require modifying the stop order
                         # Implementation depends on broker API capabilities
                         
-                        # Mark as triggered
+                        # Mark as triggered - will be cleaned up on next iteration (AUTO-STOP)
                         monitor_data['breakeven_triggered'] = True
                         
                         # TODO: Implement actual stop modification via API
                         # await self.trading_bot.modify_order(stop_order_id, new_stop_price=entry_price)
+                        
+                        logger.info(f"✅ Breakeven triggered for {symbol} - AUTO-STOPPING monitoring")
                 
             except Exception as e:
                 logger.error(f"Error in breakeven monitoring: {e}")
@@ -666,6 +688,7 @@ class OvernightRangeStrategy:
                 "atr_period": self.atr_period,
                 "stop_multiplier": self.stop_atr_multiplier,
                 "tp_multiplier": self.tp_atr_multiplier,
+                "breakeven_enabled": self.breakeven_enabled,
                 "breakeven_points": self.breakeven_profit_points
             }
         }
