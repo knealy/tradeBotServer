@@ -5622,16 +5622,18 @@ class TopStepXTradingBot:
         """
         Parse timeframe string to API unit format.
         
-        Supports comprehensive timeframes:
-        - Seconds: 1s, 5s, 10s, 15s, 30s
-        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m
-        - Hours: 1h, 2h, 3h, 4h, 6h, 8h, 12h
-        - Days: 1d, 2d, 3d
-        - Weeks: 1w, 2w
-        - Months: 1M, 3M, 6M
+        TopStepX API Supported Timeframes (confirmed working):
+        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 60m (1h)
+        - Days: 1d
+        - Weeks: 1w
+        - Months: 1M
+        
+        NOT Supported by API:
+        - Seconds: API returns errorCode: 2
+        - Multi-hour (2h, 4h, etc): API only supports up to 60-minute bars
         
         Args:
-            timeframe: String like "1m", "5s", "4h", etc.
+            timeframe: String like "1m", "5m", "1h", "1d", etc.
             
         Returns:
             Tuple[int, int, Callable]: (unit, unitNumber, time_delta_function)
@@ -5645,7 +5647,7 @@ class TopStepXTradingBot:
         # Parse timeframe string (e.g., "5m" -> number=5, unit="m")
         match = re.match(r'^(\d+)([smhdwM])$', timeframe)
         if not match:
-            logger.error(f"Invalid timeframe format: {timeframe}. Use format like: 1s, 5m, 1h, 1d, 1w, 1M")
+            logger.error(f"Invalid timeframe format: {timeframe}. Use format like: 1m, 5m, 15m, 1h, 1d, 1w, 1M")
             return None, None, None
         
         number = int(match.group(1))
@@ -5654,27 +5656,47 @@ class TopStepXTradingBot:
         # Map to API units and create time delta function
         # API units: 0=Second, 1=Tick, 2=Minute, 3=Day, 4=Week, 5=Month
         if unit_char == 's':
-            # Seconds
-            api_unit = 0
-            api_unit_number = number
-            time_delta_func = lambda bars: timedelta(seconds=number * bars)
+            # Seconds - NOT SUPPORTED by TopStepX API
+            logger.warning(f"Second timeframes are not supported by TopStepX API (tried {timeframe})")
+            logger.warning("Supported timeframes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 1h, 1d, 1w, 1M")
+            return None, None, None
         elif unit_char == 'm':
-            # Minutes
+            # Minutes - only certain values are supported
+            supported_minutes = [1, 2, 3, 5, 10, 15, 30, 45, 60]
+            if number not in supported_minutes:
+                logger.warning(f"Minute value {number} may not be supported by API")
+                logger.warning(f"Supported minute intervals: {supported_minutes}")
             api_unit = 2
             api_unit_number = number
             time_delta_func = lambda bars: timedelta(minutes=number * bars)
         elif unit_char == 'h':
-            # Hours - convert to minutes for API
-            api_unit = 2
-            api_unit_number = number * 60
-            time_delta_func = lambda bars: timedelta(hours=number * bars)
+            # Hours - API only supports up to 1h (60 minutes)
+            if number == 1:
+                # 1h = 60 minutes
+                api_unit = 2
+                api_unit_number = 60
+                time_delta_func = lambda bars: timedelta(hours=bars)
+            else:
+                # Multi-hour not supported - API limitation
+                logger.warning(f"Multi-hour timeframes (>{number}h) are not supported by TopStepX API")
+                logger.warning("The API only supports up to 1h bars. For longer timeframes, use 1d, 1w, or 1M")
+                logger.warning("Falling back to 1h bars - timestamps will be 1 hour apart, not {number} hours")
+                # Fall back to 1h
+                api_unit = 2
+                api_unit_number = 60
+                time_delta_func = lambda bars: timedelta(hours=bars)
         elif unit_char == 'd':
-            # Days
+            # Days - only 1d is commonly supported
+            if number != 1:
+                logger.warning(f"Multi-day timeframes ({number}d) may not be supported")
+                logger.warning("Most APIs only support 1d. Results may vary.")
             api_unit = 3
             api_unit_number = number
             time_delta_func = lambda bars: timedelta(days=number * bars)
         elif unit_char == 'w':
             # Weeks
+            if number != 1:
+                logger.warning(f"Multi-week timeframes ({number}w) may not be supported")
             api_unit = 4
             api_unit_number = number
             time_delta_func = lambda bars: timedelta(weeks=number * bars)
@@ -5695,17 +5717,22 @@ class TopStepXTradingBot:
         """
         Get historical price data for a symbol using direct REST API.
         
-        Supports comprehensive timeframes:
-        - Seconds: 1s, 5s, 10s, 15s, 30s
-        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m
-        - Hours: 1h, 2h, 3h, 4h, 6h, 8h, 12h
-        - Days: 1d, 2d, 3d
-        - Weeks: 1w, 2w
+        TopStepX API Supported Timeframes:
+        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m, 60m (1h)
+        - Days: 1d
+        - Weeks: 1w  
         - Months: 1M, 3M, 6M
+        
+        NOT Supported (API limitations):
+        - Seconds: 1s, 5s, etc (API returns errorCode: 2)
+        - Multi-hour: 2h, 4h, 8h, etc (API only supports up to 1h/60m)
+        
+        Note: For multi-hour analysis, use 1h bars and aggregate manually,
+        or use daily (1d) timeframe for longer-term views.
         
         Args:
             symbol: Trading symbol (e.g., "MNQ", "MES")
-            timeframe: Timeframe (e.g., "1s", "5m", "1h", "4h", "1d", "1w")
+            timeframe: Timeframe (e.g., "1m", "5m", "15m", "1h", "1d", "1w", "1M")
             limit: Number of bars to return
             
         Returns:
@@ -5717,7 +5744,7 @@ class TopStepXTradingBot:
             # For small limits (1-5 bars) on short timeframes, bypass cache or use very short TTL
             # This ensures real-time monitoring gets fresh data
             use_fresh_data = False
-            short_timeframes = ['1s', '5s', '10s', '15s', '30s', '1m', '2m', '3m', '5m', '10m', '15m']
+            short_timeframes = ['1m', '2m', '3m', '5m', '10m', '15m']
             if limit <= 5 and timeframe in short_timeframes:
                 use_fresh_data = True
                 logger.debug(f"Small limit ({limit}) on short timeframe ({timeframe}) - fetching fresh data")
@@ -5794,7 +5821,22 @@ class TopStepXTradingBot:
                 bars_data = response
                 logger.debug(f"API returned list with {len(response)} items")
             elif isinstance(response, dict):
-                # Try common response formats
+                # Check for API error response (success=False, errorCode set)
+                if response.get('success') == False or response.get('errorCode'):
+                    error_code = response.get('errorCode', 'Unknown')
+                    error_msg = response.get('errorMessage', 'No error message')
+                    
+                    # Provide specific error messages for known error codes
+                    if error_code == 2:
+                        logger.error(f"API errorCode 2: Timeframe '{timeframe}' is not supported by TopStepX")
+                        logger.error("Supported timeframes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 1h (60m), 1d, 1w, 1M")
+                        logger.error("NOT supported: seconds (1s, 5s, etc), multi-hour (2h, 4h, etc)")
+                    else:
+                        logger.error(f"API returned error: Code {error_code}, Message: {error_msg}")
+                    
+                    return []
+                
+                # Try common response formats for successful responses
                 bars_data = response.get('bars') or response.get('data') or response.get('candles')
                 if bars_data is None:
                     logger.error(f"Unexpected dict response format. Keys: {list(response.keys())}")
