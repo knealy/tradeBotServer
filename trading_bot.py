@@ -32,6 +32,7 @@ from signalrcore.hub_connection_builder import HubConnectionBuilder
 from discord_notifier import DiscordNotifier
 from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
 from account_tracker import AccountTracker
+from overnight_range_strategy import OvernightRangeStrategy
 
 # Optional ProjectX SDK adapter
 try:
@@ -199,6 +200,10 @@ class TopStepXTradingBot:
         # Initialize real-time account state tracker
         self.account_tracker = AccountTracker()
         logger.debug("Account tracker initialized")
+        
+        # Initialize overnight range breakout strategy
+        self.overnight_strategy = OvernightRangeStrategy(trading_bot=self)
+        logger.debug("Overnight range strategy initialized")
         
         # Order counter for unique custom tags
         self._order_counter = 0
@@ -6259,6 +6264,10 @@ class TopStepXTradingBot:
         print("  flatten - Close all positions and cancel all orders")
         print("  contracts - List available contracts")
         print("  accounts - List accounts again")
+        print("  strategy_start [symbols] - Start overnight range breakout strategy")
+        print("  strategy_stop - Stop the strategy")
+        print("  strategy_status - Show strategy status and configuration")
+        print("  strategy_test <symbol> - Test strategy components (ATR, ranges, orders)")
         print("  help - Show this help message")
         print("  quit - Exit trading interface")
         print("="*50)
@@ -6783,6 +6792,119 @@ class TopStepXTradingBot:
                         print(f"   Entry: ${entry_price}")
                         print(f"   Stop Loss: ${stop_price}")
                         print(f"   Take Profit: ${profit_price}")
+                
+                elif command_lower == "strategy_start" or command_lower.startswith("strategy_start "):
+                    # Start overnight range breakout strategy
+                    parts = command.split()
+                    symbols = parts[1:] if len(parts) > 1 else None
+                    
+                    print(f"\n🎯 Starting Overnight Range Breakout Strategy...")
+                    print(f"   Symbols: {symbols or os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES')}")
+                    print(f"   Overnight: {self.overnight_strategy.overnight_start} - {self.overnight_strategy.overnight_end}")
+                    print(f"   Market Open: {self.overnight_strategy.market_open_time}")
+                    print(f"   ATR Period: {self.overnight_strategy.atr_period} ({self.overnight_strategy.atr_timeframe})")
+                    print(f"   Breakeven: +{self.overnight_strategy.breakeven_profit_points} pts")
+                    
+                    confirm = input("\n   Start strategy? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Strategy start cancelled")
+                        continue
+                    
+                    await self.overnight_strategy.start(symbols)
+                    print("✅ Strategy started! It will place orders at market open.")
+                
+                elif command_lower == "strategy_stop":
+                    # Stop overnight range breakout strategy
+                    if not self.overnight_strategy.is_trading:
+                        print("❌ Strategy is not running")
+                        continue
+                    
+                    confirm = input("\n   Stop strategy? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Strategy stop cancelled")
+                        continue
+                    
+                    await self.overnight_strategy.stop()
+                    print("✅ Strategy stopped!")
+                
+                elif command_lower == "strategy_status":
+                    # Show strategy status
+                    status = self.overnight_strategy.get_status()
+                    
+                    print(f"\n📊 Overnight Range Strategy Status:")
+                    print(f"   Active: {'✅ YES' if status['is_trading'] else '❌ NO'}")
+                    print(f"\n   Configuration:")
+                    for key, value in status['config'].items():
+                        key_display = key.replace('_', ' ').title()
+                        print(f"     {key_display}: {value}")
+                    
+                    if status['active_ranges']:
+                        print(f"\n   📈 Tracked Ranges:")
+                        for symbol, range_data in status['active_ranges'].items():
+                            print(f"     {symbol}: High={range_data['high']:.2f}, Low={range_data['low']:.2f}, Range={range_data['range_size']:.2f}")
+                    
+                    if status['active_orders']:
+                        print(f"\n   📝 Active Orders:")
+                        for symbol, order_ids in status['active_orders'].items():
+                            print(f"     {symbol}: {len(order_ids)} orders")
+                    
+                    if status['breakeven_monitoring']:
+                        print(f"\n   🎯 Breakeven Monitoring:")
+                        for order_id, monitor_data in status['breakeven_monitoring'].items():
+                            triggered = "✓ Triggered" if monitor_data['triggered'] else "⏳ Monitoring"
+                            print(f"     {monitor_data['symbol']} {monitor_data['side']}: {triggered}")
+                
+                elif command_lower.startswith("strategy_test "):
+                    # Test strategy components (ATR, overnight range, order calculation)
+                    parts = command.split()
+                    if len(parts) != 2:
+                        print("❌ Usage: strategy_test <symbol>")
+                        print("   Example: strategy_test MNQ")
+                        continue
+                    
+                    symbol = parts[1].upper()
+                    
+                    print(f"\n🔬 Testing strategy components for {symbol}...")
+                    
+                    # Test ATR calculation
+                    print(f"\n1️⃣ Calculating ATR...")
+                    atr_data = await self.overnight_strategy.calculate_atr(symbol)
+                    if atr_data:
+                        print(f"   ✅ Current ATR: {atr_data.current_atr:.2f}")
+                        print(f"   ✅ Daily ATR: {atr_data.daily_atr:.2f}")
+                        print(f"   ✅ ATR Zone High: {atr_data.atr_zone_high:.2f}")
+                        print(f"   ✅ ATR Zone Low: {atr_data.atr_zone_low:.2f}")
+                    else:
+                        print(f"   ❌ ATR calculation failed")
+                    
+                    # Test overnight range tracking
+                    print(f"\n2️⃣ Tracking overnight range...")
+                    range_data = await self.overnight_strategy.track_overnight_range(symbol)
+                    if range_data:
+                        print(f"   ✅ High: {range_data.high:.2f}")
+                        print(f"   ✅ Low: {range_data.low:.2f}")
+                        print(f"   ✅ Range Size: {range_data.range_size:.2f}")
+                        print(f"   ✅ Midpoint: {range_data.midpoint:.2f}")
+                        print(f"   ✅ Time: {range_data.start_time} to {range_data.end_time}")
+                    else:
+                        print(f"   ❌ Range tracking failed")
+                    
+                    # Test order calculation
+                    print(f"\n3️⃣ Calculating breakout orders...")
+                    long_order, short_order = await self.overnight_strategy.calculate_range_break_orders(symbol)
+                    if long_order and short_order:
+                        print(f"   ✅ LONG Order:")
+                        print(f"      Entry: {long_order.entry_price:.2f}")
+                        print(f"      Stop:  {long_order.stop_loss:.2f}")
+                        print(f"      TP:    {long_order.take_profit:.2f}")
+                        print(f"   ✅ SHORT Order:")
+                        print(f"      Entry: {short_order.entry_price:.2f}")
+                        print(f"      Stop:  {short_order.stop_loss:.2f}")
+                        print(f"      TP:    {short_order.take_profit:.2f}")
+                    else:
+                        print(f"   ❌ Order calculation failed")
+                    
+                    print(f"\n✅ Strategy test complete!")
                 
                 elif command_lower.startswith("stop "):
                     parts = command.split()
