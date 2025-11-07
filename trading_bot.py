@@ -2787,11 +2787,17 @@ class TopStepXTradingBot:
             for order in symbol_orders:
                 side = order.get('side', -1)  # 0=BUY, 1=SELL
                 quantity = order.get('size', 0)
-                price = order.get('executionPrice') or order.get('limitPrice') or order.get('stopPrice') or 0.0
+                # Try multiple field names for price (API returns different fields)
+                price = (order.get('executionPrice') or 
+                        order.get('averagePrice') or 
+                        order.get('fillPrice') or 
+                        order.get('price') or 
+                        order.get('limitPrice') or 
+                        order.get('stopPrice') or 0.0)
                 timestamp = order.get('executionTimestamp') or order.get('creationTimestamp', '')
                 
                 # Debug logging for order details
-                logger.debug(f"Processing order: side={side}, qty={quantity}, price={price}, timestamp={timestamp}")
+                logger.debug(f"Processing order: side={side}, qty={quantity}, price={price}, timestamp={timestamp}, order_keys={list(order.keys())}")
                 
                 if side == 0:  # BUY
                     # First, try to close short positions
@@ -4441,8 +4447,8 @@ class TopStepXTradingBot:
         """
         Place OCO bracket order with stop order as entry.
         
-        Uses TopstepX's native OCO bracket functionality. If OCO brackets are not enabled
-        in the platform, falls back to hybrid approach (stop order + auto-bracket on fill).
+        Works like native_bracket but uses a stop order for entry instead of market order.
+        Uses the same /api/Order/place endpoint with stopLossBracket and takeProfitBracket.
         
         Args:
             symbol: Trading symbol (e.g., "MNQ", "ES")
@@ -4482,22 +4488,87 @@ class TopStepXTradingBot:
             # Convert side to numeric value
             side_value = 0 if side.upper() == "BUY" else 1
             
-            # Prepare OCO bracket order data
-            # Try TopStepX's native OCO bracket API
-            bracket_data = {
+            # Get tick size for calculations
+            tick_size = await self._get_tick_size(symbol)
+            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}, entry_price=${entry_price:.2f}")
+            
+            # Calculate stop loss ticks from entry price
+            if side.upper() == "BUY":
+                # For BUY orders, stop loss should be below entry price
+                # TopStepX expects negative ticks for long stop loss
+                price_diff = entry_price - stop_loss_price
+                stop_loss_ticks = int(price_diff / tick_size)
+                # Ensure negative ticks for long stop loss
+                if stop_loss_ticks > 0:
+                    stop_loss_ticks = -stop_loss_ticks
+            else:
+                # For SELL orders, stop loss should be above entry price
+                # TopStepX expects positive ticks for short stop loss
+                price_diff = stop_loss_price - entry_price
+                stop_loss_ticks = int(price_diff / tick_size)
+                # Ensure positive ticks for short stop loss
+                if stop_loss_ticks < 0:
+                    stop_loss_ticks = -stop_loss_ticks
+            
+            logger.info(f"Stop Loss Calculation: Entry=${entry_price:.2f}, Target=${stop_loss_price:.2f}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks} (tick_size={tick_size})")
+            
+            # Calculate take profit ticks from entry price
+            if side.upper() == "BUY":
+                # For BUY orders, take profit should be above entry price
+                # TopStepX expects positive ticks for long take profit
+                price_diff = take_profit_price - entry_price
+                take_profit_ticks = int(price_diff / tick_size)
+                # Ensure positive ticks for long take profit
+                if take_profit_ticks < 0:
+                    take_profit_ticks = -take_profit_ticks
+            else:
+                # For SELL orders, take profit should be below entry price
+                # TopStepX expects negative ticks for short take profit
+                price_diff = entry_price - take_profit_price
+                take_profit_ticks = int(price_diff / tick_size)
+                # Ensure negative ticks for short take profit
+                if take_profit_ticks > 0:
+                    take_profit_ticks = -take_profit_ticks
+            
+            logger.info(f"Take Profit Calculation: Entry=${entry_price:.2f}, Target=${take_profit_price:.2f}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks} (tick_size={tick_size})")
+            
+            # Validate tick values (TopStepX has limits)
+            if abs(stop_loss_ticks) > 1000:
+                logger.warning(f"Stop loss ticks ({stop_loss_ticks}) exceeds 1000 limit, capping at 1000")
+                stop_loss_ticks = 1000 if stop_loss_ticks > 0 else -1000
+            if abs(take_profit_ticks) > 1000:
+                logger.warning(f"Take profit ticks ({take_profit_ticks}) exceeds 1000 limit, capping at 1000")
+                take_profit_ticks = 1000 if take_profit_ticks > 0 else -1000
+            
+            # Prepare order data using the same format as create_bracket_order
+            # but with stop order type instead of market
+            order_data = {
                 "accountId": int(target_account),
                 "contractId": contract_id,
+                "type": 4,  # Stop-market order for entry (instead of 2=market)
                 "side": side_value,
-                "quantity": quantity,
-                "entryOrder": {
-                    "type": 4,  # Stop order for entry
-                    "stopPrice": entry_price
-                },
-                "stopLossPrice": stop_loss_price,
-                "takeProfitPrice": take_profit_price,
-                "bracketType": "OCO",  # One-Cancels-Other
-                "customTag": self._generate_unique_custom_tag("oco_bracket")
+                "size": quantity,
+                "limitPrice": None,
+                "stopPrice": entry_price,  # This makes it a stop order
+                "customTag": self._generate_unique_custom_tag("stop_bracket")
             }
+            
+            # Add bracket orders using the same format as create_bracket_order
+            order_data["stopLossBracket"] = {
+                "ticks": stop_loss_ticks,
+                "type": 4,  # Stop loss type
+                "size": quantity,
+                "reduceOnly": True
+            }
+            logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks, size: {quantity}, reduceOnly: True")
+            
+            order_data["takeProfitBracket"] = {
+                "ticks": take_profit_ticks,
+                "type": 1,  # Take profit type
+                "size": quantity,
+                "reduceOnly": True
+            }
+            logger.info(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
             
             headers = {
                 "accept": "text/plain",
@@ -4505,21 +4576,17 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            # Try the OCO bracket endpoint
-            response = self._make_curl_request("POST", "/api/Order/bracketOrder", 
-                                              data=bracket_data, headers=headers, suppress_errors=True)
+            # Use the same endpoint as create_bracket_order
+            response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
-            # Check if OCO brackets are supported/enabled
             if "error" in response:
+                logger.error(f"Failed to create stop bracket order: {response['error']}")
+                # Check if it's a bracket-related error
                 error_msg = response.get("error", "").lower()
-                
-                # Check for OCO not enabled errors
-                if any(keyword in error_msg for keyword in ["oco", "bracket", "not enabled", "not supported", "disabled"]):
-                    logger.warning("OCO brackets not enabled in TopStepX platform, falling back to hybrid approach")
-                    print("⚠️  OCO brackets not enabled in your TopStepX account")
+                if any(keyword in error_msg for keyword in ["bracket", "not enabled", "not supported", "position brackets"]):
+                    logger.warning("Brackets might not be enabled, falling back to hybrid approach")
+                    print("⚠️  Native brackets not supported in this configuration")
                     print("   Falling back to hybrid approach: stop order + auto-bracket on fill")
-                    
-                    # Fall back to hybrid approach
                     return await self._stop_bracket_hybrid(
                         symbol=symbol,
                         side=side,
@@ -4529,19 +4596,54 @@ class TopStepXTradingBot:
                         take_profit_price=take_profit_price,
                         account_id=target_account
                     )
-                else:
-                    # Other error
-                    logger.error(f"OCO bracket order failed: {response['error']}")
-                    return response
+                return response
             
-            if not response.get("success"):
-                logger.error(f"OCO bracket order returned error: {response}")
-                return {"error": f"OCO bracket failed: {response}"}
+            # Check if order was actually successful
+            if response.get("success") == False:
+                error_code = response.get("errorCode", "Unknown")
+                error_message = response.get("errorMessage", "No error message")
+                logger.error(f"Stop bracket order failed: Error Code {error_code}, Message: {error_message}")
+                
+                # Check for bracket-related errors
+                if "bracket" in error_message.lower() or "position brackets" in error_message.lower():
+                    logger.warning("Falling back to hybrid approach due to bracket error")
+                    return await self._stop_bracket_hybrid(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=entry_price,
+                        stop_loss_price=stop_loss_price,
+                        take_profit_price=take_profit_price,
+                        account_id=target_account
+                    )
+                
+                return {"error": f"Stop bracket order failed: Error Code {error_code}, Message: {error_message}"}
             
             # Update order activity timestamp
             self._update_order_activity()
             
-            logger.info(f"OCO bracket order placed successfully: {response}")
+            logger.info(f"Stop bracket order created successfully: {response}")
+            
+            # Send Discord notification for successful bracket order
+            try:
+                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                
+                notification_data = {
+                    'symbol': symbol,
+                    'side': side,
+                    'quantity': quantity,
+                    'price': f"${entry_price:.2f} (stop)",
+                    'order_type': 'Stop Bracket',
+                    'order_id': response.get('orderId', 'Unknown'),
+                    'status': 'Placed',
+                    'account_name': account_name
+                }
+                
+                await self.discord_notifier.send_order_notification(notification_data)
+                logger.info(f"Discord notification sent for stop bracket {side} {quantity} {symbol}")
+            except Exception as notify_err:
+                logger.warning(f"Failed to send Discord notification: {notify_err}")
+            
             return {
                 "success": True,
                 "orderId": response.get("orderId"),
