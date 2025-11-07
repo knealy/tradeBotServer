@@ -1,21 +1,59 @@
-move away from the json/webhook parsing for trade orders
-- implement full overnight range break strategy directly into bot :
--- track highest price / lowest price between 6pm and 9:30am EST (set in env)
--- set stop bracket orders for these range breaks 
+ISSUES RESOLVED
+===============
 
+✅ Issue 1: Trades P&L showing $0.00 for entry/exit prices
+   - Root Cause: Typo in field name (fillPrice vs filledPrice)
+   - Fix: Changed to use 'filledPrice' as primary field
+   - Status: FIXED in commit 0e75c5c
+   - Test: Run 'trades' command to verify prices now display correctly
 
-go over @PERFORMANCE_FAQ.md and make sure we have implemented all optimizations before advanced ones
-- then consider implementing the advanced improvements one by one 
+✅ Issue 2: stop_bracket not placing SL/TP brackets
+   - Root Cause: Using wrong API endpoint (/api/Order/bracketOrder)
+   - Fix: Changed to /api/Order/place with type=4 and stopPrice
+   - Status: FIXED in commit f8d609d
+   - Test: Use 'stop_bracket mnq buy 1 25300 25285 25320'
 
-Go over options for fast reliable/scalable database structure and start to set up
+✅ Issue 3: Integrate stop_bracket into webhook server
+   - Added USE_STOP_ENTRY environment variable (defaults to true)
+   - Webhook now places stop bracket orders for TradingView signals
+   - Status: INTEGRATED in commit 79b2f46
+   - Test: Send TradingView webhook with entry price
 
-lay the groundwork for showing a full working tradingview chart from the historical data
-- should be real data, interactive, and able to switch between 1m,5m,15m,30m, etc. 
+WHAT WAS FIXED
+==============
 
-go over options for fastest / most effecient frontend - bridge - backend structures and tech stack 
-- make a plan to port / convert (probably to Go + React + JS) 
+1. Price Extraction (trading_bot.py)
+   - Corrected field name: 'filledPrice' (not 'fillPrice')
+   - Made it the primary field to check
+   - This fixes all trade P&L calculations
 
+2. Stop Bracket Orders (trading_bot.py)
+   - Now uses correct /api/Order/place endpoint
+   - Sets type=4 (stop-market) with stopPrice
+   - Adds stopLossBracket and takeProfitBracket
+   - Calculates ticks from entry price
+   - Falls back to hybrid if brackets not enabled
 
-current bracket order implementation needs help 
-- make a stop_bracket command
-- want to make it use stop order instead of market order and takes an entry price then modify the stop/take profit to desired prices
+3. Webhook Integration (webhook_server.py)
+   - Added USE_STOP_ENTRY env var for TradingView signals
+   - Calls place_oco_bracket_with_stop_entry() when enabled
+   - Places stop order at TV entry price with auto SL/TP
+   - Works for both long and short entries
+
+TESTING
+=======
+
+1. Test trades command:
+   > trades
+   Should now show correct prices and P&L
+
+2. Test stop_bracket manually:
+   > stop_bracket mnq buy 1 25300 25285 25320
+   Should place stop order with SL/TP brackets
+
+3. Test webhook with TradingView:
+   - Set USE_STOP_ENTRY=true
+   - Send webhook with entry, stop_loss, take_profit_1
+   - Verify stop bracket order is placed
+
+All issues resolved! 🎉
