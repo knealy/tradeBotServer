@@ -50,6 +50,12 @@ class ATRData:
     atr_zone_high: float  # Price + Daily ATR
     atr_zone_low: float  # Price - Daily ATR
     period: int  # ATR calculation period
+    # Daily ATR zones (based on market open price at 9:30am)
+    market_open_price: float = 0.0  # 9:30am candle open price
+    day_bull_price: float = 0.0  # Upper zone lower bound: open + (dailyATR/2) * 0.5
+    day_bull_price1: float = 0.0  # Upper zone upper bound: open + (dailyATR/2) * 0.618
+    day_bear_price: float = 0.0  # Lower zone upper bound: open - (dailyATR/2) * 0.5
+    day_bear_price1: float = 0.0  # Lower zone lower bound: open - (dailyATR/2) * 0.618
 
 
 @dataclass
@@ -300,15 +306,61 @@ class OvernightRangeStrategy:
             atr_zone_high = current_price + daily_atr
             atr_zone_low = current_price - daily_atr
             
+            # Get market open price (9:30am candle open)
+            # This is used for daily ATR zone calculations
+            market_open_price = 0.0
+            now = datetime.now(self.timezone)
+            open_hour, open_min = map(int, self.market_open_time.split(':'))
+            market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+            
+            # Fetch a few 1-minute bars around market open to get the open price
+            try:
+                # Get bars from around market open
+                open_bars = await self.trading_bot.get_historical_data(
+                    symbol=symbol,
+                    timeframe='1m',
+                    limit=10
+                )
+                
+                if open_bars and len(open_bars) > 0:
+                    # Find the bar closest to market open time
+                    # For now, use the most recent bar's open (this will be updated in real-time)
+                    # In production, you'd want to specifically find the 9:30am bar
+                    market_open_price = open_bars[-1].get('open', open_bars[-1].get('o', current_price))
+                else:
+                    market_open_price = current_price
+            except:
+                market_open_price = current_price
+            
+            # Calculate daily ATR zones (PineScript formula)
+            # day_dist = dailyATR * 0.5
+            day_dist = daily_atr * 0.5
+            
+            # Upper zone: open_price + (dailyATR/2) * 0.5 to open_price + (dailyATR/2) * 0.618
+            day_bull_price = market_open_price + day_dist * 0.5  # Lower bound of upper zone
+            day_bull_price1 = market_open_price + day_dist * 0.618  # Upper bound of upper zone
+            
+            # Lower zone: open_price - (dailyATR/2) * 0.5 to open_price - (dailyATR/2) * 0.618
+            day_bear_price = market_open_price - day_dist * 0.5  # Upper bound of lower zone
+            day_bear_price1 = market_open_price - day_dist * 0.618  # Lower bound of lower zone
+            
             atr_data = ATRData(
                 current_atr=current_atr,
                 daily_atr=daily_atr,
                 atr_zone_high=atr_zone_high,
                 atr_zone_low=atr_zone_low,
-                period=period
+                period=period,
+                market_open_price=market_open_price,
+                day_bull_price=day_bull_price,
+                day_bull_price1=day_bull_price1,
+                day_bear_price=day_bear_price,
+                day_bear_price1=day_bear_price1
             )
             
-            logger.debug(f"ATR calculated for {symbol}: Current={current_atr:.2f}, Daily={daily_atr:.2f}, Zones=[{atr_zone_low:.2f}, {atr_zone_high:.2f}]")
+            logger.debug(f"ATR calculated for {symbol}: Current={current_atr:.2f}, Daily={daily_atr:.2f}")
+            logger.debug(f"  Market Open: {market_open_price:.2f}")
+            logger.debug(f"  Upper ATR Zone: [{day_bull_price:.2f}, {day_bull_price1:.2f}]")
+            logger.debug(f"  Lower ATR Zone: [{day_bear_price1:.2f}, {day_bear_price:.2f}]")
             return atr_data
             
         except Exception as e:
@@ -390,6 +442,10 @@ class OvernightRangeStrategy:
             # Filter bars to only include those within the overnight session
             # Bars are returned newest first, so we need to filter by timestamp
             overnight_bars = []
+            bar_count_debug = 0
+            first_bar_time = None
+            last_bar_time = None
+            
             for bar in bars:
                 # Get timestamp from bar
                 ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
@@ -406,9 +462,20 @@ class OvernightRangeStrategy:
                 
                 bar_time = bar_time.astimezone(self.timezone)
                 
+                # Track first and last bar times for debugging
+                if bar_count_debug == 0:
+                    first_bar_time = bar_time
+                bar_count_debug += 1
+                last_bar_time = bar_time
+                
                 # Check if bar is within overnight session
                 if start_time <= bar_time <= end_time:
                     overnight_bars.append(bar)
+            
+            # Debug logging
+            logger.info(f"  Total bars fetched: {bar_count_debug}")
+            if first_bar_time and last_bar_time:
+                logger.info(f"  Bars range: {first_bar_time.strftime('%Y-%m-%d %H:%M')} to {last_bar_time.strftime('%Y-%m-%d %H:%M')}")
             
             if not overnight_bars:
                 logger.warning(f"No bars found in overnight session for {symbol}")
@@ -473,10 +540,31 @@ class OvernightRangeStrategy:
             tick_size = await self.get_tick_size(symbol)
             logger.info(f"Using tick size {tick_size} for {symbol}")
             
+            # Check if daily ATR zones are inside overnight range
+            # If they are, don't use them as profit targets
+            upper_zone_inside = (atr_data.day_bull_price >= range_data.low and 
+                                 atr_data.day_bull_price1 <= range_data.high)
+            lower_zone_inside = (atr_data.day_bear_price1 >= range_data.low and 
+                                 atr_data.day_bear_price <= range_data.high)
+            
+            logger.info(f"Daily ATR zones check:")
+            logger.info(f"  Overnight Range: [{range_data.low:.2f}, {range_data.high:.2f}]")
+            logger.info(f"  Upper Zone: [{atr_data.day_bull_price:.2f}, {atr_data.day_bull_price1:.2f}] - Inside: {upper_zone_inside}")
+            logger.info(f"  Lower Zone: [{atr_data.day_bear_price1:.2f}, {atr_data.day_bear_price:.2f}] - Inside: {lower_zone_inside}")
+            
             # Calculate long breakout order (above overnight high)
             long_entry_raw = range_data.high + self.range_break_offset
             long_stop_raw = long_entry_raw - (atr_data.current_atr * self.stop_atr_multiplier)
-            long_tp_raw = long_entry_raw + (atr_data.daily_atr * self.tp_atr_multiplier)
+            
+            # Determine TP target based on whether ATR zone is inside range
+            if upper_zone_inside:
+                # ATR zone is inside range - use ATR * 2 or ATR * 3 instead
+                logger.info(f"  Upper ATR zone inside overnight range - using ATR*2 for TP")
+                long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
+            else:
+                # ATR zone is outside range - use daily ATR zone as target
+                logger.info(f"  Upper ATR zone outside overnight range - using daily ATR zone for TP")
+                long_tp_raw = long_entry_raw + (atr_data.daily_atr * self.tp_atr_multiplier)
             
             # Round to valid tick sizes
             long_entry = self.round_to_tick(long_entry_raw, tick_size)
@@ -497,7 +585,16 @@ class OvernightRangeStrategy:
             # Calculate short breakout order (below overnight low)
             short_entry_raw = range_data.low - self.range_break_offset
             short_stop_raw = short_entry_raw + (atr_data.current_atr * self.stop_atr_multiplier)
-            short_tp_raw = short_entry_raw - (atr_data.daily_atr * self.tp_atr_multiplier)
+            
+            # Determine TP target based on whether ATR zone is inside range
+            if lower_zone_inside:
+                # ATR zone is inside range - use ATR * 2 or ATR * 3 instead
+                logger.info(f"  Lower ATR zone inside overnight range - using ATR*2 for TP")
+                short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
+            else:
+                # ATR zone is outside range - use daily ATR zone as target
+                logger.info(f"  Lower ATR zone outside overnight range - using daily ATR zone for TP")
+                short_tp_raw = short_entry_raw - (atr_data.daily_atr * self.tp_atr_multiplier)
             
             # Round to valid tick sizes
             short_entry = self.round_to_tick(short_entry_raw, tick_size)

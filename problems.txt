@@ -77,8 +77,23 @@ After:  Entry=25355.00, SL=25299.75, TP=26194.75 ✅
 
 ---
 
------
 
+actual proper levels for today: (2025-11-07)
+
+should be looking at time range 2025-11-06 18:00 to 2025-11-06 09:30
+
+ovn high - 25354.75
+ovn low - 25062
+
+daily atr upper zone :
+- 25250.46 high
+- 25223.93 low
+
+daily atr lower zone :
+- 24999.07 high 
+- 24972.54 low 
+
+-----
 
 Enter command: strategy_test mnq
 
@@ -123,4 +138,43 @@ Enter command: strategy_test mnq
 
 
 -----
+
+FIXES IMPLEMENTED (2025-11-08):
+
+1. Overnight Range Time Filtering Enhancement:
+   - Added precise time range calculation for overnight session
+   - Filters bars to EXACT overnight session (yesterday 6pm to today 9:30am)
+   - Added debug logging to show:
+     * Total bars fetched
+     * Bars time range (first to last)
+     * How many bars matched overnight session
+   - This should fix the overnight low discrepancy (expected 25062)
+
+2. Daily ATR Zones Implementation:
+   - Implemented exact PineScript formula:
+     * day_dist = dailyATR * 0.5
+     * Upper zone: open_price + day_dist * 0.5 to open_price + day_dist * 0.618
+     * Lower zone: open_price - day_dist * 0.5 to open_price - day_dist * 0.618
+   - Gets market open price (9:30am candle open)
+   - Calculates 4 zone prices:
+     * day_bull_price: opening_price + (dailyATR / 2) * 0.5
+     * day_bull_price1: opening_price + (dailyATR / 2) * 0.618
+     * day_bear_price: opening_price - (dailyATR / 2) * 0.5
+     * day_bear_price1: opening_price - (dailyATR / 2) * 0.618
+
+3. Smart TP Target Selection:
+   - Checks if daily ATR zones are INSIDE overnight range
+   - IF zone is inside range:
+     * Uses ATR * 2 for TP target (more conservative)
+     * Logs: "Zone inside overnight range - using ATR*2 for TP"
+   - IF zone is outside range:
+     * Uses daily ATR zone for TP target (original strategy)
+     * Logs: "Zone outside overnight range - using daily ATR zone for TP"
+   - Prevents targeting levels that are within the consolidation range
+
+Test again with: strategy_test MNQ
+Expected improvements:
+- Overnight Low: 25062 (correct)
+- Daily ATR zones: Correctly calculated from 9:30am open
+- TP targets: Smartly chosen based on zone location
 
