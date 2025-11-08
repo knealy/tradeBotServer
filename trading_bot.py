@@ -604,7 +604,7 @@ class TopStepXTradingBot:
                 if suppress_errors:
                     logger.debug(f"HTTP error {response.status_code}: {e}")
                 else:
-                logger.error(f"HTTP error {response.status_code}: {e}")
+                    logger.error(f"HTTP error {response.status_code}: {e}")
                 return {"error": f"HTTP {response.status_code}: {str(e)}"}
             
             # Parse JSON response
@@ -2841,13 +2841,13 @@ class TopStepXTradingBot:
                     
                     # If there's still quantity remaining after closing shorts, it's a new long position
                     if remaining_qty > 0:
-                    open_positions.append({
-                        'entry_order': order,
-                        'entry_price': price,
-                        'entry_time': timestamp,
+                        open_positions.append({
+                            'entry_order': order,
+                            'entry_price': price,
+                            'entry_time': timestamp,
                             'remaining_qty': remaining_qty,
-                        'side': 'LONG'
-                    })
+                            'side': 'LONG'
+                        })
                         logger.debug(f"Opened LONG position: {remaining_qty} @ ${price:.2f}")
                         
                 elif side == 1:  # SELL
@@ -2855,38 +2855,38 @@ class TopStepXTradingBot:
                     remaining_qty = quantity
                     
                     while remaining_qty > 0 and open_positions and open_positions[0]['side'] == 'LONG':
-                            position = open_positions[0]
+                        position = open_positions[0]
                         closed_qty = min(remaining_qty, position['remaining_qty'])
-                            
+                        
                         # Calculate P&L for closing long: profit when sell price > buy price
-                            entry_price = position['entry_price']
-                            exit_price = price
-                            point_value = self._get_point_value(symbol)
-                            pnl = (exit_price - entry_price) * closed_qty * point_value
-                            
-                            # Create consolidated trade
-                            trade = {
-                                'symbol': symbol,
-                                'side': 'LONG',
-                                'quantity': closed_qty,
-                                'entry_price': entry_price,
-                                'exit_price': exit_price,
-                                'entry_time': position['entry_time'],
-                                'exit_time': timestamp,
-                                'pnl': pnl,
-                                'entry_order_id': position['entry_order'].get('id'),
-                                'exit_order_id': order.get('id')
-                            }
-                            consolidated_trades.append(trade)
+                        entry_price = position['entry_price']
+                        exit_price = price
+                        point_value = self._get_point_value(symbol)
+                        pnl = (exit_price - entry_price) * closed_qty * point_value
+                        
+                        # Create consolidated trade
+                        trade = {
+                            'symbol': symbol,
+                            'side': 'LONG',
+                            'quantity': closed_qty,
+                            'entry_price': entry_price,
+                            'exit_price': exit_price,
+                            'entry_time': position['entry_time'],
+                            'exit_time': timestamp,
+                            'pnl': pnl,
+                            'entry_order_id': position['entry_order'].get('id'),
+                            'exit_order_id': order.get('id')
+                        }
+                        consolidated_trades.append(trade)
                         logger.debug(f"Created LONG trade: {closed_qty} @ ${entry_price:.2f} → ${exit_price:.2f}, P&L: ${pnl:.2f}")
-                            
-                            # Update remaining quantities
-                            position['remaining_qty'] -= closed_qty
+                        
+                        # Update remaining quantities
+                        position['remaining_qty'] -= closed_qty
                         remaining_qty -= closed_qty
-                            
-                            # Remove position if fully closed
-                            if position['remaining_qty'] <= 0:
-                                open_positions.pop(0)
+                        
+                        # Remove position if fully closed
+                        if position['remaining_qty'] <= 0:
+                            open_positions.pop(0)
                     
                     # If there's still quantity remaining after closing longs, it's a new short position
                     if remaining_qty > 0:
@@ -5765,11 +5765,11 @@ class TopStepXTradingBot:
             
             # Check cache first - use dynamic TTL based on market hours (unless we need fresh data)
             if not use_fresh_data:
-            cache_key = self._get_cache_key(symbol, timeframe)
-            cached_data = self._load_from_cache(cache_key, max_age_minutes=None)
-            if cached_data is not None and len(cached_data) >= limit:
-                logger.info(f"Using cached data ({len(cached_data)} bars available)")
-                return cached_data[-limit:] if len(cached_data) > limit else cached_data
+                cache_key = self._get_cache_key(symbol, timeframe)
+                cached_data = self._load_from_cache(cache_key, max_age_minutes=None)
+                if cached_data is not None and len(cached_data) >= limit:
+                    logger.info(f"Using cached data ({len(cached_data)} bars available)")
+                    return cached_data[-limit:] if len(cached_data) > limit else cached_data
             else:
                 cache_key = self._get_cache_key(symbol, timeframe)
             
@@ -5907,7 +5907,7 @@ class TopStepXTradingBot:
                     """Get field value trying multiple name variations."""
                     for name in field_names:
                         val = bar.get(name)
-                            if val is not None:
+                        if val is not None:
                             return val
                     return 0
                 
