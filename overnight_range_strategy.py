@@ -562,9 +562,9 @@ class OvernightRangeStrategy:
                 logger.info(f"  Upper ATR zone inside overnight range - using ATR*2 for TP")
                 long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
             else:
-                # ATR zone is outside range - use daily ATR zone as target
-                logger.info(f"  Upper ATR zone outside overnight range - using daily ATR zone for TP")
-                long_tp_raw = long_entry_raw + (atr_data.daily_atr * self.tp_atr_multiplier)
+                # ATR zone is outside range - TARGET THE ZONE ITSELF (lower bound of upper zone)
+                logger.info(f"  Upper ATR zone outside overnight range - targeting zone at {atr_data.day_bull_price:.2f}")
+                long_tp_raw = atr_data.day_bull_price  # Target the lower bound of upper zone
             
             # Round to valid tick sizes
             long_entry = self.round_to_tick(long_entry_raw, tick_size)
@@ -592,9 +592,9 @@ class OvernightRangeStrategy:
                 logger.info(f"  Lower ATR zone inside overnight range - using ATR*2 for TP")
                 short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
             else:
-                # ATR zone is outside range - use daily ATR zone as target
-                logger.info(f"  Lower ATR zone outside overnight range - using daily ATR zone for TP")
-                short_tp_raw = short_entry_raw - (atr_data.daily_atr * self.tp_atr_multiplier)
+                # ATR zone is outside range - TARGET THE ZONE ITSELF (upper bound of lower zone)
+                logger.info(f"  Lower ATR zone outside overnight range - targeting zone at {atr_data.day_bear_price:.2f}")
+                short_tp_raw = atr_data.day_bear_price  # Target the upper bound of lower zone
             
             # Round to valid tick sizes
             short_entry = self.round_to_tick(short_entry_raw, tick_size)

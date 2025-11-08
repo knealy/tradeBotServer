@@ -178,3 +178,36 @@ Expected improvements:
 - Daily ATR zones: Correctly calculated from 9:30am open
 - TP targets: Smartly chosen based on zone location
 
+-----
+
+FIX #4 (2025-11-08): TP Target Calculation Correction
+
+Issue: SHORT TP was way too far
+- Example: Entry=25061.75, TP=23869.00 (wrong!)
+- Should be: TP within daily ATR lower zone [24972.50, 24999.07]
+
+Root Cause:
+When ATR zone is OUTSIDE overnight range, I was calculating:
+  TP = Entry ± (daily_atr * 2.0)
+This used daily_atr as a DISTANCE, not as a TARGET.
+
+Fix: Target the zone itself, not use it as a distance
+- LONG when upper zone OUTSIDE:
+  * OLD: TP = entry + (daily_atr * 2.0)  ❌
+  * NEW: TP = day_bull_price  ✅ (target zone lower bound)
+  
+- SHORT when lower zone OUTSIDE:
+  * OLD: TP = entry - (daily_atr * 2.0)  ❌
+  * NEW: TP = day_bear_price  ✅ (target zone upper bound)
+
+New Expected Output:
+```
+SHORT: Entry=25061.75, SL=25117.00, TP=24999.07  ✅
+  (targeting day_bear_price within zone [24972.54, 24999.07])
+  
+LONG: Entry=25355.00, SL=25299.75, TP=25443.50  ✅
+  (ATR*2 because upper zone is inside range)
+```
+
+This makes much more sense and aligns with the strategy goal!
+
