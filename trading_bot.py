@@ -4425,7 +4425,8 @@ class TopStepXTradingBot:
     
     async def place_oco_bracket_with_stop_entry(self, symbol: str, side: str, quantity: int,
                                                 entry_price: float, stop_loss_price: float,
-                                                take_profit_price: float, account_id: str = None) -> Dict:
+                                                take_profit_price: float, account_id: str = None,
+                                                enable_breakeven: bool = False) -> Dict:
         """
         Place OCO bracket order with stop order as entry.
         
@@ -4440,6 +4441,7 @@ class TopStepXTradingBot:
             stop_loss_price: Stop loss price
             take_profit_price: Take profit price
             account_id: Account ID (uses selected account if not provided)
+            enable_breakeven: Enable breakeven stop monitoring (default: False)
             
         Returns:
             Dict: OCO bracket response or error
@@ -4576,7 +4578,8 @@ class TopStepXTradingBot:
                         entry_price=entry_price,
                         stop_loss_price=stop_loss_price,
                         take_profit_price=take_profit_price,
-                        account_id=target_account
+                        account_id=target_account,
+                        enable_breakeven=enable_breakeven
                     )
                 return response
             
@@ -4596,7 +4599,8 @@ class TopStepXTradingBot:
                         entry_price=entry_price,
                         stop_loss_price=stop_loss_price,
                         take_profit_price=take_profit_price,
-                        account_id=target_account
+                        account_id=target_account,
+                        enable_breakeven=enable_breakeven
                     )
                 
                 return {"error": f"Stop bracket order failed: Error Code {error_code}, Message: {error_message}"}
@@ -4626,6 +4630,23 @@ class TopStepXTradingBot:
             except Exception as notify_err:
                 logger.warning(f"Failed to send Discord notification: {notify_err}")
             
+            # Setup breakeven monitoring if enabled
+            if enable_breakeven:
+                order_id = response.get("orderId")
+                if order_id and hasattr(self, 'overnight_strategy'):
+                    logger.info(f"Setting up breakeven monitoring for order {order_id}")
+                    breakeven_points = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+                    self.overnight_strategy.breakeven_monitoring[order_id] = {
+                        "symbol": symbol,
+                        "side": "LONG" if side.upper() == "BUY" else "SHORT",
+                        "entry_price": entry_price,
+                        "original_stop": stop_loss_price,
+                        "breakeven_threshold": breakeven_points,
+                        "breakeven_triggered": False,
+                        "is_filled": False  # Will be set to True when entry order fills
+                    }
+                    logger.info(f"Breakeven monitoring active: {breakeven_points} pts profit threshold")
+            
             return {
                 "success": True,
                 "orderId": response.get("orderId"),
@@ -4636,6 +4657,7 @@ class TopStepXTradingBot:
                 "entry_price": entry_price,
                 "stop_loss": stop_loss_price,
                 "take_profit": take_profit_price,
+                "breakeven_enabled": enable_breakeven,
                 **response
             }
             
@@ -4650,12 +4672,14 @@ class TopStepXTradingBot:
                 entry_price=entry_price,
                 stop_loss_price=stop_loss_price,
                 take_profit_price=take_profit_price,
-                account_id=account_id
+                account_id=account_id,
+                enable_breakeven=enable_breakeven
             )
     
     async def _stop_bracket_hybrid(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float,
-                                  take_profit_price: float, account_id: str = None) -> Dict:
+                                  take_profit_price: float, account_id: str = None,
+                                  enable_breakeven: bool = False) -> Dict:
         """
         Hybrid stop bracket: place stop order for entry, then auto-bracket on fill.
         
@@ -4669,6 +4693,7 @@ class TopStepXTradingBot:
             stop_loss_price: Stop loss price
             take_profit_price: Take profit price
             account_id: Account ID
+            enable_breakeven: Enable breakeven stop monitoring (default: False)
             
         Returns:
             Dict: Order response
@@ -4777,6 +4802,21 @@ class TopStepXTradingBot:
             # Start monitoring in background
             asyncio.create_task(monitor_and_bracket())
             
+            # Setup breakeven monitoring if enabled
+            if enable_breakeven and order_id and hasattr(self, 'overnight_strategy'):
+                logger.info(f"Setting up breakeven monitoring for hybrid order {order_id}")
+                breakeven_points = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+                self.overnight_strategy.breakeven_monitoring[order_id] = {
+                    "symbol": symbol,
+                    "side": "LONG" if side.upper() == "BUY" else "SHORT",
+                    "entry_price": entry_price,
+                    "original_stop": stop_loss_price,
+                    "breakeven_threshold": breakeven_points,
+                    "breakeven_triggered": False,
+                    "is_filled": False  # Will be set to True when entry order fills
+                }
+                logger.info(f"Breakeven monitoring active: {breakeven_points} pts profit threshold")
+            
             return {
                 "success": True,
                 "orderId": order_id,
@@ -4787,6 +4827,7 @@ class TopStepXTradingBot:
                 "entry_price": entry_price,
                 "stop_loss": stop_loss_price,
                 "take_profit": take_profit_price,
+                "breakeven_enabled": enable_breakeven,
                 "message": "Stop order placed, will auto-bracket on fill"
             }
             
@@ -6699,10 +6740,19 @@ class TopStepXTradingBot:
                 
                 elif command_lower.startswith("stop_bracket "):
                     parts = command.split()
+                    
+                    # Check for --breakeven flag
+                    enable_breakeven = "--breakeven" in parts
+                    if enable_breakeven:
+                        parts.remove("--breakeven")
+                    
                     if len(parts) != 7:
-                        print("❌ Usage: stop_bracket <symbol> <side> <quantity> <entry_price> <stop_price> <profit_price>")
+                        print("❌ Usage: stop_bracket <symbol> <side> <quantity> <entry_price> <stop_price> <profit_price> [--breakeven]")
                         print("   Example: stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00")
+                        print("   Example: stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00 --breakeven")
                         print("   Places a stop order at entry_price with bracket SL/TP attached")
+                        print("   --breakeven: Automatically move stop to breakeven after profit threshold")
+                        print(f"   Profit threshold: {os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0')} points")
                         continue
                     
                     symbol, side, quantity, entry_price, stop_price, profit_price = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
@@ -6736,6 +6786,10 @@ class TopStepXTradingBot:
                             print("❌ For SELL orders, take profit must be below entry price")
                             continue
                     
+                    # Check env variable for default breakeven behavior
+                    if not enable_breakeven and os.getenv('MANUAL_BREAKEVEN_ENABLED', 'false').lower() in ('true', '1', 'yes', 'on'):
+                        enable_breakeven = True
+                    
                     # Confirm the stop bracket order
                     print(f"\n⚠️  CONFIRM STOP BRACKET ORDER:")
                     print(f"   Symbol: {symbol.upper()}")
@@ -6744,6 +6798,10 @@ class TopStepXTradingBot:
                     print(f"   Entry (Stop) Price: ${entry_price}")
                     print(f"   Stop Loss: ${stop_price}")
                     print(f"   Take Profit: ${profit_price}")
+                    print(f"   Breakeven: {'✅ Enabled' if enable_breakeven else '❌ Disabled'}")
+                    if enable_breakeven:
+                        breakeven_points = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+                        print(f"   Breakeven Threshold: {breakeven_points} points profit")
                     print(f"   Account: {self.selected_account['name']}")
                     print(f"   ⚠️  Entry triggers when price {'rises to' if side.upper() == 'BUY' else 'falls to'} ${entry_price}")
                     
@@ -6760,7 +6818,8 @@ class TopStepXTradingBot:
                         quantity=quantity,
                         entry_price=entry_price,
                         stop_loss_price=stop_price,
-                        take_profit_price=profit_price
+                        take_profit_price=profit_price,
+                        enable_breakeven=enable_breakeven
                     )
                     
                     if "error" in result:
@@ -6778,6 +6837,9 @@ class TopStepXTradingBot:
                         print(f"   Stop Loss: ${stop_price}")
                         print(f"   Take Profit: ${profit_price}")
                         print(f"   📝 All orders linked - one fills, others cancel automatically")
+                        if enable_breakeven:
+                            breakeven_pts = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+                            print(f"   🔄 Breakeven enabled: Stop will move to entry after +{breakeven_pts} pts profit")
                     elif method == "hybrid_auto_bracket":
                         print(f"✅ Stop entry order placed with auto-bracketing!")
                         print(f"   Order ID: {entry_order_id}")
@@ -6786,12 +6848,18 @@ class TopStepXTradingBot:
                         print(f"   Stop Loss: ${stop_price}")
                         print(f"   Take Profit: ${profit_price}")
                         print(f"   📝 Brackets will be placed automatically when stop order fills")
+                        if enable_breakeven:
+                            breakeven_pts = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+                            print(f"   🔄 Breakeven enabled: Stop will move to entry after +{breakeven_pts} pts profit")
                     else:
                         print(f"✅ Stop bracket order placed!")
                         print(f"   Order ID: {entry_order_id}")
                         print(f"   Entry: ${entry_price}")
                         print(f"   Stop Loss: ${stop_price}")
                         print(f"   Take Profit: ${profit_price}")
+                        if enable_breakeven:
+                            breakeven_pts = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+                            print(f"   🔄 Breakeven enabled: Stop will move to entry after +{breakeven_pts} pts profit")
                 
                 elif command_lower == "strategy_start" or command_lower.startswith("strategy_start "):
                     # Start overnight range breakout strategy

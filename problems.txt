@@ -24,16 +24,6 @@ remove all unneccesary/irrelevant/redundant files/code to cleanup and de clutter
 **Impact**: Better resource utilization
 
 
-set flag option on stop bracket to move stop to breakeven after positions are in prof 15pts+
-
-move away from the json/webhook parsing for trade orders with webserver 
-- implement full overnight range break strategy directly into bot :
--- track highest price / lowest price every night between 6pm and 9:30am EST (start/end time set in env)
--- calculate current price atr and atr for the day / daily atr zone (see @mom_current.pine) 
--- at 9:30am EST (set time in env) set stop bracket orders slightly above/below these price extremes for these range breaks 
--- stop around -1 to -1.5 current atr from entry
--- tp around Daily atr zone 
-
 go over options for fastest / most effecient frontend - bridge - backend structures and tech stack 
 - make a plan to port / convert (probably to Go + React + JS) 
 - is Go the best choice?
@@ -43,39 +33,58 @@ go over options for fastest / most effecient frontend - bridge - backend structu
 **Solution**: Migrate hot paths to Go/Rust
 **Impact**: 10-100x performance improvement for I/O-bound operations
 
----
-
-### ✅ FIXED: Order Rejection Issues (Nov 7, 2025)
-
-**Problem**: Strategy orders rejected by TopStepX platform
-- "Rejected (Invalid stop price. Price is not aligned to tick size.)"
-- "Rejected (Order price is outside allowed range.)"
-
-**Root Cause**: 
-- ATR calculations produced prices like 25299.80, 24763.95
-- MNQ tick size is 0.25, so only .00, .25, .50, .75 are valid
-- Prices like .80, .95 are invalid and get rejected
-
-**Solution Implemented**:
-1. Added `get_tick_size()` method - fetches tick size from contract info
-2. Added `round_to_tick()` method - rounds prices to valid tick increments
-3. All prices (entry, stop, TP) now rounded before order placement
-4. Added price validation (stop < entry for LONG, stop > entry for SHORT)
-5. Added sanity checks for extreme price deviations (20% from midpoint)
-6. Caches tick sizes to avoid repeated API calls
-
-**Example Fix**:
-```
-Before: Entry=25355.00, SL=25299.80, TP=26194.71 ❌
-After:  Entry=25355.00, SL=25299.75, TP=26194.75 ✅
-```
-
-**Tick Sizes by Symbol**:
-- MNQ, MES, ES, NQ: 0.25
-- MYM, YM: 1.0
-- M2K, RTY: 0.10
 
 ---
+
+
+✅ COMPLETED: Breakeven flag for stop_bracket command
+
+Implementation:
+1. Added `--breakeven` flag to stop_bracket command
+   Usage: stop_bracket MNQ BUY 1 25800 25750 25900 --breakeven
+   
+2. Added env variables for control:
+   - MANUAL_BREAKEVEN_ENABLED=true/false (default: false)
+     * When true, breakeven is enabled by default for all manual orders
+     * --breakeven flag overrides this setting
+   
+   - MANUAL_BREAKEVEN_PROFIT_POINTS=15.0 (default: 15.0)
+     * Profit threshold in points before moving stop to breakeven
+     * Same auto-start/stop logic as overnight strategy
+
+3. How it works:
+   - Order placed with stop entry + SL/TP brackets
+   - If breakeven enabled, monitoring starts automatically
+   - When position reaches +15pts profit (or configured threshold)
+   - Stop loss automatically moves to entry price (breakeven)
+   - Monitoring auto-stops when:
+     * Breakeven is triggered
+     * Position is closed (TP or SL hit)
+
+4. Example usage:
+   # With flag:
+   > stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00 --breakeven
+   
+   # With env variable (enables by default):
+   MANUAL_BREAKEVEN_ENABLED=true
+   > stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00
+   
+5. Output shows breakeven status:
+   ```
+   ⚠️  CONFIRM STOP BRACKET ORDER:
+      Symbol: MNQ
+      Side: BUY
+      Quantity: 1
+      Entry (Stop) Price: $25800.0
+      Stop Loss: $25750.0
+      Take Profit: $25900.0
+      Breakeven: ✅ Enabled
+      Breakeven Threshold: 15.0 points profit
+   ```
+
+✅ FEATURE COMPLETE!
+
+
 
 
 actual proper levels for today: (2025-11-07)
@@ -92,122 +101,4 @@ daily atr upper zone :
 daily atr lower zone :
 - 24999.07 high 
 - 24972.54 low 
-
------
-
-Enter command: strategy_test mnq
-
-🔬 Testing strategy components for MNQ...
-
-1️⃣ Calculating ATR...
-2025-11-07 15:45:21,956 - __main__ - INFO - Fetching historical data for MNQ (5m, 15 bars)
-2025-11-07 15:45:22,074 - __main__ - INFO - Fetching historical data for MNQ (1d, 15 bars)
-   ✅ Current ATR: 44.16
-   ✅ Daily ATR: 419.86
-   ✅ ATR Zone High: 25541.11
-   ✅ ATR Zone Low: 24701.39
-
-2️⃣ Tracking overnight range...
-2025-11-07 15:45:22,153 - overnight_range_strategy - INFO - Fetching overnight range for MNQ (last 930 minutes)
-2025-11-07 15:45:22,153 - __main__ - INFO - Fetching historical data for MNQ (1m, 940 bars)
-2025-11-07 15:45:22,368 - overnight_range_strategy - INFO - 📊 Overnight range for MNQ: High=25354.75, Low=24709.00, Range=645.75
-   ✅ High: 25354.75
-   ✅ Low: 24709.00
-   ✅ Range Size: 645.75
-   ✅ Midpoint: 25031.88
-   ✅ Time: 2025-11-07 00:15:22.368259-05:00 to 2025-11-07 15:45:22.368259-05:00
-
-3️⃣ Calculating breakout orders...
-2025-11-07 15:45:22,368 - __main__ - INFO - Fetching historical data for MNQ (5m, 15 bars)
-2025-11-07 15:45:22,369 - __main__ - INFO - Using cached data (46 bars available)
-2025-11-07 15:45:22,369 - __main__ - INFO - Fetching historical data for MNQ (1d, 15 bars)
-2025-11-07 15:45:22,369 - __main__ - INFO - Using cached data (40 bars available)
-2025-11-07 15:45:22,369 - overnight_range_strategy - INFO - 🎯 Range break orders for MNQ:
-2025-11-07 15:45:22,369 - overnight_range_strategy - INFO -    LONG: Entry=25355.00, SL=25299.80, TP=26194.71
-2025-11-07 15:45:22,370 - overnight_range_strategy - INFO -    SHORT: Entry=24708.75, SL=24763.95, TP=23869.04
-   ✅ LONG Order:
-      Entry: 25355.00
-      Stop:  25299.80
-      TP:    26194.71
-   ✅ SHORT Order:
-      Entry: 24708.75
-      Stop:  24763.95
-      TP:    23869.04
-
-✅ Strategy test complete!
-
-
------
-
-FIXES IMPLEMENTED (2025-11-08):
-
-1. Overnight Range Time Filtering Enhancement:
-   - Added precise time range calculation for overnight session
-   - Filters bars to EXACT overnight session (yesterday 6pm to today 9:30am)
-   - Added debug logging to show:
-     * Total bars fetched
-     * Bars time range (first to last)
-     * How many bars matched overnight session
-   - This should fix the overnight low discrepancy (expected 25062)
-
-2. Daily ATR Zones Implementation:
-   - Implemented exact PineScript formula:
-     * day_dist = dailyATR * 0.5
-     * Upper zone: open_price + day_dist * 0.5 to open_price + day_dist * 0.618
-     * Lower zone: open_price - day_dist * 0.5 to open_price - day_dist * 0.618
-   - Gets market open price (9:30am candle open)
-   - Calculates 4 zone prices:
-     * day_bull_price: opening_price + (dailyATR / 2) * 0.5
-     * day_bull_price1: opening_price + (dailyATR / 2) * 0.618
-     * day_bear_price: opening_price - (dailyATR / 2) * 0.5
-     * day_bear_price1: opening_price - (dailyATR / 2) * 0.618
-
-3. Smart TP Target Selection:
-   - Checks if daily ATR zones are INSIDE overnight range
-   - IF zone is inside range:
-     * Uses ATR * 2 for TP target (more conservative)
-     * Logs: "Zone inside overnight range - using ATR*2 for TP"
-   - IF zone is outside range:
-     * Uses daily ATR zone for TP target (original strategy)
-     * Logs: "Zone outside overnight range - using daily ATR zone for TP"
-   - Prevents targeting levels that are within the consolidation range
-
-Test again with: strategy_test MNQ
-Expected improvements:
-- Overnight Low: 25062 (correct)
-- Daily ATR zones: Correctly calculated from 9:30am open
-- TP targets: Smartly chosen based on zone location
-
------
-
-FIX #4 (2025-11-08): TP Target Calculation Correction
-
-Issue: SHORT TP was way too far
-- Example: Entry=25061.75, TP=23869.00 (wrong!)
-- Should be: TP within daily ATR lower zone [24972.50, 24999.07]
-
-Root Cause:
-When ATR zone is OUTSIDE overnight range, I was calculating:
-  TP = Entry ± (daily_atr * 2.0)
-This used daily_atr as a DISTANCE, not as a TARGET.
-
-Fix: Target the zone itself, not use it as a distance
-- LONG when upper zone OUTSIDE:
-  * OLD: TP = entry + (daily_atr * 2.0)  ❌
-  * NEW: TP = day_bull_price  ✅ (target zone lower bound)
-  
-- SHORT when lower zone OUTSIDE:
-  * OLD: TP = entry - (daily_atr * 2.0)  ❌
-  * NEW: TP = day_bear_price  ✅ (target zone upper bound)
-
-New Expected Output:
-```
-SHORT: Entry=25061.75, SL=25117.00, TP=24999.07  ✅
-  (targeting day_bear_price within zone [24972.54, 24999.07])
-  
-LONG: Entry=25355.00, SL=25299.75, TP=25443.50  ✅
-  (ATR*2 because upper zone is inside range)
-```
-
-This makes much more sense and aligns with the strategy goal!
 
