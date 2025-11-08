@@ -319,11 +319,11 @@ class OvernightRangeStrategy:
         """
         Track overnight range for a symbol (6pm - 9:30am EST by default).
         
-        EFFICIENT APPROACH: Fetches historical bars at market open instead of continuous tracking.
-        Uses the bot's existing history command to get overnight session bars.
+        EFFICIENT APPROACH: Fetches historical bars for the SPECIFIC overnight session.
+        Uses the bot's existing history command to get bars for that exact time range.
         
         This finds:
-        - Highest price during overnight session
+        - Highest price during overnight session (yesterday 6pm to today 9:30am)
         - Lowest price during overnight session
         - Opening price (at start of session)
         - Closing price (at end of session)
@@ -335,45 +335,96 @@ class OvernightRangeStrategy:
             OvernightRange object with high/low/open/close, or None if error
         """
         try:
-            # Calculate overnight session duration
+            # Get current time in strategy timezone
+            now = datetime.now(self.timezone)
+            
+            # Parse overnight session times
             start_hour, start_min = map(int, self.overnight_start.split(':'))
             end_hour, end_min = map(int, self.overnight_end.split(':'))
             
-            # Calculate session length in hours
-            # Example: 18:00 to 09:30 = 15.5 hours
-            if end_hour < start_hour:
-                # Session spans midnight
-                session_hours = (24 - start_hour) + end_hour + (end_min / 60.0)
+            # Calculate the SPECIFIC overnight session times
+            # If it's before market open today, use yesterday 6pm to today 9:30am
+            # If it's after market open today, use today 6pm to tomorrow 9:30am (for next day)
+            
+            market_open_today = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+            
+            if now.time() < time(end_hour, end_min):
+                # Before market open - use yesterday's overnight session
+                # Start: Yesterday at overnight_start (e.g., yesterday 18:00)
+                # End: Today at overnight_end (e.g., today 09:30)
+                start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+                end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
             else:
-                session_hours = end_hour - start_hour + (end_min / 60.0)
+                # After market open - use today's overnight session for tomorrow
+                # Start: Today at overnight_start (e.g., today 18:00)
+                # End: Tomorrow at overnight_end (e.g., tomorrow 09:30)
+                if now.time() < time(start_hour, start_min):
+                    # Before overnight start - use yesterday's session
+                    start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+                    end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+                else:
+                    # After overnight start - session is in progress or future
+                    # For testing purposes, use the most recent completed session
+                    start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+                    end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
             
             # Calculate how many 1-minute bars we need
-            session_minutes = int(session_hours * 60)
+            session_duration = end_time - start_time
+            session_minutes = int(session_duration.total_seconds() / 60)
             
-            logger.info(f"Fetching overnight range for {symbol} (last {session_minutes} minutes)")
+            logger.info(f"Fetching overnight range for {symbol}")
+            logger.info(f"  Session: {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')}")
+            logger.info(f"  Duration: {session_minutes} minutes")
             
-            # Fetch overnight bars using existing history command
-            # This is MUCH more efficient than continuous tracking!
+            # Fetch bars for the overnight session
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
                 timeframe='1m',
-                limit=session_minutes + 10  # Add buffer for safety
+                limit=session_minutes + 60  # Add buffer to ensure we get the full range
             )
             
             if not bars or len(bars) < 10:
                 logger.error(f"Insufficient overnight bars: {len(bars) if bars else 0} bars")
                 return None
             
-            # Calculate range statistics from bars
-            high = max(bar.get('high', bar.get('h', 0)) for bar in bars)
-            low = min(bar.get('low', bar.get('l', 0)) for bar in bars)
-            open_price = bars[0].get('open', bars[0].get('o', 0))
-            close_price = bars[-1].get('close', bars[-1].get('c', 0))
+            # Filter bars to only include those within the overnight session
+            # Bars are returned newest first, so we need to filter by timestamp
+            overnight_bars = []
+            for bar in bars:
+                # Get timestamp from bar
+                ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
+                if not ts:
+                    continue
+                
+                # Parse timestamp
+                if isinstance(ts, str):
+                    bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif ts > 1e12:
+                    bar_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                else:
+                    bar_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+                
+                bar_time = bar_time.astimezone(self.timezone)
+                
+                # Check if bar is within overnight session
+                if start_time <= bar_time <= end_time:
+                    overnight_bars.append(bar)
             
-            # Get timestamps for logging
-            now = datetime.now(self.timezone)
-            end_time = now
-            start_time = now - timedelta(hours=session_hours)
+            if not overnight_bars:
+                logger.warning(f"No bars found in overnight session for {symbol}")
+                logger.warning(f"Fetched {len(bars)} bars but none matched time range")
+                return None
+            
+            logger.info(f"  Found {len(overnight_bars)} bars in overnight session")
+            
+            # Calculate range statistics from overnight bars only
+            high = max(bar.get('high', bar.get('h', 0)) for bar in overnight_bars)
+            low = min(bar.get('low', bar.get('l', 0)) for bar in overnight_bars)
+            
+            # Sort bars by timestamp to get proper open/close
+            overnight_bars_sorted = sorted(overnight_bars, key=lambda b: b.get('timestamp') or b.get('time') or b.get('t', 0))
+            open_price = overnight_bars_sorted[0].get('open', overnight_bars_sorted[0].get('o', 0))
+            close_price = overnight_bars_sorted[-1].get('close', overnight_bars_sorted[-1].get('c', 0))
             
             range_data = OvernightRange(
                 symbol=symbol,

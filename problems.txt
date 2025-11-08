@@ -77,4 +77,50 @@ After:  Entry=25355.00, SL=25299.75, TP=26194.75 ✅
 
 ---
 
+-----
+
+
+Enter command: strategy_test mnq
+
+🔬 Testing strategy components for MNQ...
+
+1️⃣ Calculating ATR...
+2025-11-07 15:45:21,956 - __main__ - INFO - Fetching historical data for MNQ (5m, 15 bars)
+2025-11-07 15:45:22,074 - __main__ - INFO - Fetching historical data for MNQ (1d, 15 bars)
+   ✅ Current ATR: 44.16
+   ✅ Daily ATR: 419.86
+   ✅ ATR Zone High: 25541.11
+   ✅ ATR Zone Low: 24701.39
+
+2️⃣ Tracking overnight range...
+2025-11-07 15:45:22,153 - overnight_range_strategy - INFO - Fetching overnight range for MNQ (last 930 minutes)
+2025-11-07 15:45:22,153 - __main__ - INFO - Fetching historical data for MNQ (1m, 940 bars)
+2025-11-07 15:45:22,368 - overnight_range_strategy - INFO - 📊 Overnight range for MNQ: High=25354.75, Low=24709.00, Range=645.75
+   ✅ High: 25354.75
+   ✅ Low: 24709.00
+   ✅ Range Size: 645.75
+   ✅ Midpoint: 25031.88
+   ✅ Time: 2025-11-07 00:15:22.368259-05:00 to 2025-11-07 15:45:22.368259-05:00
+
+3️⃣ Calculating breakout orders...
+2025-11-07 15:45:22,368 - __main__ - INFO - Fetching historical data for MNQ (5m, 15 bars)
+2025-11-07 15:45:22,369 - __main__ - INFO - Using cached data (46 bars available)
+2025-11-07 15:45:22,369 - __main__ - INFO - Fetching historical data for MNQ (1d, 15 bars)
+2025-11-07 15:45:22,369 - __main__ - INFO - Using cached data (40 bars available)
+2025-11-07 15:45:22,369 - overnight_range_strategy - INFO - 🎯 Range break orders for MNQ:
+2025-11-07 15:45:22,369 - overnight_range_strategy - INFO -    LONG: Entry=25355.00, SL=25299.80, TP=26194.71
+2025-11-07 15:45:22,370 - overnight_range_strategy - INFO -    SHORT: Entry=24708.75, SL=24763.95, TP=23869.04
+   ✅ LONG Order:
+      Entry: 25355.00
+      Stop:  25299.80
+      TP:    26194.71
+   ✅ SHORT Order:
+      Entry: 24708.75
+      Stop:  24763.95
+      TP:    23869.04
+
+✅ Strategy test complete!
+
+
+-----
 
