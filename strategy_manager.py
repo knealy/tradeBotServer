@@ -37,6 +37,7 @@ class StrategyManager:
         self.trading_bot = trading_bot
         self.strategies: Dict[str, BaseStrategy] = {}
         self.strategy_classes: Dict[str, Type[BaseStrategy]] = {}
+        self.available_strategies: Dict[str, Type[BaseStrategy]] = {}  # Alias for strategy_classes
         self.active_strategies: List[str] = []
         
         # Global settings
@@ -59,6 +60,7 @@ class StrategyManager:
             strategy_class: Strategy class (not instance)
         """
         self.strategy_classes[name] = strategy_class
+        self.available_strategies[name] = strategy_class  # Keep alias in sync
         logger.info(f"📝 Registered strategy: {name}")
     
     def load_strategies(self):
@@ -85,6 +87,10 @@ class StrategyManager:
         
         logger.info(f"📊 Total strategies loaded: {len(self.strategies)}/{len(self.strategy_classes)}")
     
+    def load_strategies_from_config(self):
+        """Alias for load_strategies() for backward compatibility."""
+        return self.load_strategies()
+    
     def get_strategy(self, name: str) -> Optional[BaseStrategy]:
         """Get strategy by name."""
         return self.strategies.get(name)
@@ -97,30 +103,36 @@ class StrategyManager:
         """Get currently active strategies."""
         return [self.strategies[name] for name in self.active_strategies if name in self.strategies]
     
-    async def start_strategy(self, name: str) -> bool:
+    async def start_strategy(self, name: str, symbols: List[str] = None):
         """
         Start a specific strategy.
         
         Args:
             name: Strategy name
+            symbols: Optional list of symbols to override config
         
         Returns:
-            bool: True if started successfully
+            tuple: (success: bool, message: str)
         """
         if name not in self.strategies:
             logger.error(f"❌ Strategy not found: {name}")
-            return False
+            return False, f"Strategy not found: {name}"
         
         if name in self.active_strategies:
             logger.warning(f"⚠️  Strategy already active: {name}")
-            return False
+            return False, f"Strategy already active: {name}"
         
         # Check concurrent limit
         if len(self.active_strategies) >= self.max_concurrent_strategies:
             logger.error(f"❌ Max concurrent strategies limit reached ({self.max_concurrent_strategies})")
-            return False
+            return False, f"Max concurrent strategies limit reached ({self.max_concurrent_strategies})"
         
         strategy = self.strategies[name]
+        
+        # Override symbols if provided
+        if symbols:
+            strategy.config.symbols = symbols
+        
         strategy.status = StrategyStatus.ACTIVE
         self.active_strategies.append(name)
         
@@ -129,9 +141,9 @@ class StrategyManager:
         self._tasks.append(task)
         
         logger.info(f"🚀 Started strategy: {name}")
-        return True
+        return True, f"Strategy started: {name} on {', '.join(strategy.config.symbols)}"
     
-    async def stop_strategy(self, name: str) -> bool:
+    async def stop_strategy(self, name: str):
         """
         Stop a specific strategy.
         
@@ -139,11 +151,11 @@ class StrategyManager:
             name: Strategy name
         
         Returns:
-            bool: True if stopped successfully
+            tuple: (success: bool, message: str)
         """
         if name not in self.active_strategies:
             logger.warning(f"⚠️  Strategy not active: {name}")
-            return False
+            return False, f"Strategy not active: {name}"
         
         strategy = self.strategies[name]
         strategy.status = StrategyStatus.IDLE
@@ -153,24 +165,40 @@ class StrategyManager:
         await strategy.cleanup()
         
         logger.info(f"🛑 Stopped strategy: {name}")
-        return True
+        return True, f"Strategy stopped: {name}"
     
-    async def start_all(self):
-        """Start all loaded strategies."""
+    async def start_all_strategies(self):
+        """Start all enabled strategies."""
         logger.info("🚀 Starting all strategies...")
+        results = {}
         for name in self.strategies.keys():
-            await self.start_strategy(name)
+            success, message = await self.start_strategy(name)
+            results[name] = (success, message)
+        return results
     
-    async def stop_all(self):
+    async def stop_all_strategies(self):
         """Stop all active strategies."""
         logger.info("🛑 Stopping all strategies...")
+        results = {}
         for name in list(self.active_strategies):
-            await self.stop_strategy(name)
+            success, message = await self.stop_strategy(name)
+            results[name] = (success, message)
         
         # Cancel all tasks
         for task in self._tasks:
             task.cancel()
         self._tasks.clear()
+        
+        return results
+    
+    # Backward compatibility aliases
+    async def start_all(self):
+        """Alias for start_all_strategies()."""
+        return await self.start_all_strategies()
+    
+    async def stop_all(self):
+        """Alias for stop_all_strategies()."""
+        return await self.stop_all_strategies()
     
     async def _run_strategy(self, strategy: BaseStrategy):
         """
@@ -326,13 +354,24 @@ class StrategyManager:
         }
     
     def get_status(self) -> Dict:
-        """Get manager status."""
+        """Get manager status with detailed strategy information."""
+        # Get aggregated metrics
+        metrics = self.get_aggregated_metrics()
+        
+        # Get individual strategy statuses
+        strategy_statuses = {}
+        for name, strategy in self.strategies.items():
+            strategy_statuses[name] = strategy.get_status()
+        
         return {
+            "total_strategies": len(self.strategies),
+            "active_strategies": len(self.active_strategies),
+            "total_positions": sum(len(s.active_positions) for s in self.strategies.values()),
+            "strategies": strategy_statuses,
             "auto_select_enabled": self.auto_select_enabled,
             "max_concurrent": self.max_concurrent_strategies,
             "registered_strategies": list(self.strategy_classes.keys()),
             "loaded_strategies": list(self.strategies.keys()),
-            "active_strategies": self.active_strategies,
-            "metrics": self.get_aggregated_metrics()
+            "active_strategy_names": self.active_strategies
         }
 
