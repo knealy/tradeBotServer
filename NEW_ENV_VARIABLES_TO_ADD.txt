@@ -1,174 +1,174 @@
-# =============================================================================
-# NEW ENVIRONMENT VARIABLES TO ADD TO YOUR .ENV FILE
-# These are the NEW variables from Option A implementation
-# Add these to your existing .env file
-# =============================================================================
+    # =============================================================================
+    # NEW ENVIRONMENT VARIABLES TO ADD TO YOUR .ENV FILE
+    # These are the NEW variables from Option A implementation
+    # Add these to your existing .env file
+    # =============================================================================
 
-# =============================================================================
-# STRATEGY MANAGER (NEW)
-# =============================================================================
-MAX_CONCURRENT_STRATEGIES=3
-GLOBAL_MAX_POSITIONS=5
+    # =============================================================================
+    # STRATEGY MANAGER (NEW)
+    # =============================================================================
+    MAX_CONCURRENT_STRATEGIES=3
+    GLOBAL_MAX_POSITIONS=5
 
-# =============================================================================
-# OVERNIGHT RANGE - NEW OPTIONS (Option A)
-# =============================================================================
+    # =============================================================================
+    # OVERNIGHT RANGE - NEW OPTIONS (Option A)
+    # =============================================================================
 
-# Time Windows (NEW)
-OVERNIGHT_RANGE_START_TIME=09:30
-OVERNIGHT_RANGE_END_TIME=15:45
-OVERNIGHT_RANGE_NO_TRADE_START=15:30
-OVERNIGHT_RANGE_NO_TRADE_END=16:00
+    # Time Windows (NEW)
+    OVERNIGHT_RANGE_START_TIME=09:30
+    OVERNIGHT_RANGE_END_TIME=15:45
+    OVERNIGHT_RANGE_NO_TRADE_START=15:30
+    OVERNIGHT_RANGE_NO_TRADE_END=16:00
 
-# TopStepX Compliance (NEW)
-OVERNIGHT_RANGE_RESPECT_MLL=true
+    # TopStepX Compliance (NEW)
+    OVERNIGHT_RANGE_RESPECT_MLL=true
 
-# Manual Breakeven for stop_bracket command (NEW)
-MANUAL_BREAKEVEN_ENABLED=false
-MANUAL_BREAKEVEN_PROFIT_POINTS=15.0
+    # Manual Breakeven for stop_bracket command (NEW)
+    MANUAL_BREAKEVEN_ENABLED=false
+    MANUAL_BREAKEVEN_PROFIT_POINTS=15.0
 
-# =============================================================================
-# MARKET CONDITION FILTERS (NEW - ALL DEFAULTED TO OFF)
-# =============================================================================
+    # =============================================================================
+    # MARKET CONDITION FILTERS (NEW - ALL DEFAULTED TO OFF)
+    # =============================================================================
 
-# Range Size Filter (NEW)
-OVERNIGHT_FILTER_RANGE_SIZE=false
-OVERNIGHT_RANGE_MIN_POINTS=50.0
-OVERNIGHT_RANGE_MAX_POINTS=500.0
+    # Range Size Filter (NEW)
+    OVERNIGHT_FILTER_RANGE_SIZE=false
+    OVERNIGHT_RANGE_MIN_POINTS=50.0
+    OVERNIGHT_RANGE_MAX_POINTS=500.0
 
-# Gap Filter (NEW)
-OVERNIGHT_FILTER_GAP=false
-OVERNIGHT_GAP_MAX_POINTS=200.0
+    # Gap Filter (NEW)
+    OVERNIGHT_FILTER_GAP=false
+    OVERNIGHT_GAP_MAX_POINTS=200.0
 
-# Volatility Filter (NEW)
-OVERNIGHT_FILTER_VOLATILITY=false
-OVERNIGHT_ATR_MIN=20.0
-OVERNIGHT_ATR_MAX=200.0
+    # Volatility Filter (NEW)
+    OVERNIGHT_FILTER_VOLATILITY=false
+    OVERNIGHT_ATR_MIN=20.0
+    OVERNIGHT_ATR_MAX=200.0
 
-# DLL Proximity Filter (NEW)
-OVERNIGHT_FILTER_DLL_PROXIMITY=false
-OVERNIGHT_DLL_THRESHOLD_PERCENT=0.75
+    # DLL Proximity Filter (NEW)
+    OVERNIGHT_FILTER_DLL_PROXIMITY=false
+    OVERNIGHT_DLL_THRESHOLD_PERCENT=0.75
 
-# =============================================================================
-# MEAN REVERSION STRATEGY (NEW - ALL VARIABLES)
-# =============================================================================
+    # =============================================================================
+    # MEAN REVERSION STRATEGY (NEW - ALL VARIABLES)
+    # =============================================================================
 
-# Strategy Control (NEW)
-MEAN_REVERSION_ENABLED=false
-MEAN_REVERSION_SYMBOLS=MNQ,MES
-MEAN_REVERSION_MAX_POSITIONS=2
-MEAN_REVERSION_POSITION_SIZE=1
-MEAN_REVERSION_RISK_PERCENT=0.5
-MEAN_REVERSION_MAX_DAILY_TRADES=10
+    # Strategy Control (NEW)
+    MEAN_REVERSION_ENABLED=false
+    MEAN_REVERSION_SYMBOLS=MNQ,MES
+    MEAN_REVERSION_MAX_POSITIONS=2
+    MEAN_REVERSION_POSITION_SIZE=1
+    MEAN_REVERSION_RISK_PERCENT=0.5
+    MEAN_REVERSION_MAX_DAILY_TRADES=10
 
-# Market Condition Preferences (NEW)
-MEAN_REVERSION_PREFERRED_CONDITIONS=ranging,reversal
-MEAN_REVERSION_AVOID_CONDITIONS=trending_up,trending_down,breakout
-MEAN_REVERSION_RESPECT_DLL=true
-MEAN_REVERSION_RESPECT_MLL=true
-MEAN_REVERSION_MAX_DLL_USAGE=0.75
+    # Market Condition Preferences (NEW)
+    MEAN_REVERSION_PREFERRED_CONDITIONS=ranging,reversal
+    MEAN_REVERSION_AVOID_CONDITIONS=trending_up,trending_down,breakout
+    MEAN_REVERSION_RESPECT_DLL=true
+    MEAN_REVERSION_RESPECT_MLL=true
+    MEAN_REVERSION_MAX_DLL_USAGE=0.75
 
-# Time Windows (NEW)
-MEAN_REVERSION_START_TIME=09:30
-MEAN_REVERSION_END_TIME=15:45
-MEAN_REVERSION_NO_TRADE_START=15:30
-MEAN_REVERSION_NO_TRADE_END=16:00
+    # Time Windows (NEW)
+    MEAN_REVERSION_START_TIME=09:30
+    MEAN_REVERSION_END_TIME=15:45
+    MEAN_REVERSION_NO_TRADE_START=15:30
+    MEAN_REVERSION_NO_TRADE_END=16:00
 
-# RSI Configuration (NEW)
-MEAN_REV_RSI_PERIOD=14
-MEAN_REV_RSI_OVERBOUGHT=70
-MEAN_REV_RSI_OVERSOLD=30
+    # RSI Configuration (NEW)
+    MEAN_REV_RSI_PERIOD=14
+    MEAN_REV_RSI_OVERBOUGHT=70
+    MEAN_REV_RSI_OVERSOLD=30
 
-# Moving Average Configuration (NEW)
-MEAN_REV_MA_PERIOD=20
-MEAN_REV_MA_TYPE=SMA
+    # Moving Average Configuration (NEW)
+    MEAN_REV_MA_PERIOD=20
+    MEAN_REV_MA_TYPE=SMA
 
-# ATR Configuration (NEW)
-MEAN_REV_ATR_PERIOD=14
-MEAN_REV_ATR_DEVIATION=2.0
-MEAN_REV_STOP_ATR=1.5
-MEAN_REV_TARGET_MA_RETURN=true
+    # ATR Configuration (NEW)
+    MEAN_REV_ATR_PERIOD=14
+    MEAN_REV_ATR_DEVIATION=2.0
+    MEAN_REV_STOP_ATR=1.5
+    MEAN_REV_TARGET_MA_RETURN=true
 
-# Timeframe (NEW)
-MEAN_REV_TIMEFRAME=5m
+    # Timeframe (NEW)
+    MEAN_REV_TIMEFRAME=5m
 
-# =============================================================================
-# TREND FOLLOWING STRATEGY (NEW - ALL VARIABLES)
-# =============================================================================
+    # =============================================================================
+    # TREND FOLLOWING STRATEGY (NEW - ALL VARIABLES)
+    # =============================================================================
 
-# Strategy Control (NEW)
-TREND_FOLLOWING_ENABLED=false
-TREND_FOLLOWING_SYMBOLS=MNQ,MES
-TREND_FOLLOWING_MAX_POSITIONS=2
-TREND_FOLLOWING_POSITION_SIZE=1
-TREND_FOLLOWING_RISK_PERCENT=0.5
-TREND_FOLLOWING_MAX_DAILY_TRADES=10
+    # Strategy Control (NEW)
+    TREND_FOLLOWING_ENABLED=false
+    TREND_FOLLOWING_SYMBOLS=MNQ,MES
+    TREND_FOLLOWING_MAX_POSITIONS=2
+    TREND_FOLLOWING_POSITION_SIZE=1
+    TREND_FOLLOWING_RISK_PERCENT=0.5
+    TREND_FOLLOWING_MAX_DAILY_TRADES=10
 
-# Market Condition Preferences (NEW)
-TREND_FOLLOWING_PREFERRED_CONDITIONS=trending_up,trending_down,breakout
-TREND_FOLLOWING_AVOID_CONDITIONS=ranging,reversal
-TREND_FOLLOWING_RESPECT_DLL=true
-TREND_FOLLOWING_RESPECT_MLL=true
-TREND_FOLLOWING_MAX_DLL_USAGE=0.75
+    # Market Condition Preferences (NEW)
+    TREND_FOLLOWING_PREFERRED_CONDITIONS=trending_up,trending_down,breakout
+    TREND_FOLLOWING_AVOID_CONDITIONS=ranging,reversal
+    TREND_FOLLOWING_RESPECT_DLL=true
+    TREND_FOLLOWING_RESPECT_MLL=true
+    TREND_FOLLOWING_MAX_DLL_USAGE=0.75
 
-# Time Windows (NEW)
-TREND_FOLLOWING_START_TIME=09:30
-TREND_FOLLOWING_END_TIME=15:45
-TREND_FOLLOWING_NO_TRADE_START=15:30
-TREND_FOLLOWING_NO_TRADE_END=16:00
+    # Time Windows (NEW)
+    TREND_FOLLOWING_START_TIME=09:30
+    TREND_FOLLOWING_END_TIME=15:45
+    TREND_FOLLOWING_NO_TRADE_START=15:30
+    TREND_FOLLOWING_NO_TRADE_END=16:00
 
-# Moving Average Crossover Configuration (NEW)
-TREND_FAST_MA_PERIOD=10
-TREND_SLOW_MA_PERIOD=30
-TREND_MA_TYPE=EMA
-TREND_MIN_STRENGTH=0.5
+    # Moving Average Crossover Configuration (NEW)
+    TREND_FAST_MA_PERIOD=10
+    TREND_SLOW_MA_PERIOD=30
+    TREND_MA_TYPE=EMA
+    TREND_MIN_STRENGTH=0.5
 
-# ATR Configuration (NEW)
-TREND_ATR_PERIOD=14
-TREND_ATR_STOP=2.0
-TREND_ATR_TRAILING=3.0
+    # ATR Configuration (NEW)
+    TREND_ATR_PERIOD=14
+    TREND_ATR_STOP=2.0
+    TREND_ATR_TRAILING=3.0
 
-# Pyramiding (NEW)
-TREND_PYRAMID_ENABLED=false
-TREND_PYRAMID_MAX_ADDS=2
+    # Pyramiding (NEW)
+    TREND_PYRAMID_ENABLED=false
+    TREND_PYRAMID_MAX_ADDS=2
 
-# Timeframe (NEW)
-TREND_TIMEFRAME=15m
+    # Timeframe (NEW)
+    TREND_TIMEFRAME=15m
 
-# =============================================================================
-# ACCOUNT TRACKER (NEW - If not already set)
-# =============================================================================
-DAILY_LOSS_LIMIT=1000.00
-MAXIMUM_LOSS_LIMIT=3000.00
-INITIAL_BALANCE=150000.00
+    # =============================================================================
+    # ACCOUNT TRACKER (NEW - If not already set)
+    # =============================================================================
+    DAILY_LOSS_LIMIT=1000.00
+    MAXIMUM_LOSS_LIMIT=3000.00
+    INITIAL_BALANCE=150000.00
 
-# =============================================================================
-# MISSING API SETTINGS (Add if not present)
-# =============================================================================
-API_RATE_LIMIT_MAX=60
-API_RATE_LIMIT_PERIOD=60
+    # =============================================================================
+    # MISSING API SETTINGS (Add if not present)
+    # =============================================================================
+    API_RATE_LIMIT_MAX=60
+    API_RATE_LIMIT_PERIOD=60
 
-# =============================================================================
-# SUMMARY OF WHAT TO ADD
-# =============================================================================
-#
-# Total NEW variables from Option A: ~85 variables
-#
-# Categories:
-# 1. Strategy Manager (2 variables)
-# 2. Overnight Range - New Options (7 variables)
-# 3. Market Condition Filters (13 variables)
-# 4. Mean Reversion Strategy (28 variables)
-# 5. Trend Following Strategy (28 variables)
-# 6. Account Tracker (3 variables - if missing)
-# 7. API Settings (2 variables - if missing)
-#
-# Key Points:
-# - All market filters are OFF by default
-# - Mean reversion is DISABLED by default
-# - Trend following is DISABLED by default
-# - Your overnight range strategy will work exactly as before
-# - No breaking changes
-#
-# =============================================================================
+    # =============================================================================
+    # SUMMARY OF WHAT TO ADD
+    # =============================================================================
+    #
+    # Total NEW variables from Option A: ~85 variables
+    #
+    # Categories:
+    # 1. Strategy Manager (2 variables)
+    # 2. Overnight Range - New Options (7 variables)
+    # 3. Market Condition Filters (13 variables)
+    # 4. Mean Reversion Strategy (28 variables)
+    # 5. Trend Following Strategy (28 variables)
+    # 6. Account Tracker (3 variables - if missing)
+    # 7. API Settings (2 variables - if missing)
+    #
+    # Key Points:
+    # - All market filters are OFF by default
+    # - Mean reversion is DISABLED by default
+    # - Trend following is DISABLED by default
+    # - Your overnight range strategy will work exactly as before
+    # - No breaking changes
+    #
+    # =============================================================================
 
