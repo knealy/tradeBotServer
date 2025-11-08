@@ -33,6 +33,9 @@ from discord_notifier import DiscordNotifier
 from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
 from account_tracker import AccountTracker
 from overnight_range_strategy import OvernightRangeStrategy
+from mean_reversion_strategy import MeanReversionStrategy
+from trend_following_strategy import TrendFollowingStrategy
+from strategy_manager import StrategyManager
 
 # Optional ProjectX SDK adapter
 try:
@@ -201,9 +204,26 @@ class TopStepXTradingBot:
         self.account_tracker = AccountTracker()
         logger.debug("Account tracker initialized")
         
-        # Initialize overnight range breakout strategy
-        self.overnight_strategy = OvernightRangeStrategy(trading_bot=self)
-        logger.debug("Overnight range strategy initialized")
+        # Initialize Strategy Manager (modular strategy system)
+        self.strategy_manager = StrategyManager(trading_bot=self)
+        logger.debug("Strategy manager initialized")
+        
+        # Register all available strategies
+        self.strategy_manager.register_strategy("overnight_range", OvernightRangeStrategy)
+        self.strategy_manager.register_strategy("mean_reversion", MeanReversionStrategy)
+        self.strategy_manager.register_strategy("trend_following", TrendFollowingStrategy)
+        logger.debug("Strategies registered with manager")
+        
+        # Load strategies from environment configuration
+        self.strategy_manager.load_strategies_from_config()
+        
+        # Initialize overnight range breakout strategy (backward compatibility)
+        # This is the default active strategy
+        self.overnight_strategy = self.strategy_manager.strategies.get("overnight_range")
+        if not self.overnight_strategy:
+            # Fallback if not loaded from config
+            self.overnight_strategy = OvernightRangeStrategy(trading_bot=self)
+        logger.debug("Overnight range strategy initialized (default active strategy)")
         
         # Order counter for unique custom tags
         self._order_counter = 0
@@ -6305,10 +6325,19 @@ class TopStepXTradingBot:
         print("  flatten - Close all positions and cancel all orders")
         print("  contracts - List available contracts")
         print("  accounts - List accounts again")
-        print("  strategy_start [symbols] - Start overnight range breakout strategy")
-        print("  strategy_stop - Stop the strategy")
-        print("  strategy_status - Show strategy status and configuration")
+        print("  strategy_start [symbols] - Start overnight range breakout strategy (default)")
+        print("  strategy_stop - Stop the overnight strategy")
+        print("  strategy_status - Show overnight strategy status and configuration")
         print("  strategy_test <symbol> - Test strategy components (ATR, ranges, orders)")
+        print("  ")
+        print("  📦 Modular Strategy System:")
+        print("  strategies list - List all available strategies")
+        print("  strategies status - Show all strategies status")
+        print("  strategies start <name> [symbols] - Start a specific strategy")
+        print("  strategies stop <name> - Stop a specific strategy")
+        print("  strategies start_all - Start all enabled strategies")
+        print("  strategies stop_all - Stop all strategies")
+        print("  ")
         print("  help - Show this help message")
         print("  quit - Exit trading interface")
         print("="*50)
@@ -6990,6 +7019,125 @@ class TopStepXTradingBot:
                         print(f"   ❌ Order calculation failed")
                     
                     print(f"\n✅ Strategy test complete!")
+                
+                # Modular Strategy System Commands
+                elif command_lower == "strategies list" or command_lower == "strategies":
+                    # List all available strategies
+                    print(f"\n📦 Available Strategies:")
+                    print(f"="*60)
+                    
+                    for name, strategy_class in self.strategy_manager.available_strategies.items():
+                        strategy_instance = self.strategy_manager.strategies.get(name)
+                        
+                        if strategy_instance:
+                            status = strategy_instance.status.value
+                            enabled = strategy_instance.config.enabled
+                            symbols = ", ".join(strategy_instance.config.symbols)
+                            status_emoji = "✅" if status == "active" else "⏸️" if status == "paused" else "⚪"
+                        else:
+                            status = "not loaded"
+                            enabled = False
+                            symbols = "N/A"
+                            status_emoji = "⚪"
+                        
+                        print(f"{status_emoji} {name.replace('_', ' ').title()}")
+                        print(f"   Status: {status}")
+                        print(f"   Enabled in Config: {enabled}")
+                        print(f"   Symbols: {symbols}")
+                        print()
+                    
+                    print(f"💡 Use 'strategies start <name>' to start a strategy")
+                    print(f"💡 Use 'strategies status' for detailed metrics")
+                
+                elif command_lower == "strategies status":
+                    # Show detailed status of all strategies
+                    status = self.strategy_manager.get_status()
+                    
+                    print(f"\n📊 Strategy Manager Status:")
+                    print(f"="*60)
+                    print(f"Active Strategies: {status['active_strategies']}/{status['total_strategies']}")
+                    print(f"Total Positions: {status['total_positions']}")
+                    print()
+                    
+                    for strategy_name, strategy_status in status['strategies'].items():
+                        print(f"📈 {strategy_name.replace('_', ' ').title()}:")
+                        print(f"   Status: {strategy_status['status']}")
+                        print(f"   Enabled: {strategy_status['enabled']}")
+                        print(f"   Symbols: {', '.join(strategy_status['symbols'])}")
+                        print(f"   Active Positions: {strategy_status['active_positions']}")
+                        print(f"   Daily Trades: {strategy_status['daily_trades']}")
+                        
+                        metrics = strategy_status.get('metrics', {})
+                        if metrics.get('total_trades', 0) > 0:
+                            print(f"   Metrics:")
+                            print(f"     Total Trades: {metrics['total_trades']}")
+                            print(f"     Win Rate: {metrics['win_rate']}")
+                            print(f"     Total P&L: {metrics['total_pnl']}")
+                            print(f"     Profit Factor: {metrics['profit_factor']}")
+                        print()
+                
+                elif command_lower.startswith("strategies start "):
+                    # Start a specific strategy
+                    parts = command.split()
+                    if len(parts) < 3:
+                        print("❌ Usage: strategies start <name> [symbols]")
+                        print("   Example: strategies start mean_reversion MNQ,MES")
+                        print("   Available strategies:")
+                        for name in self.strategy_manager.available_strategies.keys():
+                            print(f"     - {name}")
+                        continue
+                    
+                    strategy_name = parts[2]
+                    symbols = parts[3].split(',') if len(parts) > 3 else None
+                    
+                    print(f"\n🚀 Starting {strategy_name.replace('_', ' ').title()} Strategy...")
+                    success, message = await self.strategy_manager.start_strategy(strategy_name, symbols)
+                    
+                    if success:
+                        print(f"✅ {message}")
+                    else:
+                        print(f"❌ {message}")
+                
+                elif command_lower.startswith("strategies stop "):
+                    # Stop a specific strategy
+                    parts = command.split()
+                    if len(parts) != 3:
+                        print("❌ Usage: strategies stop <name>")
+                        print("   Example: strategies stop mean_reversion")
+                        continue
+                    
+                    strategy_name = parts[2]
+                    
+                    print(f"\n🛑 Stopping {strategy_name.replace('_', ' ').title()} Strategy...")
+                    success, message = await self.strategy_manager.stop_strategy(strategy_name)
+                    
+                    if success:
+                        print(f"✅ {message}")
+                    else:
+                        print(f"❌ {message}")
+                
+                elif command_lower == "strategies start_all":
+                    # Start all enabled strategies
+                    print(f"\n🚀 Starting all enabled strategies...")
+                    results = await self.strategy_manager.start_all_strategies()
+                    
+                    for strategy_name, (success, message) in results.items():
+                        emoji = "✅" if success else "❌"
+                        print(f"{emoji} {strategy_name.replace('_', ' ').title()}: {message}")
+                
+                elif command_lower == "strategies stop_all":
+                    # Stop all strategies
+                    confirm = input("\n⚠️  Stop all active strategies? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Operation cancelled")
+                        continue
+                    
+                    print(f"\n🛑 Stopping all strategies...")
+                    results = await self.strategy_manager.stop_all_strategies()
+                    
+                    for strategy_name, (success, message) in results.items():
+                        emoji = "✅" if success else "❌"
+                        print(f"{emoji} {strategy_name.replace('_', ' ').title()}: {message}")
                 
                 elif command_lower.startswith("stop "):
                     parts = command.split()

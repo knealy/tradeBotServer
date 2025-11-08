@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from collections import deque
 import pytz
 
+from strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,7 +73,7 @@ class RangeBreakOrder:
     atr_data: ATRData
 
 
-class OvernightRangeStrategy:
+class OvernightRangeStrategy(BaseStrategy):
     """
     Manages overnight range breakout strategy execution.
     
@@ -80,16 +82,25 @@ class OvernightRangeStrategy:
     - Calculates ATR for dynamic stops/targets
     - Places orders at market open
     - Manages breakeven stops
+    - Market condition filters (optional)
     """
     
-    def __init__(self, trading_bot):
+    def __init__(self, trading_bot, config: StrategyConfig = None):
         """
         Initialize the strategy.
         
         Args:
             trading_bot: Reference to main TradingBot instance
+            config: Strategy configuration (if None, loads from environment)
         """
-        self.trading_bot = trading_bot
+        # Load config from environment if not provided
+        if config is None:
+            config = StrategyConfig.from_env("OVERNIGHT_RANGE")
+        
+        # Initialize base strategy
+        super().__init__(trading_bot, config)
+        
+        # Overnight-specific state
         self.active_ranges: Dict[str, OvernightRange] = {}
         self.active_orders: Dict[str, List[str]] = {}  # symbol -> [order_ids]
         self.breakeven_monitoring: Dict[str, Dict] = {}  # order_id -> monitoring data
@@ -97,7 +108,7 @@ class OvernightRangeStrategy:
         # Tick size cache: {symbol: tick_size}
         self._tick_size_cache: Dict[str, float] = {}
         
-        # Load configuration from environment
+        # Load strategy-specific configuration from environment
         self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
         self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '09:30')  # 9:30am EST
         self.market_open_time = os.getenv('MARKET_OPEN_TIME', '09:30')  # 9:30am EST
@@ -119,6 +130,21 @@ class OvernightRangeStrategy:
         self.range_break_offset = float(os.getenv('RANGE_BREAK_OFFSET', '0.25'))  # Offset from range extremes
         self.default_quantity = int(os.getenv('STRATEGY_QUANTITY', '1'))  # Position size
         
+        # Market condition filters (OPTIONAL - defaulted to OFF)
+        self.filter_range_size_enabled = os.getenv('OVERNIGHT_FILTER_RANGE_SIZE', 'false').lower() == 'true'
+        self.filter_range_min = float(os.getenv('OVERNIGHT_RANGE_MIN_POINTS', '50.0'))
+        self.filter_range_max = float(os.getenv('OVERNIGHT_RANGE_MAX_POINTS', '500.0'))
+        
+        self.filter_gap_enabled = os.getenv('OVERNIGHT_FILTER_GAP', 'false').lower() == 'true'
+        self.filter_gap_max = float(os.getenv('OVERNIGHT_GAP_MAX_POINTS', '200.0'))
+        
+        self.filter_volatility_enabled = os.getenv('OVERNIGHT_FILTER_VOLATILITY', 'false').lower() == 'true'
+        self.filter_atr_min = float(os.getenv('OVERNIGHT_ATR_MIN', '20.0'))
+        self.filter_atr_max = float(os.getenv('OVERNIGHT_ATR_MAX', '200.0'))
+        
+        self.filter_dll_proximity_enabled = os.getenv('OVERNIGHT_FILTER_DLL_PROXIMITY', 'false').lower() == 'true'
+        self.filter_dll_threshold = float(os.getenv('OVERNIGHT_DLL_THRESHOLD_PERCENT', '0.75'))  # 75%
+        
         # Strategy state
         self.is_tracking = False
         self.is_trading = False
@@ -134,6 +160,13 @@ class OvernightRangeStrategy:
             logger.info(f"   Breakeven: ENABLED (+{self.breakeven_profit_points} pts to trigger)")
         else:
             logger.info(f"   Breakeven: DISABLED")
+        
+        # Log market condition filters status
+        logger.info(f"   Market Condition Filters:")
+        logger.info(f"     Range Size: {'ENABLED' if self.filter_range_size_enabled else 'DISABLED'} ({self.filter_range_min:.0f}-{self.filter_range_max:.0f} pts)")
+        logger.info(f"     Gap Filter: {'ENABLED' if self.filter_gap_enabled else 'DISABLED'} (max {self.filter_gap_max:.0f} pts)")
+        logger.info(f"     Volatility Filter: {'ENABLED' if self.filter_volatility_enabled else 'DISABLED'} (ATR {self.filter_atr_min:.0f}-{self.filter_atr_max:.0f})")
+        logger.info(f"     DLL Proximity: {'ENABLED' if self.filter_dll_proximity_enabled else 'DISABLED'} (threshold {self.filter_dll_threshold:.0%})")
     
     async def get_tick_size(self, symbol: str) -> float:
         """
@@ -219,6 +252,137 @@ class OvernightRangeStrategy:
         else:
             # Three or more decimal places
             return round(rounded, 4)
+    
+    async def check_market_conditions(self, symbol: str, range_data: OvernightRange, atr_data: ATRData) -> Tuple[bool, str]:
+        """
+        Check if market conditions are favorable for trading (OPTIONAL filters).
+        
+        Filters (all default to DISABLED):
+        1. Range size filter: Avoid too small/large ranges
+        2. Gap filter: Skip large overnight gaps
+        3. Volatility filter: Avoid extreme ATR values
+        4. DLL proximity filter: Pause when close to daily loss limit
+        
+        Args:
+            symbol: Trading symbol
+            range_data: Overnight range data
+            atr_data: ATR data
+        
+        Returns:
+            (should_trade: bool, reason: str)
+        """
+        # Range size filter (DEFAULT: OFF)
+        if self.filter_range_size_enabled:
+            range_points = range_data.range_size
+            if range_points < self.filter_range_min:
+                return False, f"Range too small ({range_points:.2f} < {self.filter_range_min:.0f} pts)"
+            if range_points > self.filter_range_max:
+                return False, f"Range too large ({range_points:.2f} > {self.filter_range_max:.0f} pts)"
+        
+        # Gap filter (DEFAULT: OFF)
+        if self.filter_gap_enabled:
+            gap_points = abs(range_data.close - range_data.open)
+            if gap_points > self.filter_gap_max:
+                return False, f"Gap too large ({gap_points:.2f} > {self.filter_gap_max:.0f} pts)"
+        
+        # Volatility filter (DEFAULT: OFF)
+        if self.filter_volatility_enabled:
+            if atr_data.current_atr < self.filter_atr_min:
+                return False, f"ATR too low ({atr_data.current_atr:.2f} < {self.filter_atr_min:.0f})"
+            if atr_data.current_atr > self.filter_atr_max:
+                return False, f"ATR too high ({atr_data.current_atr:.2f} > {self.filter_atr_max:.0f})"
+        
+        # DLL proximity filter (DEFAULT: OFF)
+        if self.filter_dll_proximity_enabled:
+            if hasattr(self.trading_bot, 'account_tracker'):
+                tracker = self.trading_bot.account_tracker
+                current_daily_pnl = tracker.get_daily_pnl()
+                dll = tracker.daily_loss_limit
+                
+                if current_daily_pnl < 0:
+                    dll_usage = abs(current_daily_pnl) / dll
+                    if dll_usage >= self.filter_dll_threshold:
+                        return False, f"Too close to DLL ({dll_usage:.1%} >= {self.filter_dll_threshold:.1%})"
+        
+        return True, "All filters passed"
+    
+    # Implement abstract methods from BaseStrategy
+    
+    async def analyze(self, symbol: str) -> Optional[Dict]:
+        """
+        Analyze overnight range and generate trading signals.
+        
+        Returns signals for BOTH long and short breakout orders.
+        """
+        try:
+            # Get overnight range
+            range_data = self.active_ranges.get(symbol)
+            if not range_data:
+                range_data = await self.track_overnight_range(symbol)
+                if not range_data:
+                    return None
+            
+            # Calculate ATR
+            atr_data = await self.calculate_atr(symbol)
+            if not atr_data:
+                return None
+            
+            # Check market conditions (if filters enabled)
+            should_trade, reason = await self.check_market_conditions(symbol, range_data, atr_data)
+            if not should_trade:
+                logger.info(f"❌ Skipping {symbol}: {reason}")
+                return None
+            
+            # Calculate orders
+            long_order, short_order = await self.calculate_range_break_orders(symbol)
+            if not long_order or not short_order:
+                return None
+            
+            # Return signal with both orders
+            return {
+                "symbol": symbol,
+                "long_order": long_order,
+                "short_order": short_order,
+                "range_data": range_data,
+                "atr_data": atr_data,
+                "confidence": 0.8,  # High confidence for range breakouts
+                "reason": "Overnight range breakout setup"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing {symbol}: {e}")
+            return None
+    
+    async def execute(self, signal: Dict) -> bool:
+        """
+        Execute overnight range breakout orders.
+        
+        Places BOTH long and short stop bracket orders.
+        """
+        try:
+            symbol = signal["symbol"]
+            long_order = signal["long_order"]
+            short_order = signal["short_order"]
+            
+            result = await self.place_range_break_orders(symbol)
+            return result.get("success", False)
+            
+        except Exception as e:
+            logger.error(f"Error executing signal: {e}")
+            return False
+    
+    async def manage_positions(self):
+        """
+        Manage open positions - handled by monitor_breakeven_stops().
+        """
+        # Breakeven monitoring is handled by the background task
+        pass
+    
+    async def cleanup(self):
+        """
+        Clean up strategy resources.
+        """
+        await self.stop()
     
     async def calculate_atr(self, symbol: str, period: int = None, timeframe: str = None) -> Optional[ATRData]:
         """

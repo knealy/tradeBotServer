@@ -14,24 +14,24 @@ The bot now supports a **modular strategy architecture** that allows you to:
 ```
 ┌─────────────────────────────────────────────────────┐
 │           Trading Bot (Main)                        │
-│  ┌──────────────────────────────────────────────┐  │
-│  │       Strategy Manager                       │  │
-│  │  ┌────────────┐  ┌────────────┐            │  │
-│  │  │ Strategy 1 │  │ Strategy 2 │  ...       │  │
-│  │  │  (Active)  │  │  (Paused)  │            │  │
-│  │  └────────────┘  └────────────┘            │  │
-│  │                                              │  │
-│  │  - Auto-selection based on market conditions│  │
-│  │  - Global risk management                   │  │
-│  │  - Performance tracking                     │  │
-│  └──────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────┐   │
+│  │       Strategy Manager                       │   │
+│  │  ┌────────────┐  ┌────────────┐              │   │
+│  │  │ Strategy 1 │  │ Strategy 2 │  ...         │   │
+│  │  │  (Active)  │  │  (Paused)  │              │   │
+│  │  └────────────┘  └────────────┘              │   │
+│  │                                              │   │
+│  │  - Auto-selection based on market conditions │   │
+│  │  - Global risk management                    │   │
+│  │  - Performance tracking                      │   │
+│  └──────────────────────────────────────────────┘   │
 │                                                     │
-│  ┌──────────────────────────────────────────────┐  │
-│  │       Account Tracker (TopStepX)            │  │
-│  │  - DLL/MLL compliance                       │  │
-│  │  - Position sizing                          │  │
-│  │  - P&L tracking                             │  │
-│  └──────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────┐   │
+│  │       Account Tracker (TopStepX)             │   │
+│  │  - DLL/MLL compliance                        │   │
+│  │  - Position sizing                           │   │
+│  │  - P&L tracking                              │   │
+│  └──────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
 ```
 
