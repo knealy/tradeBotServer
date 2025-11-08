@@ -8,6 +8,8 @@ This bot provides:
 2. Live account listing from API
 3. Account selection for trading
 4. Live market order placement
+
+Version: 2.0.0 (Modular Strategy System)
 """
 
 import os
