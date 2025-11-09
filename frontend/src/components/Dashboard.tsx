@@ -37,6 +37,8 @@ export default function Dashboard() {
   // WebSocket connection (optional - dashboard works with polling)
   useEffect(() => {
     // Try to connect, but don't fail if WebSocket server isn't running
+    let checkConnection: NodeJS.Timeout | null = null
+    
     try {
       wsService.connect()
       
@@ -50,14 +52,9 @@ export default function Dashboard() {
         console.log('Metrics update:', data)
       })
 
-      const checkConnection = setInterval(() => {
+      checkConnection = setInterval(() => {
         setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
       }, 1000)
-      
-      return () => {
-        clearInterval(checkConnection)
-        wsService.disconnect()
-      }
     } catch (error) {
       // WebSocket is optional - dashboard works with polling
       console.log('WebSocket not available, using polling instead')
@@ -65,7 +62,9 @@ export default function Dashboard() {
     }
 
     return () => {
-      clearInterval(checkConnection)
+      if (checkConnection) {
+        clearInterval(checkConnection)
+      }
       wsService.disconnect()
     }
   }, [])
