@@ -218,15 +218,14 @@ async def test_performance():
         for cache_key, cache_data in metrics['cache'].items():
             hits = cache_data.get('hits', 0)
             misses = cache_data.get('misses', 0)
-            total = hits + misses
-            hit_rate = cache_data.get('hit_rate', 0)
-            avg_time = cache_data.get('avg_response_time_ms', 0)
+            total = cache_data.get('total', hits + misses)
+            hit_rate_str = cache_data.get('hit_rate', '0.0%')
             
             print(f"   {cache_key}:")
             print(f"      Hits: {hits}")
             print(f"      Misses: {misses}")
-            print(f"      Hit Rate: {hit_rate:.1f}%")
-            print(f"      Avg Response: {avg_time:.1f}ms")
+            print(f"      Total: {total}")
+            print(f"      Hit Rate: {hit_rate_str}")
     else:
         print("   No cache metrics available")
     
@@ -235,8 +234,18 @@ async def test_performance():
         print("🌐 API Performance:")
         api_data = metrics['api']
         print(f"   Total Calls: {api_data.get('total_calls', 0)}")
-        print(f"   Avg Duration: {api_data.get('avg_duration_ms', 0):.1f}ms")
-        print(f"   Error Rate: {api_data.get('error_rate', 0):.1f}%")
+        print(f"   Total Errors: {api_data.get('total_errors', 0)}")
+        error_rate = api_data.get('error_rate', 0)
+        if isinstance(error_rate, (int, float)):
+            print(f"   Error Rate: {error_rate:.1f}%")
+        else:
+            print(f"   Error Rate: {error_rate}")
+        
+        if api_data.get('slowest_endpoints'):
+            print()
+            print("   ⏱️  Slowest Endpoints:")
+            for item in api_data['slowest_endpoints'][:5]:  # Top 5
+                print(f"      - {item.get('endpoint', 'N/A')}: {item.get('avg_ms', 'N/A')}ms avg")
     
     print()
     
