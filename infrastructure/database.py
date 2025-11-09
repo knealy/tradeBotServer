@@ -45,18 +45,49 @@ class DatabaseManager:
         """
         Get database connection parameters from environment.
         
+        Automatically selects the correct database URL:
+        - On Railway: Uses DATABASE_URL (internal)
+        - Locally: Uses PUBLIC_DATABASE_URL if DATABASE_URL is internal-only
+        
         Supports both Railway's DATABASE_URL and individual params.
         
         Returns:
             Dict: Connection parameters
         """
-        # Railway provides DATABASE_URL
-        database_url = os.getenv('DATABASE_URL')
+        # Check if running on Railway
+        is_railway = os.getenv('RAILWAY_ENVIRONMENT') is not None
         
+        # Get database URLs
+        database_url = os.getenv('DATABASE_URL')
+        public_database_url = os.getenv('PUBLIC_DATABASE_URL')
+        
+        # Choose the correct URL
         if database_url:
-            # Parse DATABASE_URL (format: postgresql://user:pass@host:port/dbname)
-            logger.info("Using DATABASE_URL from environment")
-            return {'dsn': database_url}
+            # If on Railway, always use internal DATABASE_URL
+            if is_railway:
+                logger.info("Using DATABASE_URL (Railway internal)")
+                return {'dsn': database_url}
+            
+            # If local, check if DATABASE_URL is internal-only
+            # Internal URLs contain "railway.internal" or similar internal hostnames
+            is_internal = (
+                'railway.internal' in database_url or
+                'containers-us-west' in database_url and 'proxy.rlwy.net' not in database_url
+            )
+            
+            if is_internal and public_database_url:
+                # Use public URL for local access
+                logger.info("Using PUBLIC_DATABASE_URL (local access to Railway)")
+                return {'dsn': public_database_url}
+            elif is_internal and not public_database_url:
+                # Internal URL but no public URL - warn and try anyway
+                logger.warning("DATABASE_URL appears to be internal-only, but PUBLIC_DATABASE_URL not set. "
+                             "This may fail from local machine.")
+                return {'dsn': database_url}
+            else:
+                # Not internal, use as-is (could be local PostgreSQL or already public)
+                logger.info("Using DATABASE_URL from environment")
+                return {'dsn': database_url}
         
         # Fallback to individual parameters
         params = {

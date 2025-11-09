@@ -26,14 +26,6 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# IMPORTANT: Set DATABASE_URL from environment BEFORE importing trading_bot
-# This prevents .env file from overriding the exported DATABASE_URL
-if 'DATABASE_URL' in os.environ:
-    # Store the exported DATABASE_URL before .env loads
-    exported_db_url = os.environ['DATABASE_URL']
-    # Temporarily remove it so .env can load
-    del os.environ['DATABASE_URL']
-
 try:
     from trading_bot import TopStepXTradingBot
     from infrastructure.database import get_database
@@ -49,10 +41,6 @@ except ImportError as e:
     print("      pip install -r requirements.txt")
     print()
     sys.exit(1)
-
-# Restore exported DATABASE_URL after imports (overrides .env)
-if 'exported_db_url' in locals():
-    os.environ['DATABASE_URL'] = exported_db_url
 
 
 async def test_performance():
@@ -77,15 +65,20 @@ async def test_performance():
         # Provide helpful guidance
         if "railway.internal" in error_msg or "could not translate host name" in error_msg:
             print()
-            print("💡 Tip: You're using Railway's internal database URL.")
-            print("   To test locally, get the PUBLIC_DATABASE_URL from Railway Dashboard:")
-            print("   1. Go to https://railway.app")
-            print("   2. Your Project → PostgreSQL Service → Variables")
-            print("   3. Copy the PUBLIC_DATABASE_URL (not DATABASE_URL - that's internal-only)")
-            print("   4. Run: export DATABASE_URL='<paste-public-url>'")
+            print("💡 Tip: Database connection failed.")
+            if not os.getenv('PUBLIC_DATABASE_URL'):
+                print("   Add PUBLIC_DATABASE_URL to your .env file:")
+                print("   1. Go to Railway Dashboard → PostgreSQL → Variables")
+                print("   2. Copy PUBLIC_DATABASE_URL")
+                print("   3. Add to .env: PUBLIC_DATABASE_URL=<paste-url>")
+                print()
+                print("   The script will automatically use PUBLIC_DATABASE_URL when local.")
+            else:
+                print("   PUBLIC_DATABASE_URL is set but connection still failed.")
+                print("   Check that the URL is correct in your .env file.")
             print()
             print("   Or test without database (in-memory cache):")
-            print("   unset DATABASE_URL")
+            print("   Comment out DATABASE_URL and PUBLIC_DATABASE_URL in .env")
         
         db_type = "In-Memory"
     
