@@ -62,6 +62,27 @@ class StrategyConfig:
     respect_mll: bool = True
     max_dll_usage_percent: float = 0.75  # Use max 75% of DLL
     
+    @staticmethod
+    def _parse_conditions(conditions_str: str) -> List[MarketCondition]:
+        """
+        Parse market conditions from comma-separated string.
+        Returns empty list if string is empty or None.
+        """
+        if not conditions_str or not conditions_str.strip():
+            return []
+        
+        result = []
+        for condition in conditions_str.split(","):
+            condition = condition.strip()
+            if not condition:
+                continue
+            try:
+                result.append(MarketCondition(condition))
+            except ValueError:
+                logger.warning(f"Invalid market condition '{condition}', skipping. Valid values: {[c.value for c in MarketCondition]}")
+        
+        return result
+    
     @classmethod
     def from_env(cls, strategy_name: str) -> 'StrategyConfig':
         """Load strategy config from environment variables."""
@@ -75,14 +96,12 @@ class StrategyConfig:
             position_size=int(os.getenv(f"{prefix}POSITION_SIZE", "1")),
             risk_per_trade_percent=float(os.getenv(f"{prefix}RISK_PERCENT", "0.5")),
             max_daily_trades=int(os.getenv(f"{prefix}MAX_DAILY_TRADES", "10")),
-            preferred_conditions=[
-                MarketCondition(c.strip()) for c in 
-                os.getenv(f"{prefix}PREFERRED_CONDITIONS", "breakout,trending").split(",")
-            ],
-            avoid_conditions=[
-                MarketCondition(c.strip()) for c in
-                os.getenv(f"{prefix}AVOID_CONDITIONS", "high_volatility").split(",")
-            ],
+            preferred_conditions=cls._parse_conditions(
+                os.getenv(f"{prefix}PREFERRED_CONDITIONS", "")
+            ),
+            avoid_conditions=cls._parse_conditions(
+                os.getenv(f"{prefix}AVOID_CONDITIONS", "")
+            ),
             trading_start_time=os.getenv(f"{prefix}START_TIME", "09:30"),
             trading_end_time=os.getenv(f"{prefix}END_TIME", "15:45"),
             no_trade_start=os.getenv(f"{prefix}NO_TRADE_START", "15:30"),
