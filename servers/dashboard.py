@@ -33,22 +33,14 @@ class DashboardAPI:
             accounts = await self.trading_bot.list_accounts()
             formatted_accounts = []
             
-            # Use balances from the accounts list (already fetched by list_accounts)
-            # Only fetch individual balance if not present (shouldn't be needed)
+            # list_accounts() already includes balances in the account dict
+            # No need to make individual balance calls
             for account in accounts:
-                # Use balance from account dict if available, otherwise try to fetch
-                balance = account.get('balance')
-                if balance is None:
-                    try:
-                        balance = await self.trading_bot.get_account_balance(account.get('id'))
-                    except:
-                        balance = 0
-                
                 formatted_accounts.append({
                     "id": account.get('id'),
                     "name": account.get('name'),
                     "status": account.get('status'),
-                    "balance": balance,
+                    "balance": account.get('balance', 0.0),  # Already included from list_accounts()
                     "currency": account.get('currency', 'USD'),
                     "account_type": account.get('account_type', 'unknown')
                 })
