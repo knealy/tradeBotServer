@@ -605,8 +605,12 @@ class AsyncWebhookServer:
                     logger.error(f"Fill check error: {e}")
                     await asyncio.sleep(60)
         
+        # Wrap in a callable that returns the coroutine
+        def check_fills_wrapper():
+            return check_fills()
+        
         await self.task_queue.submit_critical(
-            check_fills(),
+            check_fills_wrapper,
             task_id="periodic_fill_check"
         )
         
@@ -620,8 +624,11 @@ class AsyncWebhookServer:
                     logger.error(f"Balance update error: {e}")
                     await asyncio.sleep(120)
         
+        def update_balance_wrapper():
+            return update_balance()
+        
         await self.task_queue.submit_high(
-            update_balance(),
+            update_balance_wrapper,
             task_id="periodic_balance_update"
         )
         
@@ -631,8 +638,11 @@ class AsyncWebhookServer:
                 await asyncio.sleep(300)
                 self.task_queue.print_stats()
         
+        def print_stats_wrapper():
+            return print_stats()
+        
         await self.task_queue.submit_low(
-            print_stats(),
+            print_stats_wrapper,
             task_id="periodic_stats"
         )
     

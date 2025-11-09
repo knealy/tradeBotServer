@@ -12,20 +12,23 @@ export default function Dashboard() {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected')
 
-  // Fetch accounts
+  // Fetch accounts (less frequent - balances don't change that often)
   const { data: accounts = [] } = useQuery('accounts', accountApi.getAccounts, {
-    refetchInterval: 30000, // Refetch every 30 seconds
+    refetchInterval: 60000, // Refetch every 60 seconds (was 30)
+    staleTime: 30000, // Consider data fresh for 30 seconds
   })
 
-  // Fetch account info
+  // Fetch account info (less frequent)
   const { data: accountInfo } = useQuery('accountInfo', accountApi.getAccountInfo, {
     enabled: !!selectedAccount,
-    refetchInterval: 5000, // Refetch every 5 seconds
+    refetchInterval: 15000, // Refetch every 15 seconds (was 5)
+    staleTime: 10000, // Consider data fresh for 10 seconds
   })
 
-  // Fetch metrics
+  // Fetch metrics (less frequent)
   const { data: metricsData } = useQuery('metrics', metricsApi.getMetrics, {
-    refetchInterval: 10000, // Refetch every 10 seconds
+    refetchInterval: 30000, // Refetch every 30 seconds (was 10)
+    staleTime: 20000, // Consider data fresh for 20 seconds
   })
   
   // Extract metrics from response

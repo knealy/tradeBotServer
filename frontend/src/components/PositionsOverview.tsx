@@ -7,7 +7,8 @@ export default function PositionsOverview() {
     'positions',
     positionApi.getPositions,
     {
-      refetchInterval: 5000, // Refetch every 5 seconds
+      refetchInterval: 10000, // Refetch every 10 seconds (was 5)
+      staleTime: 5000, // Consider data fresh for 5 seconds
     }
   )
 

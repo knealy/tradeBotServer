@@ -29,15 +29,20 @@ class DashboardAPI:
     async def get_accounts(self) -> List[Dict[str, Any]]:
         """Get all available accounts"""
         try:
+            # Get accounts list (this already includes balances from the API)
             accounts = await self.trading_bot.list_accounts()
             formatted_accounts = []
             
+            # Use balances from the accounts list (already fetched by list_accounts)
+            # Only fetch individual balance if not present (shouldn't be needed)
             for account in accounts:
-                # Get current balance for each account
-                try:
-                    balance = await self.trading_bot.get_account_balance(account.get('id'))
-                except:
-                    balance = account.get('balance', 0)
+                # Use balance from account dict if available, otherwise try to fetch
+                balance = account.get('balance')
+                if balance is None:
+                    try:
+                        balance = await self.trading_bot.get_account_balance(account.get('id'))
+                    except:
+                        balance = 0
                 
                 formatted_accounts.append({
                     "id": account.get('id'),
