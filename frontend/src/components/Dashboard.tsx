@@ -34,23 +34,35 @@ export default function Dashboard() {
   // Extract metrics from response
   const metrics = metricsData?.performance || metricsData
 
-  // WebSocket connection
+  // WebSocket connection (optional - dashboard works with polling)
   useEffect(() => {
-    wsService.connect()
+    // Try to connect, but don't fail if WebSocket server isn't running
+    try {
+      wsService.connect()
+      
+      wsService.on('account_update', (data) => {
+        // Handle account updates
+        console.log('Account update:', data)
+      })
 
-    wsService.on('account_update', (data) => {
-      // Handle account updates
-      console.log('Account update:', data)
-    })
+      wsService.on('metrics_update', (data) => {
+        // Handle metrics updates
+        console.log('Metrics update:', data)
+      })
 
-    wsService.on('metrics_update', (data) => {
-      // Handle metrics updates
-      console.log('Metrics update:', data)
-    })
-
-    const checkConnection = setInterval(() => {
-      setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
-    }, 1000)
+      const checkConnection = setInterval(() => {
+        setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
+      }, 1000)
+      
+      return () => {
+        clearInterval(checkConnection)
+        wsService.disconnect()
+      }
+    } catch (error) {
+      // WebSocket is optional - dashboard works with polling
+      console.log('WebSocket not available, using polling instead')
+      setConnectionStatus('disconnected')
+    }
 
     return () => {
       clearInterval(checkConnection)
