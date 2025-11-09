@@ -63,9 +63,10 @@ class WebSocketServer:
             await self.server.wait_closed()
             logger.info("🛑 WebSocket server stopped")
 
-    async def _websocket_handler(self, websocket: WebSocketServerProtocol, path: str):
+    async def _websocket_handler(self, websocket: WebSocketServerProtocol):
         """Handle new WebSocket connections with professional authentication"""
         client_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
+        path = websocket.request.path if hasattr(websocket, 'request') else "/"
         logger.info(f"🔌 New WebSocket connection from {client_ip} to {path}")
 
         # Extract token from query parameters
