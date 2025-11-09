@@ -88,7 +88,7 @@ export default function AccountSelector({
           />
           
           {/* Dropdown */}
-          <div className="absolute top-full mt-2 w-full bg-slate-700 border border-slate-600 rounded-lg shadow-xl z-20 max-h-96 overflow-y-auto">
+          <div className="absolute top-full mt-2 w-full bg-slate-700 border border-slate-600 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
             {accounts.length === 0 ? (
               <div className="px-4 py-3 text-slate-400 text-sm">
                 No accounts available
