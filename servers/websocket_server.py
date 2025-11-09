@@ -39,7 +39,7 @@ class WebSocketServer:
                 self._websocket_handler,
                 self.host,
                 self.port,
-                subprotocols=["trading-dashboard-v1"],
+                # subprotocols=["trading-dashboard-v1"],  # Optional - removed to allow connections without subprotocol
                 ping_interval=30,
                 ping_timeout=10,
                 close_timeout=10
