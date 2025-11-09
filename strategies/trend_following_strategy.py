@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
 
 logger = logging.getLogger(__name__)
 

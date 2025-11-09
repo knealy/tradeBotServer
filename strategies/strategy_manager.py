@@ -10,7 +10,7 @@ import logging
 import asyncio
 from typing import Dict, List, Optional, Type
 from datetime import datetime
-from strategy_base import BaseStrategy, StrategyConfig, StrategyStatus, MarketCondition
+from strategies.strategy_base import BaseStrategy, StrategyConfig, StrategyStatus, MarketCondition
 
 logger = logging.getLogger(__name__)
 

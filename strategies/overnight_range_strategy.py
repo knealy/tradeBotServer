@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from collections import deque
 import pytz
 
-from strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
 
 logger = logging.getLogger(__name__)
 

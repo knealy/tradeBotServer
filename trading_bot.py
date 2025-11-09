@@ -31,19 +31,21 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from signalrcore.hub_connection_builder import HubConnectionBuilder
-from discord_notifier import DiscordNotifier
 from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
-from account_tracker import AccountTracker
-from overnight_range_strategy import OvernightRangeStrategy
-from mean_reversion_strategy import MeanReversionStrategy
-from trend_following_strategy import TrendFollowingStrategy
-from strategy_manager import StrategyManager
-from performance_metrics import get_metrics_tracker
-from database import get_database
+
+# Import from new organized structure
+from core.discord_notifier import DiscordNotifier
+from core.account_tracker import AccountTracker
+from strategies.overnight_range_strategy import OvernightRangeStrategy
+from strategies.mean_reversion_strategy import MeanReversionStrategy
+from strategies.trend_following_strategy import TrendFollowingStrategy
+from strategies.strategy_manager import StrategyManager
+from infrastructure.performance_metrics import get_metrics_tracker
+from infrastructure.database import get_database
 
 # Optional ProjectX SDK adapter
 try:
-    import sdk_adapter  # local adapter around project-x-py
+    from core import sdk_adapter  # local adapter around project-x-py
     logger_temp = logging.getLogger(__name__)
     logger_temp.debug("✅ sdk_adapter imported successfully")
 except Exception as import_err:

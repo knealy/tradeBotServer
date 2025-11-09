@@ -19,7 +19,7 @@ import urllib.parse
 
 # Import the trading bot
 from trading_bot import TopStepXTradingBot
-from discord_notifier import DiscordNotifier
+from core.discord_notifier import DiscordNotifier
 
 # Configure logging with rotation
 from logging.handlers import RotatingFileHandler

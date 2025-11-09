@@ -16,8 +16,8 @@ from aiohttp import web
 import aiohttp
 
 from trading_bot import TopStepXTradingBot
-from task_queue import get_task_queue, TaskPriority
-from performance_metrics import get_metrics_tracker
+from infrastructure.task_queue import get_task_queue, TaskPriority
+from infrastructure.performance_metrics import get_metrics_tracker
 
 logger = logging.getLogger(__name__)
 
