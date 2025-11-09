@@ -1,9 +1,25 @@
+import { useAccount } from '../contexts/AccountContext'
+import AccountSelector from '../components/AccountSelector'
+
 export default function SettingsPage() {
+  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">Settings</h1>
-        <p className="text-slate-400 mt-2">Configure your trading bot</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Settings</h1>
+          <p className="text-slate-400 mt-2">Configure your trading bot</p>
+        </div>
+      </div>
+
+      {/* Account Selection */}
+      <div className="max-w-md">
+        <AccountSelector
+          accounts={accounts}
+          selectedAccount={selectedAccount}
+          onAccountChange={setSelectedAccount}
+        />
       </div>
 
       <div className="grid gap-6">

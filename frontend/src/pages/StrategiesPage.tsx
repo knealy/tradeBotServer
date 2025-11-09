@@ -1,7 +1,10 @@
 import { useQuery } from 'react-query'
+import { useAccount } from '../contexts/AccountContext'
 import { strategyApi } from '../services/api'
+import AccountSelector from '../components/AccountSelector'
 
 export default function StrategiesPage() {
+  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
   const { data: strategies = [], isLoading } = useQuery(
     'strategies',
     strategyApi.getStrategies,
@@ -12,9 +15,20 @@ export default function StrategiesPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">Strategies</h1>
-        <p className="text-slate-400 mt-2">Manage your trading strategies</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Strategies</h1>
+          <p className="text-slate-400 mt-2">Manage your trading strategies</p>
+        </div>
+      </div>
+
+      {/* Account Selection */}
+      <div className="max-w-md">
+        <AccountSelector
+          accounts={accounts}
+          selectedAccount={selectedAccount}
+          onAccountChange={setSelectedAccount}
+        />
       </div>
 
       {isLoading ? (

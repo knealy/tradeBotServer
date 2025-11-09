@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from 'react-query'
 import { accountApi, metricsApi } from '../services/api'
 import { wsService } from '../services/websocket'
-import type { Account, PerformanceMetrics } from '../types'
+import { useAccount } from '../contexts/AccountContext'
+import type { PerformanceMetrics } from '../types'
 import AccountCard from './AccountCard'
 import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
@@ -10,15 +11,9 @@ import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
 
 export default function Dashboard() {
-  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected')
   const queryClient = useQueryClient()
-
-  // Fetch accounts (less frequent - balances don't change that often)
-  const { data: accounts = [] } = useQuery('accounts', accountApi.getAccounts, {
-    refetchInterval: 60000, // Refetch every 60 seconds (was 30)
-    staleTime: 30000, // Consider data fresh for 30 seconds
-  })
+  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
 
   // Fetch account info (less frequent)
   const { data: accountInfo } = useQuery('accountInfo', accountApi.getAccountInfo, {
@@ -98,13 +93,6 @@ export default function Dashboard() {
       // Don't disconnect - keep connection alive for other components
     }
   }, [])
-
-  // Auto-select first account
-  useEffect(() => {
-    if (accounts.length > 0 && !selectedAccount) {
-      setSelectedAccount(accounts[0])
-    }
-  }, [accounts, selectedAccount])
 
   return (
     <div className="space-y-6">
