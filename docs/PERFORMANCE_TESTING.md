@@ -31,13 +31,39 @@
 
 **Zero setup - just run the test script:**
 
-```bash
-# 1. Make sure Railway deployment is running
-# 2. Get your Railway database URL
-railway variables | grep DATABASE_URL
+#### **Method A: Get DATABASE_URL from Railway Dashboard (No CLI needed)**
 
+1. **Go to Railway Dashboard**: https://railway.app
+2. **Open your project** → Click on your **PostgreSQL service**
+3. **Go to "Variables" tab** → Find `DATABASE_URL`
+4. **Copy the value** (it looks like: `postgresql://postgres:password@containers-us-west-xx.railway.app:5432/railway`)
+
+```bash
 # 3. Run test script locally (connects to Railway DB)
-export DATABASE_URL="postgresql://postgres:password@containers-us-west-xx.railway.app:5432/railway"
+export DATABASE_URL="<paste-your-database-url-here>"
+python test_performance.py
+```
+
+#### **Method B: Install Railway CLI (Optional)**
+
+**Install Railway CLI (macOS with Homebrew):**
+```bash
+# Install Railway CLI
+brew install railway
+
+# Or with npm (if you have Node.js)
+npm i -g @railway/cli
+
+# Authenticate
+railway login
+
+# Get database URL
+railway variables | grep DATABASE_URL
+```
+
+**Then run test:**
+```bash
+export DATABASE_URL="$(railway variables | grep DATABASE_URL | cut -d'=' -f2-)"
 python test_performance.py
 ```
 
@@ -300,13 +326,16 @@ Enter command: history MNQ 5m 100
 **Best Approach: Test on Railway First**
 
 1. **Deploy to Railway** (you already have this)
-2. **Run test script connecting to Railway DB:**
+2. **Get DATABASE_URL from Railway Dashboard:**
+   - Go to https://railway.app → Your Project → PostgreSQL Service → Variables tab
+   - Copy the `DATABASE_URL` value
+3. **Run test script connecting to Railway DB:**
    ```bash
-   export DATABASE_URL="<your-railway-db-url>"
+   export DATABASE_URL="<paste-from-dashboard>"
    python test_performance.py
    ```
-3. **Check Railway logs** for cache performance
-4. **Use `metrics` command** in Railway bot
+4. **Check Railway logs** for cache performance
+5. **Use `metrics` command** in Railway bot
 
 **Why this is best:**
 - ✅ Zero local setup
