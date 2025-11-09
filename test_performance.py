@@ -26,6 +26,14 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# IMPORTANT: Set DATABASE_URL from environment BEFORE importing trading_bot
+# This prevents .env file from overriding the exported DATABASE_URL
+if 'DATABASE_URL' in os.environ:
+    # Store the exported DATABASE_URL before .env loads
+    exported_db_url = os.environ['DATABASE_URL']
+    # Temporarily remove it so .env can load
+    del os.environ['DATABASE_URL']
+
 try:
     from trading_bot import TopStepXTradingBot
     from infrastructure.database import get_database
@@ -41,6 +49,10 @@ except ImportError as e:
     print("      pip install -r requirements.txt")
     print()
     sys.exit(1)
+
+# Restore exported DATABASE_URL after imports (overrides .env)
+if 'exported_db_url' in locals():
+    os.environ['DATABASE_URL'] = exported_db_url
 
 
 async def test_performance():
@@ -66,11 +78,11 @@ async def test_performance():
         if "railway.internal" in error_msg or "could not translate host name" in error_msg:
             print()
             print("💡 Tip: You're using Railway's internal database URL.")
-            print("   To test locally, get the EXTERNAL DATABASE_URL from Railway Dashboard:")
+            print("   To test locally, get the PUBLIC_DATABASE_URL from Railway Dashboard:")
             print("   1. Go to https://railway.app")
             print("   2. Your Project → PostgreSQL Service → Variables")
-            print("   3. Copy the DATABASE_URL (should have 'containers-us-west-xx.railway.app')")
-            print("   4. Run: export DATABASE_URL='<paste-url>'")
+            print("   3. Copy the PUBLIC_DATABASE_URL (not DATABASE_URL - that's internal-only)")
+            print("   4. Run: export DATABASE_URL='<paste-public-url>'")
             print()
             print("   Or test without database (in-memory cache):")
             print("   unset DATABASE_URL")
@@ -90,9 +102,10 @@ async def test_performance():
     
     bot = TopStepXTradingBot(api_key=api_key, username=username)
     
-    # Authenticate
+    # Authenticate (async)
     print("🔐 Authenticating...")
-    if not bot.authenticate():
+    auth_result = await bot.authenticate()
+    if not auth_result:
         print("❌ Authentication failed")
         return
     
@@ -198,7 +211,7 @@ async def test_performance():
     print("=" * 70)
     
     metrics_tracker = get_metrics_tracker(db=db)
-    metrics = metrics_tracker.get_performance_report()
+    metrics = metrics_tracker.get_full_report()
     
     if metrics.get('cache'):
         print("💾 Cache Performance:")
