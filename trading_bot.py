@@ -39,6 +39,7 @@ from mean_reversion_strategy import MeanReversionStrategy
 from trend_following_strategy import TrendFollowingStrategy
 from strategy_manager import StrategyManager
 from performance_metrics import get_metrics_tracker
+from database import get_database
 
 # Optional ProjectX SDK adapter
 try:
@@ -206,6 +207,14 @@ class TopStepXTradingBot:
         # Initialize real-time account state tracker
         self.account_tracker = AccountTracker()
         logger.debug("Account tracker initialized")
+        
+        # Initialize PostgreSQL database (for persistent caching and state)
+        try:
+            self.db = get_database()
+            logger.info("✅ PostgreSQL database initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  PostgreSQL unavailable (will use memory cache only): {e}")
+            self.db = None
         
         # Initialize Strategy Manager (modular strategy system)
         self.strategy_manager = StrategyManager(trading_bot=self)
@@ -651,7 +660,7 @@ class TopStepXTradingBot:
             # Record performance metrics
             duration_ms = (time.time() - start_time) * 1000
             try:
-                metrics_tracker = get_metrics_tracker()
+                metrics_tracker = get_metrics_tracker(db=getattr(self, 'db', None))
                 metrics_tracker.record_api_call(
                     endpoint=endpoint,
                     method=method,
@@ -5418,6 +5427,66 @@ class TopStepXTradingBot:
         # This wraps around midnight, so we check if hour >= 13 or hour < 3
         return hour_utc >= 13 or hour_utc < 3
     
+    def _get_last_market_close(self) -> datetime:
+        """
+        Get the last market close time (when trading actually stopped).
+        
+        Futures market schedule (US/Eastern):
+        - Trades: Sunday 6:00 PM - Friday 5:00 PM
+        - Daily break: 5:00 PM - 6:00 PM (maintenance)
+        - Weekend break: Friday 5:00 PM - Sunday 6:00 PM
+        
+        Returns:
+            datetime: Last market close in UTC
+        """
+        from datetime import timezone, timedelta
+        import pytz
+        
+        et_tz = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et_tz)
+        
+        # Market close times in ET
+        daily_close_hour = 17  # 5:00 PM ET
+        weekend_open_hour = 18  # Sunday 6:00 PM ET
+        
+        # Get current day of week (0=Monday, 6=Sunday)
+        weekday = now_et.weekday()
+        current_hour = now_et.hour
+        
+        # Weekend (Friday after 5pm - Sunday before 6pm)
+        if weekday == 6:  # Sunday
+            if current_hour < weekend_open_hour:
+                # Before Sunday 6pm - use last Friday 5pm
+                days_back = 2
+                last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
+            else:
+                # After Sunday 6pm - market is open, use current time
+                return datetime.now(timezone.utc)
+        elif weekday == 5:  # Saturday
+            # Use last Friday 5pm
+            days_back = 1
+            last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
+        elif weekday == 4 and current_hour >= daily_close_hour:  # Friday after 5pm
+            # Use today's 5pm
+            last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
+        else:
+            # During the week - check if in daily break (5pm-6pm)
+            if current_hour == daily_close_hour or (current_hour < weekend_open_hour and now_et.hour < 18):
+                # In daily break - use today's 5pm or yesterday's 5pm
+                if current_hour >= daily_close_hour:
+                    last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
+                else:
+                    # Before 6pm after daily close - use yesterday's close
+                    last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            else:
+                # Market is currently open - use current time
+                return datetime.now(timezone.utc)
+        
+        # Convert to UTC
+        last_close_utc = last_close.astimezone(timezone.utc)
+        logger.debug(f"Last market close: {last_close} ET = {last_close_utc} UTC")
+        return last_close_utc
+    
     def _get_cache_ttl_minutes(self) -> int:
         """
         Get cache TTL in minutes based on market hours and environment configuration.
@@ -5763,7 +5832,8 @@ class TopStepXTradingBot:
         return api_unit, api_unit_number, time_delta_func
     
     async def get_historical_data(self, symbol: str, timeframe: str = "1m", 
-                                 limit: int = 100) -> List[Dict]:
+                                 limit: int = 100, start_time: datetime = None, 
+                                 end_time: datetime = None) -> List[Dict]:
         """
         Get historical price data for a symbol using direct REST API.
         
@@ -5780,7 +5850,9 @@ class TopStepXTradingBot:
         Args:
             symbol: Trading symbol (e.g., "MNQ", "MES")
             timeframe: Timeframe (e.g., "1s", "5m", "15m", "1h", "4h", "1d", "1w", "1M")
-            limit: Number of bars to return (max 20,000 per API docs)
+            limit: Number of bars to return (max 20,000 per API docs) - ignored if start_time provided
+            start_time: Optional start datetime (UTC) - if provided, gets all bars from start to end
+            end_time: Optional end datetime (UTC) - defaults to last market close time
             
         Returns:
             List[Dict]: Historical data with keys: timestamp, open, high, low, close, volume
@@ -5796,20 +5868,67 @@ class TopStepXTradingBot:
                 use_fresh_data = True
                 logger.debug(f"Small limit ({limit}) on short timeframe ({timeframe}) - fetching fresh data")
             
-            # Check cache first - use dynamic TTL based on market hours (unless we need fresh data)
+            # In date range mode, always bypass cache to ensure we get the exact date range requested
+            if start_time is not None:
+                use_fresh_data = True
+                logger.info("Date range mode detected - bypassing cache")
+            
+            # PHASE 1: Check PostgreSQL database cache first (persistent, fast)
+            if not use_fresh_data and self.db:
+                try:
+                    # Check cache coverage
+                    coverage = self.db.get_cache_coverage(symbol, timeframe)
+                    if coverage['cached']:
+                        logger.debug(f"📊 DB Cache coverage: {coverage['bar_count']} bars "
+                                   f"({coverage['oldest_bar']} to {coverage['newest_bar']})")
+                        
+                        # Try to get bars from database
+                        cached_bars = self.db.get_cached_bars(symbol, timeframe, 
+                                                             start_time=start_time,
+                                                             end_time=end_time,
+                                                             limit=limit * 2)  # Get extra for filtering
+                        
+                        if cached_bars and len(cached_bars) >= limit:
+                            logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
+                            # Record cache hit in metrics
+                            metrics_tracker = get_metrics_tracker(db=self.db)
+                            metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                            return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                        else:
+                            logger.debug(f"📉 DB Cache PARTIAL: Only {len(cached_bars) if cached_bars else 0} bars "
+                                       f"(need {limit}), will fetch from API")
+                except Exception as db_err:
+                    logger.debug(f"DB cache check failed (will use API): {db_err}")
+            
+            # PHASE 2: Check in-memory cache (legacy, fast but not persistent)
             if not use_fresh_data:
                 cache_key = self._get_cache_key(symbol, timeframe)
                 cached_data = self._load_from_cache(cache_key, max_age_minutes=None)
                 if cached_data is not None and len(cached_data) >= limit:
-                    logger.info(f"Using cached data ({len(cached_data)} bars available)")
+                    logger.info(f"✅ Memory Cache HIT: {len(cached_data)} bars")
+                    # Record cache hit
+                    metrics_tracker = get_metrics_tracker(db=self.db)
+                    metrics_tracker.record_cache_hit(f"memory_{symbol}_{timeframe}")
                     return cached_data[-limit:] if len(cached_data) > limit else cached_data
             else:
                 cache_key = self._get_cache_key(symbol, timeframe)
+            
+            # PHASE 3: Cache miss - will fetch from API
+            if self.db:
+                logger.debug(f"💾 DB Cache MISS: Fetching from API")
+                metrics_tracker = get_metrics_tracker(db=self.db)
+                metrics_tracker.record_cache_miss(f"historical_{symbol}_{timeframe}")
             
             # Ensure we have a valid JWT token
             if not await self._ensure_valid_token():
                 logger.error("Failed to authenticate - cannot fetch historical data")
                 return []
+            
+            # Log token status for debugging
+            from datetime import datetime, timezone
+            if self.token_expiry:
+                time_remaining = (self.token_expiry - datetime.now(timezone.utc)).total_seconds() / 60
+                logger.info(f"Token valid - expires in {time_remaining:.1f} minutes")
             
             # Parse timeframe to API format
             # Supports: 1s, 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w, etc.
@@ -5821,13 +5940,47 @@ class TopStepXTradingBot:
             
             # Get contract ID for the symbol
             contract_id = self._get_contract_id(symbol)
+            logger.info(f"Using contract ID: {contract_id} for symbol {symbol}")
             
             # Calculate time range for the request
             from datetime import datetime, timedelta, timezone
-            end_time = datetime.now(timezone.utc)
-            # Request more data than needed to account for market closures/gaps
-            # Use the time_delta_func to calculate proper lookback period
-            start_time = end_time - time_delta_func(max(limit * 3, limit + 100))
+            
+            # Determine end time: use provided end_time, or last market close, or now
+            if end_time is None:
+                end_time = self._get_last_market_close()
+                logger.info(f"Using last market close as end time: {end_time}")
+            elif end_time.tzinfo is None:
+                # Assume UTC if no timezone provided
+                end_time = end_time.replace(tzinfo=timezone.utc)
+            
+            # Determine start time based on mode
+            if start_time is not None:
+                # Date range mode - use provided start time
+                if start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=timezone.utc)
+                # Request maximum bars for date range queries
+                api_limit = 20000
+                lookback_days = (end_time - start_time).total_seconds() / 86400
+                logger.info(f"Date range mode: {start_time} to {end_time} ({lookback_days:.1f} days)")
+            else:
+                # Bar count mode - calculate start time from end time
+                # Request more data than needed to account for market closures/gaps
+                # For sub-15m timeframes, use much larger multiplier to ensure we capture trading hours
+                # Markets are only open ~23 hours/day (futures), ~6.5 hours/day (stocks)
+                if timeframe in ['1s', '5s', '10s', '15s', '30s']:
+                    # For seconds: go back at least 3-5 days worth of data
+                    lookback_bars = max(limit * 20, 2000)  # At least 2000 bars worth of time
+                elif timeframe in ['1m', '2m', '3m', '5m', '10m']:
+                    # For sub-15m minutes: go back enough to capture at least 2-3 trading days
+                    lookback_bars = max(limit * 15, 1500)  # At least 1500 bars worth of time
+                else:
+                    # For 15m and above, use standard multiplier
+                    lookback_bars = max(limit * 3, limit + 100)
+                
+                start_time = end_time - time_delta_func(lookback_bars)
+                lookback_days = (end_time - start_time).total_seconds() / 86400
+                api_limit = limit * 3  # Request extra to handle gaps
+                logger.info(f"Bar count mode: {lookback_bars} bars = {lookback_days:.1f} days")
             
             # Format timestamps for API (ISO 8601)
             start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -5841,7 +5994,7 @@ class TopStepXTradingBot:
                 "endTime": end_str,
                 "unit": unit,  # 0=Second, 1=Tick, 2=Minute, 3=Day, 4=Week
                 "unitNumber": unit_number,
-                "limit": limit * 3,  # Request extra to handle gaps
+                "limit": api_limit,  # Request limit based on mode (bar count or date range)
                 "includePartialBar": True  # Include current incomplete bar for real-time monitoring
             }
             
@@ -5853,7 +6006,8 @@ class TopStepXTradingBot:
             }
             
             # Make API call
-            logger.debug(f"Requesting bars: {start_str} to {end_str}")
+            logger.info(f"Requesting bars: {start_str} to {end_str}")
+            logger.info(f"API Request: {bars_request}")
             response = self._make_curl_request("POST", "/api/History/retrieveBars", 
                                               data=bars_request, headers=headers)
             
@@ -5868,8 +6022,12 @@ class TopStepXTradingBot:
                 bars_data = response
                 logger.debug(f"API returned list with {len(response)} items")
             elif isinstance(response, dict):
+                # Log full response for debugging
+                logger.info(f"API response: success={response.get('success')}, errorCode={response.get('errorCode')}, bars count={len(response.get('bars', []))}")
+                
                 # Check for API error response (success=False, errorCode set)
-                if response.get('success') == False or response.get('errorCode'):
+                # Note: errorCode=0 means success, errorCode>0 means error
+                if response.get('success') == False or (response.get('errorCode') and response.get('errorCode') != 0):
                     error_code = response.get('errorCode', 'Unknown')
                     error_msg = response.get('errorMessage', 'No error message')
                     logger.error(f"API returned error: Code {error_code}, Message: {error_msg}")
@@ -5878,7 +6036,16 @@ class TopStepXTradingBot:
                     return []
                 
                 # Try common response formats for successful responses
-                bars_data = response.get('bars') or response.get('data') or response.get('candles')
+                # Check for key existence to handle empty lists correctly
+                if 'bars' in response:
+                    bars_data = response['bars']
+                elif 'data' in response:
+                    bars_data = response['data']
+                elif 'candles' in response:
+                    bars_data = response['candles']
+                else:
+                    bars_data = None
+                
                 if bars_data is None:
                     logger.error(f"Unexpected dict response format. Keys: {list(response.keys())}")
                     logger.error(f"Full response (first 500 chars): {str(response)[:500]}")
@@ -5955,15 +6122,43 @@ class TopStepXTradingBot:
                 }
                 parsed_bars.append(parsed_bar)
             
-            # Sort by timestamp and take the most recent bars
+            # Sort by timestamp and filter based on mode
             parsed_bars.sort(key=lambda b: b.get("timestamp", ""))
-            result_bars = parsed_bars[-limit:] if len(parsed_bars) > limit else parsed_bars
+            
+            if start_time is not None:
+                # Date range mode - filter to exact date range
+                from datetime import datetime
+                result_bars = []
+                for bar in parsed_bars:
+                    bar_time_str = bar.get("timestamp", "")
+                    try:
+                        # Parse bar timestamp (ISO format)
+                        bar_time = datetime.fromisoformat(bar_time_str.replace('Z', '+00:00'))
+                        # Filter to bars within the requested range
+                        if start_time <= bar_time <= end_time:
+                            result_bars.append(bar)
+                    except:
+                        # If we can't parse timestamp, include the bar
+                        result_bars.append(bar)
+                logger.info(f"Date range filter: {len(result_bars)} bars between {start_time} and {end_time}")
+            else:
+                # Bar count mode - take the most recent N bars
+                result_bars = parsed_bars[-limit:] if len(parsed_bars) > limit else parsed_bars
             
             logger.debug(f"[REST API] Found {len(result_bars)} historical bars")
             
-            # Save to cache for future use
+            # Save to in-memory cache for future use (legacy)
             if parsed_bars:
                 self._save_to_cache(cache_key, parsed_bars)
+            
+            # Save to PostgreSQL database cache (persistent, survives restarts)
+            if parsed_bars and self.db:
+                try:
+                    cached_count = self.db.cache_historical_bars(symbol, timeframe, parsed_bars)
+                    if cached_count > 0:
+                        logger.info(f"💾 Saved {cached_count} bars to database cache")
+                except Exception as db_err:
+                    logger.debug(f"Failed to cache to database (non-critical): {db_err}")
             
             return result_bars
             
@@ -6418,10 +6613,42 @@ class TopStepXTradingBot:
                     accounts = await self.list_accounts()
                     self.display_accounts(accounts)
                 
+                elif command_lower == "contracts":
+                    print("📋 Fetching available contracts...")
+                    contracts = await self.get_available_contracts(use_cache=False)
+                    if contracts:
+                        print(f"\n✅ Found {len(contracts)} available contracts:\n")
+                        # Group by symbol prefix
+                        by_symbol = {}
+                        for c in contracts:
+                            symbol = c.get('symbol') or c.get('Symbol') or 'Unknown'
+                            contract_id = c.get('contractId') or c.get('ContractId') or c.get('id') or 'Unknown'
+                            description = c.get('description') or c.get('Description') or ''
+                            
+                            if symbol not in by_symbol:
+                                by_symbol[symbol] = []
+                            by_symbol[symbol].append({'id': contract_id, 'desc': description})
+                        
+                        # Display grouped by symbol
+                        for symbol in sorted(by_symbol.keys()):
+                            items = by_symbol[symbol]
+                            if len(items) == 1:
+                                print(f"  {symbol:8} → {items[0]['id']}")
+                                if items[0]['desc']:
+                                    print(f"           {items[0]['desc']}")
+                            else:
+                                print(f"  {symbol} ({len(items)} contracts):")
+                                for item in items:
+                                    print(f"    → {item['id']}")
+                                    if item['desc']:
+                                        print(f"      {item['desc']}")
+                    else:
+                        print("❌ No contracts available")
+                
                 elif command_lower == "metrics":
                     # Display performance metrics
                     try:
-                        metrics_tracker = get_metrics_tracker()
+                        metrics_tracker = get_metrics_tracker(db=self.db)
                         metrics_tracker.print_report()
                         
                         # Also print JSON summary for programmatic access
@@ -6628,11 +6855,11 @@ class TopStepXTradingBot:
                     print("    Closes all positions and cancels all orders")
                     print("    Requires confirmation by typing 'FLATTEN'")
                     print()
-                    print("  contracts")
-                    print("    Lists available trading contracts")
-                    print()
                     print("  accounts")
                     print("    Lists all your trading accounts")
+                    print()
+                    print("  contracts")
+                    print("    Lists all available trading contracts")
                     print()
                     print("  help")
                     print("    Shows this help message")
@@ -7807,10 +8034,14 @@ class TopStepXTradingBot:
                 elif command_lower.startswith("history "):
                     parts = command.split()
                     if len(parts) < 2:
-                        print("❌ Usage: history <symbol> [timeframe] [limit] [raw] [csv]")
-                        print("   Example: history MNQ 1m 50")
-                        print("   Example: history MNQ 5m 20 raw")
-                        print("   Example: history MNQ 5m 20 csv")
+                        print("❌ Usage: history <symbol> [timeframe] [limit|start_date end_date] [raw] [csv]")
+                        print("   Bar count mode:")
+                        print("     history MNQ 1m 50")
+                        print("     history MNQ 5m 20 raw")
+                        print("   Date range mode (gets ALL bars between dates):")
+                        print("     history MNQ 1m 2024-11-01 2024-11-08")
+                        print("     history MNQ 5m 2024-11-08T09:30 2024-11-08T16:00")
+                        print("     history MNQ 1h 2024-11-01 2024-11-08 csv")
                         continue
                     
                     symbol = parts[1]
@@ -7822,13 +8053,58 @@ class TopStepXTradingBot:
                     # Filter out flags when parsing other args
                     clean_parts = [p for p in parts[2:] if p.lower() not in raw_flags and p.lower() not in csv_flags]
                     timeframe = clean_parts[0] if len(clean_parts) > 0 else "1m"
-                    limit = int(clean_parts[1]) if len(clean_parts) > 1 else 20
+                    
+                    # Parse limit or date range
+                    start_dt = None
+                    end_dt = None
+                    limit = 20  # Default
+                    
+                    if len(clean_parts) >= 3:
+                        # Might be date range mode: history MNQ 1m 2024-11-01 2024-11-08
+                        try:
+                            from datetime import datetime as dt_parser
+                            # Try common date formats
+                            date_formats = [
+                                "%Y-%m-%d",           # 2024-11-01
+                                "%Y-%m-%dT%H:%M",     # 2024-11-01T09:30
+                                "%Y-%m-%dT%H:%M:%S",  # 2024-11-01T09:30:00
+                                "%Y/%m/%d",           # 2024/11/01
+                                "%m/%d/%Y",           # 11/01/2024
+                            ]
+                            start_dt = None
+                            end_dt = None
+                            for fmt in date_formats:
+                                try:
+                                    start_dt = dt_parser.strptime(clean_parts[1], fmt)
+                                    end_dt = dt_parser.strptime(clean_parts[2], fmt)
+                                    break
+                                except:
+                                    continue
+                            
+                            if start_dt and end_dt:
+                                print(f"📅 Date range mode: {start_dt} to {end_dt}")
+                            else:
+                                # Not valid dates, try as bar count
+                                limit = int(clean_parts[1])
+                        except:
+                            # Not a valid date, fall back to bar count
+                            try:
+                                limit = int(clean_parts[1])
+                            except:
+                                limit = 20
+                    elif len(clean_parts) >= 2:
+                        # Bar count mode
+                        try:
+                            limit = int(clean_parts[1])
+                        except:
+                            limit = 20
                     
                     # Measure duration for performance insight
                     import time as _t
                     _t0 = _t.time()
-                    # Get historical data (SDK only - no REST fallback)
-                    result = await self.get_historical_data(symbol, timeframe, limit)
+                    # Get historical data
+                    result = await self.get_historical_data(symbol, timeframe, limit, 
+                                                           start_time=start_dt, end_time=end_dt)
                     _elapsed_ms = int((_t.time() - _t0) * 1000)
                     
                     # Check for error response
@@ -7845,17 +8121,20 @@ class TopStepXTradingBot:
                         print("   - Market is closed or data is not available")
                         print("   - Try a different symbol or timeframe")
                     else:
+                        # In date range mode, show ALL bars. In bar count mode, show last N bars
+                        display_bars = result if start_dt is not None else result[-limit:]
+                        
                         # Handle CSV export
                         if csv:
-                            csv_filename = self._export_to_csv(result[-limit:], symbol, timeframe)
+                            csv_filename = self._export_to_csv(display_bars, symbol, timeframe)
                             if csv_filename:
-                                print(f"✅ Exported {len(result[-limit:])} bars to {csv_filename}")
+                                print(f"✅ Exported {len(display_bars)} bars to {csv_filename}")
                                 print(f"   Elapsed time: {_elapsed_ms} ms")
                             else:
                                 print(f"❌ Failed to export CSV file")
                         
                         if raw:
-                            for bar in result[-limit:]:
+                            for bar in display_bars:
                                 time = bar.get('time', 'N/A')
                                 open_price = bar.get('open', 0)
                                 high = bar.get('high', 0)
@@ -7863,10 +8142,11 @@ class TopStepXTradingBot:
                                 close = bar.get('close', 0)
                                 volume = bar.get('volume', 0)
                                 print(f"{time} {open_price} {high} {low} {close} {volume}")
-                            print(f"fetched={len(result[-limit:])} elapsed_ms={_elapsed_ms}")
+                            print(f"fetched={len(display_bars)} elapsed_ms={_elapsed_ms}")
                         elif not csv:  # Only show formatted output if not CSV-only export
-                            _count = len(result[-limit:])
-                            print(f"\n📊 Historical Data for {symbol.upper()} ({timeframe}) - fetched={_count} in {_elapsed_ms} ms:")
+                            _count = len(display_bars)
+                            mode_str = f"date range" if start_dt else f"last {limit} bars"
+                            print(f"\n📊 Historical Data for {symbol.upper()} ({timeframe}) - {mode_str}, fetched={_count} in {_elapsed_ms} ms:")
                             # Only show psutil tip if slow AND psutil not installed
                             if _elapsed_ms > 10000:
                                 try:
@@ -7881,7 +8161,7 @@ class TopStepXTradingBot:
                             # Align headers properly - Time column needs 26 chars for ISO timestamps with timezone
                             print(f"{'Time':<26} {'Open':<12} {'High':<12} {'Low':<12} {'Close':<12} {'Volume':<10}")
                             print("-" * 100)
-                            for bar in result[-limit:]:  # Show exactly requested bars
+                            for bar in display_bars:  # Show bars based on mode (all for date range, last N for bar count)
                                 # Get timestamp - prioritize parsed 'time'/'timestamp' keys
                                 time = bar.get('time') or bar.get('timestamp') or ''
                                 

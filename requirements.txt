@@ -31,6 +31,9 @@ jinja2>=3.1.0     # For HTML templating
 # Performance optimization
 psutil>=5.9.0  # For efficient SDK resource monitoring (significantly improves performance)
 
+# Database (PostgreSQL for persistent caching)
+psycopg2-binary>=2.9.0  # PostgreSQL adapter for Python
+
 # Optional: For enhanced functionality
 # pandas>=2.0.0       # For data analysis
 # numpy>=1.24.0       # For numerical operations

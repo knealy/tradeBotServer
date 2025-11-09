@@ -102,8 +102,13 @@ class MetricsTracker:
     - Strategy execution times
     """
     
-    def __init__(self):
-        """Initialize metrics tracker."""
+    def __init__(self, db=None):
+        """
+        Initialize metrics tracker.
+        
+        Args:
+            db: Optional database instance for persistent storage
+        """
         self.api_metrics: Dict[str, PerformanceStats] = defaultdict(PerformanceStats)
         self.cache_metrics: Dict[str, CacheMetrics] = defaultdict(CacheMetrics)
         self.strategy_metrics: Dict[str, PerformanceStats] = defaultdict(PerformanceStats)
@@ -111,6 +116,7 @@ class MetricsTracker:
         
         self.start_time = datetime.now()
         self.process = psutil.Process()
+        self.db = db  # Optional database for persistent metrics
         
         logger.info("📊 Metrics tracker initialized")
     
@@ -152,6 +158,13 @@ class MetricsTracker:
         # Log all API calls at debug level
         status = "✅" if success else "❌"
         logger.debug(f"API_METRIC: {status} {key} - {duration_ms:.0f}ms - {status_code or 'N/A'}")
+        
+        # Save to database if available (for historical tracking)
+        if self.db:
+            try:
+                self.db.save_api_metric(endpoint, method, duration_ms, status_code, success, error_message)
+            except Exception as e:
+                logger.debug(f"Failed to save API metric to database: {e}")
     
     def record_cache_hit(self, cache_name: str):
         """Record a cache hit."""
@@ -292,11 +305,23 @@ class MetricsTracker:
 _metrics_tracker: Optional[MetricsTracker] = None
 
 
-def get_metrics_tracker() -> MetricsTracker:
-    """Get or create global metrics tracker instance."""
+def get_metrics_tracker(db=None) -> MetricsTracker:
+    """
+    Get or create global metrics tracker instance.
+    
+    Args:
+        db: Optional database instance for persistent storage
+    
+    Returns:
+        MetricsTracker: Global metrics tracker
+    """
     global _metrics_tracker
     if _metrics_tracker is None:
-        _metrics_tracker = MetricsTracker()
+        _metrics_tracker = MetricsTracker(db=db)
+    elif db and not _metrics_tracker.db:
+        # Update database reference if provided later
+        _metrics_tracker.db = db
+        logger.info("📊 Metrics tracker database connection updated")
     return _metrics_tracker
 
 
