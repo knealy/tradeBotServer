@@ -102,6 +102,8 @@ class DashboardAPI:
                     "equity": account_info.get('equity'),
                     "dailyPnL": account_info.get('daily_pnl'),
                     "status": target_account.get('status', 'active'),
+                    "currency": target_account.get('currency', 'USD'),
+                    "account_type": target_account.get('account_type', 'unknown'),
                 },
                 "message": f"Switched to account: {target_account.get('name', account_id)}"
             }

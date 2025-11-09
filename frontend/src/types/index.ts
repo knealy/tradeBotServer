@@ -6,6 +6,8 @@ export interface Account {
   balance: number
   currency: string
   account_type: string
+  accountId?: string
+  account_id?: string
 }
 
 // Position Types

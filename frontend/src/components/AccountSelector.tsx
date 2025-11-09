@@ -18,6 +18,12 @@ export default function AccountSelector({
   const [isOpen, setIsOpen] = useState(false)
   const queryClient = useQueryClient()
 
+  const getAccountIdentifier = (account: Account) =>
+    account.id || account.accountId || account.account_id || account.name || 'unknown'
+
+  const getAccountLabel = (account: Account) =>
+    account.name || account.accountId || account.account_id || getAccountIdentifier(account)
+
   const switchMutation = useMutation(
     (accountId: string) => accountApi.switchAccount(accountId),
     {
@@ -44,12 +50,15 @@ export default function AccountSelector({
   )
 
   const handleAccountSelect = async (account: Account) => {
-    if (account.accountId === selectedAccount?.accountId) {
+    const selectedId = selectedAccount ? getAccountIdentifier(selectedAccount) : null
+    const accountId = getAccountIdentifier(account)
+
+    if (accountId === selectedId) {
       setIsOpen(false)
       return
     }
     
-    switchMutation.mutate(account.accountId)
+    switchMutation.mutate(accountId)
   }
 
   return (
@@ -64,7 +73,7 @@ export default function AccountSelector({
           <div className="text-left">
             {selectedAccount ? (
               <>
-                <div className="font-medium">{selectedAccount.accountId}</div>
+                <div className="font-medium">{getAccountLabel(selectedAccount)}</div>
                 <div className="text-xs text-slate-400">
                   ${selectedAccount.balance?.toLocaleString() || 'N/A'}
                 </div>
@@ -95,13 +104,15 @@ export default function AccountSelector({
               </div>
             ) : (
               accounts.map((account) => {
-                const isSelected = account.accountId === selectedAccount?.accountId
+                const accountId = getAccountIdentifier(account)
+                const selectedId = selectedAccount ? getAccountIdentifier(selectedAccount) : null
+                const isSelected = accountId === selectedId
                 const isLoading = switchMutation.isLoading && 
-                                 switchMutation.variables === account.accountId
+                                 switchMutation.variables === accountId
                 
                 return (
                   <button
-                    key={account.accountId}
+                    key={accountId}
                     onClick={() => handleAccountSelect(account)}
                     disabled={switchMutation.isLoading}
                     className={`w-full px-4 py-3 flex items-center justify-between hover:bg-slate-600 transition-colors ${
@@ -113,7 +124,7 @@ export default function AccountSelector({
                         account.status === 'active' ? 'bg-green-500' : 'bg-slate-500'
                       }`}></div>
                       <div className="text-left">
-                        <div className="font-medium">{account.accountId}</div>
+                        <div className="font-medium">{getAccountLabel(account)}</div>
                         <div className="text-xs text-slate-400">
                           ${account.balance?.toLocaleString() || 'N/A'}
                           {account.status && (

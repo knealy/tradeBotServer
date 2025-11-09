@@ -32,8 +32,10 @@ export const accountApi = {
     return response.data
   },
 
-  switchAccount: async (accountId: string): Promise<Account> => {
-    const response = await api.post(`/api/account/switch`, { account_id: accountId })
+  switchAccount: async (
+    accountId: string
+  ): Promise<{ success: boolean; account?: Account; message?: string; error?: string }> => {
+    const response = await api.post('/api/account/switch', { account_id: accountId })
     return response.data
   },
 }
