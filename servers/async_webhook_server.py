@@ -9,11 +9,15 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 from typing import Dict, Optional
 from aiohttp import web
 import aiohttp
+
+# Add project root to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trading_bot import TopStepXTradingBot
 from infrastructure.task_queue import get_task_queue, TaskPriority

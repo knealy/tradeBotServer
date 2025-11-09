@@ -2,10 +2,14 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from typing import Set, Dict, Any
 import websockets
 from websockets.server import WebSocketServerProtocol
+
+# Add project root to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from auth import validate_token
 

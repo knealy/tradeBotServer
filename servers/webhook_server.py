@@ -10,12 +10,16 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import datetime
 from typing import Dict, Optional, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.parse
+
+# Add project root to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import the trading bot
 from trading_bot import TopStepXTradingBot

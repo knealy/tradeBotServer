@@ -6,8 +6,14 @@ Provides API endpoints and WebSocket for real-time dashboard
 import json
 import asyncio
 import logging
+import os
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
+
+# Add project root to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from auth import require_auth, get_cors_headers
 
 logger = logging.getLogger(__name__)
