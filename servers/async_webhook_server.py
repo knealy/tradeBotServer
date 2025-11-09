@@ -59,8 +59,8 @@ class AsyncWebhookServer:
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         self.dashboard_api = DashboardAPI(trading_bot, None)
         
-        # Setup CORS for React frontend
-        cors = cors_setup(self.app, defaults={
+        # Setup CORS for React frontend (before routes)
+        self.cors = cors_setup(self.app, defaults={
             "*": ResourceOptions(
                 allow_credentials=True,
                 expose_headers="*",
@@ -71,6 +71,10 @@ class AsyncWebhookServer:
         
         # Setup routes
         self._setup_routes()
+        
+        # Apply CORS to all routes
+        for route in list(self.app.router.routes()):
+            self.cors.add(route)
         
         # Server state
         self.server_start_time = None
