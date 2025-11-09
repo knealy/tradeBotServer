@@ -24,8 +24,8 @@ certifi>=2023.0.0    # For SSL certificates
 PyJWT>=2.8.0         # For JWT token parsing and expiration checking
 pytz>=2024.1         # For timezone handling in trading strategies
 
-# Dashboard dependencies
-aiohttp>=3.9.0    # For async HTTP handling
+# Dashboard and async webhook server dependencies
+aiohttp>=3.9.0    # For async HTTP handling and async webhook server
 jinja2>=3.1.0     # For HTML templating
 
 # Performance optimization
