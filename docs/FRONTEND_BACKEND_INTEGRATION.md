@@ -16,8 +16,14 @@ The React frontend is now fully integrated with the Python backend through a com
 ### **1. Install Backend Dependencies**
 
 ```bash
-# Install new CORS dependency
-pip install aiohttp-cors>=0.7.0
+# Make sure you're in the project root (not frontend/)
+cd /path/to/projectXbot
+
+# Activate virtual environment (if not already active)
+source .venv/bin/activate
+
+# Install new CORS dependency (use quotes for version specifier)
+pip install "aiohttp-cors>=0.7.0"
 ```
 
 ### **2. Start Backend Server**
