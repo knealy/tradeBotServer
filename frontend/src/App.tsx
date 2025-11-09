@@ -19,6 +19,9 @@ function App() {
         <Layout>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/positions" element={<Dashboard />} />
+            <Route path="/strategies" element={<Dashboard />} />
+            <Route path="/settings" element={<Dashboard />} />
           </Routes>
         </Layout>
       </BrowserRouter>

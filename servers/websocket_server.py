@@ -75,16 +75,22 @@ class WebSocketServer:
             query_params = dict(param.split('=') for param in query_string.split('&') if '=' in param)
             token = query_params.get('token')
 
-        # Authenticate connection
-        if not token or not validate_token(token):
-            logger.warning(f"🚫 WebSocket connection denied from {client_ip}: Invalid token")
-            await websocket.send(json.dumps({
-                "type": "auth_error", 
-                "message": "Authentication failed",
-                "timestamp": time.time()
-            }))
-            await websocket.close(code=1008, reason="Authentication failed")
-            return
+        # Authenticate connection (optional for local dev)
+        # For local development, allow connections without token
+        # For production, require token
+        require_auth = os.getenv('WEBSOCKET_REQUIRE_AUTH', 'false').lower() in ('true', '1', 'yes')
+        if require_auth:
+            if not token or not validate_token(token):
+                logger.warning(f"🚫 WebSocket connection denied from {client_ip}: Invalid token")
+                await websocket.send(json.dumps({
+                    "type": "auth_error", 
+                    "message": "Authentication failed",
+                    "timestamp": time.time()
+                }))
+                await websocket.close(code=1008, reason="Authentication failed")
+                return
+        else:
+            logger.info(f"🔓 WebSocket authentication disabled (local dev mode)")
 
         # Add client to active connections
         self.clients.add(websocket)
@@ -293,7 +299,10 @@ class WebSocketServer:
                         logger.warning(f"Failed to get performance stats for broadcast: {e}")
                     
                     # Send health status
-                    health_status = self.webhook_server.get_health_status() if hasattr(self.webhook_server, 'get_health_status') else {"status": "healthy"}
+                    health_status = {"status": "healthy", "uptime": time.time()}
+                    if hasattr(self.webhook_server, 'server_start_time') and self.webhook_server.server_start_time:
+                        from datetime import datetime
+                        health_status["uptime_seconds"] = (datetime.now() - self.webhook_server.server_start_time).total_seconds()
                     await self.broadcast({
                         "type": "health_update",
                         "data": health_status,

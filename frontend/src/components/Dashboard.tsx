@@ -34,37 +34,55 @@ export default function Dashboard() {
   // Extract metrics from response
   const metrics = metricsData?.performance || metricsData
 
-  // WebSocket connection (optional - dashboard works with polling)
+  // WebSocket connection for real-time updates
   useEffect(() => {
-    // Try to connect, but don't fail if WebSocket server isn't running
     let checkConnection: NodeJS.Timeout | null = null
     
-    try {
-      wsService.connect()
-      
-      wsService.on('account_update', (data) => {
-        // Handle account updates
-        console.log('Account update:', data)
-      })
-
-      wsService.on('metrics_update', (data) => {
-        // Handle metrics updates
-        console.log('Metrics update:', data)
-      })
-
-      checkConnection = setInterval(() => {
-        setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
-      }, 1000)
-    } catch (error) {
-      // WebSocket is optional - dashboard works with polling
-      console.log('WebSocket not available, using polling instead')
-      setConnectionStatus('disconnected')
+    // Connect WebSocket
+    wsService.connect()
+    
+    // Handle WebSocket messages
+    const handleAccountUpdate = (data: any) => {
+      console.log('Account update via WebSocket:', data)
+      // Invalidate React Query cache to refetch
+      // The query will automatically refetch due to refetchInterval
     }
+
+    const handleMetricsUpdate = (data: any) => {
+      console.log('Metrics update via WebSocket:', data)
+      // Invalidate React Query cache to refetch
+    }
+
+    const handlePositionUpdate = (data: any) => {
+      console.log('Position update via WebSocket:', data)
+      // Invalidate React Query cache to refetch
+    }
+
+    const handleAccountsUpdate = (data: any) => {
+      console.log('Accounts update via WebSocket:', data)
+      // Invalidate React Query cache to refetch
+    }
+
+    // Register event handlers
+    wsService.on('account_update', handleAccountUpdate)
+    wsService.on('metrics_update', handleMetricsUpdate)
+    wsService.on('position_update', handlePositionUpdate)
+    wsService.on('accounts_update', handleAccountsUpdate)
+
+    // Check connection status periodically
+    checkConnection = setInterval(() => {
+      setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
+    }, 1000)
 
     return () => {
       if (checkConnection) {
         clearInterval(checkConnection)
       }
+      // Unregister event handlers
+      wsService.off('account_update', handleAccountUpdate)
+      wsService.off('metrics_update', handleMetricsUpdate)
+      wsService.off('position_update', handlePositionUpdate)
+      wsService.off('accounts_update', handleAccountsUpdate)
       wsService.disconnect()
     }
   }, [])

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trading_bot import TopStepXTradingBot
 from servers.dashboard import DashboardAPI
+from servers.websocket_server import WebSocketServer
 from infrastructure.task_queue import get_task_queue, TaskPriority
 from infrastructure.performance_metrics import get_metrics_tracker
 
@@ -58,6 +59,10 @@ class AsyncWebhookServer:
         self.task_queue = get_task_queue(max_concurrent=20)  # 20 concurrent background tasks
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         self.dashboard_api = DashboardAPI(trading_bot, None)
+        
+        # Initialize WebSocket server (port 8081)
+        websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
+        self.websocket_server = WebSocketServer(trading_bot, self, host=host, port=websocket_port)
         
         # Setup CORS for React frontend (before routes)
         self.cors = cors_setup(self.app, defaults={
@@ -192,6 +197,14 @@ class AsyncWebhookServer:
                 "timestamp": datetime.now().isoformat()
             }
             
+            # Broadcast metrics update via WebSocket
+            if hasattr(self, 'websocket_server') and self.websocket_server:
+                await self.websocket_server.broadcast({
+                    "type": "metrics_update",
+                    "data": metrics_data,
+                    "timestamp": time.time()
+                })
+            
             return web.json_response(metrics_data)
         
         except Exception as e:
@@ -203,6 +216,13 @@ class AsyncWebhookServer:
         """Get all available accounts."""
         try:
             accounts = await self.dashboard_api.get_accounts()
+            # Broadcast update via WebSocket
+            if hasattr(self, 'websocket_server') and self.websocket_server:
+                await self.websocket_server.broadcast({
+                    "type": "accounts_update",
+                    "data": accounts,
+                    "timestamp": time.time()
+                })
             return web.json_response(accounts)
         except Exception as e:
             logger.error(f"Error getting accounts: {e}")
@@ -214,6 +234,9 @@ class AsyncWebhookServer:
             account_info = await self.dashboard_api.get_account_info()
             if "error" in account_info:
                 return web.json_response(account_info, status=400)
+            # Broadcast update via WebSocket
+            if hasattr(self, 'websocket_server') and self.websocket_server:
+                await self.websocket_server.broadcast_account_update(account_info)
             return web.json_response(account_info)
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
@@ -239,6 +262,9 @@ class AsyncWebhookServer:
         """Get open positions."""
         try:
             positions = await self.dashboard_api.get_positions()
+            # Broadcast update via WebSocket
+            if hasattr(self, 'websocket_server') and self.websocket_server:
+                await self.websocket_server.broadcast_position_update(positions)
             return web.json_response(positions)
         except Exception as e:
             logger.error(f"Error getting positions: {e}")
@@ -277,6 +303,9 @@ class AsyncWebhookServer:
         """Get open orders."""
         try:
             orders = await self.dashboard_api.get_orders()
+            # Broadcast update via WebSocket
+            if hasattr(self, 'websocket_server') and self.websocket_server:
+                await self.websocket_server.broadcast_order_update(orders)
             return web.json_response(orders)
         except Exception as e:
             logger.error(f"Error getting orders: {e}")
@@ -650,6 +679,10 @@ class AsyncWebhookServer:
             # Start background tasks
             await self.start_background_tasks()
             
+            # Start WebSocket server
+            logger.info(f"🚀 Starting WebSocket server on {self.websocket_server.host}:{self.websocket_server.port}")
+            asyncio.create_task(self.websocket_server.start())
+            
             # Start web server
             runner = web.AppRunner(self.app)
             await runner.setup()
@@ -657,6 +690,7 @@ class AsyncWebhookServer:
             await site.start()
             
             logger.info(f"✅ Async webhook server running on http://{self.host}:{self.port}")
+            logger.info(f"✅ WebSocket server running on ws://{self.websocket_server.host}:{self.websocket_server.port}")
             logger.info(f"   Health check: http://{self.host}:{self.port}/health")
             logger.info(f"   Status: http://{self.host}:{self.port}/status")
             logger.info(f"   Metrics: http://{self.host}:{self.port}/metrics")
@@ -677,6 +711,8 @@ class AsyncWebhookServer:
             # Cleanup
             logger.info("🧹 Cleaning up...")
             await self.stop_background_tasks()
+            if hasattr(self, 'websocket_server') and self.websocket_server:
+                await self.websocket_server.stop()
             await runner.cleanup()
             logger.info("✅ Server shutdown complete")
 
