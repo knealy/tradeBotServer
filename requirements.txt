@@ -26,6 +26,7 @@ pytz>=2024.1         # For timezone handling in trading strategies
 
 # Dashboard and async webhook server dependencies
 aiohttp>=3.9.0    # For async HTTP handling and async webhook server
+aiohttp-cors>=0.7.0  # CORS support for React frontend
 jinja2>=3.1.0     # For HTML templating
 
 # Performance optimization

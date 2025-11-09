@@ -11,15 +11,17 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
-from typing import Dict, Optional
+from datetime import datetime, timedelta
+from typing import Dict, Optional, List, Any
 from aiohttp import web
+from aiohttp_cors import setup as cors_setup, ResourceOptions
 import aiohttp
 
 # Add project root to Python path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trading_bot import TopStepXTradingBot
+from servers.dashboard import DashboardAPI
 from infrastructure.task_queue import get_task_queue, TaskPriority
 from infrastructure.performance_metrics import get_metrics_tracker
 
@@ -55,6 +57,17 @@ class AsyncWebhookServer:
         self.app = web.Application()
         self.task_queue = get_task_queue(max_concurrent=20)  # 20 concurrent background tasks
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
+        self.dashboard_api = DashboardAPI(trading_bot, None)
+        
+        # Setup CORS for React frontend
+        cors = cors_setup(self.app, defaults={
+            "*": ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods="*"
+            )
+        })
         
         # Setup routes
         self._setup_routes()
@@ -68,13 +81,41 @@ class AsyncWebhookServer:
     
     def _setup_routes(self):
         """Setup HTTP routes."""
+        # Health & Status
         self.app.router.add_get('/health', self.handle_health)
+        self.app.router.add_get('/api/health', self.handle_health)
         self.app.router.add_get('/status', self.handle_status)
+        self.app.router.add_get('/api/status', self.handle_status)
         self.app.router.add_get('/metrics', self.handle_metrics)
-        self.app.router.add_post('/webhook', self.handle_webhook)
-        self.app.router.add_post('/api/webhook', self.handle_webhook)  # Alternative path
+        self.app.router.add_get('/api/metrics', self.handle_metrics)
         
-        logger.debug("Routes configured: /health, /status, /metrics, /webhook")
+        # Webhook endpoints
+        self.app.router.add_post('/webhook', self.handle_webhook)
+        self.app.router.add_post('/api/webhook', self.handle_webhook)
+        
+        # Dashboard API endpoints
+        self.app.router.add_get('/api/accounts', self.handle_get_accounts)
+        self.app.router.add_get('/api/account/info', self.handle_get_account_info)
+        self.app.router.add_post('/api/account/switch', self.handle_switch_account)
+        
+        self.app.router.add_get('/api/positions', self.handle_get_positions)
+        self.app.router.add_post('/api/positions/{position_id}/close', self.handle_close_position)
+        self.app.router.add_post('/api/positions/flatten', self.handle_flatten_positions)
+        
+        self.app.router.add_get('/api/orders', self.handle_get_orders)
+        self.app.router.add_post('/api/orders/{order_id}/cancel', self.handle_cancel_order)
+        self.app.router.add_post('/api/orders/cancel-all', self.handle_cancel_all_orders)
+        self.app.router.add_post('/api/orders/place', self.handle_place_order)
+        
+        self.app.router.add_get('/api/strategies', self.handle_get_strategies)
+        self.app.router.add_get('/api/strategies/status', self.handle_get_strategy_status)
+        self.app.router.add_post('/api/strategies/{name}/start', self.handle_start_strategy)
+        self.app.router.add_post('/api/strategies/{name}/stop', self.handle_stop_strategy)
+        
+        self.app.router.add_get('/api/trades', self.handle_get_trades)
+        self.app.router.add_get('/api/performance', self.handle_get_performance)
+        
+        logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
     async def handle_health(self, request: web.Request) -> web.Response:
         """
@@ -151,6 +192,250 @@ class AsyncWebhookServer:
         
         except Exception as e:
             logger.error(f"Metrics endpoint failed: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    # Dashboard API Handlers
+    async def handle_get_accounts(self, request: web.Request) -> web.Response:
+        """Get all available accounts."""
+        try:
+            accounts = await self.dashboard_api.get_accounts()
+            return web.json_response(accounts)
+        except Exception as e:
+            logger.error(f"Error getting accounts: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_account_info(self, request: web.Request) -> web.Response:
+        """Get current account information."""
+        try:
+            account_info = await self.dashboard_api.get_account_info()
+            if "error" in account_info:
+                return web.json_response(account_info, status=400)
+            return web.json_response(account_info)
+        except Exception as e:
+            logger.error(f"Error getting account info: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_switch_account(self, request: web.Request) -> web.Response:
+        """Switch to a different account."""
+        try:
+            data = await request.json()
+            account_id = data.get('account_id')
+            if not account_id:
+                return web.json_response({"error": "account_id required"}, status=400)
+            
+            result = await self.dashboard_api.switch_account(account_id)
+            if "error" in result:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error switching account: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_positions(self, request: web.Request) -> web.Response:
+        """Get open positions."""
+        try:
+            positions = await self.dashboard_api.get_positions()
+            return web.json_response(positions)
+        except Exception as e:
+            logger.error(f"Error getting positions: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_close_position(self, request: web.Request) -> web.Response:
+        """Close a position."""
+        try:
+            position_id = request.match_info.get('position_id')
+            if not position_id:
+                return web.json_response({"error": "position_id required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            quantity = data.get('quantity')
+            
+            result = await self.dashboard_api.close_position(position_id)
+            if "error" in result:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error closing position: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_flatten_positions(self, request: web.Request) -> web.Response:
+        """Flatten all positions."""
+        try:
+            result = await self.dashboard_api.flatten_all_positions()
+            if "error" in result:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error flattening positions: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_orders(self, request: web.Request) -> web.Response:
+        """Get open orders."""
+        try:
+            orders = await self.dashboard_api.get_orders()
+            return web.json_response(orders)
+        except Exception as e:
+            logger.error(f"Error getting orders: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_cancel_order(self, request: web.Request) -> web.Response:
+        """Cancel an order."""
+        try:
+            order_id = request.match_info.get('order_id')
+            if not order_id:
+                return web.json_response({"error": "order_id required"}, status=400)
+            
+            result = await self.dashboard_api.cancel_order(order_id)
+            if "error" in result:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error canceling order: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_cancel_all_orders(self, request: web.Request) -> web.Response:
+        """Cancel all open orders."""
+        try:
+            result = await self.dashboard_api.cancel_all_orders()
+            if "error" in result:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error canceling all orders: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_place_order(self, request: web.Request) -> web.Response:
+        """Place a new order."""
+        try:
+            data = await request.json()
+            symbol = data.get('symbol')
+            side = data.get('side')
+            quantity = data.get('quantity')
+            order_type = data.get('type', 'market')
+            price = data.get('price')
+            
+            if not all([symbol, side, quantity]):
+                return web.json_response(
+                    {"error": "symbol, side, and quantity required"},
+                    status=400
+                )
+            
+            result = await self.dashboard_api.place_order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                order_type=order_type,
+                price=price
+            )
+            
+            if "error" in result:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error placing order: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_strategies(self, request: web.Request) -> web.Response:
+        """Get all available strategies."""
+        try:
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            strategies = []
+            for name, strategy_class in self.trading_bot.strategy_manager.available_strategies.items():
+                strategies.append({
+                    "name": name,
+                    "description": getattr(strategy_class, '__doc__', ''),
+                    "enabled": name in self.trading_bot.strategy_manager.active_strategies
+                })
+            
+            return web.json_response(strategies)
+        except Exception as e:
+            logger.error(f"Error getting strategies: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_strategy_status(self, request: web.Request) -> web.Response:
+        """Get status of all strategies."""
+        try:
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            status = self.trading_bot.strategy_manager.get_status()
+            return web.json_response(status)
+        except Exception as e:
+            logger.error(f"Error getting strategy status: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_start_strategy(self, request: web.Request) -> web.Response:
+        """Start a strategy."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            symbols = data.get('symbols')
+            
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            success, message = self.trading_bot.strategy_manager.start_strategy(
+                strategy_name,
+                symbols=symbols
+            )
+            
+            if success:
+                return web.json_response({"success": True, "message": message})
+            else:
+                return web.json_response({"error": message}, status=400)
+        except Exception as e:
+            logger.error(f"Error starting strategy: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_stop_strategy(self, request: web.Request) -> web.Response:
+        """Stop a strategy."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+            
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            success, message = self.trading_bot.strategy_manager.stop_strategy(strategy_name)
+            
+            if success:
+                return web.json_response({"success": True, "message": message})
+            else:
+                return web.json_response({"error": message}, status=400)
+        except Exception as e:
+            logger.error(f"Error stopping strategy: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_trades(self, request: web.Request) -> web.Response:
+        """Get trade history."""
+        try:
+            start_date = request.query.get('start_date')
+            end_date = request.query.get('end_date')
+            
+            trades = await self.dashboard_api.get_trade_history(
+                start_date=start_date,
+                end_date=end_date
+            )
+            return web.json_response(trades)
+        except Exception as e:
+            logger.error(f"Error getting trades: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_performance(self, request: web.Request) -> web.Response:
+        """Get performance statistics."""
+        try:
+            stats = await self.dashboard_api.get_performance_stats()
+            if "error" in stats:
+                return web.json_response(stats, status=400)
+            return web.json_response(stats)
+        except Exception as e:
+            logger.error(f"Error getting performance: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_webhook(self, request: web.Request) -> web.Response:
@@ -377,6 +662,11 @@ class AsyncWebhookServer:
             logger.info(f"   Status: http://{self.host}:{self.port}/status")
             logger.info(f"   Metrics: http://{self.host}:{self.port}/metrics")
             logger.info(f"   Webhook: http://{self.host}:{self.port}/webhook")
+            logger.info(f"   Dashboard API: http://{self.host}:{self.port}/api/*")
+            logger.info(f"   - Accounts: GET /api/accounts")
+            logger.info(f"   - Positions: GET /api/positions")
+            logger.info(f"   - Orders: GET /api/orders")
+            logger.info(f"   - Strategies: GET /api/strategies")
             
             # Keep server running
             try:

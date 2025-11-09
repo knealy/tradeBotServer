@@ -57,8 +57,10 @@
 
 1. **Go to Railway Dashboard**: https://railway.app
 2. **Open your project** → Click on your **PostgreSQL service**
-3. **Go to "Variables" tab** → Find `DATABASE_URL`
-4. **Copy the value** (it looks like: `postgresql://postgres:password@containers-us-west-xx.railway.app:5432/railway`)
+3. **Go to "Variables" tab** → Find `PUBLIC_DATABASE_URL` (for local testing)
+   - **Note**: Use `PUBLIC_DATABASE_URL` for local access (external)
+   - `DATABASE_URL` is internal-only and won't work from your local machine
+4. **Copy the value** (it looks like: `postgresql://postgres:password@proxy.rlwy.net:port/railway`)
 
 ```bash
 # 3. Run test script locally (connects to Railway DB)
@@ -348,9 +350,9 @@ Enter command: history MNQ 5m 100
 **Best Approach: Test on Railway First**
 
 1. **Deploy to Railway** (you already have this)
-2. **Get DATABASE_URL from Railway Dashboard:**
+2. **Get PUBLIC_DATABASE_URL from Railway Dashboard:**
    - Go to https://railway.app → Your Project → PostgreSQL Service → Variables tab
-   - Copy the `DATABASE_URL` value
+   - Copy the `PUBLIC_DATABASE_URL` value (not `DATABASE_URL` - that's internal-only)
 3. **Run test script connecting to Railway DB:**
    ```bash
    export DATABASE_URL="<paste-from-dashboard>"

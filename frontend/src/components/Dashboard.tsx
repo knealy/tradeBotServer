@@ -24,9 +24,12 @@ export default function Dashboard() {
   })
 
   // Fetch metrics
-  const { data: metrics } = useQuery('metrics', metricsApi.getMetrics, {
+  const { data: metricsData } = useQuery('metrics', metricsApi.getMetrics, {
     refetchInterval: 10000, // Refetch every 10 seconds
   })
+  
+  // Extract metrics from response
+  const metrics = metricsData?.performance || metricsData
 
   // WebSocket connection
   useEffect(() => {

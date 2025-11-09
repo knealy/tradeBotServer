@@ -1,45 +1,73 @@
-import { io, Socket } from 'socket.io-client'
+// WebSocket service using native WebSocket (not Socket.io)
+// The Python backend uses standard WebSocket, not Socket.io
+
 import type { WebSocketMessage } from '../types'
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'http://localhost:8080'
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8081'
 
 class WebSocketService {
-  private socket: Socket | null = null
+  private socket: WebSocket | null = null
   private listeners: Map<string, Set<(data: any) => void>> = new Map()
+  private reconnectAttempts = 0
+  private maxReconnectAttempts = 5
+  private reconnectDelay = 1000
 
   connect(): void {
-    if (this.socket?.connected) {
+    if (this.socket?.readyState === WebSocket.OPEN) {
       return
     }
 
-    this.socket = io(WS_URL, {
-      transports: ['websocket'],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-    })
+    try {
+      this.socket = new WebSocket(WS_URL)
 
-    this.socket.on('connect', () => {
-      console.log('WebSocket connected')
-      this.emit('connected', { timestamp: new Date().toISOString() })
-    })
+      this.socket.onopen = () => {
+        console.log('WebSocket connected')
+        this.reconnectAttempts = 0
+        this.emit('connected', { timestamp: new Date().toISOString() })
+      }
 
-    this.socket.on('disconnect', () => {
-      console.log('WebSocket disconnected')
-    })
+      this.socket.onclose = () => {
+        console.log('WebSocket disconnected')
+        this.attemptReconnect()
+      }
 
-    this.socket.on('message', (message: WebSocketMessage) => {
-      this.handleMessage(message)
-    })
+      this.socket.onmessage = (event) => {
+        try {
+          const message: WebSocketMessage = JSON.parse(event.data)
+          this.handleMessage(message)
+        } catch (e) {
+          console.error('Error parsing WebSocket message:', e)
+        }
+      }
 
-    this.socket.on('error', (error: Error) => {
-      console.error('WebSocket error:', error)
-    })
+      this.socket.onerror = (error) => {
+        console.error('WebSocket error:', error)
+      }
+    } catch (error) {
+      console.error('Failed to create WebSocket:', error)
+      this.attemptReconnect()
+    }
+  }
+
+  private attemptReconnect(): void {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error('Max reconnection attempts reached')
+      return
+    }
+
+    this.reconnectAttempts++
+    const delay = this.reconnectDelay * this.reconnectAttempts
+
+    console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`)
+    
+    setTimeout(() => {
+      this.connect()
+    }, delay)
   }
 
   disconnect(): void {
     if (this.socket) {
-      this.socket.disconnect()
+      this.socket.close()
       this.socket = null
     }
   }
@@ -56,8 +84,8 @@ class WebSocketService {
   }
 
   emit(event: string, data: any): void {
-    if (this.socket?.connected) {
-      this.socket.emit(event, data)
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: event, data }))
     }
   }
 
@@ -69,7 +97,7 @@ class WebSocketService {
   }
 
   isConnected(): boolean {
-    return this.socket?.connected ?? false
+    return this.socket?.readyState === WebSocket.OPEN ?? false
   }
 }
 

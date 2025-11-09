@@ -15,7 +15,7 @@ A production-ready, autonomous futures trading bot for TopStepX prop firm accoun
 
 ## ⚡ Performance Highlights
 
-| Metric | Before | After | Improvement |
+| ./Metric | Before | After | Improvement |
 |--------|--------|-------|-------------|
 | Data fetch time | 109ms | 5ms | **95% faster** ⚡ |
 | API calls per day | ~2000 | ~300 | **85% reduction** |

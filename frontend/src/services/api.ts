@@ -48,6 +48,10 @@ export const positionApi = {
   closePosition: async (positionId: string, quantity?: number): Promise<void> => {
     await api.post(`/api/positions/${positionId}/close`, { quantity })
   },
+
+  flattenAll: async (): Promise<void> => {
+    await api.post('/api/positions/flatten')
+  },
 }
 
 // Order API
@@ -59,6 +63,21 @@ export const orderApi = {
 
   cancelOrder: async (orderId: string): Promise<void> => {
     await api.post(`/api/orders/${orderId}/cancel`)
+  },
+
+  cancelAll: async (): Promise<void> => {
+    await api.post('/api/orders/cancel-all')
+  },
+
+  placeOrder: async (order: {
+    symbol: string
+    side: 'BUY' | 'SELL'
+    quantity: number
+    type?: 'MARKET' | 'LIMIT' | 'STOP'
+    price?: number
+  }): Promise<Order> => {
+    const response = await api.post('/api/orders/place', order)
+    return response.data
   },
 }
 
@@ -74,12 +93,14 @@ export const strategyApi = {
     return response.data
   },
 
-  startStrategy: async (name: string, symbols?: string[]): Promise<void> => {
-    await api.post(`/api/strategies/${name}/start`, { symbols })
+  startStrategy: async (name: string, symbols?: string[]): Promise<{ success: boolean; message: string }> => {
+    const response = await api.post(`/api/strategies/${name}/start`, { symbols })
+    return response.data
   },
 
-  stopStrategy: async (name: string): Promise<void> => {
-    await api.post(`/api/strategies/${name}/stop`)
+  stopStrategy: async (name: string): Promise<{ success: boolean; message: string }> => {
+    const response = await api.post(`/api/strategies/${name}/stop`)
+    return response.data
   },
 }
 
@@ -87,6 +108,24 @@ export const strategyApi = {
 export const metricsApi = {
   getMetrics: async (): Promise<PerformanceMetrics> => {
     const response = await api.get('/api/metrics')
+    // Extract performance data from response
+    return response.data.performance || response.data
+  },
+}
+
+// Trade History API
+export const tradeApi = {
+  getTrades: async (startDate?: string, endDate?: string): Promise<any[]> => {
+    const params = new URLSearchParams()
+    if (startDate) params.append('start_date', startDate)
+    if (endDate) params.append('end_date', endDate)
+    
+    const response = await api.get(`/api/trades?${params.toString()}`)
+    return response.data
+  },
+
+  getPerformance: async (): Promise<any> => {
+    const response = await api.get('/api/performance')
     return response.data
   },
 }
