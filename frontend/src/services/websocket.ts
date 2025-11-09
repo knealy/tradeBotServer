@@ -9,26 +9,43 @@ class WebSocketService {
   private socket: WebSocket | null = null
   private listeners: Map<string, Set<(data: any) => void>> = new Map()
   private reconnectAttempts = 0
-  private maxReconnectAttempts = 5
+  private maxReconnectAttempts = 8
   private reconnectDelay = 1000
+  private heartbeatIntervalId: number | null = null
+  private readonly HEARTBEAT_INTERVAL = 30000
+  private manualClose = false
 
   connect(): void {
-    if (this.socket?.readyState === WebSocket.OPEN) {
+    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return
     }
 
+    this.notify('socket_connecting', { timestamp: new Date().toISOString() })
+
     try {
+      this.manualClose = false
       this.socket = new WebSocket(WS_URL)
 
       this.socket.onopen = () => {
         console.log('WebSocket connected')
         this.reconnectAttempts = 0
-        this.emit('connected', { timestamp: new Date().toISOString() })
+        this.notify('socket_connected', { timestamp: new Date().toISOString() })
+        this.startHeartbeat()
       }
 
-      this.socket.onclose = () => {
-        console.log('WebSocket disconnected')
-        this.attemptReconnect()
+      this.socket.onclose = (event) => {
+        console.log('WebSocket disconnected', event.reason || '')
+        this.clearHeartbeat()
+        this.notify('socket_disconnected', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          timestamp: new Date().toISOString(),
+        })
+
+        if (!this.manualClose) {
+          this.attemptReconnect()
+        }
       }
 
       this.socket.onmessage = (event) => {
@@ -42,9 +59,11 @@ class WebSocketService {
 
       this.socket.onerror = (error) => {
         console.error('WebSocket error:', error)
+        this.notify('socket_error', { error })
       }
     } catch (error) {
       console.error('Failed to create WebSocket:', error)
+      this.notify('socket_error', { error })
       this.attemptReconnect()
     }
   }
@@ -52,6 +71,10 @@ class WebSocketService {
   private attemptReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('Max reconnection attempts reached')
+      this.notify('socket_failed', {
+        attempts: this.reconnectAttempts,
+        timestamp: new Date().toISOString(),
+      })
       return
     }
 
@@ -59,17 +82,35 @@ class WebSocketService {
     const delay = this.reconnectDelay * this.reconnectAttempts
 
     console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`)
-    
-    setTimeout(() => {
+    this.notify('socket_reconnecting', {
+      attempt: this.reconnectAttempts,
+      delay,
+      timestamp: new Date().toISOString(),
+    })
+
+    window.setTimeout(() => {
       this.connect()
     }, delay)
   }
 
   disconnect(): void {
+    this.manualClose = true
+    this.clearHeartbeat()
     if (this.socket) {
       this.socket.close()
       this.socket = null
     }
+  }
+
+  forceReconnect(): void {
+    this.manualClose = false
+    this.reconnectAttempts = 0
+    this.clearHeartbeat()
+    if (this.socket) {
+      this.socket.close()
+      this.socket = null
+    }
+    this.connect()
   }
 
   on(event: string, callback: (data: any) => void): void {
@@ -85,7 +126,7 @@ class WebSocketService {
 
   emit(event: string, data: any): void {
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ type: event, data }))
+      this.socket.send(JSON.stringify({ action: event, payload: data }))
     }
   }
 
@@ -93,6 +134,29 @@ class WebSocketService {
     const listeners = this.listeners.get(message.type)
     if (listeners) {
       listeners.forEach((callback) => callback(message.data))
+    }
+  }
+
+  private notify(event: string, data: any): void {
+    const listeners = this.listeners.get(event)
+    if (listeners) {
+      listeners.forEach((callback) => callback(data))
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.clearHeartbeat()
+    this.heartbeatIntervalId = window.setInterval(() => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.send(JSON.stringify({ action: 'ping', payload: { timestamp: Date.now() } }))
+      }
+    }, this.HEARTBEAT_INTERVAL)
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatIntervalId !== null) {
+      window.clearInterval(this.heartbeatIntervalId)
+      this.heartbeatIntervalId = null
     }
   }
 

@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQuery, useQueryClient } from 'react-query'
 import { accountApi, metricsApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import { useAccount } from '../contexts/AccountContext'
-import type { PerformanceMetrics } from '../types'
+import { useWebSocket } from '../contexts/WebSocketContext'
 import AccountCard from './AccountCard'
 import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
@@ -11,9 +11,9 @@ import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
 
 export default function Dashboard() {
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected')
   const queryClient = useQueryClient()
   const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+  const { status: socketStatus, reconnectAttempts, lastError: socketError, reconnect: reconnectSocket } = useWebSocket()
 
   // Fetch account info (less frequent)
   const { data: accountInfo } = useQuery('accountInfo', accountApi.getAccountInfo, {
@@ -33,14 +33,8 @@ export default function Dashboard() {
 
   // WebSocket connection for real-time updates
   useEffect(() => {
-    let checkConnection: NodeJS.Timeout | null = null
     let isComponentMounted = true
-    
-    // Connect WebSocket only if not already connected
-    if (!wsService.isConnected()) {
-      wsService.connect()
-    }
-    
+
     // Handle WebSocket messages with React Query cache invalidation
     const handleAccountUpdate = (data: any) => {
       if (!isComponentMounted) return
@@ -73,26 +67,45 @@ export default function Dashboard() {
     wsService.on('position_update', handlePositionUpdate)
     wsService.on('accounts_update', handleAccountsUpdate)
 
-    // Check connection status periodically
-    checkConnection = setInterval(() => {
-      if (isComponentMounted) {
-        setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
-      }
-    }, 1000)
-
     return () => {
       isComponentMounted = false
-      if (checkConnection) {
-        clearInterval(checkConnection)
-      }
-      // Unregister event handlers
       wsService.off('account_update', handleAccountUpdate)
       wsService.off('metrics_update', handleMetricsUpdate)
       wsService.off('position_update', handlePositionUpdate)
       wsService.off('accounts_update', handleAccountsUpdate)
-      // Don't disconnect - keep connection alive for other components
     }
-  }, [])
+  }, [queryClient])
+
+  const connectionBadge = useMemo(() => {
+    switch (socketStatus) {
+      case 'connected':
+        return {
+          label: 'Connected',
+          container: 'bg-green-500/20 text-green-300',
+          dot: 'bg-green-400',
+        }
+      case 'reconnecting':
+        return {
+          label: `Reconnecting (${reconnectAttempts})`,
+          container: 'bg-amber-500/20 text-amber-200',
+          dot: 'bg-amber-300',
+        }
+      case 'error':
+        return {
+          label: 'Connection Error',
+          container: 'bg-red-500/20 text-red-300',
+          dot: 'bg-red-400',
+        }
+      default:
+        return {
+          label: 'Disconnected',
+          container: 'bg-red-500/20 text-red-300',
+          dot: 'bg-red-400',
+        }
+    }
+  }, [socketStatus, reconnectAttempts])
+
+  const showRetryButton = socketStatus === 'error' || socketStatus === 'disconnected'
 
   return (
     <div className="space-y-6">
@@ -103,17 +116,24 @@ export default function Dashboard() {
           <p className="text-slate-400 mt-1">Real-time trading overview</p>
         </div>
         <div className="flex items-center gap-4">
-          <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-            connectionStatus === 'connected' 
-              ? 'bg-green-500/20 text-green-400' 
-              : 'bg-red-500/20 text-red-400'
-          }`}>
-            <div className={`w-2 h-2 rounded-full ${
-              connectionStatus === 'connected' ? 'bg-green-400' : 'bg-red-400'
-            }`} />
-            <span className="text-sm font-medium">
-              {connectionStatus === 'connected' ? 'Connected' : 'Disconnected'}
-            </span>
+          <div className={`flex items-center gap-3 px-4 py-2 rounded-lg ${connectionBadge.container}`}>
+            <div className={`w-2 h-2 rounded-full ${connectionBadge.dot}`} />
+            <div className="flex flex-col">
+              <span className="text-sm font-medium">{connectionBadge.label}</span>
+              {socketError && (
+                <span className="text-xs text-red-200 truncate max-w-[200px]">
+                  {socketError}
+                </span>
+              )}
+            </div>
+            {showRetryButton && (
+              <button
+                onClick={reconnectSocket}
+                className="ml-2 text-xs font-semibold text-primary-300 underline"
+              >
+                Retry
+              </button>
+            )}
           </div>
         </div>
       </div>

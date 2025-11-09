@@ -6,6 +6,7 @@ import PositionsPage from './pages/PositionsPage'
 import StrategiesPage from './pages/StrategiesPage'
 import SettingsPage from './pages/SettingsPage'
 import Layout from './components/Layout'
+import { WebSocketProvider } from './contexts/WebSocketContext'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,18 +20,20 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AccountProvider>
-        <BrowserRouter>
-          <Layout>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/positions" element={<PositionsPage />} />
-              <Route path="/strategies" element={<StrategiesPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </Layout>
-        </BrowserRouter>
-      </AccountProvider>
+      <WebSocketProvider>
+        <AccountProvider>
+          <BrowserRouter>
+            <Layout>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/positions" element={<PositionsPage />} />
+                <Route path="/strategies" element={<StrategiesPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Routes>
+            </Layout>
+          </BrowserRouter>
+        </AccountProvider>
+      </WebSocketProvider>
     </QueryClientProvider>
   )
 }
