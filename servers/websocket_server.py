@@ -207,8 +207,8 @@ class WebSocketServer:
                     # Create tasks for all clients
                     tasks = []
                     for client in list(self.clients):
-                        if not client.closed:
-                            tasks.append(self._send_to_client(client, message))
+                        # Don't check .closed (v12+ compatibility) - let exception handling deal with it
+                        tasks.append(self._send_to_client(client, message))
                     
                     # Send to all clients concurrently
                     if tasks:
