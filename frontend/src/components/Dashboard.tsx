@@ -4,6 +4,7 @@ import { accountApi, metricsApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import type { Account, PerformanceMetrics } from '../types'
 import AccountCard from './AccountCard'
+import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
 import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
@@ -130,18 +131,13 @@ export default function Dashboard() {
       </div>
 
       {/* Account Selection */}
-      {accounts.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {accounts.map((account) => (
-            <AccountCard
-              key={account.id}
-              account={account}
-              isSelected={selectedAccount?.id === account.id}
-              onSelect={() => setSelectedAccount(account)}
-            />
-          ))}
-        </div>
-      )}
+      <div className="max-w-md">
+        <AccountSelector
+          accounts={accounts}
+          selectedAccount={selectedAccount}
+          onAccountChange={setSelectedAccount}
+        />
+      </div>
 
       {/* Main Dashboard Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

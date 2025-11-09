@@ -89,10 +89,20 @@ class DashboardAPI:
             # Switch to the account
             self.trading_bot.selected_account = target_account
             
+            # Get updated account info
+            account_info = await self.trading_bot.get_account_info()
+            
             return {
                 "success": True,
-                "account_id": account_id,
-                "account_name": target_account.get('name'),
+                "account": {
+                    "id": account_id,
+                    "accountId": target_account.get('name', account_id),
+                    "name": target_account.get('name', account_id),
+                    "balance": account_info.get('balance'),
+                    "equity": account_info.get('equity'),
+                    "dailyPnL": account_info.get('daily_pnl'),
+                    "status": target_account.get('status', 'active'),
+                },
                 "message": f"Switched to account: {target_account.get('name', account_id)}"
             }
         except Exception as e:
