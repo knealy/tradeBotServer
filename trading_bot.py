@@ -38,6 +38,7 @@ from overnight_range_strategy import OvernightRangeStrategy
 from mean_reversion_strategy import MeanReversionStrategy
 from trend_following_strategy import TrendFollowingStrategy
 from strategy_manager import StrategyManager
+from performance_metrics import get_metrics_tracker
 
 # Optional ProjectX SDK adapter
 try:
@@ -568,6 +569,12 @@ class TopStepXTradingBot:
         Returns:
             Dict: Response data
         """
+        # Start performance tracking
+        start_time = time.time()
+        status_code = None
+        success = False
+        error_message = None
+        
         # Apply rate limiting (unless skipped for critical operations)
         if not skip_rate_limit:
             self._rate_limiter.acquire()
@@ -599,38 +606,62 @@ class TopStepXTradingBot:
                 **request_kwargs
             )
             
+            status_code = response.status_code
+            
             # Handle response
             try:
                 response.raise_for_status()  # Raise exception for bad status codes
             except requests.exceptions.HTTPError as e:
+                error_message = f"HTTP {response.status_code}: {str(e)}"
                 if suppress_errors:
                     logger.debug(f"HTTP error {response.status_code}: {e}")
                 else:
                     logger.error(f"HTTP error {response.status_code}: {e}")
-                return {"error": f"HTTP {response.status_code}: {str(e)}"}
+                return {"error": error_message}
             
             # Parse JSON response
             try:
                 # Handle empty response (common for successful operations)
                 if not response.text.strip():
+                    success = True
                     return {"success": True, "message": "Operation completed successfully"}
                 
                 response_data = response.json()
+                success = True
                 return response_data
             except json.JSONDecodeError as e:
+                error_message = f"Invalid JSON response: {e}"
                 logger.error(f"Failed to parse JSON response: {e}")
                 logger.error(f"Raw response: {response.text[:500]}")  # Log first 500 chars
-                return {"error": f"Invalid JSON response: {e}"}
+                return {"error": error_message}
                 
         except requests.exceptions.Timeout:
+            error_message = "Request timed out"
             logger.error(f"HTTP request timed out after {api_timeout}s")
-            return {"error": "Request timed out"}
+            return {"error": error_message}
         except requests.exceptions.ConnectionError as e:
+            error_message = f"Connection error: {str(e)}"
             logger.error(f"HTTP connection error: {e}")
-            return {"error": f"Connection error: {str(e)}"}
+            return {"error": error_message}
         except Exception as e:
+            error_message = str(e)
             logger.error(f"HTTP request failed: {str(e)}")
             return {"error": str(e)}
+        finally:
+            # Record performance metrics
+            duration_ms = (time.time() - start_time) * 1000
+            try:
+                metrics_tracker = get_metrics_tracker()
+                metrics_tracker.record_api_call(
+                    endpoint=endpoint,
+                    method=method,
+                    duration_ms=duration_ms,
+                    status_code=status_code,
+                    success=success,
+                    error_message=error_message
+                )
+            except Exception as metrics_err:
+                logger.debug(f"Failed to record metrics: {metrics_err}")
     
     async def authenticate(self) -> bool:
         """
@@ -6299,6 +6330,7 @@ class TopStepXTradingBot:
         print("  stop <symbol> <side> <quantity> <price> - Place stop order")
         print("  trail <symbol> <side> <quantity> <trail_amount> - Place trailing stop")
         print("  positions - Show open positions")
+        print("  metrics - Show performance metrics and system stats")
         print("  orders - Show open orders")
         print("  close <position_id> [quantity] - Close position")
         print("  cancel <order_id> - Cancel order")
@@ -6385,6 +6417,26 @@ class TopStepXTradingBot:
                 elif command_lower == "accounts":
                     accounts = await self.list_accounts()
                     self.display_accounts(accounts)
+                
+                elif command_lower == "metrics":
+                    # Display performance metrics
+                    try:
+                        metrics_tracker = get_metrics_tracker()
+                        metrics_tracker.print_report()
+                        
+                        # Also print JSON summary for programmatic access
+                        report = metrics_tracker.get_full_report()
+                        print(f"\n📊 Summary: {report['api']['total_calls']} API calls, "
+                              f"{report['system']['memory_mb']} MB memory, "
+                              f"{report['system']['cpu_percent']}% CPU")
+                        
+                        # Show cache performance if available
+                        if report['cache']:
+                            for cache_name, metrics in report['cache'].items():
+                                print(f"💾 {cache_name}: {metrics['hit_rate']} hit rate")
+                    except Exception as e:
+                        print(f"❌ Failed to display metrics: {e}")
+                        logger.error(f"Metrics display error: {e}")
                 
                 elif command_lower == "switch_account" or command_lower.startswith("switch_account "):
                     # Switch to a different account without closing the bot
