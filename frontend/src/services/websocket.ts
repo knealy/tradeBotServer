@@ -97,7 +97,7 @@ class WebSocketService {
   }
 
   isConnected(): boolean {
-    return this.socket?.readyState === WebSocket.OPEN ?? false
+    return this.socket?.readyState === WebSocket.OPEN || false
   }
 }
 

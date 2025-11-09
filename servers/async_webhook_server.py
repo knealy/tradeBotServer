@@ -594,8 +594,8 @@ class AsyncWebhookServer:
         logger.info("✅ Background tasks started")
     
     async def _submit_periodic_tasks(self):
-        """Submit periodic background tasks."""
-        # Check order fills every 30 seconds (CRITICAL priority)
+        """Start periodic background tasks as independent coroutines."""
+        # Check order fills every 30 seconds (runs as background task)
         async def check_fills():
             while True:
                 try:
@@ -605,16 +605,11 @@ class AsyncWebhookServer:
                     logger.error(f"Fill check error: {e}")
                     await asyncio.sleep(60)
         
-        # Wrap in a callable that returns the coroutine
-        def check_fills_wrapper():
-            return check_fills()
+        # Start as background task (not in task queue - infinite loops don't work there)
+        asyncio.create_task(check_fills())
+        logger.debug("✅ Started periodic fill check task")
         
-        await self.task_queue.submit_critical(
-            check_fills_wrapper,
-            task_id="periodic_fill_check"
-        )
-        
-        # Update account balance every 60 seconds (HIGH priority)
+        # Update account balance every 60 seconds
         async def update_balance():
             while True:
                 try:
@@ -624,27 +619,17 @@ class AsyncWebhookServer:
                     logger.error(f"Balance update error: {e}")
                     await asyncio.sleep(120)
         
-        def update_balance_wrapper():
-            return update_balance()
+        asyncio.create_task(update_balance())
+        logger.debug("✅ Started periodic balance update task")
         
-        await self.task_queue.submit_high(
-            update_balance_wrapper,
-            task_id="periodic_balance_update"
-        )
-        
-        # Print task queue stats every 5 minutes (LOW priority)
+        # Print task queue stats every 5 minutes
         async def print_stats():
             while True:
                 await asyncio.sleep(300)
                 self.task_queue.print_stats()
         
-        def print_stats_wrapper():
-            return print_stats()
-        
-        await self.task_queue.submit_low(
-            print_stats_wrapper,
-            task_id="periodic_stats"
-        )
+        asyncio.create_task(print_stats())
+        logger.debug("✅ Started periodic stats task")
     
     async def stop_background_tasks(self):
         """Stop all background tasks."""
