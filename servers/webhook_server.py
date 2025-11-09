@@ -909,7 +909,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         """Handle API requests"""
         try:
             # Import dashboard API
-            from dashboard import DashboardAPI
+            from servers.dashboard import DashboardAPI
             from auth import extract_token_from_request, validate_token
             import asyncio
             import os
@@ -2687,7 +2687,7 @@ class WebhookServer:
                 self.websocket_server = None
                 return
                 
-            from websocket_server import WebSocketServer
+            from servers.websocket_server import WebSocketServer
             # Use the same port as the main server for Railway compatibility
             websocket_port = int(os.getenv('WEBSOCKET_PORT', str(self.port)))
             self.websocket_server = WebSocketServer(

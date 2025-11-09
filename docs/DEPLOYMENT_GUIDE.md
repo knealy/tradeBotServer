@@ -122,7 +122,7 @@ python3 test_fixed_system.py
 #### **Step 3: Start Webhook Server**
 ```bash
 # Start with fixed settings
-python3 start_webhook.py --position-size 3
+python3 servers/start_webhook.py --position-size 3
 ```
 
 ---

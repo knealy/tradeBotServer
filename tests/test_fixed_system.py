@@ -15,7 +15,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from trading_bot import TopStepXTradingBot
-from webhook_server import WebhookServer
+from servers.webhook_server import WebhookServer
 
 # Configure logging
 logging.basicConfig(

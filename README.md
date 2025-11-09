@@ -229,14 +229,23 @@ python3 test_native_methods.py
 ```
 projectXbot/
 ├── trading_bot.py              # Main trading bot
-├── webhook_server.py           # TradingView webhook server
-├── test_webhook.py            # Webhook testing suite
-├── test_native_methods.py      # Native API testing
+├── servers/                    # Server modules
+│   ├── webhook_server.py       # TradingView webhook server
+│   ├── start_webhook.py        # Webhook server startup script
+│   ├── async_webhook_server.py # Async webhook server
+│   ├── dashboard.py           # Dashboard API
+│   └── websocket_server.py     # WebSocket server
+├── core/                       # Core modules
+│   ├── account_tracker.py     # Account tracking
+│   ├── discord_notifier.py    # Discord notifications
+│   └── sdk_adapter.py         # SDK adapter
+├── tests/                      # Test suite
+│   ├── test_webhook.py        # Webhook testing
+│   └── test_native_methods.py # Native API testing
 ├── load_env.py                # Environment variable loader
 ├── setup_env.sh              # Environment setup script
 ├── requirements.txt           # Python dependencies
-├── README.md                 # This file
-└── mom_current.pine           # TradingView Pine Script
+└── README.md                 # This file
 ```
 
 ## 📚 Documentation

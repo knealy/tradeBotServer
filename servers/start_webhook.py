@@ -18,7 +18,7 @@ import logging
 import argparse
 
 from trading_bot import TopStepXTradingBot
-from webhook_server import WebhookServer
+from servers.webhook_server import WebhookServer
 
 
 logging.basicConfig(

@@ -92,7 +92,7 @@ def main():
     
     # Import and run async server
     try:
-        from async_webhook_server import main as async_main
+        from servers.async_webhook_server import main as async_main
         asyncio.run(async_main())
     except KeyboardInterrupt:
         logger.info("\n🛑 Received shutdown signal")

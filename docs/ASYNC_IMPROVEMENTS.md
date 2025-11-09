@@ -155,7 +155,7 @@ Memory: 250MB ✅ 50% reduction
 ### **Start Async Server:**
 ```bash
 # New async server (recommended)
-python start_async_webhook.py
+python servers/start_async_webhook.py
 
 # Configuration (environment variables)
 export WEBHOOK_HOST=0.0.0.0
@@ -295,17 +295,17 @@ curl http://localhost:8080/metrics | jq '.task_queue'
 ### **Option A: New Deployments**
 Use async server by default:
 ```bash
-python start_async_webhook.py
+python servers/start_async_webhook.py
 ```
 
 ### **Option B: Existing Deployments**
 Keep old server, test async in parallel:
 ```bash
 # Old server on port 8080
-python start_webhook.py --port 8080
+python servers/start_webhook.py --port 8080
 
 # New async server on port 8081
-WEBHOOK_PORT=8081 python start_async_webhook.py
+WEBHOOK_PORT=8081 python servers/start_async_webhook.py
 ```
 
 Test with both, then switch fully to async.
@@ -314,10 +314,10 @@ Test with both, then switch fully to async.
 Update `Procfile` or start command:
 ```
 # Old
-web: python start_webhook.py
+web: python servers/start_webhook.py
 
 # New (recommended)
-web: python start_async_webhook.py
+web: python servers/start_async_webhook.py
 ```
 
 ---

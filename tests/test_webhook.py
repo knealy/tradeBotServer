@@ -237,7 +237,7 @@ def test_webhook_server_connection(webhook_url: str = "http://localhost:8080/"):
     except requests.exceptions.RequestException as e:
         print(f"❌ Webhook server is not running: {str(e)}")
         print("💡 Make sure to start the webhook server first:")
-        print("   python3 webhook_server.py")
+        print("   python3 servers/start_webhook.py")
         return False
 
 def main():
