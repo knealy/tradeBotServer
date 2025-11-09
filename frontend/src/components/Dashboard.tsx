@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useQuery } from 'react-query'
+import { useQuery, useQueryClient } from 'react-query'
 import { accountApi, metricsApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import type { Account, PerformanceMetrics } from '../types'
@@ -11,6 +11,7 @@ import PerformanceChart from './PerformanceChart'
 export default function Dashboard() {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected')
+  const queryClient = useQueryClient()
 
   // Fetch accounts (less frequent - balances don't change that often)
   const { data: accounts = [] } = useQuery('accounts', accountApi.getAccounts, {
@@ -37,30 +38,37 @@ export default function Dashboard() {
   // WebSocket connection for real-time updates
   useEffect(() => {
     let checkConnection: NodeJS.Timeout | null = null
+    let isComponentMounted = true
     
-    // Connect WebSocket
-    wsService.connect()
+    // Connect WebSocket only if not already connected
+    if (!wsService.isConnected()) {
+      wsService.connect()
+    }
     
-    // Handle WebSocket messages
+    // Handle WebSocket messages with React Query cache invalidation
     const handleAccountUpdate = (data: any) => {
-      console.log('Account update via WebSocket:', data)
-      // Invalidate React Query cache to refetch
-      // The query will automatically refetch due to refetchInterval
+      if (!isComponentMounted) return
+      console.log('✅ Account update via WebSocket:', data)
+      queryClient.invalidateQueries(['accountInfo'])
+      queryClient.invalidateQueries(['accounts'])
     }
 
     const handleMetricsUpdate = (data: any) => {
-      console.log('Metrics update via WebSocket:', data)
-      // Invalidate React Query cache to refetch
+      if (!isComponentMounted) return
+      console.log('✅ Metrics update via WebSocket:', data)
+      queryClient.invalidateQueries(['metrics'])
     }
 
     const handlePositionUpdate = (data: any) => {
-      console.log('Position update via WebSocket:', data)
-      // Invalidate React Query cache to refetch
+      if (!isComponentMounted) return
+      console.log('✅ Position update via WebSocket:', data)
+      queryClient.invalidateQueries(['positions'])
     }
 
     const handleAccountsUpdate = (data: any) => {
-      console.log('Accounts update via WebSocket:', data)
-      // Invalidate React Query cache to refetch
+      if (!isComponentMounted) return
+      console.log('✅ Accounts update via WebSocket:', data)
+      queryClient.invalidateQueries(['accounts'])
     }
 
     // Register event handlers
@@ -71,10 +79,13 @@ export default function Dashboard() {
 
     // Check connection status periodically
     checkConnection = setInterval(() => {
-      setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
+      if (isComponentMounted) {
+        setConnectionStatus(wsService.isConnected() ? 'connected' : 'disconnected')
+      }
     }, 1000)
 
     return () => {
+      isComponentMounted = false
       if (checkConnection) {
         clearInterval(checkConnection)
       }
@@ -83,7 +94,7 @@ export default function Dashboard() {
       wsService.off('metrics_update', handleMetricsUpdate)
       wsService.off('position_update', handlePositionUpdate)
       wsService.off('accounts_update', handleAccountsUpdate)
-      wsService.disconnect()
+      // Don't disconnect - keep connection alive for other components
     }
   }, [])
 
