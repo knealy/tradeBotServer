@@ -269,10 +269,23 @@ async def test_performance():
     # Recommendations
     print("💡 Recommendations:")
     if db:
+        # For remote databases (Railway), account for network latency
+        # Local DB: <10ms, Remote DB: 50-250ms is normal
+        is_remote = 'proxy.rlwy.net' in str(os.getenv('PUBLIC_DATABASE_URL', '')) or 'railway' in str(os.getenv('DATABASE_URL', ''))
+        
         if warm_duration < 10:
-            print("   ✅ Excellent! Database cache is working perfectly")
+            print("   ✅ Excellent! Database cache is working perfectly (local DB)")
         elif warm_duration < 50:
             print("   ✅ Good! Database cache is providing significant speedup")
+        elif warm_duration < 300 and is_remote:
+            # Remote database - network latency is expected
+            improvement_pct = ((cold_duration - warm_duration) / cold_duration * 100) if cold_duration > 0 else 0
+            if improvement_pct > 50:
+                print(f"   ✅ Excellent! Remote database cache working well ({improvement_pct:.1f}% faster)")
+                print("   💡 200-250ms is normal for remote databases (network latency)")
+                print("   💡 Still much faster than API calls (~600ms)")
+            else:
+                print(f"   ⚠️  Cache working but improvement is modest ({improvement_pct:.1f}%)")
         else:
             print("   ⚠️  Cache may not be working optimally - check database connection")
     else:
