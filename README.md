@@ -170,7 +170,7 @@ Uses dual moving average crossovers to ride strong trends.
 **Best for**: Trending markets  
 **Enable in .env**: `TREND_FOLLOWING_ENABLED=true`
 
-See **[MODULAR_STRATEGY_GUIDE.md](MODULAR_STRATEGY_GUIDE.md)** for complete strategy documentation.
+See **[MODULAR_STRATEGY_GUIDE.md](docs/MODULAR_STRATEGY_GUIDE.md)** for complete strategy documentation.
 
 ---
 
@@ -241,38 +241,42 @@ projectXbot/
 
 ## 📚 Documentation
 
+**📖 Start Here**: **[docs/START_HERE.md](docs/START_HERE.md)** - Quick navigation guide for all documentation
+
 ### **Getting Started**
-- **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Complete testing guide (local with Docker, Railway)
-- **[POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md)** - Database setup and configuration
-- **[ENV_CONFIGURATION.md](ENV_CONFIGURATION.md)** - All environment variables explained
+- **[docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md)** - Complete testing guide (local with Docker, Railway)
+- **[docs/POSTGRESQL_SETUP.md](docs/POSTGRESQL_SETUP.md)** - Database setup and configuration
+- **[docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md)** - All environment variables explained
 
 ### **Architecture & Design**
-- **[CURRENT_ARCHITECTURE.md](CURRENT_ARCHITECTURE.md)** - Complete system architecture overview
-- **[COMPREHENSIVE_ROADMAP.md](COMPREHENSIVE_ROADMAP.md)** - Project roadmap, current status, future plans
-- **[TECH_STACK_ANALYSIS.md](TECH_STACK_ANALYSIS.md)** - Tech stack comparison and migration plans
+- **[docs/CURRENT_ARCHITECTURE.md](docs/CURRENT_ARCHITECTURE.md)** - Complete system architecture overview
+- **[docs/COMPREHENSIVE_ROADMAP.md](docs/COMPREHENSIVE_ROADMAP.md)** - Project roadmap, current status, future plans
+- **[docs/TECH_STACK_ANALYSIS.md](docs/TECH_STACK_ANALYSIS.md)** - Tech stack comparison and migration plans
+
+### **Recent Updates**
+- **[docs/RECENT_CHANGES.md](docs/RECENT_CHANGES.md)** - Last 3 weeks of development (Nov 2025)
+- **[docs/problems.md](docs/problems.md)** - Completed tasks and next priorities
 
 ### **Performance & Optimization**
-- **[ASYNC_IMPROVEMENTS.md](ASYNC_IMPROVEMENTS.md)** - Async webhook server & task queue
-- **[DATABASE_ARCHITECTURE.md](DATABASE_ARCHITECTURE.md)** - Database schema and caching strategy
+- **[docs/DATABASE_ARCHITECTURE.md](docs/DATABASE_ARCHITECTURE.md)** - Database schema and caching strategy
 
 ### **Trading Strategies**
-- **[OVERNIGHT_STRATEGY_GUIDE.md](OVERNIGHT_STRATEGY_GUIDE.md)** - Overnight range breakout guide
-- **[MODULAR_STRATEGY_GUIDE.md](MODULAR_STRATEGY_GUIDE.md)** - Strategy system documentation
-- **[STRATEGY_IMPROVEMENTS.md](STRATEGY_IMPROVEMENTS.md)** - Strategy optimization recommendations
+- **[docs/OVERNIGHT_STRATEGY_GUIDE.md](docs/OVERNIGHT_STRATEGY_GUIDE.md)** - Overnight range breakout guide
+- **[docs/MODULAR_STRATEGY_GUIDE.md](docs/MODULAR_STRATEGY_GUIDE.md)** - Strategy system documentation
+- **[docs/STRATEGY_IMPROVEMENTS.md](docs/STRATEGY_IMPROVEMENTS.md)** - Strategy optimization recommendations
 
 ### **Deployment**
-- **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Railway deployment instructions
+- **[docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md)** - Railway deployment instructions
 
 ### **Development**
-- **[ACTION_PLAN.md](ACTION_PLAN.md)** - Quick reference action plan
-- **[CLEANUP_PLAN.md](CLEANUP_PLAN.md)** - Code cleanup and organization
+- **[docs/CLEANUP_PLAN.md](docs/CLEANUP_PLAN.md)** - Code cleanup and organization
 
 ---
 
 ## 🔧 Configuration Files
 
 ### **Environment Variables**
-See **[ENV_CONFIGURATION.md](ENV_CONFIGURATION.md)** for complete documentation.
+See **[docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md)** for complete documentation.
 
 **Core**:
 - `PROJECT_X_API_KEY` - Your TopStepX API key
@@ -290,7 +294,7 @@ See **[ENV_CONFIGURATION.md](ENV_CONFIGURATION.md)** for complete documentation.
 - `OVERNIGHT_ENABLED` - Enable overnight range strategy
 - `OVERNIGHT_SYMBOL` - Symbol to trade (e.g., MNQ)
 - `OVERNIGHT_POSITION_SIZE` - Position size in contracts
-- See **[ENV_CONFIGURATION.md](ENV_CONFIGURATION.md)** for all strategy variables
+- See **[docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md)** for all strategy variables
 
 ### **Official SDK Docs**
 - Installation: https://project-x-py.readthedocs.io/en/latest/installation.html

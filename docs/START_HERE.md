@@ -9,7 +9,7 @@ This guide helps you navigate the comprehensive documentation and get started qu
 ## 📋 Quick Links (What Do You Want to Do?)
 
 ### **Just Want to Start Trading?**
-→ Read **[README.md](README.md)** sections:
+→ Read **[README.md](../README.md)** sections:
 - Quick Start (installation + configuration)
 - Interactive Commands
 - Trading Strategies
@@ -99,7 +99,7 @@ This guide helps you navigate the comprehensive documentation and get started qu
 ## 🎯 Recommended Learning Path
 
 ### **Beginner** (Total: ~2 hours)
-1. **[README.md](README.md)** (10 min) - Overview
+1. **[README.md](../README.md)** (10 min) - Overview
 2. **[CURRENT_ARCHITECTURE.md](CURRENT_ARCHITECTURE.md)** (30 min) - Understand system
 3. **[TESTING_GUIDE.md](TESTING_GUIDE.md)** (60 min) - Test locally
 4. **[OVERNIGHT_STRATEGY_GUIDE.md](OVERNIGHT_STRATEGY_GUIDE.md)** (20 min) - Learn strategy
@@ -128,7 +128,7 @@ This guide helps you navigate the comprehensive documentation and get started qu
 ### **Core Documentation**
 | File | Purpose | Length | Priority |
 |------|---------|--------|----------|
-| **[README.md](README.md)** | Project overview, quick start | 300 lines | 🔴 Must Read |
+| **[README.md](../README.md)** | Project overview, quick start | 300 lines | 🔴 Must Read |
 | **[CURRENT_ARCHITECTURE.md](CURRENT_ARCHITECTURE.md)** | System architecture | 1000 lines | 🔴 Must Read |
 | **[TESTING_GUIDE.md](TESTING_GUIDE.md)** | Testing procedures | 1000 lines | 🟡 Should Read |
 | **[COMPREHENSIVE_ROADMAP.md](COMPREHENSIVE_ROADMAP.md)** | Project roadmap | 1500 lines | 🟢 Optional |
@@ -173,7 +173,7 @@ PROJECT_X_USERNAME=your_username
 python trading_bot.py
 ```
 
-**See**: [README.md](README.md) → Quick Start
+**See**: [README.md](../README.md) → Quick Start
 
 ---
 
@@ -300,7 +300,7 @@ curl https://your-app.railway.app/metrics
 ## 🎉 Quick Wins
 
 ### **5 Minutes**
-1. Read [README.md](README.md)
+1. Read [README.md](../README.md)
 2. Run `python trading_bot.py`
 3. Try `metrics` command
 
@@ -364,5 +364,5 @@ curl https://your-app.railway.app/metrics
 
 ---
 
-**Ready to start? Begin with [README.md](README.md) or [TESTING_GUIDE.md](TESTING_GUIDE.md)!** 🚀
+**Ready to start? Begin with [README.md](../README.md) or [TESTING_GUIDE.md](TESTING_GUIDE.md)!** 🚀
 

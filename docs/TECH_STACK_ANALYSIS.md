@@ -37,12 +37,12 @@
 │  │  - SignalR connections                   │  │
 │  └──────────────────────────────────────────┘  │
 │                                                 │
-│  ┌──────────────────────────────────────────┐  │
-│  │     Strategy System (Python)             │  │
-│  │  - 3 strategies (modular)                │  │
-│  │  - BaseStrategy class                    │  │
-│  │  - StrategyManager                       │  │
-│  └──────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────┐   │
+│  │     Strategy System (Python)             │   │
+│  │  - 3 strategies (modular)                │   │ 
+│  │  - BaseStrategy class                    │   │
+│  │  - StrategyManager                       │   │
+│  └──────────────────────────────────────────┘   │
 │                                                 │
 └─────────────────────────────────────────────────┘
          │                    │
@@ -135,13 +135,13 @@
 
 ### Performance Gains
 
-| Metric | Python | Go | Improvement |
-|--------|--------|----|----|
-| API Calls/sec | ~100 | ~1,000 | 10x |
-| WebSocket Connections | 100 | 10,000 | 100x |
-| Memory Usage | 150MB | 30MB | 5x |
-| Startup Time | 5s | 0.1s | 50x |
-| JSON Parsing | 10ms | 1ms | 10x |
+| Metric           | Python | Go | Improvement |
+|------------------|--------|----|----|
+| API Calls/sec    | ~100 | ~1,000 | 10x |
+| WebSocket Conn's | 100 | 10,000 | 100x |
+| Memory Usage     | 150MB | 30MB | 5x |
+| Startup Time     | 5s | 0.1s | 50x |
+| JSON Parsing     | 10ms | 1ms | 10x |
 
 ---
 
