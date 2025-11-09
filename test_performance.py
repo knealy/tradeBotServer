@@ -32,7 +32,14 @@ try:
     from infrastructure.performance_metrics import get_metrics_tracker
 except ImportError as e:
     print(f"❌ Import error: {e}")
-    print("Make sure you're running from the project root directory")
+    print()
+    print("💡 Troubleshooting:")
+    print("   1. Make sure you're in the project root directory")
+    print("   2. Activate your virtual environment:")
+    print("      source .venv/bin/activate")
+    print("   3. Install dependencies:")
+    print("      pip install -r requirements.txt")
+    print()
     sys.exit(1)
 
 
@@ -51,8 +58,23 @@ async def test_performance():
         print("✅ Database: PostgreSQL connected")
         db_type = "PostgreSQL"
     except Exception as e:
+        error_msg = str(e)
         print(f"⚠️  Database: Not available (using in-memory cache only)")
-        print(f"   Reason: {e}")
+        print(f"   Reason: {error_msg}")
+        
+        # Provide helpful guidance
+        if "railway.internal" in error_msg or "could not translate host name" in error_msg:
+            print()
+            print("💡 Tip: You're using Railway's internal database URL.")
+            print("   To test locally, get the EXTERNAL DATABASE_URL from Railway Dashboard:")
+            print("   1. Go to https://railway.app")
+            print("   2. Your Project → PostgreSQL Service → Variables")
+            print("   3. Copy the DATABASE_URL (should have 'containers-us-west-xx.railway.app')")
+            print("   4. Run: export DATABASE_URL='<paste-url>'")
+            print()
+            print("   Or test without database (in-memory cache):")
+            print("   unset DATABASE_URL")
+        
         db_type = "In-Memory"
     
     print()

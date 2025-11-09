@@ -27,6 +27,28 @@
 
 ## ⚡ Quick Test (Recommended)
 
+### **Prerequisites**
+
+**Before running the test, make sure:**
+
+1. **Activate your virtual environment:**
+   ```bash
+   source .venv/bin/activate
+   ```
+
+2. **Install dependencies (if not already installed):**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Set your API credentials (if not in .env):**
+   ```bash
+   export PROJECT_X_API_KEY="your-api-key"
+   export PROJECT_X_USERNAME="your-username"
+   ```
+
+---
+
 ### **Option 1: Test on Railway (Easiest)**
 
 **Zero setup - just run the test script:**
