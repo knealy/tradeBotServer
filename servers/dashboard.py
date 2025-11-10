@@ -592,9 +592,13 @@ class DashboardAPI:
                         if symbol and trade.get('symbol', '').upper() != symbol.upper():
                             continue
                         
+                        # Create unique ID from entry+exit order IDs to avoid duplicates
+                        # (one exit order can close multiple partial positions)
+                        unique_id = f"{trade.get('entry_order_id')}-{trade.get('exit_order_id')}"
+                        
                         normalized = {
-                            "id": str(trade.get('exit_order_id') or int(trade_ts.timestamp())),
-                            "order_id": f"{trade.get('entry_order_id')}-{trade.get('exit_order_id')}",
+                            "id": unique_id,
+                            "order_id": unique_id,
                             "symbol": trade.get('symbol', 'UNKNOWN').upper(),
                             "side": trade.get('side', 'UNKNOWN').upper(),
                             "quantity": float(trade.get('quantity', 0)),

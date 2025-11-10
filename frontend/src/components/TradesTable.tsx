@@ -76,10 +76,12 @@ export default function TradesTable() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/60">
-              {trades.map((trade: Trade) => {
+              {trades.map((trade: Trade, index: number) => {
                 const netPnlClass = trade.net_pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                // Use combination of fields for unique key since IDs can be duplicated in consolidated trades
+                const uniqueKey = `${trade.id}-${trade.timestamp}-${index}`
                 return (
-                  <tr key={trade.id} className="hover:bg-slate-700/40 transition-colors">
+                  <tr key={uniqueKey} className="hover:bg-slate-700/40 transition-colors">
                     <td className="py-2 text-slate-300">{formatterDate.format(new Date(trade.timestamp))}</td>
                     <td className="py-2 font-semibold text-slate-100">{trade.symbol}</td>
                     <td className={`py-2 uppercase ${trade.side === 'BUY' ? 'text-green-300' : 'text-red-300'}`}> 
