@@ -27,10 +27,15 @@ const getWebSocketUrl = () => {
 
 const WS_URL = getWebSocketUrl()
 
-console.log('🔧 WebSocket URL:', WS_URL, {
+const actualIsDev = import.meta.env.DEV || 
+                    window.location.hostname === 'localhost' || 
+                    window.location.hostname === '127.0.0.1'
+console.log('🔧 WebSocket Configuration:', {
+  url: WS_URL,
   hostname: window.location.hostname,
   protocol: window.location.protocol,
-  isDev: import.meta.env.DEV
+  'import.meta.env.DEV': import.meta.env.DEV,
+  'computed isDev': actualIsDev
 })
 
 class WebSocketService {

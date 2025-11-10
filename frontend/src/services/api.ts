@@ -31,10 +31,17 @@ const getApiBaseUrl = () => {
 
 const API_BASE_URL = getApiBaseUrl()
 
-console.log('🔧 API Base URL:', API_BASE_URL || '(relative - same origin)', {
+// Debug logging
+const actualIsDev = import.meta.env.DEV || 
+                    window.location.hostname === 'localhost' || 
+                    window.location.hostname === '127.0.0.1'
+console.log('🔧 API Configuration [Build: 2025-11-10T19:30]:', {
+  baseURL: API_BASE_URL || '(relative path)',
+  actualURL: API_BASE_URL || window.location.origin,
   hostname: window.location.hostname,
   origin: window.location.origin,
-  isDev: import.meta.env.DEV
+  'import.meta.env.DEV': import.meta.env.DEV,
+  'computed isDev': actualIsDev
 })
 
 const api = axios.create({
