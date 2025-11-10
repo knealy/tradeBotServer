@@ -295,6 +295,7 @@ class DashboardAPI:
         now = time.monotonic()
 
         async with lock:
+            # Check memory cache first
             entry = self._order_history_cache.get(cache_key)
             if (
                 entry
@@ -303,13 +304,38 @@ class DashboardAPI:
                 and entry['end'] >= end_dt
                 and entry['limit'] >= limit
             ):
+                logger.info(f"💾 Memory cache HIT for account {account}")
                 return entry['data']
+
+            # Try database cache (24 hour TTL)
+            if hasattr(self.trading_bot, 'db') and self.trading_bot.db:
+                try:
+                    db_cached = self.trading_bot.db.get_cached_order_history(
+                        account_id=account,
+                        start_time=start_dt,
+                        end_time=end_dt,
+                        limit=limit * 2,  # Fetch more for better cache coverage
+                        max_age_hours=24
+                    )
+                    if db_cached:
+                        # Store in memory cache too
+                        self._order_history_cache[cache_key] = {
+                            'data': db_cached,
+                            'start': start_dt,
+                            'end': end_dt,
+                            'limit': len(db_cached),
+                            'expires': now + self._order_history_ttl,
+                        }
+                        return db_cached
+                except Exception as e:
+                    logger.warning(f"DB cache lookup failed: {e}")
 
             # Expand the request range to reuse results for downstream calls
             request_start = min(start_dt, entry['start']) if entry else start_dt
             request_end = max(end_dt, entry['end']) if entry else end_dt
             fetch_limit = max(limit, entry['limit'] if entry else limit, 500)
 
+            # Fetch from API
             history = await self.trading_bot.get_order_history(
                 account_id=account,
                 limit=fetch_limit,
@@ -317,6 +343,14 @@ class DashboardAPI:
                 end_timestamp=self._format_iso(request_end),
             )
 
+            # Cache in database for long-term storage
+            if hasattr(self.trading_bot, 'db') and self.trading_bot.db and history:
+                try:
+                    self.trading_bot.db.cache_order_history(account, history)
+                except Exception as e:
+                    logger.warning(f"Failed to cache orders in DB: {e}")
+
+            # Store in memory cache
             self._order_history_cache[cache_key] = {
                 'data': history,
                 'start': request_start,

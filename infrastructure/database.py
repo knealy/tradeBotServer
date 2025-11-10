@@ -248,6 +248,22 @@ class DatabaseManager:
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
         
+        -- Order history cache (raw API responses for faster dashboard loads)
+        CREATE TABLE IF NOT EXISTS order_history_cache (
+            id SERIAL PRIMARY KEY,
+            account_id VARCHAR(50) NOT NULL,
+            order_data JSONB NOT NULL,
+            order_timestamp TIMESTAMPTZ NOT NULL,
+            cached_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_cache_account_time 
+            ON order_history_cache(account_id, order_timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_order_cache_cached_at 
+            ON order_history_cache(cached_at);
+        -- Composite index for fast lookups
+        CREATE INDEX IF NOT EXISTS idx_order_cache_lookup
+            ON order_history_cache(account_id, order_timestamp DESC, cached_at);
+        
         CREATE INDEX IF NOT EXISTS idx_trades_account 
             ON trade_history(account_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_trades_strategy 
@@ -683,6 +699,124 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"❌ Failed to save API metric: {e}")
             return False
+    
+    # ==================== Order History Cache Methods ====================
+    
+    def cache_order_history(self, account_id: str, orders: List[Dict]) -> bool:
+        """
+        Cache order history in database for faster subsequent loads.
+        
+        Args:
+            account_id: Account ID
+            orders: List of order dictionaries from API
+            
+        Returns:
+            bool: Success status
+        """
+        if not orders:
+            return True
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Prepare data for bulk insert
+                    values = []
+                    for order in orders:
+                        # Extract timestamp from order
+                        order_ts = None
+                        for key in ['updateTimestamp', 'creationTimestamp', 'timestamp']:
+                            if key in order:
+                                ts_val = order[key]
+                                if isinstance(ts_val, str):
+                                    try:
+                                        order_ts = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
+                                        break
+                                    except:
+                                        pass
+                                elif isinstance(ts_val, datetime):
+                                    order_ts = ts_val
+                                    break
+                        
+                        if not order_ts:
+                            continue
+                        
+                        values.append((
+                            account_id,
+                            json.dumps(order),
+                            order_ts
+                        ))
+                    
+                    if not values:
+                        return True
+                    
+                    # Bulk insert with ON CONFLICT DO NOTHING to avoid duplicates
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO order_history_cache (account_id, order_data, order_timestamp)
+                        VALUES %s
+                        ON CONFLICT DO NOTHING
+                        """,
+                        values,
+                        page_size=100
+                    )
+                    
+                    logger.info(f"✅ Cached {len(values)} orders for account {account_id}")
+                    return True
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to cache order history: {e}")
+            return False
+    
+    def get_cached_order_history(
+        self,
+        account_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int = 1000,
+        max_age_hours: int = 24
+    ) -> Optional[List[Dict]]:
+        """
+        Retrieve cached order history from database.
+        
+        Args:
+            account_id: Account ID
+            start_time: Start timestamp
+            end_time: End timestamp
+            limit: Maximum orders to return
+            max_age_hours: Maximum cache age in hours
+            
+        Returns:
+            List of order dictionaries or None if cache miss/stale
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT order_data, order_timestamp, cached_at
+                        FROM order_history_cache
+                        WHERE account_id = %s
+                          AND order_timestamp >= %s
+                          AND order_timestamp <= %s
+                          AND cached_at > NOW() - INTERVAL '%s hours'
+                        ORDER BY order_timestamp DESC
+                        LIMIT %s
+                    """, (account_id, start_time, end_time, max_age_hours, limit))
+                    
+                    rows = cur.fetchall()
+                    
+                    if not rows:
+                        return None
+                    
+                    # Parse JSON order data
+                    orders = [row['order_data'] for row in rows]
+                    
+                    logger.info(f"✅ DB Cache HIT: {len(orders)} orders for account {account_id}")
+                    return orders
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to get cached order history: {e}")
+            return None
     
     # ==================== Utility Methods ====================
     
