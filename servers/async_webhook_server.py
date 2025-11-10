@@ -123,6 +123,8 @@ class AsyncWebhookServer:
         
         self.app.router.add_get('/api/trades', self.handle_get_trades)
         self.app.router.add_get('/api/performance', self.handle_get_performance)
+        self.app.router.add_get('/api/performance/history', self.handle_get_performance_history)
+        self.app.router.add_get('/api/history', self.handle_get_historical_data)
         
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
@@ -446,16 +448,28 @@ class AsyncWebhookServer:
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_get_trades(self, request: web.Request) -> web.Response:
-        """Get trade history."""
+        """Get trade history with filters and pagination."""
         try:
-            start_date = request.query.get('start_date')
-            end_date = request.query.get('end_date')
-            
-            trades = await self.dashboard_api.get_trade_history(
+            params = request.rel_url.query
+            account_id = params.get('account_id')
+            start_date = params.get('start') or params.get('start_date')
+            end_date = params.get('end') or params.get('end_date')
+            symbol = params.get('symbol')
+            trade_type = params.get('type', 'filled')
+            limit = int(params.get('limit', '50'))
+            cursor = params.get('cursor')
+
+            trades = await self.dashboard_api.get_trade_history_paginated(
+                account_id=account_id,
                 start_date=start_date,
-                end_date=end_date
+                end_date=end_date,
+                symbol=symbol,
+                trade_type=trade_type,
+                limit=limit,
+                cursor=cursor,
             )
-            return web.json_response(trades)
+            status = 200 if 'error' not in trades else 400
+            return web.json_response(trades, status=status)
         except Exception as e:
             logger.error(f"Error getting trades: {e}")
             return web.json_response({"error": str(e)}, status=500)
@@ -469,6 +483,46 @@ class AsyncWebhookServer:
             return web.json_response(stats)
         except Exception as e:
             logger.error(f"Error getting performance: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_performance_history(self, request: web.Request) -> web.Response:
+        """Get cumulative performance history for charting."""
+        try:
+            params = request.rel_url.query
+            account_id = params.get('account_id')
+            interval = params.get('interval', 'day')
+            start_date = params.get('start') or params.get('start_date')
+            end_date = params.get('end') or params.get('end_date')
+            history = await self.dashboard_api.get_performance_history(
+                account_id=account_id,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            status = 200 if 'error' not in history else 400
+            return web.json_response(history, status=status)
+        except Exception as e:
+            logger.error(f"Error getting performance history: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_historical_data(self, request: web.Request) -> web.Response:
+        """Fetch historical OHLCV bars for charts."""
+        try:
+            params = request.rel_url.query
+            symbol = params.get('symbol')
+            timeframe = params.get('timeframe', '5m')
+            limit = int(params.get('limit', '300'))
+            end_time = params.get('end') or params.get('end_time')
+            data = await self.dashboard_api.get_historical_data(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                end_time=end_time,
+            )
+            status = 200 if 'error' not in data else 400
+            return web.json_response(data, status=status)
+        except Exception as e:
+            logger.error(f"Error getting historical data: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_webhook(self, request: web.Request) -> web.Response:

@@ -4,12 +4,14 @@ Provides API endpoints and WebSocket for real-time dashboard
 """
 
 import json
+import base64
 import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
+from collections import defaultdict
 
 # Add project root to Python path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,7 +27,184 @@ class DashboardAPI:
         self.trading_bot = trading_bot
         self.webhook_server = webhook_server
         self.websocket_clients = set()
-    
+        
+    # ------------------------------------------------------------------
+    # Utility Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_iso_datetime(value: Optional[str], default: Optional[datetime] = None) -> datetime:
+        """Parse ISO-8601 string into timezone-aware UTC datetime."""
+        if value:
+            try:
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                logger.debug(f"Failed to parse datetime '{value}', falling back to default")
+        return default.astimezone(timezone.utc) if default else datetime.now(timezone.utc)
+
+    @staticmethod
+    def _format_iso(dt: datetime) -> str:
+        """Return ISO formatted string in UTC."""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    @staticmethod
+    def _encode_cursor(timestamp: str, trade_id: str) -> str:
+        payload = json.dumps({"t": timestamp, "id": trade_id})
+        return base64.urlsafe_b64encode(payload.encode()).decode()
+
+    @staticmethod
+    def _decode_cursor(cursor: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not cursor:
+            return None
+        try:
+            decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+            data = json.loads(decoded)
+            return data
+        except Exception:
+            logger.warning(f"Invalid cursor provided: {cursor}")
+            return None
+
+    @staticmethod
+    def _extract_trade_timestamp(trade: Dict[str, Any]) -> Optional[datetime]:
+        for key in ['timestamp', 'fillTime', 'exit_time', 'entry_time', 'created', 'updateTime']:
+            value = trade.get(key)
+            if not value:
+                continue
+            try:
+                return DashboardAPI._parse_iso_datetime(value)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _extract_trade_pnl(trade: Dict[str, Any]) -> float:
+        for key in ['pnl', 'PnL', 'realizedPnl', 'realized_pnl', 'profitLoss', 'result', 'netPnl']:
+            if key in trade and trade[key] is not None:
+                try:
+                    return float(trade[key])
+                except Exception:
+                    continue
+        # Some records embed PnL inside metadata/description strings
+        description = trade.get('description') or trade.get('details')
+        if description and isinstance(description, str):
+            import re
+            match = re.search(r"([-+]?\d*\.?\d+)", description)
+            if match:
+                try:
+                    return float(match.group(1))
+                except Exception:
+                    pass
+        return 0.0
+
+    @staticmethod
+    def _extract_trade_fees(trade: Dict[str, Any]) -> float:
+        for key in ['fees', 'commission', 'fee', 'commissions']:
+            if key in trade and trade[key] is not None:
+                try:
+                    return float(trade[key])
+                except Exception:
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _extract_trade_symbol(trade: Dict[str, Any]) -> str:
+        for key in ['symbol', 'contractId', 'instrument', 'product']:
+            value = trade.get(key)
+            if value:
+                return str(value)
+        return 'UNKNOWN'
+
+    @staticmethod
+    def _extract_trade_side(trade: Dict[str, Any]) -> str:
+        for key in ['side', 'orderSide', 'direction']:
+            value = trade.get(key)
+            if value:
+                return str(value).upper()
+        return 'UNKNOWN'
+
+    @staticmethod
+    def _extract_trade_quantity(trade: Dict[str, Any]) -> float:
+        for key in ['quantity', 'qty', 'filledQuantity', 'orderQty']:
+            value = trade.get(key)
+            if value is not None:
+                try:
+                    return float(value)
+                except Exception:
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _extract_trade_price(trade: Dict[str, Any]) -> Optional[float]:
+        for key in ['price', 'fillPrice', 'avgPrice', 'executionPrice']:
+            value = trade.get(key)
+            if value is not None:
+                try:
+                    return float(value)
+                except Exception:
+                    continue
+        return None
+
+    @staticmethod
+    def _normalize_trade_status(trade: Dict[str, Any]) -> str:
+        status = trade.get('status') or trade.get('orderStatus') or trade.get('state')
+        if status is None:
+            return 'unknown'
+        if isinstance(status, int):
+            status_map = {
+                0: 'pending',
+                1: 'pending',
+                2: 'filled',
+                3: 'filled',
+                4: 'filled',
+                5: 'cancelled',
+                6: 'cancelled',
+                7: 'rejected',
+            }
+            return status_map.get(status, 'unknown')
+        status_str = str(status).lower()
+        if 'fill' in status_str or status_str in ['complete', 'executed', 'closed']:
+            return 'filled'
+        if 'cancel' in status_str:
+            return 'cancelled'
+        if 'reject' in status_str or 'error' in status_str:
+            return 'rejected'
+        if 'working' in status_str or 'open' in status_str or 'pending' in status_str:
+            return 'pending'
+        return status_str
+
+    @staticmethod
+    def _bucket_timestamp(dt: datetime, interval: str) -> datetime:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        interval = interval.lower()
+        if interval in ['trade', 'none']:
+            return dt
+        if interval in ['hour', '1h']:
+            return dt.replace(minute=0, second=0, microsecond=0)
+        if interval in ['week', '1w']:
+            start_of_week = dt - timedelta(days=dt.weekday())
+            return start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+        if interval in ['month', '1m']:
+            return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # Default to day
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @staticmethod
+    def _allowed_performance_intervals() -> List[str]:
+        return ['trade', 'hour', 'day', 'week', 'month']
+
+    @staticmethod
+    def _fallback_interval(interval: str) -> str:
+        interval = (interval or 'day').lower()
+        if interval not in DashboardAPI._allowed_performance_intervals():
+            return 'day'
+        return interval
+
     async def get_accounts(self) -> List[Dict[str, Any]]:
         """Get all available accounts"""
         try:
@@ -164,39 +343,136 @@ class DashboardAPI:
             logger.error(f"Error getting orders: {e}")
             return []
     
-    async def get_trade_history(self, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
-        """Get trade history with date filtering"""
+    async def get_trade_history_paginated(
+        self,
+        account_id: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        symbol: Optional[str] = None,
+        trade_type: str = 'filled',
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return paginated trade history with filters and summary."""
         try:
-            # Default to last 7 days if no dates provided
-            if not start_date:
-                start_date = (datetime.now() - timedelta(days=7)).isoformat()
-            if not end_date:
-                end_date = datetime.now().isoformat()
-            
+            account = account_id or (self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None)
+            if not account:
+                return {"error": "No account selected"}
+
+            limit = max(1, min(limit, 500))
+            now = datetime.now(timezone.utc)
+            end_dt = self._parse_iso_datetime(end_date, now)
+
+            cursor_payload = self._decode_cursor(cursor)
+            if cursor_payload and cursor_payload.get('t'):
+                end_dt = self._parse_iso_datetime(cursor_payload['t'], end_dt) - timedelta(microseconds=1)
+
+            # Default start window: last 7 days
+            default_start = end_dt - timedelta(days=7)
+            start_dt = self._parse_iso_datetime(start_date, default_start)
+            if start_dt >= end_dt:
+                start_dt = end_dt - timedelta(days=1)
+
             history = await self.trading_bot.get_order_history(
-                account_id=self.trading_bot.selected_account.get('id'),
-                start_timestamp=start_date,
-                end_timestamp=end_date,
-                limit=100
+                account_id=account,
+                limit=limit * 3,
+                start_timestamp=self._format_iso(start_dt),
+                end_timestamp=self._format_iso(end_dt),
             )
-            
-            formatted_history = []
+
+            trades_normalized: List[Dict[str, Any]] = []
             for trade in history:
-                formatted_history.append({
-                    "id": trade.get('id'),
-                    "symbol": trade.get('symbol'),
-                    "side": trade.get('side'),
-                    "quantity": trade.get('quantity'),
-                    "price": trade.get('price'),
-                    "pnl": trade.get('pnl', 0),
-                    "timestamp": trade.get('timestamp'),
-                    "status": trade.get('status')
-                })
-            
-            return formatted_history
+                trade_ts = self._extract_trade_timestamp(trade)
+                if not trade_ts:
+                    continue
+                if trade_ts < start_dt or trade_ts > end_dt:
+                    continue
+
+                normalized_status = self._normalize_trade_status(trade)
+                if trade_type != 'all' and normalized_status != trade_type.lower():
+                    continue
+
+                trade_symbol = self._extract_trade_symbol(trade)
+                if symbol and trade_symbol.upper() != symbol.upper():
+                    continue
+
+                pnl = self._extract_trade_pnl(trade)
+                fees = self._extract_trade_fees(trade)
+                quantity = self._extract_trade_quantity(trade)
+                price = self._extract_trade_price(trade)
+
+                normalized = {
+                    "id": str(trade.get('id') or trade.get('orderId') or trade.get('fillId') or trade_ts.timestamp()),
+                    "order_id": str(trade.get('orderId') or trade.get('id') or ''),
+                    "symbol": trade_symbol.upper(),
+                    "side": self._extract_trade_side(trade),
+                    "quantity": quantity,
+                    "price": price,
+                    "pnl": pnl,
+                    "fees": fees,
+                    "net_pnl": pnl - fees,
+                    "status": normalized_status,
+                    "strategy": trade.get('strategy') or trade.get('strategyName'),
+                    "timestamp": self._format_iso(trade_ts),
+                }
+                trades_normalized.append(normalized)
+
+            # Sort trades newest first
+            trades_normalized.sort(key=lambda x: x['timestamp'], reverse=True)
+
+            items = trades_normalized[:limit]
+            next_cursor = None
+            if len(trades_normalized) > limit:
+                last_item = trades_normalized[limit]
+                next_cursor = self._encode_cursor(last_item['timestamp'], last_item['id'])
+
+            totals = defaultdict(int)
+            gross_pnl = 0.0
+            net_pnl = 0.0
+            total_fees = 0.0
+            for trade in trades_normalized:
+                totals['total'] += 1
+                totals[trade['status']] += 1
+                gross_pnl += trade['pnl']
+                net_pnl += trade['net_pnl']
+                total_fees += trade['fees']
+
+            summary = {
+                "total": totals['total'],
+                "filled": totals['filled'],
+                "cancelled": totals['cancelled'],
+                "pending": totals['pending'],
+                "rejected": totals['rejected'],
+                "gross_pnl": round(gross_pnl, 2),
+                "net_pnl": round(net_pnl, 2),
+                "fees": round(total_fees, 2),
+            }
+
+            return {
+                "account_id": str(account),
+                "start": self._format_iso(start_dt),
+                "end": self._format_iso(end_dt),
+                "items": items,
+                "next_cursor": next_cursor,
+                "summary": summary,
+            }
         except Exception as e:
-            logger.error(f"Error getting trade history: {e}")
-            return []
+            logger.error(f"Error building trade history: {e}")
+            return {"error": str(e)}
+
+    async def get_trade_history(self, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
+        """Legacy helper returning just the trade list."""
+        result = await self.get_trade_history_paginated(
+            start_date=start_date,
+            end_date=end_date,
+            trade_type='filled',
+            limit=200,
+        )
+        if isinstance(result, dict) and 'items' in result:
+            return result['items']
+        if isinstance(result, dict) and 'error' in result:
+            logger.error(f"Trade history error: {result['error']}")
+        return []
     
     async def get_performance_stats(self) -> Dict[str, Any]:
         """Get performance statistics"""
@@ -338,3 +614,167 @@ class DashboardAPI:
         
         # Remove disconnected clients
         self.websocket_clients -= disconnected_clients
+
+    async def get_performance_history(
+        self,
+        account_id: Optional[str] = None,
+        interval: str = 'day',
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            account = account_id or (self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None)
+            if not account:
+                return {"error": "No account selected"}
+
+            interval = self._fallback_interval(interval)
+            now = datetime.now(timezone.utc)
+            end_dt = self._parse_iso_datetime(end_date, now)
+            default_start = end_dt - timedelta(days=90)
+            start_dt = self._parse_iso_datetime(start_date, default_start)
+            if start_dt >= end_dt:
+                start_dt = end_dt - timedelta(days=1)
+
+            trades = await self.trading_bot.get_order_history(
+                account_id=account,
+                limit=1000,
+                start_timestamp=self._format_iso(start_dt),
+                end_timestamp=self._format_iso(end_dt),
+            )
+
+            buckets: Dict[str, Dict[str, Any]] = {}
+            total_pnl = 0.0
+            total_wins = 0
+            total_losses = 0
+            win_pnl_total = 0.0
+            loss_pnl_total = 0.0
+            trade_count = 0
+
+            for trade in trades:
+                trade_ts = self._extract_trade_timestamp(trade)
+                if not trade_ts:
+                    continue
+                if trade_ts < start_dt or trade_ts > end_dt:
+                    continue
+
+                pnl = self._extract_trade_pnl(trade)
+                bucket_dt = self._bucket_timestamp(trade_ts, interval)
+                bucket_key = self._format_iso(bucket_dt)
+
+                bucket = buckets.setdefault(
+                    bucket_key,
+                    {
+                        "timestamp": bucket_key,
+                        "period_pnl": 0.0,
+                        "cumulative_pnl": 0.0,
+                        "trade_count": 0,
+                        "winning_trades": 0,
+                        "losing_trades": 0,
+                        "max_drawdown": 0.0,
+                    },
+                )
+
+                bucket['period_pnl'] += pnl
+                bucket['trade_count'] += 1
+                if pnl > 0:
+                    bucket['winning_trades'] += 1
+                    total_wins += 1
+                    win_pnl_total += pnl
+                elif pnl < 0:
+                    bucket['losing_trades'] += 1
+                    total_losses += 1
+                    loss_pnl_total += pnl
+                total_pnl += pnl
+                trade_count += 1
+
+            # Sort buckets chronologically and compute cumulative PnL/drawdown
+            points = []
+            cumulative = 0.0
+            peak = 0.0
+            max_drawdown = 0.0
+            for key in sorted(buckets.keys()):
+                bucket = buckets[key]
+                cumulative += bucket['period_pnl']
+                bucket['cumulative_pnl'] = round(cumulative, 2)
+                if cumulative > peak:
+                    peak = cumulative
+                drawdown = peak - cumulative
+                if drawdown > max_drawdown:
+                    max_drawdown = drawdown
+                bucket['max_drawdown'] = round(drawdown, 2)
+                bucket['period_pnl'] = round(bucket['period_pnl'], 2)
+                points.append(bucket)
+
+            account_info = await self.trading_bot.get_account_info()
+            current_balance = account_info.get('balance', 0.0) if isinstance(account_info, dict) else 0.0
+            start_balance = current_balance - total_pnl
+
+            summary = {
+                "start_balance": round(start_balance, 2),
+                "end_balance": round(current_balance, 2),
+                "total_pnl": round(total_pnl, 2),
+                "win_rate": round((total_wins / trade_count * 100) if trade_count else 0.0, 2),
+                "avg_win": round(win_pnl_total / total_wins, 2) if total_wins else 0.0,
+                "avg_loss": round(loss_pnl_total / total_losses, 2) if total_losses else 0.0,
+                "max_drawdown": round(max_drawdown, 2),
+                "trade_count": trade_count,
+                "winning_trades": total_wins,
+                "losing_trades": total_losses,
+            }
+
+            return {
+                "account_id": str(account),
+                "interval": interval,
+                "start": self._format_iso(start_dt),
+                "end": self._format_iso(end_dt),
+                "points": points,
+                "summary": summary,
+            }
+        except Exception as e:
+            logger.error(f"Error building performance history: {e}")
+            return {"error": str(e)}
+
+    async def get_historical_data(
+        self,
+        symbol: str,
+        timeframe: str = '5m',
+        limit: int = 300,
+        end_time: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not symbol:
+            return {"error": "Symbol is required"}
+        try:
+            limit = max(1, min(limit, 1500))
+            end_dt = self._parse_iso_datetime(end_time) if end_time else None
+            bars = await self.trading_bot.get_historical_data(
+                symbol=symbol.upper(),
+                timeframe=timeframe,
+                limit=limit,
+                end_time=end_dt,
+            )
+
+            formatted_bars = []
+            for bar in bars:
+                ts = bar.get('timestamp') or bar.get('time')
+                if isinstance(ts, datetime):
+                    ts_str = self._format_iso(ts)
+                else:
+                    ts_str = str(ts)
+                formatted_bars.append({
+                    "timestamp": ts_str,
+                    "open": float(bar.get('open', 0.0) or 0.0),
+                    "high": float(bar.get('high', 0.0) or 0.0),
+                    "low": float(bar.get('low', 0.0) or 0.0),
+                    "close": float(bar.get('close', 0.0) or 0.0),
+                    "volume": float(bar.get('volume', 0.0) or 0.0),
+                })
+
+            return {
+                "symbol": symbol.upper(),
+                "timeframe": timeframe,
+                "count": len(formatted_bars),
+                "bars": formatted_bars,
+            }
+        except Exception as e:
+            logger.error(f"Error fetching historical data: {e}")
+            return {"error": str(e)}
