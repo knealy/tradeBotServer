@@ -1,0 +1,67 @@
+# Logs
+*.log
+logs/
+trading_bot.log
+
+# Environment files
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+
+# Frontend source (we only need built files)
+frontend/src/
+frontend/node_modules/
+frontend/*.json
+frontend/*.config.*
+!frontend/package.json
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+
+# Data files
+*.csv
+*.parquet
+*.pkl
+data/
+market_data/
+
+# Account state
+.account_state.json
+positions.json
+orders.json
+

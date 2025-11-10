@@ -1,0 +1,19 @@
+[phases.setup]
+nixPkgs = ["python312", "nodejs_20", "npm"]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt",
+]
+
+[phases.build]
+cmds = [
+  "bash build.sh"
+]
+
+[start]
+cmd = "python3 servers/start_async_webhook.py"
+
+# Don't pass secrets to build phase - only runtime
+[variables]
+
