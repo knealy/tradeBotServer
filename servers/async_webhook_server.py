@@ -74,7 +74,10 @@ class AsyncWebhookServer:
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         self.dashboard_api = DashboardAPI(trading_bot, None)
         
-        # Initialize WebSocket server (port 8081)
+        # WebSocket clients (integrated into main server)
+        self.websocket_clients = set()
+        
+        # Initialize WebSocket server (port 8081) - kept for backward compatibility
         websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
         self.websocket_server = WebSocketServer(trading_bot, self, host=host, port=websocket_port)
         
@@ -145,6 +148,9 @@ class AsyncWebhookServer:
     
     def _setup_routes(self):
         """Setup HTTP routes."""
+        # WebSocket endpoint (must be first to avoid conflicts)
+        self.app.router.add_get('/ws', self.handle_websocket)
+        
         # Health & Status
         self.app.router.add_get('/health', self.handle_health)
         self.app.router.add_get('/api/health', self.handle_health)
@@ -182,6 +188,102 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/history', self.handle_get_historical_data)
         
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
+    
+    async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
+        """
+        WebSocket handler for real-time dashboard updates.
+        
+        Integrates WebSocket into the main HTTP server on the same port.
+        """
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        client_ip = request.remote
+        logger.info(f"🔌 WebSocket connected from {client_ip}. Total clients: {len(self.websocket_clients) + 1}")
+        
+        # Add client to active connections
+        self.websocket_clients.add(ws)
+        
+        try:
+            # Send welcome message with current data
+            await ws.send_json({
+                "type": "connected",
+                "message": "Connected to trading dashboard",
+                "timestamp": time.time()
+            })
+            
+            # Send initial data
+            try:
+                accounts = await self.dashboard_api.get_accounts()
+                await ws.send_json({
+                    "type": "accounts_update",
+                    "data": accounts,
+                    "timestamp": time.time()
+                })
+                
+                account_info = await self.dashboard_api.get_account_info()
+                if "error" not in account_info:
+                    await ws.send_json({
+                        "type": "account_update",
+                        "data": account_info,
+                        "timestamp": time.time()
+                    })
+                
+                positions = await self.dashboard_api.get_positions()
+                await ws.send_json({
+                    "type": "position_update",
+                    "data": positions,
+                    "timestamp": time.time()
+                })
+                
+                orders = await self.dashboard_api.get_orders()
+                await ws.send_json({
+                    "type": "order_update",
+                    "data": orders,
+                    "timestamp": time.time()
+                })
+            except Exception as e:
+                logger.error(f"Error sending initial WebSocket data: {e}")
+            
+            # Keep connection alive and handle messages
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        # Handle ping/pong for keep-alive
+                        if data.get('type') == 'ping':
+                            await ws.send_json({"type": "pong", "timestamp": time.time()})
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON from WebSocket client: {msg.data}")
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(f"WebSocket error: {ws.exception()}")
+                    break
+        
+        except Exception as e:
+            logger.error(f"WebSocket handler error: {e}")
+        
+        finally:
+            # Remove client from active connections
+            self.websocket_clients.discard(ws)
+            logger.info(f"🔌 WebSocket disconnected from {client_ip}. Total clients: {len(self.websocket_clients)}")
+        
+        return ws
+    
+    async def broadcast_to_websockets(self, message: dict):
+        """Broadcast a message to all connected WebSocket clients."""
+        if not self.websocket_clients:
+            return
+        
+        disconnected = set()
+        for ws in self.websocket_clients:
+            try:
+                await ws.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed to send WebSocket message: {e}")
+                disconnected.add(ws)
+        
+        # Clean up disconnected clients
+        self.websocket_clients -= disconnected
     
     async def handle_health(self, request: web.Request) -> web.Response:
         """
@@ -255,12 +357,11 @@ class AsyncWebhookServer:
             }
             
             # Broadcast metrics update via WebSocket
-            if hasattr(self, 'websocket_server') and self.websocket_server:
-                await self.websocket_server.broadcast({
-                    "type": "metrics_update",
-                    "data": metrics_data,
-                    "timestamp": time.time()
-                })
+            await self.broadcast_to_websockets({
+                "type": "metrics_update",
+                "data": metrics_data,
+                "timestamp": time.time()
+            })
             
             return web.json_response(metrics_data)
         
@@ -274,12 +375,11 @@ class AsyncWebhookServer:
         try:
             accounts = await self.dashboard_api.get_accounts()
             # Broadcast update via WebSocket
-            if hasattr(self, 'websocket_server') and self.websocket_server:
-                await self.websocket_server.broadcast({
-                    "type": "accounts_update",
-                    "data": accounts,
-                    "timestamp": time.time()
-                })
+            await self.broadcast_to_websockets({
+                "type": "accounts_update",
+                "data": accounts,
+                "timestamp": time.time()
+            })
             return web.json_response(accounts)
         except Exception as e:
             logger.error(f"Error getting accounts: {e}")
@@ -292,8 +392,11 @@ class AsyncWebhookServer:
             if "error" in account_info:
                 return web.json_response(account_info, status=400)
             # Broadcast update via WebSocket
-            if hasattr(self, 'websocket_server') and self.websocket_server:
-                await self.websocket_server.broadcast_account_update(account_info)
+            await self.broadcast_to_websockets({
+                "type": "account_update",
+                "data": account_info,
+                "timestamp": time.time()
+            })
             return web.json_response(account_info)
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
@@ -320,8 +423,11 @@ class AsyncWebhookServer:
         try:
             positions = await self.dashboard_api.get_positions()
             # Broadcast update via WebSocket
-            if hasattr(self, 'websocket_server') and self.websocket_server:
-                await self.websocket_server.broadcast_position_update(positions)
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": positions,
+                "timestamp": time.time()
+            })
             return web.json_response(positions)
         except Exception as e:
             logger.error(f"Error getting positions: {e}")
@@ -361,8 +467,11 @@ class AsyncWebhookServer:
         try:
             orders = await self.dashboard_api.get_orders()
             # Broadcast update via WebSocket
-            if hasattr(self, 'websocket_server') and self.websocket_server:
-                await self.websocket_server.broadcast_order_update(orders)
+            await self.broadcast_to_websockets({
+                "type": "order_update",
+                "data": orders,
+                "timestamp": time.time()
+            })
             return web.json_response(orders)
         except Exception as e:
             logger.error(f"Error getting orders: {e}")

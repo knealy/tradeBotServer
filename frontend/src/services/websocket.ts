@@ -10,14 +10,14 @@ const getWebSocketUrl = () => {
     return import.meta.env.VITE_WS_URL
   }
   
-  // If running on Railway (production), use same origin with wss://
+  // If running on Railway (production), use same origin with wss:// + /ws path
   if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}`
+    return `${protocol}//${window.location.host}/ws`
   }
   
-  // Development fallback
-  return 'ws://localhost:8081'
+  // Development fallback - connect to main server on same port
+  return 'ws://localhost:8080/ws'
 }
 
 const WS_URL = getWebSocketUrl()
