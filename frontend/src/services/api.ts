@@ -1,5 +1,15 @@
 import axios from 'axios'
-import type { Account, Position, Order, Strategy, PerformanceMetrics } from '../types'
+import type {
+  Account,
+  Position,
+  Order,
+  Strategy,
+  PerformanceMetrics,
+  Trade,
+  TradesResponse,
+  PerformanceHistoryResponse,
+  HistoricalDataResponse,
+} from '../types'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
 
@@ -20,6 +30,37 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+interface SwitchAccountResponse {
+  success: boolean
+  account?: Account
+  message?: string
+  error?: string
+}
+
+interface GetTradesOptions {
+  accountId?: string
+  start?: string
+  end?: string
+  symbol?: string
+  type?: 'all' | 'filled' | 'cancelled' | 'pending' | 'rejected'
+  limit?: number
+  cursor?: string | null
+}
+
+interface PerformanceHistoryOptions {
+  accountId?: string
+  interval?: string
+  start?: string
+  end?: string
+}
+
+interface HistoricalDataOptions {
+  symbol: string
+  timeframe?: string
+  limit?: number
+  end?: string
+}
+
 // Account API
 export const accountApi = {
   getAccounts: async (): Promise<Account[]> => {
@@ -32,9 +73,7 @@ export const accountApi = {
     return response.data
   },
 
-  switchAccount: async (
-    accountId: string
-  ): Promise<{ success: boolean; account?: Account; message?: string; error?: string }> => {
+  switchAccount: async (accountId: string): Promise<SwitchAccountResponse> => {
     const response = await api.post('/api/account/switch', { account_id: accountId })
     return response.data
   },
@@ -115,19 +154,51 @@ export const metricsApi = {
   },
 }
 
-// Trade History API
+// Trades API
 export const tradeApi = {
-  getTrades: async (startDate?: string, endDate?: string): Promise<any[]> => {
+  getTrades: async (options: GetTradesOptions = {}): Promise<TradesResponse> => {
     const params = new URLSearchParams()
-    if (startDate) params.append('start_date', startDate)
-    if (endDate) params.append('end_date', endDate)
-    
-    const response = await api.get(`/api/trades?${params.toString()}`)
+    if (options.accountId) params.append('account_id', options.accountId)
+    if (options.start) params.append('start', options.start)
+    if (options.end) params.append('end', options.end)
+    if (options.symbol) params.append('symbol', options.symbol)
+    if (options.type) params.append('type', options.type)
+    if (options.limit) params.append('limit', String(options.limit))
+    if (options.cursor) params.append('cursor', options.cursor)
+
+    const query = params.toString()
+    const response = await api.get(`/api/trades${query ? `?${query}` : ''}`)
+    return response.data
+  },
+}
+
+// Analytics API
+export const analyticsApi = {
+  getPerformanceSummary: async (): Promise<any> => {
+    const response = await api.get('/api/performance')
     return response.data
   },
 
-  getPerformance: async (): Promise<any> => {
-    const response = await api.get('/api/performance')
+  getPerformanceHistory: async (options: PerformanceHistoryOptions = {}): Promise<PerformanceHistoryResponse> => {
+    const params = new URLSearchParams()
+    if (options.accountId) params.append('account_id', options.accountId)
+    if (options.interval) params.append('interval', options.interval)
+    if (options.start) params.append('start', options.start)
+    if (options.end) params.append('end', options.end)
+
+    const query = params.toString()
+    const response = await api.get(`/api/performance/history${query ? `?${query}` : ''}`)
+    return response.data
+  },
+
+  getHistoricalData: async (options: HistoricalDataOptions): Promise<HistoricalDataResponse> => {
+    const params = new URLSearchParams()
+    params.append('symbol', options.symbol)
+    if (options.timeframe) params.append('timeframe', options.timeframe)
+    if (options.limit) params.append('limit', String(options.limit))
+    if (options.end) params.append('end', options.end)
+
+    const response = await api.get(`/api/history?${params.toString()}`)
     return response.data
   },
 }

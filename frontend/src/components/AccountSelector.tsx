@@ -29,17 +29,54 @@ export default function AccountSelector({
     {
       onSuccess: (data) => {
         if (data.success && data.account) {
-          onAccountChange(data.account)
-          
-          // Invalidate all queries to fetch data for new account
-          queryClient.invalidateQueries(['accounts'])
-          queryClient.invalidateQueries(['accountInfo'])
-          queryClient.invalidateQueries(['positions'])
-          queryClient.invalidateQueries(['orders'])
-          queryClient.invalidateQueries(['metrics'])
-          queryClient.invalidateQueries(['trades'])
-          queryClient.invalidateQueries(['performance'])
-          
+          const normalized: Account = {
+            id: data.account.id || data.account.accountId || data.account.account_id || getAccountIdentifier(data.account),
+            name: data.account.name || data.account.accountId || getAccountIdentifier(data.account),
+            status: data.account.status || 'active',
+            balance: Number(data.account.balance ?? 0),
+            currency: data.account.currency || 'USD',
+            account_type: data.account.account_type || 'unknown',
+            accountId: data.account.accountId,
+            account_id: data.account.account_id,
+            equity: data.account.equity ?? data.account.balance ?? 0,
+            dailyPnL: data.account.dailyPnL ?? data.account.daily_pnl ?? 0,
+            daily_pnl: data.account.dailyPnL ?? data.account.daily_pnl ?? 0,
+          }
+
+          onAccountChange(normalized)
+
+          // Optimistically update account info cache so UI reflects immediately
+          queryClient.setQueryData<Account>('accountInfo', normalized)
+
+          // Update accounts list balances instantly
+          queryClient.setQueryData<Account[]>(
+            'accounts',
+            (old) =>
+              old?.map((acct) =>
+                getAccountIdentifier(acct) === normalized.id
+                  ? { ...acct, balance: normalized.balance, status: normalized.status }
+                  : acct
+              ) || []
+          )
+
+          // Trigger refetch for other data sources
+          const invalidationTargets = [
+            'accounts',
+            'accountInfo',
+            'positions',
+            'orders',
+            'metrics',
+            'trades',
+            'performance',
+            'performanceHistory',
+            'historicalData',
+          ]
+          invalidationTargets.forEach((target) =>
+            queryClient.invalidateQueries({
+              predicate: (query) => query.queryKey[0] === target,
+            })
+          )
+
           setIsOpen(false)
         }
       },

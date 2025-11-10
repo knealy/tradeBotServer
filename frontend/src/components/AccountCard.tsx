@@ -8,7 +8,7 @@ interface AccountCardProps {
 }
 
 export default function AccountCard({ account, isSelected, onSelect }: AccountCardProps) {
-  const pnl = account.balance > 0 ? account.balance : 0 // This would come from account data
+  const pnl = account.dailyPnL ?? account.daily_pnl ?? 0
   const pnlColor = pnl >= 0 ? 'text-green-400' : 'text-red-400'
   const PnlIcon = pnl >= 0 ? TrendingUp : TrendingDown
 

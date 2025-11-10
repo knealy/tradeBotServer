@@ -8,6 +8,9 @@ export interface Account {
   account_type: string
   accountId?: string
   account_id?: string
+  equity?: number
+  dailyPnL?: number
+  daily_pnl?: number
 }
 
 // Position Types
@@ -83,5 +86,86 @@ export interface WebSocketMessage {
   type: 'account_update' | 'position_update' | 'order_update' | 'metrics_update' | 'error'
   data: any
   timestamp: string
+}
+
+export interface PerformanceHistoryPoint {
+  timestamp: string
+  period_pnl: number
+  cumulative_pnl: number
+  trade_count: number
+  winning_trades: number
+  losing_trades: number
+  max_drawdown: number
+}
+
+export interface PerformanceHistorySummary {
+  start_balance: number
+  end_balance: number
+  total_pnl: number
+  win_rate: number
+  avg_win: number
+  avg_loss: number
+  max_drawdown: number
+  trade_count: number
+  winning_trades: number
+  losing_trades: number
+}
+
+export interface PerformanceHistoryResponse {
+  account_id: string
+  interval: string
+  start: string
+  end: string
+  points: PerformanceHistoryPoint[]
+  summary: PerformanceHistorySummary
+}
+
+export interface Trade {
+  id: string
+  order_id: string
+  symbol: string
+  side: string
+  quantity: number
+  price?: number | null
+  pnl: number
+  fees: number
+  net_pnl: number
+  status: string
+  strategy?: string
+  timestamp: string
+}
+
+export interface TradesResponse {
+  account_id: string
+  start: string
+  end: string
+  items: Trade[]
+  next_cursor?: string | null
+  summary: {
+    total: number
+    filled: number
+    cancelled: number
+    pending: number
+    rejected: number
+    gross_pnl: number
+    net_pnl: number
+    fees: number
+  }
+}
+
+export interface HistoricalBar {
+  timestamp: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+export interface HistoricalDataResponse {
+  symbol: string
+  timeframe: string
+  count: number
+  bars: HistoricalBar[]
 }
 

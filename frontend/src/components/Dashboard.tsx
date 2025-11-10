@@ -9,6 +9,8 @@ import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
 import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
+import HistoricalPriceChart from './HistoricalPriceChart'
+import TradesTable from './TradesTable'
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
@@ -149,18 +151,20 @@ export default function Dashboard() {
 
       {/* Main Dashboard Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - Account Info & Positions */}
+        {/* Left Column - Account Info & Charts */}
         <div className="lg:col-span-2 space-y-6">
           {accountInfo && (
             <AccountCard account={accountInfo} isSelected={true} />
           )}
-          <PositionsOverview />
           <PerformanceChart />
+          <HistoricalPriceChart />
+          <PositionsOverview />
         </div>
 
-        {/* Right Column - Metrics */}
+        {/* Right Column - Metrics and Trades */}
         <div className="space-y-6">
           {metrics && <MetricsCard metrics={metrics} />}
+          <TradesTable />
         </div>
       </div>
     </div>
