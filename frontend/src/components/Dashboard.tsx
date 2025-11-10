@@ -4,6 +4,7 @@ import { accountApi, metricsApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import { useAccount } from '../contexts/AccountContext'
 import { useWebSocket } from '../contexts/WebSocketContext'
+import type { Account } from '../types'
 import AccountCard from './AccountCard'
 import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
@@ -18,17 +19,27 @@ export default function Dashboard() {
   const { status: socketStatus, reconnectAttempts, lastError: socketError, reconnect: reconnectSocket } = useWebSocket()
 
   // Fetch account info (less frequent)
-  const { data: accountInfo } = useQuery('accountInfo', accountApi.getAccountInfo, {
-    enabled: !!selectedAccount,
-    refetchInterval: 15000, // Refetch every 15 seconds (was 5)
-    staleTime: 10000, // Consider data fresh for 10 seconds
-  })
+  const accountId = selectedAccount?.id
+  const { data: accountInfo } = useQuery(
+    ['accountInfo', accountId],
+    accountApi.getAccountInfo,
+    {
+      enabled: !!accountId,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    }
+  )
 
-  // Fetch metrics (less frequent)
-  const { data: metricsData } = useQuery('metrics', metricsApi.getMetrics, {
-    refetchInterval: 30000, // Refetch every 30 seconds (was 10)
-    staleTime: 20000, // Consider data fresh for 20 seconds
-  })
+  // Fetch metrics (fallback polling)
+  const { data: metricsData } = useQuery(
+    ['metrics'],
+    metricsApi.getMetrics,
+    {
+      refetchInterval: socketStatus === 'connected' ? false : 60_000,
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+    }
+  )
   
   // Extract metrics from response
   const metrics = metricsData?.performance || metricsData
@@ -37,33 +48,54 @@ export default function Dashboard() {
   useEffect(() => {
     let isComponentMounted = true
 
-    // Handle WebSocket messages with React Query cache invalidation
     const handleAccountUpdate = (data: any) => {
-      if (!isComponentMounted) return
-      console.log('✅ Account update via WebSocket:', data)
-      queryClient.invalidateQueries(['accountInfo'])
-      queryClient.invalidateQueries(['accounts'])
+      if (!isComponentMounted || !data) return
+      const normalized = {
+        id: data.account_id || data.accountId || data.id,
+        name: data.account_name || data.name,
+        status: data.status || 'active',
+        balance: Number(data.balance ?? 0),
+        currency: data.currency || 'USD',
+        account_type: data.account_type || 'unknown',
+        equity: Number(data.equity ?? data.balance ?? 0),
+        dailyPnL: Number(data.dailyPnL ?? data.daily_pnl ?? 0),
+        daily_pnl: Number(data.dailyPnL ?? data.daily_pnl ?? 0),
+      }
+
+      if (normalized.id) {
+        queryClient.setQueryData(['accountInfo', normalized.id], normalized)
+        queryClient.setQueryData<Account[]>(
+          ['accounts'],
+          (previous) =>
+            previous?.map((acct) =>
+              (acct.id || acct.accountId || acct.account_id) === normalized.id
+                ? { ...acct, ...normalized }
+                : acct
+            ) || previous
+        )
+      }
     }
 
     const handleMetricsUpdate = (data: any) => {
-      if (!isComponentMounted) return
-      console.log('✅ Metrics update via WebSocket:', data)
-      queryClient.invalidateQueries(['metrics'])
+      if (!isComponentMounted || !data) return
+      const payload = data.performance || data
+      queryClient.setQueryData(['metrics'], payload)
     }
 
     const handlePositionUpdate = (data: any) => {
-      if (!isComponentMounted) return
-      console.log('✅ Position update via WebSocket:', data)
-      queryClient.invalidateQueries(['positions'])
+      if (!isComponentMounted || !data) return
+      if (accountId) {
+        queryClient.setQueryData(['positions', accountId], data)
+      }
     }
 
     const handleAccountsUpdate = (data: any) => {
-      if (!isComponentMounted) return
-      console.log('✅ Accounts update via WebSocket:', data)
-      queryClient.invalidateQueries(['accounts'])
+      if (!isComponentMounted || !data) return
+      if (Array.isArray(data)) {
+        queryClient.setQueryData(['accounts'], data)
+      }
     }
 
-    // Register event handlers
     wsService.on('account_update', handleAccountUpdate)
     wsService.on('metrics_update', handleMetricsUpdate)
     wsService.on('position_update', handlePositionUpdate)
@@ -76,7 +108,7 @@ export default function Dashboard() {
       wsService.off('position_update', handlePositionUpdate)
       wsService.off('accounts_update', handleAccountsUpdate)
     }
-  }, [queryClient])
+  }, [queryClient, accountId])
 
   const connectionBadge = useMemo(() => {
     switch (socketStatus) {

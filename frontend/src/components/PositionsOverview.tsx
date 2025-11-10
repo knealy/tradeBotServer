@@ -1,14 +1,19 @@
 import { useQuery } from 'react-query'
 import { positionApi } from '../services/api'
 import { TrendingUp, TrendingDown } from 'lucide-react'
+import { useAccount } from '../contexts/AccountContext'
 
 export default function PositionsOverview() {
+  const { selectedAccount } = useAccount()
+  const accountId = selectedAccount?.id
+
   const { data: positions = [], isLoading } = useQuery(
-    'positions',
+    ['positions', accountId],
     positionApi.getPositions,
     {
-      refetchInterval: 10000, // Refetch every 10 seconds (was 5)
-      staleTime: 5000, // Consider data fresh for 5 seconds
+      enabled: !!accountId,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
     }
   )
 
@@ -35,12 +40,16 @@ export default function PositionsOverview() {
       <div className="space-y-3">
         {positions.map((position) => {
           const isLong = position.side === 'LONG'
-          const PnlIcon = position.unrealized_pnl >= 0 ? TrendingUp : TrendingDown
-          const pnlColor = position.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'
+          const unrealized = Number(position.unrealized_pnl ?? 0)
+          const realized = Number(position.realized_pnl ?? 0)
+          const entryPrice = Number(position.entry_price ?? 0)
+          const currentPrice = Number(position.current_price ?? entryPrice)
+          const PnlIcon = unrealized >= 0 ? TrendingUp : TrendingDown
+          const pnlColor = unrealized >= 0 ? 'text-green-400' : 'text-red-400'
 
           return (
             <div
-              key={position.id}
+              key={position.id || `${position.symbol}-${position.entry_price}`}
               className="p-4 bg-slate-700/50 rounded-lg border border-slate-600"
             >
               <div className="flex items-center justify-between mb-2">
@@ -51,30 +60,30 @@ export default function PositionsOverview() {
                     {position.side}
                   </div>
                   <span className="font-semibold">{position.symbol}</span>
-                  <span className="text-slate-400 text-sm">x{position.quantity}</span>
+                  <span className="text-slate-400 text-sm">x{Number(position.quantity ?? 0)}</span>
                 </div>
                 <div className={`flex items-center gap-1 ${pnlColor}`}>
                   <PnlIcon className="w-4 h-4" />
                   <span className="font-semibold">
-                    ${position.unrealized_pnl.toFixed(2)}
+                    ${unrealized.toFixed(2)}
                   </span>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-slate-400">Entry</p>
-                  <p className="font-semibold">${position.entry_price.toFixed(2)}</p>
+                  <p className="font-semibold">${entryPrice.toFixed(2)}</p>
                 </div>
                 <div>
                   <p className="text-slate-400">Current</p>
-                  <p className="font-semibold">${position.current_price.toFixed(2)}</p>
+                  <p className="font-semibold">${currentPrice.toFixed(2)}</p>
                 </div>
                 <div>
                   <p className="text-slate-400">Realized P&L</p>
                   <p className={`font-semibold ${
-                    position.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                    realized >= 0 ? 'text-green-400' : 'text-red-400'
                   }`}>
-                    ${position.realized_pnl.toFixed(2)}
+                    ${realized.toFixed(2)}
                   </p>
                 </div>
               </div>
