@@ -191,15 +191,28 @@ class DashboardAPI:
 
     @staticmethod
     def _extract_trade_side(trade: Dict[str, Any]) -> str:
+        """Extract side from TopStepX order data (0=BUY, 1=SELL)"""
         for key in ['side', 'orderSide', 'direction']:
             value = trade.get(key)
-            if value:
-                return str(value).upper()
+            if value is not None:
+                # TopStepX uses numeric codes: 0=BUY, 1=SELL
+                if isinstance(value, int):
+                    return 'BUY' if value == 0 else 'SELL'
+                # Handle string values
+                value_str = str(value).upper()
+                if value_str in ['BUY', 'SELL', 'LONG', 'SHORT', '0', '1']:
+                    if value_str == '0' or value_str == 'BUY' or value_str == 'LONG':
+                        return 'BUY'
+                    elif value_str == '1' or value_str == 'SELL' or value_str == 'SHORT':
+                        return 'SELL'
+                    return value_str
         return 'UNKNOWN'
 
     @staticmethod
     def _extract_trade_quantity(trade: Dict[str, Any]) -> float:
-        for key in ['quantity', 'qty', 'filledQuantity', 'orderQty']:
+        """Extract quantity from TopStepX order data"""
+        # TopStepX uses: size (order size), fillVolume (filled amount)
+        for key in ['fillVolume', 'filledQuantity', 'size', 'quantity', 'qty', 'orderQty']:
             value = trade.get(key)
             if value is not None:
                 try:
@@ -210,7 +223,9 @@ class DashboardAPI:
 
     @staticmethod
     def _extract_trade_price(trade: Dict[str, Any]) -> Optional[float]:
-        for key in ['price', 'fillPrice', 'avgPrice', 'executionPrice']:
+        """Extract price from TopStepX order data"""
+        # TopStepX uses: limitPrice (limit orders), fillPrice (filled price), avgFillPrice
+        for key in ['avgFillPrice', 'fillPrice', 'limitPrice', 'price', 'avgPrice', 'executionPrice']:
             value = trade.get(key)
             if value is not None:
                 try:
@@ -529,8 +544,12 @@ class DashboardAPI:
         trade_type: str = 'filled',
         limit: int = 50,
         cursor: Optional[str] = None,
+        consolidate: bool = True,  # Enable trade consolidation by default
     ) -> Dict[str, Any]:
-        """Return paginated trade history with filters and summary."""
+        """Return paginated trade history with filters and summary.
+        
+        If consolidate=True, uses trading_bot's logic to pair entry/exit orders
+        and calculate accurate P&L for complete trades."""
         try:
             account = account_id or (self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None)
             if not account:
@@ -557,46 +576,87 @@ class DashboardAPI:
                 limit=limit * 3,
             )
 
-            trades_normalized: List[Dict[str, Any]] = []
-            for idx, trade in enumerate(history):
-                trade_ts = self._extract_trade_timestamp(trade)
-                if not trade_ts:
-                    if idx < 3:  # Log first few for debugging
-                        logger.warning(f"Skipping trade {idx} - no timestamp. Keys: {list(trade.keys())}")
-                    continue
-                if trade_ts < start_dt or trade_ts > end_dt:
-                    continue
-
-                normalized_status = self._normalize_trade_status(trade)
-                if trade_type != 'all' and normalized_status != trade_type.lower():
-                    continue
-
-                trade_symbol = self._extract_trade_symbol(trade)
-                if symbol and trade_symbol.upper() != symbol.upper():
-                    continue
-
-                pnl = self._extract_trade_pnl(trade)
-                fees = self._extract_trade_fees(trade)
-                quantity = self._extract_trade_quantity(trade)
-                price = self._extract_trade_price(trade)
-
-                normalized = {
-                    "id": str(trade.get('id') or trade.get('orderId') or trade.get('fillId') or int(trade_ts.timestamp())),
-                    "order_id": str(trade.get('orderId') or trade.get('id') or ''),
-                    "symbol": trade_symbol.upper(),
-                    "side": self._extract_trade_side(trade),
-                    "quantity": quantity,
-                    "price": price,
-                    "pnl": pnl,
-                    "fees": fees,
-                    "net_pnl": pnl - fees,
-                    "status": normalized_status,
-                    "strategy": trade.get('strategy') or trade.get('strategyName'),
-                    "timestamp": self._format_iso(trade_ts),
-                }
-                trades_normalized.append(normalized)
+            # If consolidate=True, use trading_bot's consolidation logic to pair orders and calculate P&L
+            if consolidate and hasattr(self.trading_bot, '_consolidate_orders_into_trades'):
+                try:
+                    consolidated_trades = self.trading_bot._consolidate_orders_into_trades(history)
+                    logger.info(f"✅ Consolidated {len(history)} orders into {len(consolidated_trades)} complete trades")
+                    
+                    # Convert consolidated trades to normalized format
+                    trades_normalized: List[Dict[str, Any]] = []
+                    for trade in consolidated_trades:
+                        trade_ts = self._parse_iso_datetime(trade.get('exit_time'))
+                        if not trade_ts or trade_ts < start_dt or trade_ts > end_dt:
+                            continue
+                        
+                        if symbol and trade.get('symbol', '').upper() != symbol.upper():
+                            continue
+                        
+                        normalized = {
+                            "id": str(trade.get('exit_order_id') or int(trade_ts.timestamp())),
+                            "order_id": f"{trade.get('entry_order_id')}-{trade.get('exit_order_id')}",
+                            "symbol": trade.get('symbol', 'UNKNOWN').upper(),
+                            "side": trade.get('side', 'UNKNOWN').upper(),
+                            "quantity": float(trade.get('quantity', 0)),
+                            "price": float(trade.get('entry_price', 0)),
+                            "exit_price": float(trade.get('exit_price', 0)),
+                            "pnl": float(trade.get('pnl', 0)),
+                            "fees": 0.0,  # TopStepX doesn't provide fees in order history
+                            "net_pnl": float(trade.get('pnl', 0)),
+                            "status": "filled",
+                            "strategy": trade.get('strategy'),
+                            "timestamp": self._format_iso(trade_ts),
+                            "entry_time": self._format_iso(self._parse_iso_datetime(trade.get('entry_time'))),
+                        }
+                        trades_normalized.append(normalized)
+                    
+                    logger.info(f"📊 Normalized {len(trades_normalized)} consolidated trades")
+                except Exception as e:
+                    logger.error(f"❌ Trade consolidation failed: {e}, falling back to raw orders")
+                    consolidate = False  # Fall back to raw order processing
             
-            logger.info(f"Normalized {len(trades_normalized)} trades from {len(history)} raw orders")
+            # If not consolidating or consolidation failed, process raw orders
+            if not consolidate:
+                trades_normalized: List[Dict[str, Any]] = []
+                for idx, trade in enumerate(history):
+                    trade_ts = self._extract_trade_timestamp(trade)
+                    if not trade_ts:
+                        if idx < 3:  # Log first few for debugging
+                            logger.warning(f"Skipping trade {idx} - no timestamp. Keys: {list(trade.keys())}")
+                        continue
+                    if trade_ts < start_dt or trade_ts > end_dt:
+                        continue
+
+                    normalized_status = self._normalize_trade_status(trade)
+                    if trade_type != 'all' and normalized_status != trade_type.lower():
+                        continue
+
+                    trade_symbol = self._extract_trade_symbol(trade)
+                    if symbol and trade_symbol.upper() != symbol.upper():
+                        continue
+
+                    pnl = self._extract_trade_pnl(trade)
+                    fees = self._extract_trade_fees(trade)
+                    quantity = self._extract_trade_quantity(trade)
+                    price = self._extract_trade_price(trade)
+
+                    normalized = {
+                        "id": str(trade.get('id') or trade.get('orderId') or trade.get('fillId') or int(trade_ts.timestamp())),
+                        "order_id": str(trade.get('orderId') or trade.get('id') or ''),
+                        "symbol": trade_symbol.upper(),
+                        "side": self._extract_trade_side(trade),
+                        "quantity": quantity,
+                        "price": price,
+                        "pnl": pnl,
+                        "fees": fees,
+                        "net_pnl": pnl - fees,
+                        "status": normalized_status,
+                        "strategy": trade.get('strategy') or trade.get('strategyName'),
+                        "timestamp": self._format_iso(trade_ts),
+                    }
+                    trades_normalized.append(normalized)
+                
+                logger.info(f"📊 Normalized {len(trades_normalized)} trades from {len(history)} raw orders")
 
             # Sort trades newest first
             trades_normalized.sort(key=lambda x: x['timestamp'], reverse=True)
@@ -816,12 +876,23 @@ class DashboardAPI:
             if start_dt >= end_dt:
                 start_dt = end_dt - timedelta(days=1)
 
-            trades = await self._get_cached_order_history(
+            raw_orders = await self._get_cached_order_history(
                 account=account,
                 start_dt=start_dt,
                 end_dt=end_dt,
                 limit=1000,
             )
+
+            # Use trade consolidation for accurate P&L calculation
+            if hasattr(self.trading_bot, '_consolidate_orders_into_trades'):
+                try:
+                    trades = self.trading_bot._consolidate_orders_into_trades(raw_orders)
+                    logger.info(f"✅ Consolidated {len(raw_orders)} orders into {len(trades)} trades for performance history")
+                except Exception as e:
+                    logger.error(f"❌ Trade consolidation failed in performance history: {e}, using raw orders")
+                    trades = raw_orders
+            else:
+                trades = raw_orders
 
             buckets: Dict[str, Dict[str, Any]] = {}
             total_pnl = 0.0
@@ -832,13 +903,22 @@ class DashboardAPI:
             trade_count = 0
 
             for trade in trades:
-                trade_ts = self._extract_trade_timestamp(trade)
+                # Handle both consolidated trades (with 'exit_time') and raw orders
+                if 'exit_time' in trade:
+                    trade_ts = self._parse_iso_datetime(trade.get('exit_time'))
+                else:
+                    trade_ts = self._extract_trade_timestamp(trade)
+                
                 if not trade_ts:
                     continue
                 if trade_ts < start_dt or trade_ts > end_dt:
                     continue
 
-                pnl = self._extract_trade_pnl(trade)
+                # Handle both consolidated trades (with 'pnl') and raw orders
+                if 'pnl' in trade and isinstance(trade.get('pnl'), (int, float)):
+                    pnl = float(trade['pnl'])
+                else:
+                    pnl = self._extract_trade_pnl(trade)
                 bucket_dt = self._bucket_timestamp(trade_ts, interval)
                 bucket_key = self._format_iso(bucket_dt)
 
