@@ -888,10 +888,14 @@ class DashboardAPI:
                 try:
                     trades = self.trading_bot._consolidate_orders_into_trades(raw_orders)
                     logger.info(f"✅ Consolidated {len(raw_orders)} orders into {len(trades)} trades for performance history")
+                    # Log first few trades for debugging
+                    for i, trade in enumerate(trades[:3]):
+                        logger.info(f"  Trade {i+1}: symbol={trade.get('symbol')}, pnl={trade.get('pnl')}, exit_time={trade.get('exit_time')}")
                 except Exception as e:
                     logger.error(f"❌ Trade consolidation failed in performance history: {e}, using raw orders")
                     trades = raw_orders
             else:
+                logger.warning("⚠️ _consolidate_orders_into_trades not available, using raw orders")
                 trades = raw_orders
 
             buckets: Dict[str, Dict[str, Any]] = {}
@@ -919,6 +923,11 @@ class DashboardAPI:
                     pnl = float(trade['pnl'])
                 else:
                     pnl = self._extract_trade_pnl(trade)
+                
+                # Debug logging for first few trades
+                if trade_count < 3:
+                    logger.info(f"  Processing trade {trade_count+1}: timestamp={trade_ts}, pnl={pnl}")
+                
                 bucket_dt = self._bucket_timestamp(trade_ts, interval)
                 bucket_key = self._format_iso(bucket_dt)
 
@@ -968,6 +977,9 @@ class DashboardAPI:
 
             current_balance = await self.trading_bot.get_account_balance(account) or 0.0
             start_balance = current_balance - total_pnl
+            
+            # Log summary for debugging
+            logger.info(f"📊 Performance Summary: total_trades={trade_count}, total_pnl={round(total_pnl, 2)}, wins={total_wins}, losses={total_losses}, current_balance={current_balance}")
 
             summary = {
                 "start_balance": round(start_balance, 2),
