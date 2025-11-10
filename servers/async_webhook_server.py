@@ -29,6 +29,19 @@ from infrastructure.performance_metrics import get_metrics_tracker
 logger = logging.getLogger(__name__)
 
 
+# Middleware to add no-cache headers to prevent stale data
+@web.middleware
+async def no_cache_middleware(request: web.Request, handler):
+    """Add no-cache headers to all responses to ensure fresh data."""
+    response = await handler(request)
+    # Only add headers to API endpoints
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+
 class AsyncWebhookServer:
     """
     Async webhook server for TradingView integration.
@@ -55,7 +68,8 @@ class AsyncWebhookServer:
         self.trading_bot = trading_bot
         self.host = host
         self.port = port
-        self.app = web.Application()
+        # Create application with no-cache middleware to prevent stale data in frontend
+        self.app = web.Application(middlewares=[no_cache_middleware])
         self.task_queue = get_task_queue(max_concurrent=20)  # 20 concurrent background tasks
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         self.dashboard_api = DashboardAPI(trading_bot, None)
@@ -77,6 +91,9 @@ class AsyncWebhookServer:
         # Setup routes
         self._setup_routes()
         
+        # Setup static file serving for frontend
+        self._setup_static_routes()
+        
         # Apply CORS to all routes
         for route in list(self.app.router.routes()):
             self.cors.add(route)
@@ -87,6 +104,44 @@ class AsyncWebhookServer:
         self.webhook_count = 0
         
         logger.info(f"✅ Async webhook server initialized ({host}:{port})")
+    
+    def _setup_static_routes(self):
+        """Setup static file serving for React frontend."""
+        import os
+        from pathlib import Path
+        
+        # Determine the path to static files
+        project_root = Path(__file__).parent.parent
+        static_dir = project_root / 'static' / 'dashboard'
+        
+        if static_dir.exists():
+            logger.info(f"📂 Serving frontend from: {static_dir}")
+            
+            # Serve static files (JS, CSS, images, etc.)
+            self.app.router.add_static('/assets', static_dir / 'assets', name='assets')
+            
+            # Serve index.html for all frontend routes (React Router support)
+            async def serve_frontend(request):
+                """Serve index.html for all frontend routes."""
+                index_path = static_dir / 'index.html'
+                if index_path.exists():
+                    return web.FileResponse(index_path)
+                else:
+                    return web.Response(text="Frontend not built. Run: cd frontend && npm run build", status=404)
+            
+            # Add routes for frontend pages
+            self.app.router.add_get('/', serve_frontend)
+            self.app.router.add_get('/dashboard', serve_frontend)
+            self.app.router.add_get('/dashboard/', serve_frontend)
+            self.app.router.add_get('/dashboard/{path:.*}', serve_frontend)
+            self.app.router.add_get('/positions', serve_frontend)
+            self.app.router.add_get('/strategies', serve_frontend)
+            self.app.router.add_get('/settings', serve_frontend)
+            
+            logger.info("✅ Frontend routes configured")
+        else:
+            logger.warning(f"⚠️  Frontend not built at {static_dir}")
+            logger.warning("   Run: cd frontend && npm run build")
     
     def _setup_routes(self):
         """Setup HTTP routes."""

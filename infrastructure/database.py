@@ -121,7 +121,7 @@ class DatabaseManager:
     @contextmanager
     def get_connection(self):
         """
-        Context manager for database connections.
+        Context manager for database connections with health check.
         
         Usage:
             with db.get_connection() as conn:
@@ -131,16 +131,36 @@ class DatabaseManager:
         conn = None
         try:
             conn = self.pool.getconn()
+            
+            # Health check: Test if connection is still alive
+            try:
+                conn.isolation_level  # Quick check without executing query
+            except (psycopg2.InterfaceError, psycopg2.OperationalError):
+                # Connection is dead, close it and get a new one
+                logger.warning("⚠️ Stale database connection detected, reconnecting...")
+                try:
+                    conn.close()
+                except:
+                    pass
+                conn = self.pool.getconn()
+            
             yield conn
             conn.commit()
         except Exception as e:
             if conn:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except:
+                    pass  # Rollback might fail if connection is already closed
             logger.error(f"Database error: {e}")
             raise
         finally:
             if conn:
-                self.pool.putconn(conn)
+                try:
+                    self.pool.putconn(conn)
+                except:
+                    # Connection might be already closed, that's ok
+                    pass
     
     def _initialize_schema(self):
         """Create database schema if it doesn't exist."""
@@ -696,6 +716,14 @@ class DatabaseManager:
                     
                     return True
         
+        except psycopg2.InterfaceError as e:
+            # Connection interface error - likely already closed
+            logger.debug(f"Database connection interface error (non-fatal): {e}")
+            return False
+        except psycopg2.OperationalError as e:
+            # Connection operational error - database might be unavailable
+            logger.debug(f"Database operational error (non-fatal): {e}")
+            return False
         except Exception as e:
             logger.error(f"❌ Failed to save API metric: {e}")
             return False

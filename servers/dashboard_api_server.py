@@ -28,6 +28,19 @@ from infrastructure.database import get_database
 logger = logging.getLogger(__name__)
 
 
+# Middleware to add no-cache headers to prevent stale data
+@web.middleware
+async def no_cache_middleware(request: web.Request, handler):
+    """Add no-cache headers to all responses to ensure fresh data."""
+    response = await handler(request)
+    # Only add headers to API endpoints
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+
 class DashboardAPIServer:
     """
     REST API server for React dashboard.
@@ -44,7 +57,8 @@ class DashboardAPIServer:
         self.trading_bot = trading_bot
         self.host = host
         self.port = port
-        self.app = web.Application()
+        # Create application with no-cache middleware to prevent stale data in frontend
+        self.app = web.Application(middlewares=[no_cache_middleware])
         self.dashboard_api = DashboardAPI(trading_bot, None)
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         

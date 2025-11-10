@@ -11,12 +11,33 @@ import type {
   HistoricalDataResponse,
 } from '../types'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+// Auto-detect API base URL
+// In production (Railway), API is on same domain, so use relative path
+// In development, use localhost:8080
+const getApiBaseUrl = () => {
+  // If VITE_API_URL is set, use it
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL
+  }
+  
+  // If running on Railway (production), use same origin
+  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return window.location.origin
+  }
+  
+  // Development fallback
+  return 'http://localhost:8080'
+}
+
+const API_BASE_URL = getApiBaseUrl()
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
   },
 })
 
@@ -82,7 +103,8 @@ export const accountApi = {
 // Position API
 export const positionApi = {
   getPositions: async (): Promise<Position[]> => {
-    const response = await api.get('/api/positions')
+    // Add timestamp to prevent browser caching
+    const response = await api.get(`/api/positions?_t=${Date.now()}`)
     return response.data
   },
 
@@ -98,7 +120,8 @@ export const positionApi = {
 // Order API
 export const orderApi = {
   getOrders: async (): Promise<Order[]> => {
-    const response = await api.get('/api/orders')
+    // Add timestamp to prevent browser caching
+    const response = await api.get(`/api/orders?_t=${Date.now()}`)
     return response.data
   },
 
@@ -165,6 +188,12 @@ export const tradeApi = {
     if (options.type) params.append('type', options.type)
     if (options.limit) params.append('limit', String(options.limit))
     if (options.cursor) params.append('cursor', options.cursor)
+    
+    // ALWAYS refresh cache to get latest trade data
+    params.append('refresh', '1')
+    
+    // Add timestamp to prevent browser caching
+    params.append('_t', Date.now().toString())
 
     const query = params.toString()
     const response = await api.get(`/api/trades${query ? `?${query}` : ''}`)

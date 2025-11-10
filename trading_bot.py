@@ -4540,7 +4540,24 @@ class TopStepXTradingBot:
             
             # Get tick size for calculations
             tick_size = await self._get_tick_size(symbol)
-            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}, entry_price=${entry_price:.2f}")
+            
+            # Round entry price to valid tick size (CRITICAL: prevents "Invalid stop price" rejections)
+            rounded_entry_price = self._round_to_tick_size(entry_price, tick_size)
+            logger.info(f"Entry price: {entry_price} -> {rounded_entry_price} (tick_size: {tick_size})")
+            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}, entry_price=${rounded_entry_price:.2f}")
+            
+            # Use rounded entry price for all calculations
+            entry_price = rounded_entry_price
+            
+            # Round stop loss and take profit prices to valid tick size
+            rounded_stop_loss_price = self._round_to_tick_size(stop_loss_price, tick_size)
+            rounded_take_profit_price = self._round_to_tick_size(take_profit_price, tick_size)
+            logger.info(f"Stop Loss: {stop_loss_price} -> {rounded_stop_loss_price}")
+            logger.info(f"Take Profit: {take_profit_price} -> {rounded_take_profit_price}")
+            
+            # Use rounded prices for calculations
+            stop_loss_price = rounded_stop_loss_price
+            take_profit_price = rounded_take_profit_price
             
             # Calculate stop loss ticks from entry price
             if side.upper() == "BUY":

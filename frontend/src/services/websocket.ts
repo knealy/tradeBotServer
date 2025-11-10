@@ -3,7 +3,24 @@
 
 import type { WebSocketMessage } from '../types'
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8081'
+// Auto-detect WebSocket URL
+const getWebSocketUrl = () => {
+  // If VITE_WS_URL is set, use it
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL
+  }
+  
+  // If running on Railway (production), use same origin with wss://
+  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}`
+  }
+  
+  // Development fallback
+  return 'ws://localhost:8081'
+}
+
+const WS_URL = getWebSocketUrl()
 
 class WebSocketService {
   private socket: WebSocket | null = null
