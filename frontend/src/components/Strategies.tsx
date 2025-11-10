@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { strategyApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'

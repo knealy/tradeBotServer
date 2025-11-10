@@ -5,7 +5,6 @@ import type {
   Order,
   Strategy,
   PerformanceMetrics,
-  Trade,
   TradesResponse,
   PerformanceHistoryResponse,
   HistoricalDataResponse,

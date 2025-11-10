@@ -40,10 +40,19 @@ export interface Order {
 // Strategy Types
 export interface Strategy {
   name: string
-  status: 'ACTIVE' | 'INACTIVE' | 'PAUSED'
+  status: 'ACTIVE' | 'INACTIVE' | 'PAUSED' | 'running' | 'stopped'
   symbols: string[]
-  config: Record<string, any>
-  performance: {
+  config?: Record<string, any>
+  description?: string
+  stats?: {
+    total_trades?: number
+    winning_trades?: number
+    losing_trades?: number
+    win_rate?: number
+    total_pnl?: number
+    avg_pnl?: number
+  }
+  performance?: {
     total_trades: number
     winning_trades: number
     losing_trades: number

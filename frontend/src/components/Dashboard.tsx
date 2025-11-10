@@ -42,7 +42,7 @@ export default function Dashboard() {
   )
   
   // Extract metrics from response
-  const metrics = metricsData?.performance || metricsData
+  const metrics = (metricsData as any)?.performance || metricsData
 
   // WebSocket connection for real-time updates
   useEffect(() => {
@@ -64,14 +64,14 @@ export default function Dashboard() {
 
       if (normalized.id) {
         queryClient.setQueryData(['accountInfo', normalized.id], normalized)
-        queryClient.setQueryData<Account[]>(
+        queryClient.setQueryData<Account[] | undefined>(
           ['accounts'],
           (previous) =>
             previous?.map((acct) =>
               (acct.id || acct.accountId || acct.account_id) === normalized.id
                 ? { ...acct, ...normalized }
                 : acct
-            ) || previous
+            )
         )
       }
     }

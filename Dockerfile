@@ -13,16 +13,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire application
+# Copy the entire application (including pre-built frontend)
 COPY . .
-
-# Create static directory if it doesn't exist
-RUN mkdir -p static/dashboard
 
 # Expose port (Railway will override with $PORT)
 EXPOSE 8080
 
-# Start the application
-# Frontend will be added later - for now just run the API server
+# Start the application with frontend serving
 CMD ["python3", "servers/start_async_webhook.py"]
 

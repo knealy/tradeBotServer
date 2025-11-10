@@ -1,5 +1,5 @@
 import { PerformanceMetrics } from '../types'
-import { Activity, Zap, Database, AlertCircle } from 'lucide-react'
+import { Activity, Zap, Database } from 'lucide-react'
 
 interface MetricsCardProps {
   metrics: PerformanceMetrics
