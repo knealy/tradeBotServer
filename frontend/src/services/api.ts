@@ -10,47 +10,28 @@ import type {
   HistoricalDataResponse,
 } from '../types'
 
-// Auto-detect API base URL
-// In production (Railway), API is on same domain, so use empty string for relative URLs
-// In development, use localhost:8080
-const getApiBaseUrl = () => {
-  // If VITE_API_URL is set, use it
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL
-  }
-  
-  // Check hostname at runtime (more reliable than import.meta.env.DEV)
-  const hostname = window.location.hostname
-  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1'
-  
-  // In production (Railway), use empty string for relative URLs
-  // In development (localhost), use localhost:8080
-  if (isLocal) {
-    return 'http://localhost:8080'
-  }
-  
-  // Production: use empty string for relative paths
-  return ''
-}
-
-const API_BASE_URL = getApiBaseUrl()
-
-// Debug logging - Build timestamp helps verify new code is loaded
-console.log('🔧 API Configuration [Build: 2025-11-10T19:45 - FIXED]:', {
-  baseURL: API_BASE_URL || '(empty = relative)',
-  resolvedURL: API_BASE_URL || window.location.origin,
-  hostname: window.location.hostname,
-  isLocalhost: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-})
+// Auto-detect API base URL at runtime
+// CRITICAL: This must be determined at REQUEST time, not module load time
+// Vite/Rollup optimizations can cause issues with module-level constants
 
 const api = axios.create({
-  baseURL: API_BASE_URL,
+  // Use empty string for baseURL - this makes requests relative to current origin
+  // This works perfectly for Railway where frontend and API are on same domain
+  baseURL: '',
   headers: {
     'Content-Type': 'application/json',
     'Cache-Control': 'no-cache, no-store, must-revalidate',
     'Pragma': 'no-cache',
     'Expires': '0',
   },
+})
+
+// Debug logging - Build timestamp helps verify new code is loaded
+console.log('🔧 API Configuration [Build: 2025-11-10T20:00 - SIMPLIFIED]:', {
+  baseURL: '(empty = relative to current origin)',
+  currentOrigin: window.location.origin,
+  hostname: window.location.hostname,
+  note: 'All API requests will be relative to current page origin'
 })
 
 // Add auth token interceptor if needed
