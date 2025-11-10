@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
@@ -27,6 +28,12 @@ class DashboardAPI:
         self.trading_bot = trading_bot
         self.webhook_server = webhook_server
         self.websocket_clients = set()
+        self._order_history_cache: Dict[str, Dict[str, Any]] = {}
+        self._order_history_locks: Dict[str, asyncio.Lock] = {}
+        self._positions_cache: Dict[str, Dict[str, Any]] = {}
+        self._positions_locks: Dict[str, asyncio.Lock] = {}
+        self._order_history_ttl = float(os.getenv("DASHBOARD_ORDER_HISTORY_TTL", "30"))
+        self._positions_ttl = float(os.getenv("DASHBOARD_POSITIONS_TTL", "2"))
         
     # ------------------------------------------------------------------
     # Utility Helpers
@@ -205,6 +212,75 @@ class DashboardAPI:
             return 'day'
         return interval
 
+    def _get_lock(self, lock_dict: Dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
+        lock = lock_dict.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            lock_dict[key] = lock
+        return lock
+
+    async def _get_cached_order_history(
+        self,
+        account: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Return cached order history when possible to avoid hammering the API."""
+        cache_key = str(account) if account is not None else 'default'
+        lock = self._get_lock(self._order_history_locks, cache_key)
+        now = time.monotonic()
+
+        async with lock:
+            entry = self._order_history_cache.get(cache_key)
+            if (
+                entry
+                and entry['expires'] > now
+                and entry['start'] <= start_dt
+                and entry['end'] >= end_dt
+                and entry['limit'] >= limit
+            ):
+                return entry['data']
+
+            # Expand the request range to reuse results for downstream calls
+            request_start = min(start_dt, entry['start']) if entry else start_dt
+            request_end = max(end_dt, entry['end']) if entry else end_dt
+            fetch_limit = max(limit, entry['limit'] if entry else limit, 500)
+
+            history = await self.trading_bot.get_order_history(
+                account_id=account,
+                limit=fetch_limit,
+                start_timestamp=self._format_iso(request_start),
+                end_timestamp=self._format_iso(request_end),
+            )
+
+            self._order_history_cache[cache_key] = {
+                'data': history,
+                'start': request_start,
+                'end': request_end,
+                'limit': fetch_limit,
+                'expires': now + self._order_history_ttl,
+            }
+            return history
+
+    async def _get_cached_positions(self, account: Optional[str]) -> List[Dict[str, Any]]:
+        """Return cached open positions for a short TTL to smooth API latency."""
+        cache_key = str(account) if account is not None else 'default'
+        lock = self._get_lock(self._positions_locks, cache_key)
+        now = time.monotonic()
+
+        async with lock:
+            entry = self._positions_cache.get(cache_key)
+            if entry and entry['expires'] > now:
+                return entry['data']
+
+            positions = await self.trading_bot.get_open_positions()
+            self._positions_cache[cache_key] = {
+                'data': positions,
+                'expires': now + self._positions_ttl,
+            }
+            return positions
+
     async def get_accounts(self) -> List[Dict[str, Any]]:
         """Get all available accounts"""
         try:
@@ -267,6 +343,9 @@ class DashboardAPI:
             
             # Switch to the account
             self.trading_bot.selected_account = target_account
+            cache_key = str(account_id)
+            self._order_history_cache.pop(cache_key, None)
+            self._positions_cache.pop(cache_key, None)
             
             # Get updated account info
             account_info = await self.trading_bot.get_account_info()
@@ -293,7 +372,8 @@ class DashboardAPI:
     async def get_positions(self) -> List[Dict[str, Any]]:
         """Get open positions"""
         try:
-            positions = await self.trading_bot.get_open_positions()
+            account = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+            positions = await self._get_cached_positions(account)
             formatted_positions = []
             
             for pos in positions:
@@ -373,11 +453,11 @@ class DashboardAPI:
             if start_dt >= end_dt:
                 start_dt = end_dt - timedelta(days=1)
 
-            history = await self.trading_bot.get_order_history(
-                account_id=account,
+            history = await self._get_cached_order_history(
+                account=account,
+                start_dt=start_dt,
+                end_dt=end_dt,
                 limit=limit * 3,
-                start_timestamp=self._format_iso(start_dt),
-                end_timestamp=self._format_iso(end_dt),
             )
 
             trades_normalized: List[Dict[str, Any]] = []
@@ -635,11 +715,11 @@ class DashboardAPI:
             if start_dt >= end_dt:
                 start_dt = end_dt - timedelta(days=1)
 
-            trades = await self.trading_bot.get_order_history(
-                account_id=account,
+            trades = await self._get_cached_order_history(
+                account=account,
+                start_dt=start_dt,
+                end_dt=end_dt,
                 limit=1000,
-                start_timestamp=self._format_iso(start_dt),
-                end_timestamp=self._format_iso(end_dt),
             )
 
             buckets: Dict[str, Dict[str, Any]] = {}
@@ -705,8 +785,7 @@ class DashboardAPI:
                 bucket['period_pnl'] = round(bucket['period_pnl'], 2)
                 points.append(bucket)
 
-            account_info = await self.trading_bot.get_account_info()
-            current_balance = account_info.get('balance', 0.0) if isinstance(account_info, dict) else 0.0
+            current_balance = await self.trading_bot.get_account_balance(account) or 0.0
             start_balance = current_balance - total_pnl
 
             summary = {
