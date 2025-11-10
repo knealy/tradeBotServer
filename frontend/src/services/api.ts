@@ -19,29 +19,28 @@ const getApiBaseUrl = () => {
     return import.meta.env.VITE_API_URL
   }
   
-  // Check if we're in development mode
-  const isDev = import.meta.env.DEV || 
-                window.location.hostname === 'localhost' || 
-                window.location.hostname === '127.0.0.1'
+  // Check hostname at runtime (more reliable than import.meta.env.DEV)
+  const hostname = window.location.hostname
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1'
   
-  // In production, use relative path (empty string) so it uses same origin
-  // In development, use localhost:8080
-  return isDev ? 'http://localhost:8080' : ''
+  // In production (Railway), use empty string for relative URLs
+  // In development (localhost), use localhost:8080
+  if (isLocal) {
+    return 'http://localhost:8080'
+  }
+  
+  // Production: use empty string for relative paths
+  return ''
 }
 
 const API_BASE_URL = getApiBaseUrl()
 
-// Debug logging
-const actualIsDev = import.meta.env.DEV || 
-                    window.location.hostname === 'localhost' || 
-                    window.location.hostname === '127.0.0.1'
-console.log('🔧 API Configuration [Build: 2025-11-10T19:30]:', {
-  baseURL: API_BASE_URL || '(relative path)',
-  actualURL: API_BASE_URL || window.location.origin,
+// Debug logging - Build timestamp helps verify new code is loaded
+console.log('🔧 API Configuration [Build: 2025-11-10T19:45 - FIXED]:', {
+  baseURL: API_BASE_URL || '(empty = relative)',
+  resolvedURL: API_BASE_URL || window.location.origin,
   hostname: window.location.hostname,
-  origin: window.location.origin,
-  'import.meta.env.DEV': import.meta.env.DEV,
-  'computed isDev': actualIsDev
+  isLocalhost: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
 })
 
 const api = axios.create({

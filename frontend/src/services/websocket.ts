@@ -10,32 +10,27 @@ const getWebSocketUrl = () => {
     return import.meta.env.VITE_WS_URL
   }
   
-  // Check if we're in development mode
-  const isDev = import.meta.env.DEV || 
-                window.location.hostname === 'localhost' || 
-                window.location.hostname === '127.0.0.1'
+  // Check hostname at runtime (more reliable than import.meta.env.DEV)
+  const hostname = window.location.hostname
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1'
   
-  if (isDev) {
+  if (isLocal) {
     // Development: connect to local server
     return 'ws://localhost:8080/ws'
-  } else {
-    // Production: use current origin with proper protocol
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}/ws`
   }
+  
+  // Production: use current origin with proper protocol
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/ws`
 }
 
 const WS_URL = getWebSocketUrl()
 
-const actualIsDev = import.meta.env.DEV || 
-                    window.location.hostname === 'localhost' || 
-                    window.location.hostname === '127.0.0.1'
-console.log('🔧 WebSocket Configuration:', {
+console.log('🔧 WebSocket Configuration [Build: 2025-11-10T19:45 - FIXED]:', {
   url: WS_URL,
   hostname: window.location.hostname,
   protocol: window.location.protocol,
-  'import.meta.env.DEV': import.meta.env.DEV,
-  'computed isDev': actualIsDev
+  isLocalhost: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
 })
 
 class WebSocketService {
