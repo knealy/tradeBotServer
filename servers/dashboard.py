@@ -78,35 +78,98 @@ class DashboardAPI:
 
     @staticmethod
     def _extract_trade_timestamp(trade: Dict[str, Any]) -> Optional[datetime]:
-        for key in ['timestamp', 'fillTime', 'exit_time', 'entry_time', 'created', 'updateTime']:
+        """Extract timestamp from TopStepX order data"""
+        # TopStepX uses these timestamp fields
+        for key in ['updateTimestamp', 'creationTimestamp', 'timestamp', 'fillTime', 'exit_time', 'entry_time', 'created', 'updateTime']:
             value = trade.get(key)
             if not value:
                 continue
             try:
-                return DashboardAPI._parse_iso_datetime(value)
-            except Exception:
+                # Handle both string and datetime objects
+                if isinstance(value, datetime):
+                    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+                return DashboardAPI._parse_iso_datetime(str(value))
+            except Exception as e:
+                logger.debug(f"Failed to parse timestamp from {key}={value}: {e}")
                 continue
+        
+        # If no timestamp found, log the trade structure for debugging
+        logger.warning(f"No timestamp found in trade: {list(trade.keys())}")
         return None
 
     @staticmethod
     def _extract_trade_pnl(trade: Dict[str, Any]) -> float:
+        """
+        Extract P&L from TopStepX order data.
+        TopStepX doesn't provide direct PnL in order history - need to calculate from fills.
+        """
+        # Check for direct PnL fields (may be added by consolidation logic)
         for key in ['pnl', 'PnL', 'realizedPnl', 'realized_pnl', 'profitLoss', 'result', 'netPnl']:
             if key in trade and trade[key] is not None:
                 try:
                     return float(trade[key])
                 except Exception:
                     continue
-        # Some records embed PnL inside metadata/description strings
-        description = trade.get('description') or trade.get('details')
+        
+        # TopStepX order format: calculate from fills
+        # For filled orders, we need to look at the fill data
+        # This is a simplified calculation - real P&L needs paired entry/exit
+        fills = trade.get('fills', [])
+        if fills:
+            # If we have fill data with PnL
+            total_pnl = sum(fill.get('pnl', 0) for fill in fills if isinstance(fill, dict))
+            if total_pnl != 0:
+                return float(total_pnl)
+        
+        # Check if this is a consolidated trade with calculated PnL
+        if 'entry_price' in trade and 'exit_price' in trade:
+            try:
+                entry = float(trade['entry_price'])
+                exit_price = float(trade['exit_price'])
+                quantity = float(trade.get('quantity', 0))
+                side = str(trade.get('side', '')).upper()
+                
+                # Get point value for symbol
+                symbol = DashboardAPI._extract_trade_symbol(trade)
+                point_value = DashboardAPI._get_point_value(symbol)
+                
+                if side == 'BUY' or side == 'LONG' or side == '0':
+                    pnl = (exit_price - entry) * quantity * point_value
+                else:  # SELL/SHORT
+                    pnl = (entry - exit_price) * quantity * point_value
+                
+                return float(pnl)
+            except Exception as e:
+                logger.debug(f"Failed to calculate PnL from entry/exit: {e}")
+        
+        # Parse from description as last resort
+        description = trade.get('description') or trade.get('details') or trade.get('text')
         if description and isinstance(description, str):
             import re
-            match = re.search(r"([-+]?\d*\.?\d+)", description)
+            # Look for patterns like "P&L: $123.45" or "PnL: -$50.00"
+            match = re.search(r"(?:p&l|pnl|profit|loss):\s*\$?([-+]?\d+\.?\d*)", description, re.IGNORECASE)
             if match:
                 try:
                     return float(match.group(1))
                 except Exception:
                     pass
+        
         return 0.0
+    
+    @staticmethod
+    def _get_point_value(symbol: str) -> float:
+        """Get point value for a symbol ($ per point movement)"""
+        symbol = symbol.upper()
+        if 'MNQ' in symbol or 'NQ' in symbol:
+            return 2.0  # Micro NQ: $2 per point
+        elif 'MES' in symbol or 'ES' in symbol:
+            return 5.0  # Micro ES: $5 per point
+        elif 'MYM' in symbol or 'YM' in symbol:
+            return 0.5  # Micro YM: $0.50 per point
+        elif 'M2K' in symbol or 'RTY' in symbol:
+            return 5.0  # Micro Russell: $5 per point
+        else:
+            return 1.0  # Default
 
     @staticmethod
     def _extract_trade_fees(trade: Dict[str, Any]) -> float:
@@ -461,9 +524,11 @@ class DashboardAPI:
             )
 
             trades_normalized: List[Dict[str, Any]] = []
-            for trade in history:
+            for idx, trade in enumerate(history):
                 trade_ts = self._extract_trade_timestamp(trade)
                 if not trade_ts:
+                    if idx < 3:  # Log first few for debugging
+                        logger.warning(f"Skipping trade {idx} - no timestamp. Keys: {list(trade.keys())}")
                     continue
                 if trade_ts < start_dt or trade_ts > end_dt:
                     continue
@@ -482,7 +547,7 @@ class DashboardAPI:
                 price = self._extract_trade_price(trade)
 
                 normalized = {
-                    "id": str(trade.get('id') or trade.get('orderId') or trade.get('fillId') or trade_ts.timestamp()),
+                    "id": str(trade.get('id') or trade.get('orderId') or trade.get('fillId') or int(trade_ts.timestamp())),
                     "order_id": str(trade.get('orderId') or trade.get('id') or ''),
                     "symbol": trade_symbol.upper(),
                     "side": self._extract_trade_side(trade),
@@ -496,6 +561,8 @@ class DashboardAPI:
                     "timestamp": self._format_iso(trade_ts),
                 }
                 trades_normalized.append(normalized)
+            
+            logger.info(f"Normalized {len(trades_normalized)} trades from {len(history)} raw orders")
 
             # Sort trades newest first
             trades_normalized.sort(key=lambda x: x['timestamp'], reverse=True)

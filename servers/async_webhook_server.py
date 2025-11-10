@@ -458,6 +458,13 @@ class AsyncWebhookServer:
             trade_type = params.get('type', 'filled')
             limit = int(params.get('limit', '50'))
             cursor = params.get('cursor')
+            refresh = params.get('refresh', '0') == '1'
+
+            # Clear cache if refresh requested
+            if refresh and account_id:
+                cache_key = str(account_id)
+                self.dashboard_api._order_history_cache.pop(cache_key, None)
+                logger.info(f"🔄 Cache cleared for account {account_id} (refresh=1)")
 
             trades = await self.dashboard_api.get_trade_history_paginated(
                 account_id=account_id,
@@ -493,6 +500,14 @@ class AsyncWebhookServer:
             interval = params.get('interval', 'day')
             start_date = params.get('start') or params.get('start_date')
             end_date = params.get('end') or params.get('end_date')
+            refresh = params.get('refresh', '0') == '1'
+
+            # Clear cache if refresh requested
+            if refresh and account_id:
+                cache_key = str(account_id)
+                self.dashboard_api._order_history_cache.pop(cache_key, None)
+                logger.info(f"🔄 Cache cleared for account {account_id} (refresh=1)")
+
             history = await self.dashboard_api.get_performance_history(
                 account_id=account_id,
                 interval=interval,
