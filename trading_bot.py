@@ -3135,7 +3135,9 @@ class TopStepXTradingBot:
                 return []
             
             # Filter to only filled/executed orders for history
-            filled_orders = [o for o in orders if o.get("status") in [2, 3, 4]]  # Filled, Executed, Complete
+            # Status codes: 0=Pending, 1=Working, 2=Filled, 3=Cancelled, 4=Rejected
+            # Only include status=2 (Filled) and ensure fillVolume > 0
+            filled_orders = [o for o in orders if o.get("status") == 2 and o.get("fillVolume", 0) > 0]
             logger.info(f"Total orders returned: {len(orders)}; Filled orders: {len(filled_orders)}")
             
             # If no filled orders found, try the Fill API endpoint
