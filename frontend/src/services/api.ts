@@ -11,7 +11,7 @@ import type {
 } from '../types'
 
 // Auto-detect API base URL
-// In production (Railway), API is on same domain, so use relative path
+// In production (Railway), API is on same domain, so use empty string for relative URLs
 // In development, use localhost:8080
 const getApiBaseUrl = () => {
   // If VITE_API_URL is set, use it
@@ -19,16 +19,23 @@ const getApiBaseUrl = () => {
     return import.meta.env.VITE_API_URL
   }
   
-  // If running on Railway (production), use same origin
-  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-    return window.location.origin
-  }
+  // Check if we're in development mode
+  const isDev = import.meta.env.DEV || 
+                window.location.hostname === 'localhost' || 
+                window.location.hostname === '127.0.0.1'
   
-  // Development fallback
-  return 'http://localhost:8080'
+  // In production, use relative path (empty string) so it uses same origin
+  // In development, use localhost:8080
+  return isDev ? 'http://localhost:8080' : ''
 }
 
 const API_BASE_URL = getApiBaseUrl()
+
+console.log('🔧 API Base URL:', API_BASE_URL || '(relative - same origin)', {
+  hostname: window.location.hostname,
+  origin: window.location.origin,
+  isDev: import.meta.env.DEV
+})
 
 const api = axios.create({
   baseURL: API_BASE_URL,

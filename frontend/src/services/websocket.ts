@@ -10,17 +10,28 @@ const getWebSocketUrl = () => {
     return import.meta.env.VITE_WS_URL
   }
   
-  // If running on Railway (production), use same origin with wss:// + /ws path
-  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+  // Check if we're in development mode
+  const isDev = import.meta.env.DEV || 
+                window.location.hostname === 'localhost' || 
+                window.location.hostname === '127.0.0.1'
+  
+  if (isDev) {
+    // Development: connect to local server
+    return 'ws://localhost:8080/ws'
+  } else {
+    // Production: use current origin with proper protocol
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${protocol}//${window.location.host}/ws`
   }
-  
-  // Development fallback - connect to main server on same port
-  return 'ws://localhost:8080/ws'
 }
 
 const WS_URL = getWebSocketUrl()
+
+console.log('🔧 WebSocket URL:', WS_URL, {
+  hostname: window.location.hostname,
+  protocol: window.location.protocol,
+  isDev: import.meta.env.DEV
+})
 
 class WebSocketService {
   private socket: WebSocket | null = null
