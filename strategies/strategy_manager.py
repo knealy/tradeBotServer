@@ -119,17 +119,23 @@ class StrategyManager:
             # Try to create instance from registered class
             if name in self.available_strategies:
                 logger.info(f"Creating strategy instance for {name}")
-                strategy_class = self.available_strategies[name]
-                # Create a basic config for the strategy
-                from strategies.strategy_base import StrategyConfig
-                config = StrategyConfig(
-                    name=name,
-                    symbols=symbols or ['MNQ', 'MES'],  # Default symbols
-                    enabled=True
-                )
-                strategy = strategy_class(self.trading_bot, config)
-                self.strategies[name] = strategy
-                logger.info(f"✅ Created strategy instance: {name}")
+                try:
+                    strategy_class = self.available_strategies[name]
+                    # Use from_env to create proper config with all required fields
+                    from strategies.strategy_base import StrategyConfig
+                    config = StrategyConfig.from_env(name)
+                    # Override symbols if provided
+                    if symbols:
+                        config.symbols = symbols
+                    # Ensure enabled
+                    config.enabled = True
+                    strategy = strategy_class(self.trading_bot, config)
+                    self.strategies[name] = strategy
+                    logger.info(f"✅ Created strategy instance: {name}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to create strategy instance for {name}: {e}")
+                    logger.exception(e)
+                    return False, f"Failed to create strategy instance: {str(e)}"
             else:
                 available = list(self.available_strategies.keys()) + list(self.strategies.keys())
                 logger.error(f"❌ Strategy not found: {name}. Available: {available}")

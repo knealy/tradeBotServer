@@ -232,7 +232,8 @@ export default function PositionsPage() {
             {orders.map((order) => {
               const isBuy = order.side === 'BUY'
               const orderType = order.type || 'UNKNOWN'
-              const status = order.status || 'PENDING'
+              const status = (order.status || 'PENDING').toUpperCase()
+              const canModify = status !== 'FILLED' && status !== 'CANCELLED' && status !== 'REJECTED'
 
               return (
                 <div
@@ -256,7 +257,7 @@ export default function PositionsPage() {
                         {status}
                       </span>
                     </div>
-                    {status !== 'FILLED' && status !== 'CANCELLED' && (
+                    {canModify && (
                       <div className="flex items-center gap-2">
                         {editingOrder?.id === order.id ? (
                           <>
