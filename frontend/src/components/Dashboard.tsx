@@ -5,6 +5,7 @@ import { wsService } from '../services/websocket'
 import { useAccount } from '../contexts/AccountContext'
 import { useWebSocket } from '../contexts/WebSocketContext'
 import type { Account } from '../types'
+import { Link } from 'react-router-dom'
 import AccountCard from './AccountCard'
 import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
@@ -12,6 +13,7 @@ import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
 import HistoricalPriceChart from './HistoricalPriceChart'
 import TradesTable from './TradesTable'
+import { Activity, ExternalLink } from 'lucide-react'
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
@@ -179,6 +181,25 @@ export default function Dashboard() {
           selectedAccount={selectedAccount}
           onAccountChange={setSelectedAccount}
         />
+      </div>
+
+      {/* Quick Actions */}
+      <div className="flex gap-3">
+        <Link
+          to="/strategies"
+          className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors text-sm font-medium"
+        >
+          <Activity className="w-4 h-4" />
+          Manage Strategies
+          <ExternalLink className="w-3 h-3" />
+        </Link>
+        <Link
+          to="/positions"
+          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-sm font-medium"
+        >
+          View All Positions & Orders
+          <ExternalLink className="w-3 h-3" />
+        </Link>
       </div>
 
       {/* Main Dashboard Grid */}
