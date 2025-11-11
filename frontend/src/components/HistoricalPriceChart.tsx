@@ -36,40 +36,64 @@ const formatLabel = (timestamp: string, timeframe: string) => {
   return new Intl.DateTimeFormat(undefined, options).format(date)
 }
 
-// Custom Candlestick shape
-const Candlestick = (props: any) => {
-  const { x, width, payload } = props
+// Custom Candlestick shape component
+const CandlestickShape = (props: any) => {
+  const { x, y, width, height, payload } = props
+  
+  if (!payload) return null
+  
   const { open, close, high, low } = payload
   
-  if (!open || !close || !high || !low) return null
+  if (open === undefined || close === undefined || high === undefined || low === undefined) return null
   
   const isPositive = close >= open
   const color = isPositive ? '#10B981' : '#EF4444' // green : red
   
-  // Calculate Y positions (note: Y axis is inverted in SVG)
-  const bodyHigh = Math.max(open, close)
-  const bodyLow = Math.min(open, close)
+  // Calculate the scale factor to convert price to pixels
+  // The Bar component gives us the y and height for the full high-low range
+  const priceRange = high - low
+  const pixelsPerPoint = height / priceRange
+  
+  // Calculate body dimensions
+  const bodyTop = isPositive ? close : open
+  const bodyHeight = Math.abs(close - open) * pixelsPerPoint
+  const bodyY = y + (high - bodyTop) * pixelsPerPoint
+  
+  // Calculate wick positions
+  const wickTop = y // High point
+  const wickBottom = y + height // Low point
+  const bodyTopY = bodyY
+  const bodyBottomY = bodyY + bodyHeight
   
   return (
     <g>
-      {/* Wick (high-low line) */}
+      {/* Upper wick (high to body top) */}
       <line
         x1={x + width / 2}
-        y1={high}
+        y1={wickTop}
         x2={x + width / 2}
-        y2={low}
+        y2={bodyTopY}
         stroke={color}
         strokeWidth={1}
       />
       {/* Body (open-close rectangle) */}
       <rect
         x={x + 1}
-        y={bodyHigh}
+        y={bodyY}
         width={Math.max(width - 2, 1)}
-        height={Math.max(Math.abs(bodyHigh - bodyLow), 1)}
-        fill={isPositive ? color : color}
+        height={Math.max(bodyHeight, 1)}
+        fill={color}
         stroke={color}
-        fillOpacity={isPositive ? 0.8 : 1}
+        fillOpacity={isPositive ? 0.6 : 1}
+      />
+      {/* Lower wick (body bottom to low) */}
+      <line
+        x1={x + width / 2}
+        y1={bodyBottomY}
+        x2={x + width / 2}
+        y2={wickBottom}
+        stroke={color}
+        strokeWidth={1}
       />
     </g>
   )
@@ -243,7 +267,7 @@ export default function HistoricalPriceChart() {
               stroke="#3B82F6"
               fill="#1E293B"
             />
-            <Bar dataKey="high" fill="#8884d8" shape={<Candlestick />} />
+            <Bar dataKey="high" fill="#8884d8" shape={<CandlestickShape />} />
           </ComposedChart>
         </ResponsiveContainer>
       )}
