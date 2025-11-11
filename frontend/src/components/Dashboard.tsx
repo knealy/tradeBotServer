@@ -20,6 +20,9 @@ export default function Dashboard() {
   const queryClient = useQueryClient()
   const { accounts, selectedAccount, setSelectedAccount } = useAccount()
   const { status: socketStatus, reconnectAttempts, lastError: socketError, reconnect: reconnectSocket } = useWebSocket()
+  
+  // Enable live market updates for positions/orders
+  useMarketSocket()
 
   // Fetch account info (less frequent)
   const accountId = selectedAccount?.id
