@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
 import { positionApi, orderApi } from '../services/api'
+import { useMarketSocket } from '../hooks/useMarketSocket'
 import AccountSelector from '../components/AccountSelector'
 import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2 } from 'lucide-react'
 import { useState } from 'react'
@@ -10,6 +11,9 @@ export default function PositionsPage() {
   const { accounts, selectedAccount, setSelectedAccount } = useAccount()
   const accountId = selectedAccount?.id
   const queryClient = useQueryClient()
+  
+  // Enable live market updates for positions/orders
+  useMarketSocket()
 
   // Fetch positions
   const { data: positions = [], isLoading: positionsLoading } = useQuery<Position[]>(

@@ -21,7 +21,7 @@ export default function Strategies() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const startMutation = useMutation(
-    (strategyName: string) => strategyApi.startStrategy(strategyName),
+    (strategyName: string) => strategyApi.startStrategy(strategyName, undefined, selectedAccount?.id),
     {
       onSuccess: (data, strategyName) => {
         queryClient.invalidateQueries(['strategies'])
@@ -56,7 +56,7 @@ export default function Strategies() {
   )
 
   const stopMutation = useMutation(
-    (strategyName: string) => strategyApi.stopStrategy(strategyName),
+    (strategyName: string) => strategyApi.stopStrategy(strategyName, selectedAccount?.id),
     {
       onSuccess: (data, strategyName) => {
         queryClient.invalidateQueries(['strategies'])

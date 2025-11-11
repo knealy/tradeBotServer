@@ -163,13 +163,20 @@ export const strategyApi = {
     return response.data
   },
 
-  startStrategy: async (name: string, symbols?: string[]): Promise<{ success: boolean; message: string }> => {
-    const response = await api.post(`/api/strategies/${name}/start`, { symbols })
+  startStrategy: async (name: string, symbols?: string[], accountId?: string): Promise<{ success: boolean; message: string }> => {
+    // Always send payload with accountId and symbols (even if empty)
+    const payload: { symbols?: string[]; accountId?: string } = {}
+    if (symbols) payload.symbols = symbols
+    if (accountId) payload.accountId = accountId
+    const response = await api.post(`/api/strategies/${name}/start`, payload)
     return response.data
   },
 
-  stopStrategy: async (name: string): Promise<{ success: boolean; message: string }> => {
-    const response = await api.post(`/api/strategies/${name}/stop`)
+  stopStrategy: async (name: string, accountId?: string): Promise<{ success: boolean; message: string }> => {
+    // Always send payload with accountId
+    const payload: { accountId?: string } = {}
+    if (accountId) payload.accountId = accountId
+    const response = await api.post(`/api/strategies/${name}/stop`, payload)
     return response.data
   },
 }
