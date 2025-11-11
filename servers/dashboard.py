@@ -915,6 +915,10 @@ class DashboardAPI:
             loss_pnl_total = 0.0
             trade_count = 0
 
+            # Track trades for specific days for debugging
+            nov3_trades = []
+            nov5_trades = []
+            
             for trade in trades:
                 # Handle both consolidated trades (with 'exit_time') and raw orders
                 if 'exit_time' in trade:
@@ -939,6 +943,28 @@ class DashboardAPI:
                 
                 bucket_dt = self._bucket_timestamp(trade_ts, interval)
                 bucket_key = self._format_iso(bucket_dt)
+                
+                # Track trades for Nov 3 and Nov 5 specifically
+                if bucket_key.startswith('2025-11-03'):
+                    nov3_trades.append({
+                        'timestamp': str(trade_ts),
+                        'pnl': pnl,
+                        'symbol': trade.get('symbol', '?'),
+                        'side': trade.get('side', '?'),
+                        'qty': trade.get('quantity', 0),
+                        'entry': trade.get('entry_price', 0),
+                        'exit': trade.get('exit_price', 0),
+                    })
+                elif bucket_key.startswith('2025-11-05'):
+                    nov5_trades.append({
+                        'timestamp': str(trade_ts),
+                        'pnl': pnl,
+                        'symbol': trade.get('symbol', '?'),
+                        'side': trade.get('side', '?'),
+                        'qty': trade.get('quantity', 0),
+                        'entry': trade.get('entry_price', 0),
+                        'exit': trade.get('exit_price', 0),
+                    })
 
                 bucket = buckets.setdefault(
                     bucket_key,
@@ -994,6 +1020,21 @@ class DashboardAPI:
             
             # Log summary for debugging
             logger.info(f"📊 Performance Summary: total_trades={trade_count}, total_pnl={round(total_pnl, 2)}, wins={total_wins}, losses={total_losses}, current_balance={current_balance}")
+            
+            # Log detailed breakdown for Nov 3 and Nov 5
+            if nov3_trades:
+                nov3_total = sum(t['pnl'] for t in nov3_trades)
+                logger.info(f"🔍 NOV 3 DEBUG: {len(nov3_trades)} trades, total_pnl=${nov3_total:.2f}")
+                logger.info(f"   Expected: +$489.12 with 18 trades")
+                for i, t in enumerate(nov3_trades[:5]):  # First 5 trades
+                    logger.info(f"   Trade {i+1}: {t['symbol']} {t['side']} x{t['qty']} @ ${t['entry']:.2f}→${t['exit']:.2f}, pnl=${t['pnl']:.2f}, ts={t['timestamp']}")
+            
+            if nov5_trades:
+                nov5_total = sum(t['pnl'] for t in nov5_trades)
+                logger.info(f"🔍 NOV 5 DEBUG: {len(nov5_trades)} trades, total_pnl=${nov5_total:.2f}")
+                logger.info(f"   Expected: +$1,821.32 with 45 trades")
+                for i, t in enumerate(nov5_trades[:5]):  # First 5 trades
+                    logger.info(f"   Trade {i+1}: {t['symbol']} {t['side']} x{t['qty']} @ ${t['entry']:.2f}→${t['exit']:.2f}, pnl=${t['pnl']:.2f}, ts={t['timestamp']}")
 
             summary = {
                 "start_balance": round(start_balance, 2),
