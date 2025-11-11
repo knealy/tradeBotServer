@@ -895,11 +895,13 @@ class DashboardAPI:
                 try:
                     trades = self.trading_bot._consolidate_orders_into_trades(raw_orders)
                     logger.info(f"✅ Consolidated {len(raw_orders)} orders into {len(trades)} trades for performance history")
-                    # Log first few trades for debugging
-                    for i, trade in enumerate(trades[:3]):
-                        logger.info(f"  Trade {i+1}: symbol={trade.get('symbol')}, pnl={trade.get('pnl')}, exit_time={trade.get('exit_time')}")
+                    # Log first 5 trades for debugging with full details
+                    for i, trade in enumerate(trades[:5]):
+                        logger.info(f"  Trade {i+1}: symbol={trade.get('symbol')}, side={trade.get('side')}, qty={trade.get('quantity')}, "
+                                  f"entry=${trade.get('entry_price')}, exit=${trade.get('exit_price')}, pnl=${trade.get('pnl')}, exit_time={trade.get('exit_time')}")
                 except Exception as e:
                     logger.error(f"❌ Trade consolidation failed in performance history: {e}, using raw orders")
+                    logger.exception(e)  # Show full stack trace
                     trades = raw_orders
             else:
                 logger.warning("⚠️ _consolidate_orders_into_trades not available, using raw orders")
@@ -931,9 +933,9 @@ class DashboardAPI:
                 else:
                     pnl = self._extract_trade_pnl(trade)
                 
-                # Debug logging for first few trades
-                if trade_count < 3:
-                    logger.info(f"  Processing trade {trade_count+1}: timestamp={trade_ts}, pnl={pnl}")
+                # Debug logging for trades
+                if trade_count < 10:
+                    logger.info(f"  Trade {trade_count+1}: timestamp={trade_ts}, pnl=${pnl:.2f}, has_exit_time={'exit_time' in trade}, has_pnl_field={'pnl' in trade}")
                 
                 bucket_dt = self._bucket_timestamp(trade_ts, interval)
                 bucket_key = self._format_iso(bucket_dt)
@@ -969,6 +971,7 @@ class DashboardAPI:
             cumulative = 0.0
             peak = 0.0
             max_drawdown = 0.0
+            logger.info(f"📊 Processing {len(buckets)} time buckets for performance chart")
             for key in sorted(buckets.keys()):
                 bucket = buckets[key]
                 cumulative += bucket['period_pnl']
@@ -980,6 +983,10 @@ class DashboardAPI:
                     max_drawdown = drawdown
                 bucket['max_drawdown'] = round(drawdown, 2)
                 bucket['period_pnl'] = round(bucket['period_pnl'], 2)
+                
+                # Log each day's data for debugging
+                logger.info(f"  {key[:10]}: period_pnl=${bucket['period_pnl']:.2f}, cumulative=${bucket['cumulative_pnl']:.2f}, trades={bucket['trade_count']}")
+                
                 points.append(bucket)
 
             current_balance = await self.trading_bot.get_account_balance(account) or 0.0
