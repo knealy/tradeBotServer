@@ -21,7 +21,8 @@ export default function Strategies() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const startMutation = useMutation(
-    (strategyName: string) => strategyApi.startStrategy(strategyName, undefined, selectedAccount?.id),
+    ({ name, symbols }: { name: string; symbols?: string[] }) =>
+      strategyApi.startStrategy(name, symbols, selectedAccount?.id),
     {
       onSuccess: (data, strategyName) => {
         queryClient.invalidateQueries(['strategies'])
@@ -56,7 +57,7 @@ export default function Strategies() {
   )
 
   const stopMutation = useMutation(
-    (strategyName: string) => strategyApi.stopStrategy(strategyName, selectedAccount?.id),
+    ({ name }: { name: string }) => strategyApi.stopStrategy(name, selectedAccount?.id),
     {
       onSuccess: (data, strategyName) => {
         queryClient.invalidateQueries(['strategies'])
@@ -91,10 +92,13 @@ export default function Strategies() {
   )
 
   const handleToggleStrategy = (strategyName: string, currentStatus: string) => {
+    const strategy = strategies?.find((s) => s.name === strategyName)
+    const symbols = strategy?.symbols ?? []
+
     if (currentStatus === 'running') {
-      stopMutation.mutate(strategyName)
+      stopMutation.mutate({ name: strategyName })
     } else {
-      startMutation.mutate(strategyName)
+      startMutation.mutate({ name: strategyName, symbols })
     }
   }
 

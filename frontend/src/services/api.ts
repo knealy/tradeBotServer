@@ -165,8 +165,9 @@ export const strategyApi = {
 
   startStrategy: async (name: string, symbols?: string[], accountId?: string): Promise<{ success: boolean; message: string }> => {
     // Always send payload with accountId and symbols (even if empty)
-    const payload: { symbols?: string[]; accountId?: string } = {}
-    if (symbols) payload.symbols = symbols
+    const payload: { symbols: string[]; accountId?: string } = {
+      symbols: symbols ?? []
+    }
     if (accountId) payload.accountId = accountId
     const response = await api.post(`/api/strategies/${name}/start`, payload)
     return response.data

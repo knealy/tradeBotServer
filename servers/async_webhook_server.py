@@ -917,8 +917,12 @@ class AsyncWebhookServer:
             
             logger.info(f"Strategy start result: success={success}, message={message}")
             
-            if success:
-                return web.json_response({"success": True, "message": message})
+            if success or ('already active' in message.lower()):
+                return web.json_response({
+                    "success": True,
+                    "message": message,
+                    "alreadyActive": not success
+                })
             else:
                 return web.json_response({"error": message}, status=400)
         except Exception as e:
@@ -953,8 +957,12 @@ class AsyncWebhookServer:
 
             success, message = result
             
-            if success:
-                return web.json_response({"success": True, "message": message})
+            if success or ('not active' in message.lower()):
+                return web.json_response({
+                    "success": True,
+                    "message": message,
+                    "alreadyStopped": not success
+                })
             else:
                 return web.json_response({"error": message}, status=400)
         except Exception as e:
