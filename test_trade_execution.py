@@ -165,8 +165,8 @@ Examples:
     )
     parser.add_argument(
         '--account-name',
-        default='PRACTICE',
-        help='Account name to search for (default: PRACTICE)'
+        default='PRAC',
+        help='Account name to search for (default: PRAC, also accepts PRACTICE)'
     )
     
     args = parser.parse_args()

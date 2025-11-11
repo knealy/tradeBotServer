@@ -558,16 +558,24 @@ class AsyncWebhookServer:
             data = await request.json() if request.content_length else {}
             symbol = data.get('symbol', 'MNQ').upper()
             quantity = data.get('quantity', 1)
-            account_name_filter = data.get('account_name', 'PRACTICE').upper()
+            account_name_filter = data.get('account_name', 'PRAC').upper()
+            
+            # Map common names to search patterns
+            if account_name_filter == 'PRACTICE':
+                account_name_filter = 'PRAC'
             
             logger.info(f"🧪 TEST: Overnight breakout trade test for {symbol}")
             
-            # Find PRACTICE account
+            # Find account (searches for accounts containing the filter in name or ID)
             accounts = await self.trading_bot.list_accounts()
             practice_account = None
             for acc in accounts:
-                if account_name_filter in acc.get('name', '').upper() or account_name_filter in str(acc.get('id', '')).upper():
+                acc_name = acc.get('name', '').upper()
+                acc_id = str(acc.get('id', '')).upper()
+                # Check if filter is in account name or ID
+                if account_name_filter in acc_name or account_name_filter in acc_id:
                     practice_account = acc
+                    logger.info(f"   Found matching account: {acc.get('name')} (ID: {acc.get('id')})")
                     break
             
             if not practice_account:
