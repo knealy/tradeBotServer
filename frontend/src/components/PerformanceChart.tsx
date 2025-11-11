@@ -26,6 +26,29 @@ export default function PerformanceChart() {
           interval,
         })
         console.log('✅ PerformanceChart: Received data:', result)
+        
+        // Log P&L values for debugging
+        if (result.points && result.points.length > 0) {
+          console.log(`📊 PerformanceChart [${interval}]: First 5 data points:`)
+          result.points.slice(0, 5).forEach((point: any, idx: number) => {
+            console.log(`  Point ${idx + 1}:`, {
+              timestamp: point.timestamp,
+              period_pnl: point.period_pnl,
+              cumulative_pnl: point.cumulative_pnl,
+              trade_count: point.trade_count
+            })
+          })
+          console.log(`📊 PerformanceChart [${interval}]: Last 5 data points:`)
+          result.points.slice(-5).forEach((point: any, idx: number) => {
+            console.log(`  Point ${result.points.length - 4 + idx}:`, {
+              timestamp: point.timestamp,
+              period_pnl: point.period_pnl,
+              cumulative_pnl: point.cumulative_pnl,
+              trade_count: point.trade_count
+            })
+          })
+        }
+        
         return result
       } catch (err) {
         console.error('❌ PerformanceChart: Error fetching data:', err)

@@ -55,7 +55,8 @@ Priority 4 (Optional): ⏳ Redis for HFT quotes
 
 'Recent Trades' data seems right but the calculations that translate to the Performance chart data are way off 
 
-for example all of these traids and individual P&L seem correct but 
+for example:
+in EXPRESS account - all of these trades (not counting nov 10th) and individual P&L seem correct but 
 gross PnL is very high comparitively at +19,020.50
 
 Recent Trades
@@ -145,3 +146,118 @@ $647.80
 Week 3
 
 $647.80
+
+
+2025-11-11 04:46:34,620 - __main__ - INFO - ============================================================
+2025-11-11 04:46:34,620 - __main__ - INFO - 🚀 ASYNC WEBHOOK SERVER STARTUP
+2025-11-11 04:46:34,620 - __main__ - INFO - ============================================================
+2025-11-11 04:46:34,763 - __main__ - INFO - ✅ aiohttp installed
+2025-11-11 04:46:34,776 - __main__ - INFO - ✅ psycopg2 installed
+ℹ️  Using Railway environment variables (no .env file needed)
+🔍 POSITION_SIZE: 3
+🔍 IGNORE_NON_ENTRY_SIGNALS: true
+🔍 TP1_FRACTION: 0.75
+✅ USE_PROJECTX_SDK=0 (from .env or environment)
+2025-11-11 04:46:34,778 - __main__ - WARNING - ⚠️  Failed to load .env file: cannot import name 'load_env' from 'load_env' (/app/load_env.py)
+2025-11-11 04:46:34,778 - __main__ - INFO - 📝 Configuration:
+2025-11-11 04:46:34,778 - __main__ - INFO -    Host: 0.0.0.0
+2025-11-11 04:46:34,778 - __main__ - INFO -    Port: 8080
+2025-11-11 04:46:34,778 - __main__ - INFO -    Username: cloutrades
+2025-11-11 04:46:34,778 - __main__ - INFO -    Account ID: auto-select
+2025-11-11 04:46:34,778 - __main__ - INFO - ============================================================
+2025-11-11 04:46:35,080 - trading_bot - INFO - Logging initialized - file: trading_bot.log, console: stdout
+2025-11-11 04:46:35,118 - servers.async_webhook_server - INFO - 🤖 Initializing trading bot...
+2025-11-11 04:46:35,118 - core.account_tracker - INFO - No persisted account state found
+2025-11-11 04:46:35,118 - infrastructure.database - INFO - Using individual PostgreSQL params: localhost:5432/trading_bot
+2025-11-11 04:46:35,120 - infrastructure.database - ERROR - ❌ Failed to create database pool: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+2025-11-11 04:46:35,120 - trading_bot - WARNING - ⚠️  PostgreSQL unavailable (will use memory cache only): connection to server at "localhost" (::1), port 5432 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - ✨ Strategy Manager initialized
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - 📝 Registered strategy: overnight_range
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - 📝 Registered strategy: mean_reversion
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - 📝 Registered strategy: trend_following
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - 🔄 Loading strategies from configuration...
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - ⏸️  Strategy disabled: overnight_range
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - ⏸️  Strategy disabled: mean_reversion
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - ⏸️  Strategy disabled: trend_following
+2025-11-11 04:46:35,120 - strategies.strategy_manager - INFO - 📊 Total strategies loaded: 0/3
+2025-11-11 04:46:35,120 - strategies.strategy_base - INFO - ✨ Initialized OVERNIGHT_RANGE strategy
+2025-11-11 04:46:35,135 - strategies.overnight_range_strategy - INFO - 🎯 Overnight Range Strategy initialized
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -    Overnight: 18:00 - 09:30 US/Eastern
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -    Market Open: 09:30 US/Eastern
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -    ATR Period: 14 bars (5m)
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -    Stop: 1.25x ATR, TP: 2.0x ATR
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -    Breakeven: ENABLED (+15.0 pts to trigger)
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -    Market Condition Filters:
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -      Range Size: DISABLED (50-500 pts)
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -      Gap Filter: DISABLED (max 200 pts)
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -      Volatility Filter: DISABLED (ATR 20-200)
+2025-11-11 04:46:35,136 - strategies.overnight_range_strategy - INFO -      DLL Proximity: DISABLED (threshold 75%)
+2025-11-11 04:46:35,136 - servers.async_webhook_server - INFO - 🔐 Authenticating...
+2025-11-11 04:46:35,136 - trading_bot - INFO - Authenticating with TopStepX API...
+2025-11-11 04:46:35,182 - infrastructure.performance_metrics - INFO - 📊 Metrics tracker initialized
+2025-11-11 04:46:35,187 - trading_bot - INFO - Token expires at: 2025-11-12 04:46:35+00:00
+2025-11-11 04:46:35,187 - trading_bot - INFO - Successfully authenticated as: cloutrades
+2025-11-11 04:46:35,187 - trading_bot - INFO - Session token obtained: eyJhbGciOiJIUzI1NiIs...
+2025-11-11 04:46:35,227 - trading_bot - INFO - SignalR Market Hub connected
+2025-11-11 04:46:35,238 - servers.async_webhook_server - INFO - 📋 Listing accounts...
+2025-11-11 04:46:35,238 - trading_bot - INFO - Fetching active accounts from TopStepX API...
+2025-11-11 04:46:35,248 - servers.async_webhook_server - INFO - 🚀 Starting WebSocket server on 0.0.0.0:8081
+2025-11-11 04:46:35,245 - trading_bot - INFO - Found 6 active accounts
+2025-11-11 04:46:35,248 - infrastructure.task_queue - INFO - 🔧 Worker 0 started
+2025-11-11 04:46:35,245 - servers.async_webhook_server - INFO - ✅ Auto-selected account: PRAC-V2-14334-56363256
+2025-11-11 04:46:35,248 - infrastructure.task_queue - INFO - 🔧 Worker 1 started
+2025-11-11 04:46:35,248 - infrastructure.task_queue - INFO - 🔧 Worker 2 started
+2025-11-11 04:46:35,245 - infrastructure.task_queue - INFO - ✅ Priority task queue initialized (max_concurrent=20)
+2025-11-11 04:46:35,247 - servers.async_webhook_server - INFO - 📂 Serving frontend from: /app/static/dashboard
+2025-11-11 04:46:35,247 - servers.async_webhook_server - INFO - ✅ Frontend routes configured
+2025-11-11 04:46:35,248 - servers.async_webhook_server - INFO - ✅ Async webhook server initialized (0.0.0.0:8080)
+2025-11-11 04:46:35,248 - servers.async_webhook_server - INFO - 🚀 Starting async webhook server on 0.0.0.0:8080
+2025-11-11 04:46:35,248 - servers.async_webhook_server - INFO - 🚀 Starting background tasks...
+2025-11-11 04:46:35,248 - infrastructure.task_queue - INFO - 🚀 Starting 5 workers...
+2025-11-11 04:46:35,248 - infrastructure.task_queue - INFO - ✅ Task queue started with 5 workers
+2025-11-11 04:46:35,248 - servers.async_webhook_server - INFO - ✅ Background tasks started
+2025-11-11 04:46:35,249 - infrastructure.task_queue - INFO - 🔧 Worker 3 started
+2025-11-11 04:46:35,249 - infrastructure.task_queue - INFO - 🔧 Worker 4 started
+2025-11-11 04:46:35,249 - trading_bot - INFO - Fetching order history for account 12694476
+2025-11-11 04:46:35,249 - trading_bot - INFO - Requesting order history for account 12694476 using TopStepX Gateway API
+2025-11-11 04:46:35,249 - trading_bot - INFO - Request data: {'accountId': 12694476, 'startTimestamp': '2025-11-04T04:46:35.249267+00:00', 'endTimestamp': '2025-11-11T04:46:35.249276+00:00', 'request': {'accountId': 12694476, 'limit': 10}}
+2025-11-11 04:46:35,258 - trading_bot - INFO - Total orders returned: 126; Filled orders: 32
+2025-11-11 04:46:35,258 - trading_bot - INFO - Found 10 historical filled orders
+2025-11-11 04:46:35,394 - core.discord_notifier - WARNING - Discord notification rate limited - skipping
+2025-11-11 04:46:35,394 - trading_bot - INFO - Fetching open positions for account 12694476
+2025-11-11 04:46:35,394 - trading_bot - INFO - Requesting open positions for account 12694476 using TopStepX Gateway API
+2025-11-11 04:46:35,394 - trading_bot - INFO - Request data: {'accountId': 12694476}
+2025-11-11 04:46:35,392 - core.discord_notifier - INFO - Discord order fill notification sent for SELL 1 MNQ
+2025-11-11 04:46:35,393 - core.discord_notifier - WARNING - Discord notification rate limited - skipping
+2025-11-11 04:46:35,394 - core.discord_notifier - WARNING - Discord notification rate limited - skipping
+2025-11-11 04:46:35,394 - core.discord_notifier - WARNING - Discord notification rate limited - skipping
+2025-11-11 04:46:35,394 - core.discord_notifier - WARNING - Discord notification rate limited - skipping
+2025-11-11 04:46:35,426 - trading_bot - INFO - No open positions found for account 12694476
+2025-11-11 04:46:35,426 - trading_bot - INFO - Fetching order history for account 12694476
+2025-11-11 04:46:35,426 - trading_bot - INFO - Requesting order history for account 12694476 using TopStepX Gateway API
+2025-11-11 04:46:35,426 - trading_bot - INFO - Request data: {'accountId': 12694476, 'startTimestamp': '2025-11-04T04:46:35.426639+00:00', 'endTimestamp': '2025-11-11T04:46:35.426645+00:00', 'request': {'accountId': 12694476, 'limit': 10}}
+2025-11-11 04:46:35,435 - trading_bot - INFO - Total orders returned: 126; Filled orders: 32
+2025-11-11 04:46:35,435 - trading_bot - INFO - Found 10 historical filled orders
+2025-11-11 04:46:35,435 - trading_bot - INFO - Checking order 1844416991: status=2, disposition=
+2025-11-11 04:46:35,435 - trading_bot - INFO - Checking order 1849533572: status=2, disposition=
+2025-11-11 04:46:35,435 - trading_bot - INFO - Checking order 1849803528: status=2, disposition=
+2025-11-11 04:46:35,435 - trading_bot - INFO - Checking order 1857187278: status=2, disposition=
+2025-11-11 04:46:35,435 - trading_bot - INFO - Using cached balance for account 12694476: $158,199.68
+2025-11-11 04:46:35,435 - servers.websocket_server - INFO - 🚀 Starting professional WebSocket server on 0.0.0.0:8081
+2025-11-11 04:46:35,438 - websockets.server - INFO - server listening on 0.0.0.0:8081
+2025-11-11 04:46:35,438 - servers.websocket_server - INFO - ✅ WebSocket server started successfully!
+2025-11-11 04:46:35,437 - servers.async_webhook_server - INFO - ✅ Async webhook server running on http://0.0.0.0:8080
+2025-11-11 04:46:35,437 - servers.async_webhook_server - INFO - ✅ WebSocket server running on ws://0.0.0.0:8081
+2025-11-11 04:46:35,437 - servers.async_webhook_server - INFO -    Health check: http://0.0.0.0:8080/health
+2025-11-11 04:46:35,437 - servers.async_webhook_server - INFO -    Status: http://0.0.0.0:8080/status
+2025-11-11 04:46:35,437 - servers.async_webhook_server - INFO -    Metrics: http://0.0.0.0:8080/metrics
+2025-11-11 04:46:35,437 - servers.async_webhook_server - INFO -    Webhook: http://0.0.0.0:8080/webhook
+2025-11-11 04:46:35,438 - servers.async_webhook_server - INFO -    Dashboard API: http://0.0.0.0:8080/api/*
+2025-11-11 04:46:35,438 - servers.async_webhook_server - INFO -    - Accounts: GET /api/accounts
+2025-11-11 04:46:35,438 - servers.async_webhook_server - INFO -    - Positions: GET /api/positions
