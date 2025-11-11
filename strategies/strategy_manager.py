@@ -114,9 +114,26 @@ class StrategyManager:
         Returns:
             tuple: (success: bool, message: str)
         """
+        # Check if strategy exists in instances dict
         if name not in self.strategies:
-            logger.error(f"❌ Strategy not found: {name}")
-            return False, f"Strategy not found: {name}"
+            # Try to create instance from registered class
+            if name in self.available_strategies:
+                logger.info(f"Creating strategy instance for {name}")
+                strategy_class = self.available_strategies[name]
+                # Create a basic config for the strategy
+                from strategies.strategy_base import StrategyConfig
+                config = StrategyConfig(
+                    name=name,
+                    symbols=symbols or ['MNQ', 'MES'],  # Default symbols
+                    enabled=True
+                )
+                strategy = strategy_class(self.trading_bot, config)
+                self.strategies[name] = strategy
+                logger.info(f"✅ Created strategy instance: {name}")
+            else:
+                available = list(self.available_strategies.keys()) + list(self.strategies.keys())
+                logger.error(f"❌ Strategy not found: {name}. Available: {available}")
+                return False, f"Strategy not found: {name}. Available: {', '.join(available) if available else 'none'}"
         
         if name in self.active_strategies:
             logger.warning(f"⚠️  Strategy already active: {name}")
