@@ -102,26 +102,12 @@ class DashboardAPI:
         """
         Extract P&L from TopStepX order data.
         TopStepX doesn't provide direct PnL in order history - need to calculate from fills.
+        
+        IMPORTANT: For consolidated trades (with entry_price/exit_price), always recalculate
+        P&L using the correct point value, rather than trusting pre-calculated 'pnl' field,
+        which may have been calculated with incorrect point values.
         """
-        # Check for direct PnL fields (may be added by consolidation logic)
-        for key in ['pnl', 'PnL', 'realizedPnl', 'realized_pnl', 'profitLoss', 'result', 'netPnl']:
-            if key in trade and trade[key] is not None:
-                try:
-                    return float(trade[key])
-                except Exception:
-                    continue
-        
-        # TopStepX order format: calculate from fills
-        # For filled orders, we need to look at the fill data
-        # This is a simplified calculation - real P&L needs paired entry/exit
-        fills = trade.get('fills', [])
-        if fills:
-            # If we have fill data with PnL
-            total_pnl = sum(fill.get('pnl', 0) for fill in fills if isinstance(fill, dict))
-            if total_pnl != 0:
-                return float(total_pnl)
-        
-        # Check if this is a consolidated trade with calculated PnL
+        # PRIORITY 1: Recalculate for consolidated trades (ensures correct point value)
         if 'entry_price' in trade and 'exit_price' in trade:
             try:
                 entry = float(trade['entry_price'])
@@ -141,6 +127,24 @@ class DashboardAPI:
                 return float(pnl)
             except Exception as e:
                 logger.debug(f"Failed to calculate PnL from entry/exit: {e}")
+        
+        # PRIORITY 2: Check for direct PnL fields (for non-consolidated trades)
+        for key in ['pnl', 'PnL', 'realizedPnl', 'realized_pnl', 'profitLoss', 'result', 'netPnl']:
+            if key in trade and trade[key] is not None:
+                try:
+                    return float(trade[key])
+                except Exception:
+                    continue
+        
+        # PRIORITY 3: TopStepX order format: calculate from fills
+        # For filled orders, we need to look at the fill data
+        # This is a simplified calculation - real P&L needs paired entry/exit
+        fills = trade.get('fills', [])
+        if fills:
+            # If we have fill data with PnL
+            total_pnl = sum(fill.get('pnl', 0) for fill in fills if isinstance(fill, dict))
+            if total_pnl != 0:
+                return float(total_pnl)
         
         # Parse from description as last resort
         description = trade.get('description') or trade.get('details') or trade.get('text')
@@ -168,6 +172,10 @@ class DashboardAPI:
             return 0.5  # Micro YM: $0.50 per point
         elif 'M2K' in symbol or 'RTY' in symbol:
             return 5.0  # Micro Russell: $5 per point
+        elif 'MGC' in symbol:
+            return 10.0  # Micro Gold: $10 per point
+        elif 'GC' in symbol:
+            return 100.0  # Gold: $100 per point
         else:
             return 1.0  # Default
 

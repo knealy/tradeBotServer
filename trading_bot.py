@@ -2986,6 +2986,8 @@ class TopStepXTradingBot:
             return 50.0  # $50 per point (full-size Russell)
         
         # Commodities
+        elif 'MGC' in symbol_upper:
+            return 10.0  # Micro Gold: $10 per point
         elif 'CL' in symbol_upper:
             return 1000.0  # $1000 per point for crude oil
         elif 'GC' in symbol_upper:
