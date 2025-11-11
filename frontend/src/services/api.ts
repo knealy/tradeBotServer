@@ -126,6 +126,15 @@ export const orderApi = {
     await api.post('/api/orders/cancel-all')
   },
 
+  modifyOrder: async (orderId: string, updates: {
+    price?: number
+    quantity?: number
+    order_type?: number
+  }): Promise<Order> => {
+    const response = await api.post(`/api/orders/${orderId}/modify`, updates)
+    return response.data
+  },
+
   placeOrder: async (order: {
     symbol: string
     side: 'BUY' | 'SELL'

@@ -2,7 +2,8 @@
 
 # 🎯 Current Focus
 
-
+- consider moving charts to tradingview light weight charts or chart.js + plugin
+  - use the version that is the fastest with most responsive UI
 
 #### J. Go/Rust Migration (Future)
 **Problem**: Python GIL limits concurrency
@@ -54,10 +55,5 @@ Priority 4 (Optional): ⏳ Redis for HFT quotes
 
 
 Current Problems:
-- the open positions dont give enough info realtime (unrealized pnl, entry price, etc )
-start/stop strategies buttons dont work 
-- getting erroneous discord notifications not connected to actual filled trade orders 
-- consider moving charts to tradingview light weight charts or chart.js + plugin
-- strategies option selector not connected to routes yet
 
 

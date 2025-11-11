@@ -551,11 +551,32 @@ class DashboardAPI:
             formatted_positions = []
             
             for pos in positions:
-                # Extract position data
-                entry_price = pos.get('entryPrice') or pos.get('entry_price')
-                current_price = pos.get('currentPrice') or pos.get('current_price') or pos.get('markPrice') or entry_price
-                quantity = pos.get('quantity') or pos.get('size', 0)
-                side = pos.get('side') or pos.get('positionSide', 'LONG')
+                # Log raw position data for debugging
+                logger.debug(f"Raw position data: {pos}")
+                
+                # Extract position data - try multiple field name variations
+                entry_price = (pos.get('entryPrice') or pos.get('entry_price') or 
+                              pos.get('averagePrice') or pos.get('avgPrice') or
+                              pos.get('openPrice') or pos.get('price') or 0)
+                
+                # Try to get current/mark price
+                current_price = (pos.get('currentPrice') or pos.get('current_price') or 
+                                pos.get('markPrice') or pos.get('mark_price') or
+                                pos.get('lastPrice') or pos.get('last_price') or entry_price)
+                
+                # Quantity/size
+                quantity = (pos.get('quantity') or pos.get('size') or 
+                           pos.get('qty') or pos.get('contracts') or 0)
+                
+                # Side - handle both string and integer (1=LONG, 2=SHORT)
+                side_raw = pos.get('side') or pos.get('positionSide') or pos.get('type') or pos.get('direction')
+                if isinstance(side_raw, int):
+                    side = 'LONG' if side_raw == 1 else 'SHORT'
+                elif isinstance(side_raw, str):
+                    side = side_raw.upper()
+                else:
+                    side = 'LONG'  # Default
+                
                 symbol = pos.get('symbol') or self._extract_trade_symbol(pos)
                 
                 # Calculate unrealized P&L if we have entry and current price
@@ -584,19 +605,27 @@ class DashboardAPI:
                     except Exception as calc_err:
                         logger.debug(f"Error calculating P&L for {symbol}: {calc_err}")
                 
+                # Extract additional position info
+                position_id = pos.get('id') or pos.get('positionId') or pos.get('position_id')
+                stop_loss = pos.get('stopLoss') or pos.get('stop_loss') or pos.get('stopPrice')
+                take_profit = pos.get('takeProfit') or pos.get('take_profit') or pos.get('targetPrice')
+                opened_at = pos.get('timestamp') or pos.get('createdAt') or pos.get('openedAt') or pos.get('openTime')
+                
                 formatted_positions.append({
-                    "id": pos.get('id') or pos.get('positionId'),
+                    "id": str(position_id) if position_id else None,
                     "symbol": symbol,
-                    "side": side.upper() if isinstance(side, str) else ('LONG' if side == 0 else 'SHORT'),
-                    "quantity": quantity,
-                    "entry_price": entry_price,
-                    "current_price": current_price,
+                    "side": side,
+                    "quantity": float(quantity),
+                    "entry_price": float(entry_price) if entry_price else 0,
+                    "current_price": float(current_price) if current_price else float(entry_price) if entry_price else 0,
                     "unrealized_pnl": round(unrealized_pnl, 2),
                     "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
                     "realized_pnl": round(float(realized_pnl), 2),
-                    "stop_loss": pos.get('stopLoss') or pos.get('stop_loss'),
-                    "take_profit": pos.get('takeProfit') or pos.get('take_profit'),
-                    "timestamp": pos.get('timestamp') or pos.get('createdAt')
+                    "stop_loss": float(stop_loss) if stop_loss else None,
+                    "take_profit": float(take_profit) if take_profit else None,
+                    "timestamp": opened_at,
+                    # Additional fields for debugging
+                    "_raw": pos  # Include raw data for debugging
                 })
             
             return formatted_positions

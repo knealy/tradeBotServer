@@ -190,6 +190,9 @@ class AsyncWebhookServer:
         # Test endpoint for trade execution testing
         self.app.router.add_post('/api/test/overnight-breakout', self.handle_test_overnight_breakout)
         
+        # Order modification endpoint
+        self.app.router.add_post('/api/orders/{order_id}/modify', self.handle_modify_order)
+        
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
@@ -490,9 +493,57 @@ class AsyncWebhookServer:
             result = await self.dashboard_api.cancel_order(order_id)
             if "error" in result:
                 return web.json_response(result, status=400)
+            
+            # Broadcast update via WebSocket
+            await self.broadcast_to_websockets({
+                "type": "order_update",
+                "data": await self.dashboard_api.get_orders(),
+                "timestamp": time.time()
+            })
+            
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error canceling order: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_modify_order(self, request: web.Request) -> web.Response:
+        """Modify an order (price and/or quantity)."""
+        try:
+            order_id = request.match_info.get('order_id')
+            if not order_id:
+                return web.json_response({"error": "order_id required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            new_price = data.get('price')
+            new_quantity = data.get('quantity')
+            order_type = data.get('order_type')  # Optional: 1=Limit, 4=Stop, etc.
+            
+            if new_price is None and new_quantity is None:
+                return web.json_response({"error": "Either 'price' or 'quantity' must be provided"}, status=400)
+            
+            logger.info(f"Modifying order {order_id}: price={new_price}, quantity={new_quantity}, type={order_type}")
+            
+            result = await self.trading_bot.modify_order(
+                order_id=order_id,
+                new_price=float(new_price) if new_price is not None else None,
+                new_quantity=int(new_quantity) if new_quantity is not None else None,
+                order_type=int(order_type) if order_type is not None else None
+            )
+            
+            if "error" in result:
+                return web.json_response(result, status=400)
+            
+            # Broadcast update via WebSocket
+            await self.broadcast_to_websockets({
+                "type": "order_update",
+                "data": await self.dashboard_api.get_orders(),
+                "timestamp": time.time()
+            })
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error modifying order: {e}")
+            logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_cancel_all_orders(self, request: web.Request) -> web.Response:
@@ -740,8 +791,26 @@ class AsyncWebhookServer:
             data = await request.json() if request.content_length else {}
             symbols = data.get('symbols')
             
+            logger.info(f"📋 Starting strategy: {strategy_name}, symbols: {symbols}")
+            
             if not hasattr(self.trading_bot, 'strategy_manager'):
+                logger.error("Strategy manager not available")
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            # Check if strategy exists
+            if not hasattr(self.trading_bot.strategy_manager, 'available_strategies'):
+                logger.error("Strategy manager has no available_strategies")
+                return web.json_response({"error": "Strategy manager not properly initialized"}, status=503)
+            
+            available = list(self.trading_bot.strategy_manager.available_strategies.keys())
+            logger.info(f"Available strategies: {available}")
+            
+            if strategy_name not in self.trading_bot.strategy_manager.available_strategies:
+                logger.error(f"Strategy '{strategy_name}' not found. Available: {available}")
+                return web.json_response({
+                    "error": f"Strategy '{strategy_name}' not found",
+                    "available_strategies": available
+                }, status=404)
             
             # CRITICAL FIX: await the async method
             success, message = await self.trading_bot.strategy_manager.start_strategy(
@@ -749,12 +818,15 @@ class AsyncWebhookServer:
                 symbols=symbols
             )
             
+            logger.info(f"Strategy start result: success={success}, message={message}")
+            
             if success:
                 return web.json_response({"success": True, "message": message})
             else:
                 return web.json_response({"error": message}, status=400)
         except Exception as e:
             logger.error(f"Error starting strategy: {e}")
+            logger.exception(e)  # Full stack trace
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_stop_strategy(self, request: web.Request) -> web.Response:

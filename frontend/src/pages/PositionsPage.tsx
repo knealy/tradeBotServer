@@ -2,7 +2,8 @@ import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
 import { positionApi, orderApi } from '../services/api'
 import AccountSelector from '../components/AccountSelector'
-import { TrendingUp, TrendingDown, X, AlertCircle } from 'lucide-react'
+import { TrendingUp, TrendingDown, X, AlertCircle, Edit } from 'lucide-react'
+import { useState } from 'react'
 import type { Position, Order } from '../types'
 
 export default function PositionsPage() {
@@ -32,6 +33,11 @@ export default function PositionsPage() {
     }
   )
 
+  // Modify order state
+  const [editingOrder, setEditingOrder] = useState<{ id: string; price?: number; quantity?: number } | null>(null)
+  const [modifyPrice, setModifyPrice] = useState('')
+  const [modifyQuantity, setModifyQuantity] = useState('')
+
   // Cancel order mutation
   const cancelOrderMutation = useMutation(
     (orderId: string) => orderApi.cancelOrder(orderId),
@@ -42,10 +48,49 @@ export default function PositionsPage() {
     }
   )
 
+  // Modify order mutation
+  const modifyOrderMutation = useMutation(
+    ({ orderId, updates }: { orderId: string; updates: { price?: number; quantity?: number; order_type?: number } }) =>
+      orderApi.modifyOrder(orderId, updates),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['orders', accountId])
+        setEditingOrder(null)
+        setModifyPrice('')
+        setModifyQuantity('')
+      },
+    }
+  )
+
   const handleCancelOrder = (orderId: string) => {
     if (confirm('Are you sure you want to cancel this order?')) {
       cancelOrderMutation.mutate(orderId)
     }
+  }
+
+  const handleStartEdit = (order: Order) => {
+    setEditingOrder({ id: order.id, price: order.price, quantity: order.quantity })
+    setModifyPrice(order.price ? order.price.toString() : '')
+    setModifyQuantity(order.quantity ? order.quantity.toString() : '')
+  }
+
+  const handleSaveModify = () => {
+    if (!editingOrder) return
+    
+    const updates: { price?: number; quantity?: number } = {}
+    if (modifyPrice && modifyPrice !== editingOrder.price?.toString()) {
+      updates.price = parseFloat(modifyPrice)
+    }
+    if (modifyQuantity && modifyQuantity !== editingOrder.quantity?.toString()) {
+      updates.quantity = parseInt(modifyQuantity)
+    }
+    
+    if (Object.keys(updates).length === 0) {
+      setEditingOrder(null)
+      return
+    }
+    
+    modifyOrderMutation.mutate({ orderId: editingOrder.id, updates })
   }
 
   const isLoading = positionsLoading || ordersLoading
@@ -182,14 +227,62 @@ export default function PositionsPage() {
                       </span>
                     </div>
                     {status !== 'FILLED' && status !== 'CANCELLED' && (
-                      <button
-                        onClick={() => handleCancelOrder(order.id)}
-                        className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
-                        disabled={cancelOrderMutation.isLoading}
-                      >
-                        <X className="w-3 h-3" />
-                        Cancel
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {editingOrder?.id === order.id ? (
+                          <>
+                            <input
+                              type="number"
+                              value={modifyPrice}
+                              onChange={(e) => setModifyPrice(e.target.value)}
+                              placeholder="Price"
+                              className="w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                            />
+                            <input
+                              type="number"
+                              value={modifyQuantity}
+                              onChange={(e) => setModifyQuantity(e.target.value)}
+                              placeholder="Qty"
+                              className="w-16 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                            />
+                            <button
+                              onClick={handleSaveModify}
+                              className="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors"
+                              disabled={modifyOrderMutation.isLoading}
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingOrder(null)
+                                setModifyPrice('')
+                                setModifyQuantity('')
+                              }}
+                              className="px-2 py-1 text-xs bg-slate-600 text-slate-300 rounded hover:bg-slate-500 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleStartEdit(order)}
+                              className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-1"
+                              disabled={modifyOrderMutation.isLoading}
+                            >
+                              <Edit className="w-3 h-3" />
+                              Modify
+                            </button>
+                            <button
+                              onClick={() => handleCancelOrder(order.id)}
+                              className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
+                              disabled={cancelOrderMutation.isLoading}
+                            >
+                              <X className="w-3 h-3" />
+                              Cancel
+                            </button>
+                          </>
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className="grid grid-cols-3 gap-4 text-sm">
