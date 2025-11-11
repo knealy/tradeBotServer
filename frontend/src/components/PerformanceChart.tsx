@@ -18,14 +18,26 @@ export default function PerformanceChart() {
 
   const { data, isLoading }: { data?: PerformanceHistoryResponse; isLoading: boolean } = useQuery(
     ['performanceHistory', selectedAccount?.id, interval],
-    () =>
-      analyticsApi.getPerformanceHistory({
-        accountId: selectedAccount?.id,
-        interval,
-      }),
+    async () => {
+      console.log('📊 PerformanceChart: Fetching performance history for account:', selectedAccount?.id, 'interval:', interval)
+      try {
+        const result = await analyticsApi.getPerformanceHistory({
+          accountId: selectedAccount?.id,
+          interval,
+        })
+        console.log('✅ PerformanceChart: Received data:', result)
+        return result
+      } catch (err) {
+        console.error('❌ PerformanceChart: Error fetching data:', err)
+        throw err
+      }
+    },
     {
       enabled: !!selectedAccount,
       staleTime: 60_000,
+      onError: (err) => {
+        console.error('❌ PerformanceChart: Query error:', err)
+      }
     }
   )
 

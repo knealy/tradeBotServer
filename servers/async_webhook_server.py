@@ -665,6 +665,8 @@ class AsyncWebhookServer:
             start_date = params.get('start') or params.get('start_date')
             end_date = params.get('end') or params.get('end_date')
             refresh = params.get('refresh', '0') == '1'
+            
+            logger.info(f"📊 PERFORMANCE HISTORY REQUEST: account_id={account_id}, interval={interval}, start={start_date}, end={end_date}")
 
             # Clear cache if refresh requested
             if refresh and account_id:
@@ -672,16 +674,19 @@ class AsyncWebhookServer:
                 self.dashboard_api._order_history_cache.pop(cache_key, None)
                 logger.info(f"🔄 Cache cleared for account {account_id} (refresh=1)")
 
+            logger.info(f"🔍 Calling dashboard_api.get_performance_history...")
             history = await self.dashboard_api.get_performance_history(
                 account_id=account_id,
                 interval=interval,
                 start_date=start_date,
                 end_date=end_date,
             )
+            logger.info(f"✅ Performance history returned {len(history.get('points', []))} data points")
             status = 200 if 'error' not in history else 400
             return web.json_response(history, status=status)
         except Exception as e:
-            logger.error(f"Error getting performance history: {e}")
+            logger.error(f"❌ Error getting performance history: {e}")
+            logger.exception(e)  # Print full stack trace
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_get_historical_data(self, request: web.Request) -> web.Response:
