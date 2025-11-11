@@ -37,63 +37,84 @@ const formatLabel = (timestamp: string, timeframe: string) => {
 }
 
 // Custom Candlestick shape component
+// This component receives props from Recharts Bar component and renders OHLC candlesticks
 const CandlestickShape = (props: any) => {
-  const { x, y, width, height, payload } = props
+  const { x, y, width, payload } = props
   
   if (!payload) return null
   
-  const { open, close, high, low } = payload
+  const { open, close, high, low, _yDomainMin, _yDomainMax, _yDomainRange } = payload
   
   if (open === undefined || close === undefined || high === undefined || low === undefined) return null
+  if (!_yDomainMin || !_yDomainMax || !_yDomainRange) return null
   
   const isPositive = close >= open
-  const color = isPositive ? '#10B981' : '#EF4444' // green : red
+  // Use white/black color scheme like TradingView (white for up, black for down)
+  const bodyColor = isPositive ? '#FFFFFF' : '#000000'
+  const wickColor = isPositive ? '#FFFFFF' : '#000000'
   
-  // Calculate the scale factor to convert price to pixels
-  // The Bar component gives us the y and height for the full high-low range
-  const priceRange = high - low
-  const pixelsPerPoint = height / priceRange
+  // Calculate Y positions using the Y-axis domain
+  // The y prop from Bar represents the position of the 'high' value according to Recharts' scale
+  // In SVG, Y increases downward, so higher prices have lower Y values
+  // We need to calculate where low, open, and close should be using the same scale
   
-  // Calculate body dimensions
-  const bodyTop = isPositive ? close : open
-  const bodyHeight = Math.abs(close - open) * pixelsPerPoint
-  const bodyY = y + (high - bodyTop) * pixelsPerPoint
+  // Chart height (matches ResponsiveContainer height)
+  const chartHeight = 400
+  // Calculate pixels per price unit using the domain
+  const pixelsPerPrice = chartHeight / _yDomainRange
   
-  // Calculate wick positions
-  const wickTop = y // High point
-  const wickBottom = y + height // Low point
-  const bodyTopY = bodyY
-  const bodyBottomY = bodyY + bodyHeight
+  // Calculate Y positions (inverted: higher price = lower Y)
+  // The y prop is the Y position of the high value (already calculated by Recharts)
+  const highY = y
+  
+  // Calculate positions for low, open, and close relative to high
+  // Since higher prices = lower Y values, we add the price difference * scale
+  const lowY = highY + (high - low) * pixelsPerPrice
+  const openY = highY + (high - open) * pixelsPerPrice
+  const closeY = highY + (high - close) * pixelsPerPrice
+  
+  // Body: rectangle between open and close
+  const bodyTop = Math.min(openY, closeY)
+  const bodyBottom = Math.max(openY, closeY)
+  const bodyHeight = Math.abs(closeY - openY)
+  
+  // Ensure minimum body height for visibility (at least 1px, 2px if open === close)
+  const minBodyHeight = open === close ? 2 : 1
+  const actualBodyHeight = Math.max(bodyHeight, minBodyHeight)
+  
+  // Calculate candle width (leave some space between candles)
+  const candleWidth = Math.max(width - 2, 2)
+  const candleX = x + (width - candleWidth) / 2
   
   return (
     <g>
-      {/* Upper wick (high to body top) */}
+      {/* Upper wick: vertical line from high to body top */}
       <line
         x1={x + width / 2}
-        y1={wickTop}
+        y1={highY}
         x2={x + width / 2}
-        y2={bodyTopY}
-        stroke={color}
-        strokeWidth={1}
+        y2={bodyTop}
+        stroke={wickColor}
+        strokeWidth={1.5}
       />
-      {/* Body (open-close rectangle) */}
+      {/* Body: rectangle between open and close */}
       <rect
-        x={x + 1}
-        y={bodyY}
-        width={Math.max(width - 2, 1)}
-        height={Math.max(bodyHeight, 1)}
-        fill={color}
-        stroke={color}
-        fillOpacity={isPositive ? 0.6 : 1}
+        x={candleX}
+        y={bodyTop}
+        width={candleWidth}
+        height={actualBodyHeight}
+        fill={bodyColor}
+        stroke={bodyColor}
+        strokeWidth={1}
       />
-      {/* Lower wick (body bottom to low) */}
+      {/* Lower wick: vertical line from body bottom to low */}
       <line
         x1={x + width / 2}
-        y1={bodyBottomY}
+        y1={bodyBottom}
         x2={x + width / 2}
-        y2={wickBottom}
-        stroke={color}
-        strokeWidth={1}
+        y2={lowY}
+        stroke={wickColor}
+        strokeWidth={1.5}
       />
     </g>
   )
@@ -121,7 +142,7 @@ export default function HistoricalPriceChart() {
 
   const chartData = useMemo(() => {
     if (!data?.bars) return []
-    return data.bars.map((bar: HistoricalBar) => ({
+    const bars = data.bars.map((bar: HistoricalBar) => ({
       label: formatLabel(bar.timestamp, timeframe),
       timestamp: bar.timestamp,
       open: bar.open,
@@ -129,6 +150,21 @@ export default function HistoricalPriceChart() {
       high: bar.high,
       low: bar.low,
       range: [bar.low, bar.high], // For candlestick rendering
+    }))
+    
+    // Calculate Y-axis domain for candlestick rendering
+    const allPrices = bars.flatMap(b => [b.high, b.low, b.open, b.close])
+    const minPrice = Math.min(...allPrices)
+    const maxPrice = Math.max(...allPrices)
+    const yDomainMin = minPrice - 5
+    const yDomainMax = maxPrice + 5
+    
+    // Add domain info to each bar for candlestick calculation
+    return bars.map(bar => ({
+      ...bar,
+      _yDomainMin: yDomainMin,
+      _yDomainMax: yDomainMax,
+      _yDomainRange: yDomainMax - yDomainMin,
     }))
   }, [data, timeframe])
 
