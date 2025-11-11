@@ -551,7 +551,7 @@ class AsyncWebhookServer:
         {
             "symbol": "MNQ",  // Default: MNQ
             "quantity": 1,     // Default: 1
-            "account_name": "PRACTICE"  // Default: looks for PRACTICE account
+            "account_name": "PRAC"  // Default: PRAC (searches for accounts containing "PRAC" in name)
         }
         """
         try:
