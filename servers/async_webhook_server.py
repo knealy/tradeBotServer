@@ -875,13 +875,25 @@ class AsyncWebhookServer:
                 logger.error("Strategy manager has no available_strategies")
                 return web.json_response({"error": "Strategy manager not properly initialized"}, status=503)
             
-            available = list(self.trading_bot.strategy_manager.available_strategies.keys())
-            logger.info(f"Available strategies: {available}")
+            # Check both available_strategies (classes) and strategies (instances)
+            available_classes = list(self.trading_bot.strategy_manager.available_strategies.keys()) if hasattr(self.trading_bot.strategy_manager, 'available_strategies') else []
+            available_instances = list(self.trading_bot.strategy_manager.strategies.keys()) if hasattr(self.trading_bot.strategy_manager, 'strategies') else []
+            available = list(set(available_classes + available_instances))
             
-            if strategy_name not in self.trading_bot.strategy_manager.available_strategies:
+            logger.info(f"Available strategy classes: {available_classes}")
+            logger.info(f"Available strategy instances: {available_instances}")
+            logger.info(f"All available strategies: {available}")
+            
+            # Check if strategy exists in either dict
+            strategy_exists = (
+                strategy_name in self.trading_bot.strategy_manager.available_strategies or
+                strategy_name in self.trading_bot.strategy_manager.strategies
+            )
+            
+            if not strategy_exists:
                 logger.error(f"Strategy '{strategy_name}' not found. Available: {available}")
                 return web.json_response({
-                    "error": f"Strategy '{strategy_name}' not found",
+                    "error": f"Strategy '{strategy_name}' not found. Available strategies: {', '.join(available) if available else 'none'}",
                     "available_strategies": available
                 }, status=404)
             

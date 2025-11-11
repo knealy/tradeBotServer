@@ -35,9 +35,22 @@ export default function Strategies() {
         }
       },
       onError: (error: any) => {
-        const errorMsg = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Unknown error'
+        console.error('❌ Strategy start error (full):', error)
+        console.error('❌ Error response:', error?.response)
+        console.error('❌ Error response data:', error?.response?.data)
+        
+        // Try multiple ways to extract the error message
+        let errorMsg = 'Unknown error'
+        if (error?.response?.data) {
+          errorMsg = error.response.data.error || 
+                    error.response.data.message || 
+                    JSON.stringify(error.response.data) ||
+                    'Unknown error'
+        } else if (error?.message) {
+          errorMsg = error.message
+        }
+        
         setErrorMessage(`Failed to start strategy: ${errorMsg}`)
-        console.error('❌ Strategy start error:', error)
       },
     }
   )
@@ -57,9 +70,22 @@ export default function Strategies() {
         }
       },
       onError: (error: any) => {
-        const errorMsg = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Unknown error'
+        console.error('❌ Strategy stop error (full):', error)
+        console.error('❌ Error response:', error?.response)
+        console.error('❌ Error response data:', error?.response?.data)
+        
+        // Try multiple ways to extract the error message
+        let errorMsg = 'Unknown error'
+        if (error?.response?.data) {
+          errorMsg = error.response.data.error || 
+                    error.response.data.message || 
+                    JSON.stringify(error.response.data) ||
+                    'Unknown error'
+        } else if (error?.message) {
+          errorMsg = error.message
+        }
+        
         setErrorMessage(`Failed to stop strategy: ${errorMsg}`)
-        console.error('❌ Strategy stop error:', error)
       },
     }
   )
