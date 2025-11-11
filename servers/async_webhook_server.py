@@ -187,6 +187,9 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/performance/history', self.handle_get_performance_history)
         self.app.router.add_get('/api/history', self.handle_get_historical_data)
         
+        # Test endpoint for trade execution testing
+        self.app.router.add_post('/api/test/overnight-breakout', self.handle_test_overnight_breakout)
+        
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
@@ -533,6 +536,160 @@ class AsyncWebhookServer:
         except Exception as e:
             logger.error(f"Error placing order: {e}")
             return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_test_overnight_breakout(self, request: web.Request) -> web.Response:
+        """
+        Test endpoint to simulate overnight breakout trades on PRACTICE account.
+        
+        Places stop orders with brackets (typical overnight breakout strategy):
+        - Gets current market price
+        - Places long breakout (stop above current price)
+        - Places short breakout (stop below current price)
+        - Both with stop loss and take profit brackets
+        
+        Request body (optional):
+        {
+            "symbol": "MNQ",  // Default: MNQ
+            "quantity": 1,     // Default: 1
+            "account_name": "PRACTICE"  // Default: looks for PRACTICE account
+        }
+        """
+        try:
+            data = await request.json() if request.content_length else {}
+            symbol = data.get('symbol', 'MNQ').upper()
+            quantity = data.get('quantity', 1)
+            account_name_filter = data.get('account_name', 'PRACTICE').upper()
+            
+            logger.info(f"🧪 TEST: Overnight breakout trade test for {symbol}")
+            
+            # Find PRACTICE account
+            accounts = await self.trading_bot.list_accounts()
+            practice_account = None
+            for acc in accounts:
+                if account_name_filter in acc.get('name', '').upper() or account_name_filter in str(acc.get('id', '')).upper():
+                    practice_account = acc
+                    break
+            
+            if not practice_account:
+                return web.json_response({
+                    "error": f"Account matching '{account_name_filter}' not found",
+                    "available_accounts": [{"id": acc.get('id'), "name": acc.get('name')} for acc in accounts]
+                }, status=404)
+            
+            account_id = str(practice_account.get('id'))
+            logger.info(f"✅ Found account: {practice_account.get('name')} (ID: {account_id})")
+            
+            # Switch to practice account
+            await self.dashboard_api.switch_account(account_id)
+            
+            # Get current market price
+            quote = await self.trading_bot.get_market_quote(symbol)
+            if "error" in quote:
+                return web.json_response({
+                    "error": f"Failed to get market quote: {quote['error']}"
+                }, status=400)
+            
+            current_price = quote.get('last') or quote.get('bid') or quote.get('ask')
+            if not current_price:
+                return web.json_response({
+                    "error": "Could not determine current market price",
+                    "quote": quote
+                }, status=400)
+            
+            logger.info(f"📊 Current {symbol} price: ${current_price:.2f}")
+            
+            # Calculate overnight breakout levels (typical: 0.1-0.3% above/below)
+            tick_size = await self.trading_bot._get_tick_size(symbol)
+            breakout_distance = max(tick_size * 10, current_price * 0.002)  # At least 10 ticks or 0.2%
+            stop_loss_distance = breakout_distance * 1.5  # Stop loss 1.5x breakout distance
+            take_profit_distance = breakout_distance * 2.5  # Take profit 2.5x breakout distance
+            
+            # Round to valid tick sizes
+            breakout_distance = self.trading_bot._round_to_tick_size(breakout_distance, tick_size)
+            stop_loss_distance = self.trading_bot._round_to_tick_size(stop_loss_distance, tick_size)
+            take_profit_distance = self.trading_bot._round_to_tick_size(take_profit_distance, tick_size)
+            
+            # Long breakout: stop order above current price
+            long_entry = current_price + breakout_distance
+            long_stop_loss = long_entry - stop_loss_distance
+            long_take_profit = long_entry + take_profit_distance
+            
+            # Short breakout: stop order below current price
+            short_entry = current_price - breakout_distance
+            short_stop_loss = short_entry + stop_loss_distance
+            short_take_profit = short_entry - take_profit_distance
+            
+            results = {
+                "account": {
+                    "id": account_id,
+                    "name": practice_account.get('name')
+                },
+                "symbol": symbol,
+                "current_price": round(current_price, 2),
+                "tick_size": tick_size,
+                "trades": []
+            }
+            
+            # Place long breakout trade
+            logger.info(f"📈 Placing LONG breakout: Entry=${long_entry:.2f}, SL=${long_stop_loss:.2f}, TP=${long_take_profit:.2f}")
+            long_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+                symbol=symbol,
+                side="BUY",
+                quantity=quantity,
+                entry_price=long_entry,
+                stop_loss_price=long_stop_loss,
+                take_profit_price=long_take_profit,
+                account_id=account_id
+            )
+            results["trades"].append({
+                "side": "LONG",
+                "entry_price": round(long_entry, 2),
+                "stop_loss": round(long_stop_loss, 2),
+                "take_profit": round(long_take_profit, 2),
+                "result": long_result
+            })
+            
+            # Place short breakout trade
+            logger.info(f"📉 Placing SHORT breakout: Entry=${short_entry:.2f}, SL=${short_stop_loss:.2f}, TP=${short_take_profit:.2f}")
+            short_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+                symbol=symbol,
+                side="SELL",
+                quantity=quantity,
+                entry_price=short_entry,
+                stop_loss_price=short_stop_loss,
+                take_profit_price=short_take_profit,
+                account_id=account_id
+            )
+            results["trades"].append({
+                "side": "SHORT",
+                "entry_price": round(short_entry, 2),
+                "stop_loss": round(short_stop_loss, 2),
+                "take_profit": round(short_take_profit, 2),
+                "result": short_result
+            })
+            
+            # Get current positions and orders to verify
+            positions = await self.trading_bot.get_open_positions(account_id=account_id)
+            orders = await self.trading_bot.get_open_orders(account_id=account_id)
+            
+            results["verification"] = {
+                "positions_count": len(positions),
+                "orders_count": len(orders),
+                "positions": positions[:5],  # First 5 positions
+                "orders": orders[:10]  # First 10 orders
+            }
+            
+            logger.info(f"✅ Test complete. Positions: {len(positions)}, Orders: {len(orders)}")
+            
+            return web.json_response(results, status=200)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in test overnight breakout: {e}")
+            logger.exception(e)
+            return web.json_response({
+                "error": str(e),
+                "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None
+            }, status=500)
     
     async def handle_get_strategies(self, request: web.Request) -> web.Response:
         """Get all available strategies."""

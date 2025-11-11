@@ -54,14 +54,7 @@ Priority 4 (Optional): ⏳ Redis for HFT quotes
 
 
 Current Problems:
-- candlestick charts look are lacking finesse and could use some updating its a bit odd 
-  - the price axis is on the left instead of right side and seems 'compressed' 
-  - the time axis and candles do not continue to current time and stop at end of new york session (around 5pm EST today)
-  - the candles themselves do not look clean/professional and the default white/black is too stark to see easily (the black mainly its too dark)
-  - users should be able to drag and zoom responsively across the chart 
-    rather than use some compression bar below the chart x axis. 
-  - there should be a crosshairs cursor effect while hovering to show price / time easier
-  - more modular: users should be able to pick their own candle colors, pick between two specific date/times, etc
+- consider moving charts to tradingview light weight charts or chart.js + plugin
 - strategies option selector not connected to routes yet
 - open positions not connected to routes 
 - automated trades execution not fully working 
