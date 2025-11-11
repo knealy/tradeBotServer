@@ -863,8 +863,14 @@ class AsyncWebhookServer:
             
             data = await request.json() if request.content_length else {}
             symbols = data.get('symbols')
-            
+            account_id = data.get('accountId') or data.get('account_id')
+
             logger.info(f"📋 Starting strategy: {strategy_name}, symbols: {symbols}")
+            if account_id:
+                logger.info(f"Switching account to {account_id} before starting strategy")
+                switch_result = await self.dashboard_api.switch_account(str(account_id))
+                if 'error' in switch_result:
+                    return web.json_response({"error": switch_result['error']}, status=400)
             
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 logger.error("Strategy manager not available")
@@ -898,10 +904,16 @@ class AsyncWebhookServer:
                 }, status=404)
             
             # CRITICAL FIX: await the async method
-            success, message = await self.trading_bot.strategy_manager.start_strategy(
+            result = await self.trading_bot.strategy_manager.start_strategy(
                 strategy_name,
                 symbols=symbols
             )
+
+            # start_strategy may itself return a coroutine (older implementations)
+            if asyncio.iscoroutine(result):
+                result = await result
+
+            success, message = result
             
             logger.info(f"Strategy start result: success={success}, message={message}")
             
@@ -921,11 +933,25 @@ class AsyncWebhookServer:
             if not strategy_name:
                 return web.json_response({"error": "strategy name required"}, status=400)
             
+            data = await request.json() if request.content_length else {}
+            account_id = data.get('accountId') or data.get('account_id')
+
+            if account_id:
+                logger.info(f"Switching account to {account_id} before stopping strategy")
+                switch_result = await self.dashboard_api.switch_account(str(account_id))
+                if 'error' in switch_result:
+                    return web.json_response({"error": switch_result['error']}, status=400)
+            
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
             # CRITICAL FIX: await the async method
-            success, message = await self.trading_bot.strategy_manager.stop_strategy(strategy_name)
+            result = await self.trading_bot.strategy_manager.stop_strategy(strategy_name)
+
+            if asyncio.iscoroutine(result):
+                result = await result
+
+            success, message = result
             
             if success:
                 return web.json_response({"success": True, "message": message})

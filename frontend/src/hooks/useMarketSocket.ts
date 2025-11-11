@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from 'react-query'
 import { wsService } from '../services/websocket'
 
 /**
@@ -10,53 +10,18 @@ export const useMarketSocket = () => {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    const handleMarketUpdate = (data: any) => {
+    const handleMarketUpdate = () => {
       // Invalidate positions and orders queries to trigger refetch
-      queryClient.invalidateQueries({ queryKey: ['positions'] })
-      queryClient.invalidateQueries({ queryKey: ['orders'] })
-      
-      // Optional: Optimistic update for positions if we have the data
-      if (data.symbol && data.bid && data.ask) {
-        queryClient.setQueryData(['positions'], (old: any[]) => {
-          if (!Array.isArray(old)) return old
-          
-          return old.map((p: any) => {
-            if (p.symbol === data.symbol) {
-              const currentPrice = data.bid || data.ask || data.last || p.current_price
-              // Recalculate unrealized P&L
-              const entryPrice = p.entry_price || 0
-              const quantity = p.quantity || 0
-              const side = p.side || 'LONG'
-              
-              let unrealizedPnl = 0
-              if (entryPrice && currentPrice && quantity) {
-                const priceDiff = side === 'LONG' 
-                  ? currentPrice - entryPrice 
-                  : entryPrice - currentPrice
-                // Assuming point value of 1 for now (should be symbol-specific)
-                unrealizedPnl = priceDiff * quantity
-              }
-              
-              return {
-                ...p,
-                current_price: currentPrice,
-                unrealized_pnl: unrealizedPnl
-              }
-            }
-            return p
-          })
-        })
-      }
+      queryClient.invalidateQueries('positions')
+      queryClient.invalidateQueries('orders')
     }
 
-    const handlePositionUpdate = (data: any) => {
-      // Invalidate to trigger refetch with latest data
-      queryClient.invalidateQueries({ queryKey: ['positions'] })
+    const handlePositionUpdate = () => {
+      queryClient.invalidateQueries('positions')
     }
 
-    const handleOrderUpdate = (data: any) => {
-      // Invalidate to trigger refetch with latest data
-      queryClient.invalidateQueries({ queryKey: ['orders'] })
+    const handleOrderUpdate = () => {
+      queryClient.invalidateQueries('orders')
     }
 
     // Listen for market updates
