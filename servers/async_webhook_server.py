@@ -743,7 +743,8 @@ class AsyncWebhookServer:
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
-            success, message = self.trading_bot.strategy_manager.start_strategy(
+            # CRITICAL FIX: await the async method
+            success, message = await self.trading_bot.strategy_manager.start_strategy(
                 strategy_name,
                 symbols=symbols
             )
@@ -766,7 +767,8 @@ class AsyncWebhookServer:
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
-            success, message = self.trading_bot.strategy_manager.stop_strategy(strategy_name)
+            # CRITICAL FIX: await the async method
+            success, message = await self.trading_bot.strategy_manager.stop_strategy(strategy_name)
             
             if success:
                 return web.json_response({"success": True, "message": message})

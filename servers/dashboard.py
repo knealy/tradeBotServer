@@ -191,10 +191,28 @@ class DashboardAPI:
 
     @staticmethod
     def _extract_trade_symbol(trade: Dict[str, Any]) -> str:
-        for key in ['symbol', 'contractId', 'instrument', 'product']:
+        """Extract symbol from trade/position data, handling contractId format."""
+        # Try symbol field first
+        symbol = trade.get('symbol')
+        if symbol:
+            return str(symbol).upper()
+        
+        # Try contractId (format: CON.F.US.MNQ.Z25 -> extract MNQ)
+        contract_id = trade.get('contractId', '')
+        if contract_id:
+            if '.' in contract_id:
+                # Extract symbol from contract ID (e.g., CON.F.US.MNQ.Z25 -> MNQ)
+                parts = contract_id.split('.')
+                if len(parts) >= 4:
+                    return str(parts[-2]).upper()  # Second to last part is usually the symbol
+            return str(contract_id).upper()
+        
+        # Try other fields
+        for key in ['instrument', 'product']:
             value = trade.get(key)
             if value:
-                return str(value)
+                return str(value).upper()
+        
         return 'UNKNOWN'
 
     @staticmethod
@@ -392,14 +410,50 @@ class DashboardAPI:
         async with lock:
             entry = self._positions_cache.get(cache_key)
             if entry and entry['expires'] > now:
-                return entry['data']
+                # Cache still valid, but update current prices for real-time P&L
+                positions = entry['data']
+                await self._update_position_prices(positions)
+                return positions
 
-            positions = await self.trading_bot.get_open_positions()
+            positions = await self.trading_bot.get_open_positions(account_id=account)
+            # Update current prices from live market data for real-time P&L
+            await self._update_position_prices(positions)
             self._positions_cache[cache_key] = {
                 'data': positions,
                 'expires': now + self._positions_ttl,
             }
             return positions
+    
+    async def _update_position_prices(self, positions: List[Dict]) -> None:
+        """Update current prices for positions using live market quotes for real-time P&L calculation"""
+        for pos in positions:
+            symbol = pos.get('symbol')
+            if not symbol:
+                # Try to extract from contractId
+                contract_id = pos.get('contractId', '')
+                if contract_id:
+                    symbol = self._extract_trade_symbol({'contractId': contract_id})
+                    pos['symbol'] = symbol
+            
+            if symbol:
+                try:
+                    # Get current market quote for real-time price
+                    quote = await self.trading_bot.get_market_quote(symbol)
+                    if quote and "error" not in quote:
+                        # Use last price, or bid/ask midpoint
+                        current_price = quote.get('last')
+                        if not current_price:
+                            bid = quote.get('bid')
+                            ask = quote.get('ask')
+                            if bid and ask:
+                                current_price = (bid + ask) / 2
+                        
+                        if current_price:
+                            pos['currentPrice'] = current_price
+                            pos['current_price'] = current_price
+                            pos['markPrice'] = current_price
+                except Exception as e:
+                    logger.debug(f"Failed to update price for {symbol}: {e}")
 
     async def get_accounts(self) -> List[Dict[str, Any]]:
         """Get all available accounts"""
@@ -497,22 +551,52 @@ class DashboardAPI:
             formatted_positions = []
             
             for pos in positions:
-                # Calculate unrealized P&L if we have current price
+                # Extract position data
+                entry_price = pos.get('entryPrice') or pos.get('entry_price')
+                current_price = pos.get('currentPrice') or pos.get('current_price') or pos.get('markPrice') or entry_price
+                quantity = pos.get('quantity') or pos.get('size', 0)
+                side = pos.get('side') or pos.get('positionSide', 'LONG')
+                symbol = pos.get('symbol') or self._extract_trade_symbol(pos)
+                
+                # Calculate unrealized P&L if we have entry and current price
                 unrealized_pnl = 0
                 unrealized_pnl_pct = 0
+                realized_pnl = pos.get('realizedPnl') or pos.get('realized_pnl', 0)
+                
+                if entry_price and current_price and quantity:
+                    try:
+                        # Get point value for symbol
+                        point_value = self.trading_bot._get_point_value(symbol)
+                        
+                        # Calculate P&L based on side
+                        if side.upper() in ['LONG', 'BUY', '0']:
+                            # Long: profit when current > entry
+                            price_diff = current_price - entry_price
+                            unrealized_pnl = price_diff * quantity * point_value
+                        else:
+                            # Short: profit when current < entry
+                            price_diff = entry_price - current_price
+                            unrealized_pnl = price_diff * quantity * point_value
+                        
+                        # Calculate percentage
+                        if entry_price > 0:
+                            unrealized_pnl_pct = (unrealized_pnl / (entry_price * quantity * point_value)) * 100
+                    except Exception as calc_err:
+                        logger.debug(f"Error calculating P&L for {symbol}: {calc_err}")
                 
                 formatted_positions.append({
-                    "id": pos.get('id'),
-                    "symbol": pos.get('symbol'),
-                    "side": pos.get('side'),
-                    "quantity": pos.get('quantity'),
-                    "entry_price": pos.get('entryPrice'),
-                    "current_price": pos.get('currentPrice'),
-                    "unrealized_pnl": unrealized_pnl,
-                    "unrealized_pnl_pct": unrealized_pnl_pct,
-                    "stop_loss": pos.get('stopLoss'),
-                    "take_profit": pos.get('takeProfit'),
-                    "timestamp": pos.get('timestamp')
+                    "id": pos.get('id') or pos.get('positionId'),
+                    "symbol": symbol,
+                    "side": side.upper() if isinstance(side, str) else ('LONG' if side == 0 else 'SHORT'),
+                    "quantity": quantity,
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+                    "realized_pnl": round(float(realized_pnl), 2),
+                    "stop_loss": pos.get('stopLoss') or pos.get('stop_loss'),
+                    "take_profit": pos.get('takeProfit') or pos.get('take_profit'),
+                    "timestamp": pos.get('timestamp') or pos.get('createdAt')
                 })
             
             return formatted_positions
