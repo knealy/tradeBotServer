@@ -105,6 +105,10 @@ export const positionApi = {
     await api.post(`/api/positions/${positionId}/close`, { quantity })
   },
 
+  modifyStopLoss: async (positionId: string, stopPrice: number): Promise<void> => {
+    await api.post(`/api/positions/${positionId}/modify-stop`, { stop_price: stopPrice })
+  },
+
   flattenAll: async (): Promise<void> => {
     await api.post('/api/positions/flatten')
   },
