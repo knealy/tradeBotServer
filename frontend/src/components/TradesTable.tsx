@@ -48,12 +48,19 @@ export default function TradesTable() {
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold">Recent Trades</h2>
         {summary && (
-          <div className="text-xs text-slate-400">
-            Gross PnL:{' '}
-            <span className={summary.gross_pnl >= 0 ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>
-              {summary.gross_pnl >= 0 ? '+' : ''}
-              {formatterCurrency.format(Math.abs(summary.gross_pnl))}
-            </span>
+          <div className="flex flex-col items-end text-xs text-slate-400">
+            <div>
+              Gross PnL (shown trades):{' '}
+              <span className={summary.gross_pnl >= 0 ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>
+                {summary.gross_pnl >= 0 ? '+' : ''}
+                {formatterCurrency.format(Math.abs(summary.gross_pnl))}
+              </span>
+            </div>
+            {summary.total_in_period && summary.displayed_count && summary.total_in_period > summary.displayed_count && (
+              <div className="text-slate-500 mt-1">
+                Showing {summary.displayed_count} of {summary.total_in_period} total trades
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -159,6 +159,8 @@ export interface TradesResponse {
     gross_pnl: number
     net_pnl: number
     fees: number
+    displayed_count?: number
+    total_in_period?: number
   }
 }
 

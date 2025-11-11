@@ -671,11 +671,12 @@ class DashboardAPI:
                 last_item = trades_normalized[limit]
                 next_cursor = self._encode_cursor(last_item['timestamp'], last_item['id'])
 
+            # Calculate summary ONLY for displayed items, not all trades
             totals = defaultdict(int)
             gross_pnl = 0.0
             net_pnl = 0.0
             total_fees = 0.0
-            for trade in trades_normalized:
+            for trade in items:  # ✅ FIX: Only sum the displayed trades
                 totals['total'] += 1
                 totals[trade['status']] += 1
                 gross_pnl += trade['pnl']
@@ -691,6 +692,8 @@ class DashboardAPI:
                 "gross_pnl": round(gross_pnl, 2),
                 "net_pnl": round(net_pnl, 2),
                 "fees": round(total_fees, 2),
+                "displayed_count": len(items),
+                "total_in_period": len(trades_normalized),
             }
 
             return {
