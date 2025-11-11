@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
 import { positionApi, orderApi } from '../services/api'
 import AccountSelector from '../components/AccountSelector'
-import { TrendingUp, TrendingDown, X, AlertCircle, Edit } from 'lucide-react'
+import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
 
@@ -61,6 +61,26 @@ export default function PositionsPage() {
       },
     }
   )
+
+  // Close position mutation
+  const closePositionMutation = useMutation(
+    ({ positionId, quantity }: { positionId: string; quantity?: number }) =>
+      positionApi.closePosition(positionId, quantity),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['positions', accountId])
+      },
+    }
+  )
+
+  const handleClosePosition = (positionId: string, quantity?: number) => {
+    const message = quantity 
+      ? `Are you sure you want to close ${quantity} contracts of this position?`
+      : 'Are you sure you want to close this entire position?'
+    if (confirm(message)) {
+      closePositionMutation.mutate({ positionId, quantity })
+    }
+  }
 
   const handleCancelOrder = (orderId: string) => {
     if (confirm('Are you sure you want to cancel this order?')) {
@@ -152,11 +172,21 @@ export default function PositionsPage() {
                       <span className="font-semibold">{position.symbol}</span>
                       <span className="text-slate-400 text-sm">x{Number(position.quantity ?? 0)}</span>
                     </div>
-                    <div className={`flex items-center gap-1 ${pnlColor}`}>
-                      <PnlIcon className="w-4 h-4" />
-                      <span className="font-semibold">
-                        ${unrealized.toFixed(2)}
-                      </span>
+                    <div className="flex items-center gap-3">
+                      <div className={`flex items-center gap-1 ${pnlColor}`}>
+                        <PnlIcon className="w-4 h-4" />
+                        <span className="font-semibold">
+                          ${unrealized.toFixed(2)}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleClosePosition(position.id!)}
+                        className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
+                        disabled={closePositionMutation.isLoading}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Close
+                      </button>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-4 text-sm">

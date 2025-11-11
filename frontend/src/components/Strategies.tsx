@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from 'react-query'
+import { useState } from 'react'
 import { strategyApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { Strategy } from '../types'
+import { AlertCircle, X } from 'lucide-react'
 
 export default function Strategies() {
   const { selectedAccount } = useAccount()
@@ -16,16 +18,26 @@ export default function Strategies() {
     }
   )
 
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
   const startMutation = useMutation(
     (strategyName: string) => strategyApi.startStrategy(strategyName),
     {
       onSuccess: (data, strategyName) => {
         queryClient.invalidateQueries(['strategies'])
+        setErrorMessage(null)
         if (data.success) {
           console.log(`✅ Started strategy: ${strategyName}`)
         } else {
-          console.error(`❌ Failed to start strategy: ${data.message}`)
+          const error = data.error || data.message || 'Unknown error'
+          setErrorMessage(`Failed to start ${strategyName}: ${error}`)
+          console.error(`❌ Failed to start strategy: ${error}`)
         }
+      },
+      onError: (error: any) => {
+        const errorMsg = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Unknown error'
+        setErrorMessage(`Failed to start strategy: ${errorMsg}`)
+        console.error('❌ Strategy start error:', error)
       },
     }
   )
@@ -35,11 +47,19 @@ export default function Strategies() {
     {
       onSuccess: (data, strategyName) => {
         queryClient.invalidateQueries(['strategies'])
+        setErrorMessage(null)
         if (data.success) {
           console.log(`✅ Stopped strategy: ${strategyName}`)
         } else {
-          console.error(`❌ Failed to stop strategy: ${data.message}`)
+          const error = data.error || data.message || 'Unknown error'
+          setErrorMessage(`Failed to stop ${strategyName}: ${error}`)
+          console.error(`❌ Failed to stop strategy: ${error}`)
         }
+      },
+      onError: (error: any) => {
+        const errorMsg = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Unknown error'
+        setErrorMessage(`Failed to stop strategy: ${errorMsg}`)
+        console.error('❌ Strategy stop error:', error)
       },
     }
   )
@@ -66,6 +86,21 @@ export default function Strategies() {
         <h1 className="text-2xl font-bold mb-2">Strategies</h1>
         <p className="text-slate-400">Manage your trading strategies</p>
       </div>
+
+      {errorMessage && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-red-400" />
+            <p className="text-red-400 text-sm">{errorMessage}</p>
+          </div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="text-red-400 hover:text-red-300"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {!selectedAccount && (
         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
@@ -147,21 +182,23 @@ export default function Strategies() {
                   )}
                 </div>
 
-                <button
-                  onClick={() => handleToggleStrategy(strategy.name, strategy.status)}
-                  disabled={startMutation.isLoading || stopMutation.isLoading || !selectedAccount}
-                  className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${
-                    strategy.status === 'running'
-                      ? 'bg-slate-600 hover:bg-slate-500 text-white'
-                      : 'bg-green-600 hover:bg-green-500 text-white'
-                  } disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                  {startMutation.isLoading || stopMutation.isLoading
-                    ? 'Loading...'
-                    : strategy.status === 'running'
-                    ? 'Disabled'
-                    : 'Enabled'}
-                </button>
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => handleToggleStrategy(strategy.name, strategy.status)}
+                    disabled={startMutation.isLoading || stopMutation.isLoading || !selectedAccount}
+                    className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${
+                      strategy.status === 'running' || strategy.status === 'active'
+                        ? 'bg-red-600 hover:bg-red-500 text-white'
+                        : 'bg-green-600 hover:bg-green-500 text-white'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {startMutation.isLoading || stopMutation.isLoading
+                      ? 'Loading...'
+                      : strategy.status === 'running' || strategy.status === 'active'
+                      ? 'Disable'
+                      : 'Enable'}
+                  </button>
+                </div>
               </div>
             </div>
           ))

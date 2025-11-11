@@ -56,4 +56,89 @@ Priority 4 (Optional): ⏳ Redis for HFT quotes
 
 Current Problems:
 
+index-BvDXJSbH.js:11 
+ POST https://tvwebhooks.up.railway.app/api/strategies/overnight_range/start 400 (Bad Request)
+(anonymous)	@	index-BvDXJSbH.js:11
+xhr	@	index-BvDXJSbH.js:11
+Gt	@	index-BvDXJSbH.js:13
+Promise.then		
+_request	@	index-BvDXJSbH.js:14
+request	@	index-BvDXJSbH.js:13
+(anonymous)	@	index-BvDXJSbH.js:14
+(anonymous)	@	index-BvDXJSbH.js:9
+startStrategy	@	index-BvDXJSbH.js:14
+(anonymous)	@	index-BvDXJSbH.js:89
+fn	@	index-BvDXJSbH.js:9
+m	@	index-BvDXJSbH.js:9
+ln	@	index-BvDXJSbH.js:9
+e.executeMutation	@	index-BvDXJSbH.js:9
+(anonymous)	@	index-BvDXJSbH.js:9
+Promise.then		
+e.execute	@	index-BvDXJSbH.js:9
+s.mutate	@	index-BvDXJSbH.js:9
+(anonymous)	@	index-BvDXJSbH.js:9
+u	@	index-BvDXJSbH.js:89
+onClick	@	index-BvDXJSbH.js:89
+ff	@	react-vendor-kWENTzfD.js:29
+pf	@	react-vendor-kWENTzfD.js:29
+hf	@	react-vendor-kWENTzfD.js:29
+Co	@	react-vendor-kWENTzfD.js:29
+va	@	react-vendor-kWENTzfD.js:29
+(anonymous)	@	react-vendor-kWENTzfD.js:29
+ji	@	react-vendor-kWENTzfD.js:32
+Vs	@	react-vendor-kWENTzfD.js:29
+Hl	@	react-vendor-kWENTzfD.js:29
+fi	@	react-vendor-kWENTzfD.js:29
+Tf	@	react-vendor-kWENTzfD.js:29
+
+index-BvDXJSbH.js:9 
+R {message: 'Request failed with status code 400', name: 'AxiosError', code: 'ERR_BAD_REQUEST', config: {…}, request: XMLHttpRequest, …}
+(anonymous)	@	index-BvDXJSbH.js:9
+Promise.catch		
+e.execute	@	index-BvDXJSbH.js:9
+s.mutate	@	index-BvDXJSbH.js:9
+(anonymous)	@	index-BvDXJSbH.js:9
+u	@	index-BvDXJSbH.js:89
+onClick	@	index-BvDXJSbH.js:89
+ff	@	react-vendor-kWENTzfD.js:29
+pf	@	react-vendor-kWENTzfD.js:29
+hf	@	react-vendor-kWENTzfD.js:29
+Co	@	react-vendor-kWENTzfD.js:29
+va	@	react-vendor-kWENTzfD.js:29
+(anonymous)	@	react-vendor-kWENTzfD.js:29
+ji	@	react-vendor-kWENTzfD.js:32
+Vs	@	react-vendor-kWENTzfD.js:29
+Hl	@	react-vendor-kWENTzfD.js:29
+fi	@	react-vendor-kWENTzfD.js:29
+Tf	@	react-vendor-kWENTzfD.js:29
+index-BvDXJSbH.js:89 Error starting strategy: 
+R {message: 'Request failed with status code 400', name: 'AxiosError', code: 'ERR_BAD_REQUEST', config: {…}, request: XMLHttpRequest, …}
+onError	@	index-BvDXJSbH.js:89
+(anonymous)	@	index-BvDXJSbH.js:9
+Promise.then		
+(anonymous)	@	index-BvDXJSbH.js:9
+Promise.catch		
+e.execute	@	index-BvDXJSbH.js:9
+s.mutate	@	index-BvDXJSbH.js:9
+(anonymous)	@	index-BvDXJSbH.js:9
+u	@	index-BvDXJSbH.js:89
+onClick	@	index-BvDXJSbH.js:89
+ff	@	react-vendor-kWENTzfD.js:29
+pf	@	react-vendor-kWENTzfD.js:29
+hf	@	react-vendor-kWENTzfD.js:29
+Co	@	react-vendor-kWENTzfD.js:29
+va	@	react-vendor-kWENTzfD.js:29
+(anonymous)	@	react-vendor-kWENTzfD.js:29
+ji	@	react-vendor-kWENTzfD.js:32
+Vs	@	react-vendor-kWENTzfD.js:29
+Hl	@	react-vendor-kWENTzfD.js:29
+fi	@	react-vendor-kWENTzfD.js:29
+Tf	@	react-vendor-kWENTzfD.js:29
+
+
+
+- still no enable/disable buttons on strategies available
+- still no way to modify the open orders
+- no way to modify or close open positions 
+
 

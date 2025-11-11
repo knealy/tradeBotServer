@@ -193,6 +193,10 @@ class AsyncWebhookServer:
         # Order modification endpoint
         self.app.router.add_post('/api/orders/{order_id}/modify', self.handle_modify_order)
         
+        # Position management endpoints
+        self.app.router.add_post('/api/positions/{position_id}/close', self.handle_close_position)
+        self.app.router.add_post('/api/positions/{position_id}/modify-stop', self.handle_modify_position_stop)
+        
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
@@ -543,6 +547,75 @@ class AsyncWebhookServer:
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error modifying order: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_close_position(self, request: web.Request) -> web.Response:
+        """Close a position (full or partial)."""
+        try:
+            position_id = request.match_info.get('position_id')
+            if not position_id:
+                return web.json_response({"error": "position_id required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            quantity = data.get('quantity')  # Optional: close partial position
+            
+            logger.info(f"Closing position {position_id}, quantity: {quantity}")
+            
+            result = await self.trading_bot.close_position(
+                position_id=position_id,
+                quantity=int(quantity) if quantity else None
+            )
+            
+            if "error" in result:
+                return web.json_response(result, status=400)
+            
+            # Broadcast update via WebSocket
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": await self.dashboard_api.get_positions(),
+                "timestamp": time.time()
+            })
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error closing position: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_modify_position_stop(self, request: web.Request) -> web.Response:
+        """Modify stop loss for a position."""
+        try:
+            position_id = request.match_info.get('position_id')
+            if not position_id:
+                return web.json_response({"error": "position_id required"}, status=400)
+            
+            data = await request.json()
+            new_stop_price = data.get('stop_price')
+            
+            if new_stop_price is None:
+                return web.json_response({"error": "stop_price required"}, status=400)
+            
+            logger.info(f"Modifying stop loss for position {position_id}: ${new_stop_price}")
+            
+            result = await self.trading_bot.modify_stop_loss(
+                position_id=position_id,
+                new_stop_price=float(new_stop_price)
+            )
+            
+            if "error" in result:
+                return web.json_response(result, status=400)
+            
+            # Broadcast update via WebSocket
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": await self.dashboard_api.get_positions(),
+                "timestamp": time.time()
+            })
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error modifying position stop: {e}")
             logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
     
