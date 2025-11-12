@@ -1108,6 +1108,92 @@ class DashboardAPI:
             logger.error(f"Error getting system logs: {e}")
             return []
     
+    async def export_trades_to_csv(self, account_id: str = None, start_date: str = None, end_date: str = None) -> str:
+        """Export trade history to CSV format."""
+        try:
+            import csv
+            import io
+            
+            # Get trade history
+            history = await self.get_trade_history_paginated(
+                account_id=account_id,
+                start_date=start_date,
+                end_date=end_date,
+                limit=10000,  # Get a large number of trades
+                consolidate=True
+            )
+            
+            trades = history.get('items', [])
+            if not trades:
+                return ""
+            
+            # Create CSV in memory
+            output = io.StringIO()
+            fieldnames = ['Timestamp', 'Symbol', 'Side', 'Quantity', 'Price', 'P&L', 'Fees', 'Net P&L', 'Status', 'Strategy', 'Order ID']
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for trade in trades:
+                writer.writerow({
+                    'Timestamp': trade.get('timestamp', ''),
+                    'Symbol': trade.get('symbol', ''),
+                    'Side': trade.get('side', ''),
+                    'Quantity': trade.get('quantity', 0),
+                    'Price': trade.get('price', 0),
+                    'P&L': trade.get('pnl', 0),
+                    'Fees': trade.get('fees', 0),
+                    'Net P&L': trade.get('net_pnl', 0),
+                    'Status': trade.get('status', ''),
+                    'Strategy': trade.get('strategy', ''),
+                    'Order ID': trade.get('order_id', ''),
+                })
+            
+            return output.getvalue()
+        except Exception as e:
+            logger.error(f"Error exporting trades to CSV: {e}")
+            return ""
+    
+    async def export_performance_to_csv(self, account_id: str = None, interval: str = 'day', start_date: str = None, end_date: str = None) -> str:
+        """Export performance history to CSV format."""
+        try:
+            import csv
+            import io
+            
+            # Get performance history
+            history = await self.get_performance_history(
+                account_id=account_id,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            points = history.get('points', [])
+            if not points:
+                return ""
+            
+            # Create CSV in memory
+            output = io.StringIO()
+            fieldnames = ['Timestamp', 'Period P&L', 'Cumulative P&L', 'Balance', 'Trade Count', 'Winning Trades', 'Losing Trades', 'Max Drawdown']
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for point in points:
+                writer.writerow({
+                    'Timestamp': point.get('timestamp', ''),
+                    'Period P&L': point.get('period_pnl', 0),
+                    'Cumulative P&L': point.get('cumulative_pnl', 0),
+                    'Balance': point.get('balance', 0),
+                    'Trade Count': point.get('trade_count', 0),
+                    'Winning Trades': point.get('winning_trades', 0),
+                    'Losing Trades': point.get('losing_trades', 0),
+                    'Max Drawdown': point.get('max_drawdown', 0),
+                })
+            
+            return output.getvalue()
+        except Exception as e:
+            logger.error(f"Error exporting performance to CSV: {e}")
+            return ""
+    
     async def place_order(
         self,
         symbol: str,
