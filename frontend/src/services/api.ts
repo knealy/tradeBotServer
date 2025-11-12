@@ -221,6 +221,25 @@ export const strategyApi = {
     const response = await api.post(`/api/strategies/${name}/stop`, payload)
     return response.data
   },
+
+  getStrategyStats: async (name: string, accountId?: string): Promise<any> => {
+    const params = accountId ? `?account_id=${accountId}` : ''
+    const response = await api.get(`/api/strategies/${name}/stats${params}`)
+    return response.data
+  },
+
+  getStrategyLogs: async (name: string, limit?: number): Promise<any> => {
+    const params = limit ? `?limit=${limit}` : ''
+    const response = await api.get(`/api/strategies/${name}/logs${params}`)
+    return response.data
+  },
+
+  testStrategy: async (name: string, accountId?: string): Promise<any> => {
+    const payload: { account_id?: string } = {}
+    if (accountId) payload.account_id = accountId
+    const response = await api.post(`/api/strategies/${name}/test`, payload)
+    return response.data
+  },
 }
 
 // Metrics API

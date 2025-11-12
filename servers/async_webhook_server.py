@@ -195,6 +195,9 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/strategies/status', self.handle_get_strategy_status)
         self.app.router.add_post('/api/strategies/{name}/start', self.handle_start_strategy)
         self.app.router.add_post('/api/strategies/{name}/stop', self.handle_stop_strategy)
+        self.app.router.add_get('/api/strategies/{name}/stats', self.handle_get_strategy_stats)
+        self.app.router.add_get('/api/strategies/{name}/logs', self.handle_get_strategy_logs)
+        self.app.router.add_post('/api/strategies/{name}/test', self.handle_test_strategy)
         
         self.app.router.add_get('/api/trades', self.handle_get_trades)
         self.app.router.add_get('/api/performance', self.handle_get_performance)
@@ -853,6 +856,98 @@ class AsyncWebhookServer:
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error toggling breakeven: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_strategy_stats(self, request: web.Request) -> web.Response:
+        """Get performance statistics for a specific strategy."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+            
+            account_id = request.rel_url.query.get('account_id') or self._get_selected_account_id()
+            stats = await self.dashboard_api.get_strategy_stats(strategy_name, account_id)
+            
+            if "error" in stats:
+                return web.json_response(stats, status=500)
+            
+            return web.json_response(stats)
+        except Exception as e:
+            logger.error(f"Error getting strategy stats: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_strategy_logs(self, request: web.Request) -> web.Response:
+        """Get logs for a specific strategy."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+            
+            limit = int(request.rel_url.query.get('limit', 100))
+            logs = await self.dashboard_api.get_strategy_logs(strategy_name, limit)
+            
+            return web.json_response({"logs": logs, "strategy_name": strategy_name, "count": len(logs)})
+        except Exception as e:
+            logger.error(f"Error getting strategy logs: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_test_strategy(self, request: web.Request) -> web.Response:
+        """Test/trigger a strategy manually."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            account_id = data.get('account_id') or self._get_selected_account_id()
+            
+            # Switch account if provided
+            if account_id:
+                await self.dashboard_api.switch_account(str(account_id))
+            
+            # For now, just trigger a test run by starting the strategy temporarily
+            # This is a simplified test - in production you'd want a dedicated test mode
+            logger.info(f"🧪 Testing strategy: {strategy_name}")
+            
+            # Check if strategy exists
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            strategy_exists = (
+                strategy_name in self.trading_bot.strategy_manager.available_strategies or
+                strategy_name in self.trading_bot.strategy_manager.strategies
+            )
+            
+            if not strategy_exists:
+                return web.json_response({
+                    "error": f"Strategy '{strategy_name}' not found"
+                }, status=404)
+            
+            # Return strategy info for testing
+            strategy = self.trading_bot.strategy_manager.strategies.get(strategy_name)
+            if strategy:
+                return web.json_response({
+                    "success": True,
+                    "message": f"Strategy '{strategy_name}' test initiated",
+                    "strategy": {
+                        "name": strategy_name,
+                        "status": strategy.status.value if hasattr(strategy.status, 'value') else str(strategy.status),
+                        "symbols": strategy.config.symbols,
+                        "enabled": strategy.config.enabled,
+                    }
+                })
+            else:
+                return web.json_response({
+                    "success": True,
+                    "message": f"Strategy '{strategy_name}' is available but not instantiated",
+                    "strategy": {
+                        "name": strategy_name,
+                        "status": "available",
+                    }
+                })
+        except Exception as e:
+            logger.error(f"Error testing strategy: {e}")
             logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
     

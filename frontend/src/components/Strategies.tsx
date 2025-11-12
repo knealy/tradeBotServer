@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { strategyApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { Strategy } from '../types'
-import { AlertCircle, X } from 'lucide-react'
+import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2 } from 'lucide-react'
 
 export default function Strategies() {
   const { selectedAccount } = useAccount()
@@ -19,6 +19,9 @@ export default function Strategies() {
   )
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null)
+  const [selectedStrategyForStats, setSelectedStrategyForStats] = useState<string | null>(null)
+  const [selectedStrategyForLogs, setSelectedStrategyForLogs] = useState<string | null>(null)
 
   const startMutation = useMutation(
     ({ name, symbols }: { name: string; symbols?: string[] }) =>
@@ -104,6 +107,37 @@ export default function Strategies() {
       startMutation.mutate({ name: strategyName, symbols })
     }
   }
+
+  // Strategy stats query
+  const { data: strategyStats, isLoading: statsLoading } = useQuery(
+    ['strategy-stats', selectedStrategyForStats, selectedAccount?.id],
+    () => strategyApi.getStrategyStats(selectedStrategyForStats!, selectedAccount?.id),
+    {
+      enabled: !!selectedStrategyForStats && !!selectedAccount,
+      staleTime: 30_000,
+    }
+  )
+
+  // Strategy logs query
+  const { data: strategyLogs, isLoading: logsLoading } = useQuery(
+    ['strategy-logs', selectedStrategyForLogs],
+    () => strategyApi.getStrategyLogs(selectedStrategyForLogs!, 50),
+    {
+      enabled: !!selectedStrategyForLogs,
+      staleTime: 10_000,
+      refetchInterval: 30_000, // Refresh logs every 30 seconds
+    }
+  )
+
+  // Test strategy mutation
+  const testStrategyMutation = useMutation(
+    ({ name }: { name: string }) => strategyApi.testStrategy(name, selectedAccount?.id),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['strategies'])
+      },
+    }
+  )
 
   if (isLoading) {
     return (
@@ -234,16 +268,175 @@ export default function Strategies() {
                       : 'bg-green-600 hover:bg-green-500 text-white'
 
                     return (
-                      <button
-                        onClick={() => handleToggleStrategy(strategy.name, strategy.status)}
-                        disabled={startMutation.isLoading || stopMutation.isLoading || !selectedAccount}
-                        className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${buttonClasses} disabled:opacity-50 disabled:cursor-not-allowed`}
-                      >
-                        {buttonLabel}
-                      </button>
+                      <>
+                        <button
+                          onClick={() => handleToggleStrategy(strategy.name, strategy.status)}
+                          disabled={startMutation.isLoading || stopMutation.isLoading || !selectedAccount}
+                          className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${buttonClasses} disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          {buttonLabel}
+                        </button>
+                        <button
+                          onClick={() => setExpandedStrategy(expandedStrategy === strategy.name ? null : strategy.name)}
+                          className="px-4 py-2 rounded-lg font-semibold text-sm transition-colors bg-slate-700 hover:bg-slate-600 text-white flex items-center justify-center gap-2"
+                        >
+                          {expandedStrategy === strategy.name ? (
+                            <>
+                              <ChevronUp className="w-4 h-4" /> Hide Details
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="w-4 h-4" /> Show Details
+                            </>
+                          )}
+                        </button>
+                      </>
                     )
                   })()}
                 </div>
+
+                {/* Expanded Details Section */}
+                {expandedStrategy === strategy.name && (
+                  <div className="mt-4 pt-4 border-t border-slate-700 space-y-4">
+                    {/* Action Buttons */}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => {
+                          setSelectedStrategyForStats(strategy.name)
+                          if (selectedStrategyForStats !== strategy.name) {
+                            setSelectedStrategyForLogs(null)
+                          }
+                        }}
+                        className={`px-3 py-2 rounded text-sm font-medium transition-colors flex items-center gap-2 ${
+                          selectedStrategyForStats === strategy.name
+                            ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                            : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                        }`}
+                      >
+                        <BarChart3 className="w-4 h-4" />
+                        Stats
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedStrategyForLogs(strategy.name)
+                          if (selectedStrategyForLogs !== strategy.name) {
+                            setSelectedStrategyForStats(null)
+                          }
+                        }}
+                        className={`px-3 py-2 rounded text-sm font-medium transition-colors flex items-center gap-2 ${
+                          selectedStrategyForLogs === strategy.name
+                            ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                            : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                        }`}
+                      >
+                        <FileText className="w-4 h-4" />
+                        Logs
+                      </button>
+                      <button
+                        onClick={() => testStrategyMutation.mutate({ name: strategy.name })}
+                        disabled={testStrategyMutation.isLoading || !selectedAccount}
+                        className="px-3 py-2 rounded text-sm font-medium transition-colors bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {testStrategyMutation.isLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                        Test
+                      </button>
+                    </div>
+
+                    {/* Stats Display */}
+                    {selectedStrategyForStats === strategy.name && (
+                      <div className="bg-slate-900/50 rounded-lg p-4">
+                        {statsLoading ? (
+                          <div className="text-center py-4 text-slate-400">Loading stats...</div>
+                        ) : strategyStats && !strategyStats.error ? (
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Total Trades</p>
+                              <p className="text-lg font-semibold">{strategyStats.total_trades || 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Win Rate</p>
+                              <p className="text-lg font-semibold">{strategyStats.win_rate?.toFixed(1) || 0}%</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Total P&L</p>
+                              <p className={`text-lg font-semibold ${(strategyStats.total_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                ${strategyStats.total_pnl?.toFixed(2) || '0.00'}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Profit Factor</p>
+                              <p className="text-lg font-semibold">{strategyStats.profit_factor?.toFixed(2) || '0.00'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Winning Trades</p>
+                              <p className="text-lg font-semibold text-green-400">{strategyStats.winning_trades || 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Losing Trades</p>
+                              <p className="text-lg font-semibold text-red-400">{strategyStats.losing_trades || 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Best Trade</p>
+                              <p className="text-lg font-semibold text-green-400">${strategyStats.best_trade?.toFixed(2) || '0.00'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500 mb-1">Worst Trade</p>
+                              <p className="text-lg font-semibold text-red-400">${strategyStats.worst_trade?.toFixed(2) || '0.00'}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-center py-4 text-slate-400">
+                            {strategyStats?.error || 'No stats available'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Logs Display */}
+                    {selectedStrategyForLogs === strategy.name && (
+                      <div className="bg-slate-900/50 rounded-lg p-4 max-h-96 overflow-y-auto">
+                        {logsLoading ? (
+                          <div className="text-center py-4 text-slate-400">Loading logs...</div>
+                        ) : strategyLogs?.logs && strategyLogs.logs.length > 0 ? (
+                          <div className="space-y-2 font-mono text-xs">
+                            {strategyLogs.logs.map((log: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className={`p-2 rounded border-l-2 ${
+                                  log.level === 'ERROR' || log.level === 'CRITICAL'
+                                    ? 'border-red-500 bg-red-500/10'
+                                    : log.level === 'WARNING'
+                                    ? 'border-yellow-500 bg-yellow-500/10'
+                                    : 'border-slate-600 bg-slate-800/50'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-slate-400">{log.timestamp}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-xs ${
+                                    log.level === 'ERROR' || log.level === 'CRITICAL'
+                                      ? 'bg-red-500/20 text-red-300'
+                                      : log.level === 'WARNING'
+                                      ? 'bg-yellow-500/20 text-yellow-300'
+                                      : 'bg-slate-700 text-slate-300'
+                                  }`}>
+                                    {log.level}
+                                  </span>
+                                </div>
+                                <p className="text-slate-200 break-words">{log.message}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center py-4 text-slate-400">No logs available</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ))

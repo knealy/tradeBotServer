@@ -964,6 +964,130 @@ class DashboardAPI:
             logger.error(f"Error getting performance stats: {e}")
             return {"error": str(e)}
     
+    async def get_strategy_stats(self, strategy_name: str, account_id: str = None) -> Dict[str, Any]:
+        """Get performance statistics for a specific strategy."""
+        try:
+            # Get trades for this strategy
+            history = await self.get_trade_history_paginated(
+                limit=1000,  # Get more trades for accurate stats
+                account_id=account_id
+            )
+            
+            # Filter trades by strategy name
+            strategy_trades = [
+                t for t in history.get('items', [])
+                if t.get('strategy', '').lower() == strategy_name.lower() or
+                   t.get('strategy_name', '').lower() == strategy_name.lower()
+            ]
+            
+            if not strategy_trades:
+                return {
+                    "strategy_name": strategy_name,
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "win_rate": 0.0,
+                    "total_pnl": 0.0,
+                    "avg_win": 0.0,
+                    "avg_loss": 0.0,
+                    "best_trade": 0.0,
+                    "worst_trade": 0.0,
+                    "profit_factor": 0.0,
+                }
+            
+            total_trades = len(strategy_trades)
+            winning_trades = [t for t in strategy_trades if t.get('pnl', 0) > 0]
+            losing_trades = [t for t in strategy_trades if t.get('pnl', 0) < 0]
+            
+            total_pnl = sum(t.get('pnl', 0) for t in strategy_trades)
+            win_rate = (len(winning_trades) / total_trades * 100) if total_trades > 0 else 0
+            
+            avg_win = sum(t.get('pnl', 0) for t in winning_trades) / max(len(winning_trades), 1)
+            avg_loss = abs(sum(t.get('pnl', 0) for t in losing_trades) / max(len(losing_trades), 1))
+            
+            pnl_values = [t.get('pnl', 0) for t in strategy_trades]
+            best_trade = max(pnl_values) if pnl_values else 0.0
+            worst_trade = min(pnl_values) if pnl_values else 0.0
+            
+            profit_factor = (avg_win * len(winning_trades) / (avg_loss * len(losing_trades))) if avg_loss > 0 and len(losing_trades) > 0 else 0.0
+            
+            return {
+                "strategy_name": strategy_name,
+                "total_trades": total_trades,
+                "winning_trades": len(winning_trades),
+                "losing_trades": len(losing_trades),
+                "win_rate": round(win_rate, 2),
+                "total_pnl": round(total_pnl, 2),
+                "avg_win": round(avg_win, 2),
+                "avg_loss": round(avg_loss, 2),
+                "best_trade": round(best_trade, 2),
+                "worst_trade": round(worst_trade, 2),
+                "profit_factor": round(profit_factor, 2),
+            }
+        except Exception as e:
+            logger.error(f"Error getting strategy stats: {e}")
+            return {"error": str(e)}
+    
+    async def get_strategy_logs(self, strategy_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get logs for a specific strategy."""
+        try:
+            import os
+            import re
+            from pathlib import Path
+            
+            logs = []
+            log_files = [
+                'trading_bot.log',
+                'servers/async_webhook_server.log',
+                'webhook_server.log',
+            ]
+            
+            # Search for log files
+            for log_file in log_files:
+                log_path = Path(log_file)
+                if not log_path.exists():
+                    continue
+                
+                try:
+                    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = f.readlines()
+                        # Search backwards for strategy-related logs
+                        for line in reversed(lines[-1000:]):  # Check last 1000 lines
+                            # Look for strategy name in log line
+                            if strategy_name.lower() in line.lower():
+                                # Parse log line format: timestamp - logger - level - message
+                                match = re.match(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - (\S+) - (\w+) - (.*)', line.strip())
+                                if match:
+                                    logs.append({
+                                        "timestamp": match.group(1),
+                                        "logger": match.group(2),
+                                        "level": match.group(3),
+                                        "message": match.group(4),
+                                        "source": log_file
+                                    })
+                                elif len(logs) < limit:
+                                    # Fallback: just include the line
+                                    logs.append({
+                                        "timestamp": datetime.now().isoformat(),
+                                        "logger": "unknown",
+                                        "level": "INFO",
+                                        "message": line.strip()[:200],  # Limit message length
+                                        "source": log_file
+                                    })
+                                
+                                if len(logs) >= limit:
+                                    break
+                except Exception as e:
+                    logger.debug(f"Could not read log file {log_file}: {e}")
+                    continue
+            
+            # Sort by timestamp (most recent first)
+            logs.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+            return logs[:limit]
+        except Exception as e:
+            logger.error(f"Error getting strategy logs: {e}")
+            return []
+    
     async def get_system_logs(self, level: str = None, limit: int = 100) -> List[Dict[str, Any]]:
         """Get recent system logs"""
         try:

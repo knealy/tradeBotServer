@@ -2,19 +2,6 @@
 
 # 🎯 Current Focus
 
-- consider moving charts to tradingview light weight charts or chart.js + plugin
-  - use the version that is the fastest with most responsive UI
-
-#### J. Go/Rust Migration (Future)
-**Problem**: Python GIL limits concurrency
-  **Solution**: Migrate hot paths to Go/Rust
-  **Impact**: 10-100x performance improvement for I/O-bound operations
-
-Next Priorities:
-Build React/JS dashboard [in progress]
-Add real-time WebSocket updates [in progress]
-Implement user authentication 
-Create admin panel
 
 
 ┌─────────────────────────────────────────────────────┐
@@ -41,11 +28,13 @@ Create admin panel
 └─────────────────────────────────────────────────────┘
 
 
-Priority 1 (NOW): ✅ PostgreSQL (DONE!)
-Priority 2 (NEXT): ⏳ Redis for sessions
-Priority 3 (When scaling): ⏳ Redis for distributed cache
-Priority 4 (Optional): ⏳ Redis for HFT quotes
-priority 5 add a chat bar / side panel
+
+Next Priorities:
+Build React/JS dashboard [in progress]
+Add real-time WebSocket updates [in progress]
+Implement user authentication 
+Create admin panel
+
 
 ## ✅ Recently Completed
 
@@ -59,6 +48,18 @@ priority 5 add a chat bar / side panel
 - Swap price charts to a more responsive library (TradingView LW charts or Chart.js plugin) with zoom + crosshair UX.
 - Wire up authentication + admin panel once dashboard foundations are solid.
 - Add Redis layer to persist sessions and speed up hot data once Railway deployment is stable.
+
+Priority 1 (NOW): ✅ PostgreSQL (DONE!)
+Priority 2 (NEXT): ⏳ Redis for sessions
+Priority 3 (When scaling): ⏳ Redis for distributed cache
+Priority 4 (Optional): ⏳ Redis for HFT quotes
+priority 5 add a chat bar / side panel
+
+#### J. Go/Rust Migration (Future)
+**Problem**: Python GIL limits concurrency
+  **Solution**: Migrate hot paths to Go/Rust
+  **Impact**: 10-100x performance improvement for I/O-bound operations
+
 
 ## 🧭 Dashboard Functionality Parity
 
