@@ -37,7 +37,7 @@ export default function SettingsPage() {
 
   const saveMutation = useMutation(
     (payload: {
-      defaultAccount: string
+      defaultAccount: string | null
       riskManagementEnabled: boolean
       discordNotificationsEnabled: boolean
       wsUrl: string

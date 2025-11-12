@@ -37,7 +37,7 @@ export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
   const accountId = selectedAccount?.id
 
   const placeOrderMutation = useMutation(orderApi.placeOrder, {
-    onSuccess: (response: any) => {
+    onSuccess: () => {
       setFormSuccess('Order submitted successfully')
       setFormError(null)
       queryClient.invalidateQueries(['orders', accountId])
