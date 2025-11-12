@@ -64,9 +64,27 @@ export default function PerformanceChart() {
     }
   )
 
+  const summary = useMemo(() => {
+    if (!data?.summary) return null
+    const lastPoint = data.points?.[data.points.length - 1]
+    const cumulativeAtEnd = lastPoint?.cumulative_pnl ?? data.summary.total_pnl ?? 0
+    const accountBalance =
+      typeof selectedAccount?.balance === 'number' ? selectedAccount.balance : undefined
+    const endBalance =
+      accountBalance ??
+      data.summary.end_balance ??
+      ((data.summary.start_balance ?? 0) + cumulativeAtEnd)
+    const startBalance = endBalance - cumulativeAtEnd
+    return {
+      ...data.summary,
+      start_balance: startBalance,
+      end_balance: endBalance,
+    }
+  }, [data, selectedAccount])
+
   const chartData = useMemo(() => {
     if (!data?.points) return []
-    const startBalance = data.summary?.start_balance ?? 0
+    const startBalance = summary?.start_balance ?? 0
     const dateFormatter = new Intl.DateTimeFormat(undefined, {
       month: 'short',
       day: 'numeric',
@@ -83,9 +101,7 @@ export default function PerformanceChart() {
         trades: point.trade_count,
       }
     })
-  }, [data, interval])
-
-  const summary = data?.summary
+  }, [data, interval, summary])
 
   return (
     <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 space-y-4">
@@ -164,7 +180,7 @@ export default function PerformanceChart() {
       )}
 
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm bg-slate-900/60 rounded-lg p-4 border border-slate-700/60">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm bg-slate-900/60 rounded-lg p-4 border border-slate-700/60">
           <div>
             <p className="text-slate-400">Total P&L</p>
             <p className={`font-semibold ${summary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -182,6 +198,12 @@ export default function PerformanceChart() {
           <div>
             <p className="text-slate-400">Trades</p>
             <p className="font-semibold">{summary.trade_count}</p>
+          </div>
+          <div>
+            <p className="text-slate-400">Current Balance</p>
+            <p className="font-semibold">
+              ${Number(summary.end_balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </p>
           </div>
         </div>
       )}

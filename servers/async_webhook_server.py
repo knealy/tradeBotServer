@@ -25,6 +25,7 @@ from servers.dashboard import DashboardAPI
 from servers.websocket_server import WebSocketServer
 from infrastructure.task_queue import get_task_queue, TaskPriority
 from infrastructure.performance_metrics import get_metrics_tracker
+from infrastructure.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,8 @@ class AsyncWebhookServer:
         """Setup HTTP routes."""
         # WebSocket endpoint (must be first to avoid conflicts)
         self.app.router.add_get('/ws', self.handle_websocket)
+        # Favicon placeholder to prevent 404 noise
+        self.app.router.add_get('/favicon.ico', self.handle_favicon)
         
         # Health & Status
         self.app.router.add_get('/health', self.handle_health)
@@ -198,6 +201,7 @@ class AsyncWebhookServer:
         # Position management endpoints
         self.app.router.add_post('/api/positions/{position_id}/close', self.handle_close_position)
         self.app.router.add_post('/api/positions/{position_id}/modify-stop', self.handle_modify_position_stop)
+        self.app.router.add_post('/api/positions/{position_id}/modify-tp', self.handle_modify_position_take_profit)
         
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
@@ -631,6 +635,41 @@ class AsyncWebhookServer:
             logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
     
+    async def handle_modify_position_take_profit(self, request: web.Request) -> web.Response:
+        """Modify take profit for a position."""
+        try:
+            position_id = request.match_info.get('position_id')
+            if not position_id:
+                return web.json_response({"error": "position_id required"}, status=400)
+            
+            data = await request.json()
+            new_tp_price = data.get('take_profit')
+            
+            if new_tp_price is None:
+                return web.json_response({"error": "take_profit required"}, status=400)
+            
+            logger.info(f"Modifying take profit for position {position_id}: ${new_tp_price}")
+            
+            result = await self.trading_bot.modify_take_profit(
+                position_id=position_id,
+                new_tp_price=float(new_tp_price)
+            )
+            
+            if "error" in result:
+                return web.json_response(result, status=400)
+            
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": await self.dashboard_api.get_positions(),
+                "timestamp": time.time()
+            })
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error modifying position take profit: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+    
     async def handle_cancel_all_orders(self, request: web.Request) -> web.Response:
         """Cancel all open orders."""
         try:
@@ -1033,7 +1072,7 @@ class AsyncWebhookServer:
     async def handle_get_settings(self, request: web.Request) -> web.Response:
         """Fetch dashboard/settings preferences."""
         try:
-            db = getattr(self.trading_bot, 'db', None)
+            db = self._ensure_database()
             if not db:
                 logger.warning("⚠️  Database unavailable when requesting settings")
                 return web.json_response({
@@ -1064,8 +1103,9 @@ class AsyncWebhookServer:
     async def handle_save_settings(self, request: web.Request) -> web.Response:
         """Persist dashboard/settings preferences."""
         try:
-            db = getattr(self.trading_bot, 'db', None)
+            db = self._ensure_database()
             if not db:
+                logger.error("❌ Unable to save settings: database unavailable after reinitialization attempt")
                 return web.json_response({"error": "database unavailable"}, status=503)
             
             payload = await request.json()
@@ -1093,6 +1133,24 @@ class AsyncWebhookServer:
         except Exception as e:
             logger.error(f"Error saving dashboard settings: {e}")
             return web.json_response({"error": str(e)}, status=500)
+    
+    def _ensure_database(self):
+        """Ensure we have an active database connection, attempting lazy re-init if necessary."""
+        db = getattr(self.trading_bot, 'db', None)
+        if db:
+            return db
+        try:
+            logger.info("🔄 Reinitializing database connection for dashboard settings")
+            self.trading_bot.db = get_database()
+            return self.trading_bot.db
+        except Exception as db_err:
+            logger.error(f"❌ Failed to initialize database: {db_err}")
+            self.trading_bot.db = None
+            return None
+    
+    async def handle_favicon(self, request: web.Request) -> web.Response:
+        """Return an empty favicon to silence browser 404s."""
+        return web.Response(status=204)
     
     async def handle_get_trades(self, request: web.Request) -> web.Response:
         """Get trade history with filters and pagination."""

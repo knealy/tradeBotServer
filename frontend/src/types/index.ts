@@ -27,6 +27,11 @@ export interface Position {
   stop_loss?: number | null
   take_profit?: number | null
   timestamp?: string | null
+  tick_size?: number | null
+  point_value?: number | null
+  min_quantity?: number
+  account_id?: string | null
+  brackets?: any
   [key: string]: any
 }
 

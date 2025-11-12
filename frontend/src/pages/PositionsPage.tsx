@@ -4,7 +4,7 @@ import { positionApi, orderApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import AccountSelector from '../components/AccountSelector'
 import OrderTicket from '../components/OrderTicket'
-import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2 } from 'lucide-react'
+import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
 
@@ -42,13 +42,32 @@ export default function PositionsPage() {
   const [editingOrder, setEditingOrder] = useState<{ id: string; price?: number; quantity?: number } | null>(null)
   const [modifyPrice, setModifyPrice] = useState('')
   const [modifyQuantity, setModifyQuantity] = useState('')
+  const [partialCloseQty, setPartialCloseQty] = useState<Record<string, string>>({})
+  const [stopInputs, setStopInputs] = useState<Record<string, string>>({})
+  const [takeProfitInputs, setTakeProfitInputs] = useState<Record<string, string>>({})
+  const [expandedPosition, setExpandedPosition] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+
+  const pushFeedback = (type: 'success' | 'error', message: string) => {
+    setFeedback({ type, message })
+    window.setTimeout(() => setFeedback(null), 4000)
+  }
 
   // Cancel order mutation
   const cancelOrderMutation = useMutation(
     (orderId: string) => orderApi.cancelOrder(orderId),
     {
-      onSuccess: () => {
+      onSuccess: (_, orderId) => {
         queryClient.invalidateQueries(['orders', accountId])
+        if (orderId) {
+          pushFeedback('success', `Cancel request sent for order ${orderId}`)
+        } else {
+          pushFeedback('success', 'Cancel request sent')
+        }
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to cancel order'
+        pushFeedback('error', message)
       },
     }
   )
@@ -58,11 +77,16 @@ export default function PositionsPage() {
     ({ orderId, updates }: { orderId: string; updates: { price?: number; quantity?: number; order_type?: number } }) =>
       orderApi.modifyOrder(orderId, updates),
     {
-      onSuccess: () => {
+      onSuccess: (_, variables) => {
         queryClient.invalidateQueries(['orders', accountId])
         setEditingOrder(null)
         setModifyPrice('')
         setModifyQuantity('')
+        pushFeedback('success', `Order ${variables.orderId} updated`)
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to modify order'
+        pushFeedback('error', message)
       },
     }
   )
@@ -72,13 +96,59 @@ export default function PositionsPage() {
     ({ positionId, quantity }: { positionId: string; quantity?: number }) =>
       positionApi.closePosition(positionId, quantity),
     {
-      onSuccess: () => {
+      onSuccess: (_, variables) => {
         queryClient.invalidateQueries(['positions', accountId])
+        if (variables.quantity) {
+          setPartialCloseQty((prev) => ({ ...prev, [variables.positionId]: '' }))
+          pushFeedback('success', `Partial close submitted for ${variables.quantity} contracts`)
+        } else {
+          pushFeedback('success', 'Close position request sent')
+        }
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to close position'
+        pushFeedback('error', message)
       },
     }
   )
 
-  const handleClosePosition = (positionId: string, quantity?: number) => {
+  const modifyStopLossMutation = useMutation(
+    ({ positionId, stopPrice }: { positionId: string; stopPrice: number }) =>
+      positionApi.modifyStopLoss(positionId, stopPrice),
+    {
+      onSuccess: (_, variables) => {
+        queryClient.invalidateQueries(['positions', accountId])
+        setStopInputs((prev) => ({ ...prev, [variables.positionId]: '' }))
+        pushFeedback('success', 'Stop loss updated')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to update stop loss'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
+  const modifyTakeProfitMutation = useMutation(
+    ({ positionId, takeProfit }: { positionId: string; takeProfit: number }) =>
+      positionApi.modifyTakeProfit(positionId, takeProfit),
+    {
+      onSuccess: (_, variables) => {
+        queryClient.invalidateQueries(['positions', accountId])
+        setTakeProfitInputs((prev) => ({ ...prev, [variables.positionId]: '' }))
+        pushFeedback('success', 'Take profit updated')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to update take profit'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
+  const handleClosePosition = (positionId?: string, quantity?: number) => {
+    if (!positionId) {
+      pushFeedback('error', 'Unable to close position: missing identifier')
+      return
+    }
     const message = quantity 
       ? `Are you sure you want to close ${quantity} contracts of this position?`
       : 'Are you sure you want to close this entire position?'
@@ -118,6 +188,60 @@ export default function PositionsPage() {
     modifyOrderMutation.mutate({ orderId: editingOrder.id, updates })
   }
 
+  const handlePartialClose = (position: Position) => {
+    if (!position.id) {
+      pushFeedback('error', 'Position ID missing')
+      return
+    }
+    const rawValue = partialCloseQty[position.id] || ''
+    const qty = parseInt(rawValue, 10)
+    if (!Number.isFinite(qty) || qty <= 0) {
+      pushFeedback('error', 'Enter a valid quantity for partial close')
+      return
+    }
+    if (qty > position.quantity) {
+      pushFeedback('error', 'Quantity exceeds current position size')
+      return
+    }
+    closePositionMutation.mutate({ positionId: position.id, quantity: qty })
+  }
+
+  const handleStopLossUpdate = (position: Position) => {
+    if (!position.id) {
+      pushFeedback('error', 'Position ID missing')
+      return
+    }
+    const rawValue = stopInputs[position.id] || ''
+    const price = parseFloat(rawValue)
+    if (!Number.isFinite(price)) {
+      pushFeedback('error', 'Enter a valid stop loss price')
+      return
+    }
+    modifyStopLossMutation.mutate({ positionId: position.id, stopPrice: price })
+  }
+
+  const handleTakeProfitUpdate = (position: Position) => {
+    if (!position.id) {
+      pushFeedback('error', 'Position ID missing')
+      return
+    }
+    const rawValue = takeProfitInputs[position.id] || ''
+    const price = parseFloat(rawValue)
+    if (!Number.isFinite(price)) {
+      pushFeedback('error', 'Enter a valid take profit price')
+      return
+    }
+    modifyTakeProfitMutation.mutate({ positionId: position.id, takeProfit: price })
+  }
+
+  const toggleExpandedPosition = (positionId?: string | null) => {
+    if (!positionId) {
+      pushFeedback('error', 'Raw details unavailable for this position')
+      return
+    }
+    setExpandedPosition((prev) => (prev === positionId ? null : positionId))
+  }
+
   const isLoading = positionsLoading || ordersLoading
 
   return (
@@ -128,6 +252,18 @@ export default function PositionsPage() {
           <p className="text-slate-400 mt-2">Monitor and manage your open positions and orders</p>
         </div>
       </div>
+
+      {feedback && (
+        <div
+          className={`rounded-lg border px-4 py-2 text-sm ${
+            feedback.type === 'success'
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+              : 'border-red-500/40 bg-red-500/10 text-red-300'
+          }`}
+        >
+          {feedback.message}
+        </div>
+      )}
 
       {/* Account Selection */}
       <div className="max-w-md">
@@ -164,6 +300,25 @@ export default function PositionsPage() {
               const currentPrice = Number(position.current_price ?? entryPrice)
               const PnlIcon = unrealized >= 0 ? TrendingUp : TrendingDown
               const pnlColor = unrealized >= 0 ? 'text-green-400' : 'text-red-400'
+              const stateKey = position.id ?? ''
+              const partialValue = stateKey ? partialCloseQty[stateKey] ?? '' : ''
+              const stopValue = stateKey ? stopInputs[stateKey] ?? '' : ''
+              const takeValue = stateKey ? takeProfitInputs[stateKey] ?? '' : ''
+              const openedLabel = position.timestamp ? new Date(position.timestamp).toLocaleString() : '—'
+              const unrealizedPct =
+                typeof position.unrealized_pnl_pct === 'number' && isFinite(position.unrealized_pnl_pct)
+                  ? `${position.unrealized_pnl_pct.toFixed(2)}%`
+                  : '—'
+              const tickSize =
+                typeof position.tick_size === 'number' && isFinite(position.tick_size)
+                  ? position.tick_size
+                  : null
+              const pointValue =
+                typeof position.point_value === 'number' && isFinite(position.point_value)
+                  ? position.point_value
+                  : null
+              const canControl = Boolean(position.id)
+              const isExpanded = expandedPosition === position.id
 
               return (
                 <div
@@ -188,16 +343,16 @@ export default function PositionsPage() {
                         </span>
                       </div>
                       <button
-                        onClick={() => handleClosePosition(position.id!)}
+                        onClick={() => handleClosePosition(position.id)}
                         className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
-                        disabled={closePositionMutation.isLoading}
+                        disabled={!canControl || closePositionMutation.isLoading}
                       >
                         <Trash2 className="w-3 h-3" />
                         Close
                       </button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4 text-sm">
                     <div>
                       <p className="text-slate-400">Entry</p>
                       <p className="font-semibold">${entryPrice.toFixed(2)}</p>
@@ -214,7 +369,142 @@ export default function PositionsPage() {
                         ${realized.toFixed(2)}
                       </p>
                     </div>
+                    <div>
+                      <p className="text-slate-400">Unrealized %</p>
+                      <p className="font-semibold text-slate-200">{unrealizedPct}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Stop Loss</p>
+                      <p className="font-semibold text-slate-200">
+                        {position.stop_loss !== undefined && position.stop_loss !== null
+                          ? `$${Number(position.stop_loss).toFixed(2)}`
+                          : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Take Profit</p>
+                      <p className="font-semibold text-slate-200">
+                        {position.take_profit !== undefined && position.take_profit !== null
+                          ? `$${Number(position.take_profit).toFixed(2)}`
+                          : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Opened</p>
+                      <p className="font-semibold text-slate-200">{openedLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Tick Size</p>
+                      <p className="font-semibold text-slate-200">
+                        {tickSize ? tickSize.toFixed(4) : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Point Value</p>
+                      <p className="font-semibold text-slate-200">
+                        {pointValue ? `$${pointValue.toFixed(2)}` : '—'}
+                      </p>
+                    </div>
                   </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div>
+                      <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Stop Loss</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          value={stopValue}
+                          onChange={(e) => {
+                            if (position.id) {
+                              setStopInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                            }
+                          }}
+                          placeholder="New stop price"
+                          className="w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                          disabled={!canControl}
+                        />
+                        <button
+                          onClick={() => handleStopLossUpdate(position)}
+                          className="px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors"
+                          disabled={!canControl || modifyStopLossMutation.isLoading}
+                        >
+                          Update SL
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Take Profit</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          value={takeValue}
+                          onChange={(e) => {
+                            if (position.id) {
+                              setTakeProfitInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                            }
+                          }}
+                          placeholder="New target price"
+                          className="w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                          disabled={!canControl}
+                        />
+                        <button
+                          onClick={() => handleTakeProfitUpdate(position)}
+                          className="px-3 py-1 text-xs bg-green-500/20 text-green-300 rounded hover:bg-green-500/30 transition-colors"
+                          disabled={!canControl || modifyTakeProfitMutation.isLoading}
+                        >
+                          Update TP
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        value={partialValue}
+                        onChange={(e) => {
+                          if (position.id) {
+                            setPartialCloseQty((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                          }
+                        }}
+                        placeholder="Qty"
+                        className="w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                        disabled={!canControl}
+                      />
+                      <button
+                        onClick={() => handlePartialClose(position)}
+                        className="px-3 py-1 text-xs bg-amber-500/20 text-amber-300 rounded hover:bg-amber-500/30 transition-colors"
+                        disabled={!canControl || closePositionMutation.isLoading}
+                      >
+                        Partial Close
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => toggleExpandedPosition(position.id)}
+                      className="px-3 py-1 text-xs bg-slate-600/40 text-slate-200 rounded hover:bg-slate-600/60 transition-colors flex items-center gap-1"
+                    >
+                      {isExpanded ? (
+                        <>
+                          <ChevronUp className="w-3 h-3" /> Hide Details
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="w-3 h-3" /> View Details
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {isExpanded && (
+                    <div className="mt-3 bg-slate-900/60 border border-slate-700/70 rounded-lg p-3 text-xs text-left overflow-x-auto">
+                      <div className="flex items-center gap-2 text-slate-400 mb-2">
+                        <Info className="w-4 h-4" />
+                        <span>Raw position payload</span>
+                      </div>
+                      <pre className="whitespace-pre-wrap text-slate-200">
+                        {JSON.stringify(position._raw ?? position, null, 2)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               )
             })}

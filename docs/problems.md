@@ -62,11 +62,17 @@ priority 5 add a chat bar / side panel
 
 ## 🧭 Dashboard Functionality Parity
 
-- [ ] **Orders**: full ticket (market/limit/stop/bracket), bulk cancel, flatten account
-- [ ] **Positions**: partial close, TP/SL edits, detailed drawer
+- [x] **Orders**: full ticket (market/limit/stop/bracket), bulk cancel, flatten account
+- [x] **Positions**: partial close, TP/SL edits, detailed drawer
 - [ ] **Risk View**: DLL/MLL gauges, violation alerts, auto-flatten status
 - [ ] **Notifications Feed**: show order/position events (Discord parity)
 - [ ] **Automation Tools**: trailing stop, breakeven toggle, overnight breakout test
 - [ ] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
 - [ ] **Data Exports & Charts**: CSV download, upgraded candlestick/TV charts
 
+## 🔧 Recent Debug Items
+
+- [x] Allow more trades in the "Recent Trades" list (20/50/100) with optional scrollbar.
+- [x] Fix performance chart balance line by anchoring to live account equity when available.
+- [x] Harden `/api/settings` saves: reinitialize the database connection before responding 503.
+- [x] Silence favicon 404 warnings by responding to `/favicon.ico` with 204.

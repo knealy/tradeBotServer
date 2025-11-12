@@ -611,6 +611,17 @@ class DashboardAPI:
                 take_profit = pos.get('takeProfit') or pos.get('take_profit') or pos.get('targetPrice')
                 opened_at = pos.get('timestamp') or pos.get('createdAt') or pos.get('openedAt') or pos.get('openTime')
                 
+                try:
+                    tick_size = await self.trading_bot._get_tick_size(symbol)
+                except Exception as tick_err:
+                    logger.debug(f"Tick size lookup failed for {symbol}: {tick_err}")
+                    tick_size = None
+                try:
+                    point_value_hint = self.trading_bot._get_point_value(symbol)
+                except Exception as pv_err:
+                    logger.debug(f"Point value lookup failed for {symbol}: {pv_err}")
+                    point_value_hint = None
+                
                 formatted_positions.append({
                     "id": str(position_id) if position_id else None,
                     "symbol": symbol,
@@ -624,6 +635,11 @@ class DashboardAPI:
                     "stop_loss": float(stop_loss) if stop_loss else None,
                     "take_profit": float(take_profit) if take_profit else None,
                     "timestamp": opened_at,
+                    "tick_size": tick_size,
+                    "point_value": point_value_hint,
+                    "min_quantity": pos.get('minQuantity') or pos.get('minQty') or 1,
+                    "account_id": pos.get('accountId') or pos.get('account_id'),
+                    "brackets": pos.get('bracketOrders') or pos.get('ocoOrders') or pos.get('linkedOrders'),
                     # Additional fields for debugging
                     "_raw": pos  # Include raw data for debugging
                 })
@@ -1054,10 +1070,10 @@ class DashboardAPI:
             logger.error(f"Error canceling order: {e}")
             return {"error": str(e)}
     
-    async def close_position(self, position_id: str) -> Dict[str, Any]:
+    async def close_position(self, position_id: str, quantity: Optional[int] = None) -> Dict[str, Any]:
         """Close a position"""
         try:
-            result = await self.trading_bot.close_position(position_id)
+            result = await self.trading_bot.close_position(position_id, quantity=quantity)
             return result
         except Exception as e:
             logger.error(f"Error closing position: {e}")

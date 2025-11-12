@@ -112,6 +112,10 @@ export const positionApi = {
     await api.post(`/api/positions/${positionId}/modify-stop`, { stop_price: stopPrice })
   },
 
+  modifyTakeProfit: async (positionId: string, takeProfitPrice: number): Promise<void> => {
+    await api.post(`/api/positions/${positionId}/modify-tp`, { take_profit: takeProfitPrice })
+  },
+
   flattenAll: async (): Promise<void> => {
     await api.post('/api/positions/flatten')
   },
