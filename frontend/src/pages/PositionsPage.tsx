@@ -47,6 +47,9 @@ export default function PositionsPage() {
   const [takeProfitInputs, setTakeProfitInputs] = useState<Record<string, string>>({})
   const [expandedPosition, setExpandedPosition] = useState<string | null>(null)
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [trailingStopInputs, setTrailingStopInputs] = useState<Record<string, string>>({})
+  const [trailingStopEnabled, setTrailingStopEnabled] = useState<Record<string, boolean>>({})
+  const [breakevenEnabled, setBreakevenEnabled] = useState<Record<string, boolean>>({})
 
   const pushFeedback = (type: 'success' | 'error', message: string) => {
     setFeedback({ type, message })
