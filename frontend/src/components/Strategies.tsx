@@ -5,6 +5,7 @@ import { useAccount } from '../contexts/AccountContext'
 import type { Strategy } from '../types'
 import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2 } from 'lucide-react'
 
+// Strategy Insights UI - v2.0 with stats, logs, and test buttons
 export default function Strategies() {
   const { selectedAccount } = useAccount()
   const queryClient = useQueryClient()
