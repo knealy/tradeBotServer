@@ -20,8 +20,12 @@ import { wsService } from '../services/websocket'
 import type { HistoricalBar, HistoricalDataResponse, Position, Order } from '../types'
 import { useChartTheme, getCandlestickColors, getVolumeColors } from '../hooks/useChartTheme'
 
+// Convert timestamp to Unix seconds (UTC)
+// Note: Chart displays times in UTC, so we keep timestamps as-is
+// If you need local time display, adjust the timeScale formatter instead
 const toUnixTimestamp = (timestamp: string): UTCTimestamp =>
   Math.floor(new Date(timestamp).getTime() / 1000) as UTCTimestamp
+
 
 const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d']
 
@@ -45,6 +49,7 @@ export default function TradingChart({
   const [symbol, setSymbol] = useState(propSymbol || 'MNQ')
   const [timeframe, setTimeframe] = useState('5m')
   const [barLimit, setBarLimit] = useState(300)
+  const [containerReady, setContainerReady] = useState(false)
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -73,15 +78,34 @@ export default function TradingChart({
     }
   )
 
-  // Initialize chart
+  // Wait for container to be ready with dimensions
   useEffect(() => {
     if (!chartContainerRef.current) return
+    
     const container = chartContainerRef.current
-
-    // Ensure container has explicit dimensions so canvas can render
+    
+    // Ensure container has explicit dimensions
     container.style.position = 'relative'
     container.style.height = `${height}px`
     container.style.width = '100%'
+
+    // Check if container has dimensions, if not wait a bit
+    const checkReady = () => {
+      if (container.clientWidth > 0 && container.clientHeight > 0) {
+        setContainerReady(true)
+      } else {
+        // Retry after a short delay
+        setTimeout(checkReady, 50)
+      }
+    }
+    
+    checkReady()
+  }, [height])
+
+  // Initialize chart once container is ready
+  useEffect(() => {
+    if (!containerReady || !chartContainerRef.current) return
+    const container = chartContainerRef.current
 
     const initialWidth = container.clientWidth || 600
 
@@ -89,6 +113,30 @@ export default function TradingChart({
       ...chartTheme,
       width: initialWidth,
       height,
+      timeScale: {
+        ...chartTheme.timeScale,
+        // Custom formatter to display times in ET (UTC-5 or UTC-4)
+        tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => {
+          const date = new Date((time as number) * 1000)
+          
+          // Format based on current timeframe using ET timezone
+          const currentTimeframe = timeframe
+          const formatterOptions: Intl.DateTimeFormatOptions = {
+            timeZone: 'America/New_York', // Automatically handles EST/EDT
+          }
+          
+          if (currentTimeframe === '1d') {
+            formatterOptions.month = 'short'
+            formatterOptions.day = 'numeric'
+            return date.toLocaleDateString('en-US', formatterOptions)
+          } else {
+            formatterOptions.hour = '2-digit'
+            formatterOptions.minute = '2-digit'
+            formatterOptions.hour12 = false
+            return date.toLocaleTimeString('en-US', formatterOptions)
+          }
+        },
+      },
     })
 
     // Add candlestick series
@@ -130,8 +178,9 @@ export default function TradingChart({
       markersPluginRef.current?.detach()
       markersPluginRef.current = null
       chart.remove()
+      setContainerReady(false)
     }
-  }, [height, chartTheme])
+  }, [containerReady, height, chartTheme, timeframe])
 
   // Update chart data
   useEffect(() => {
@@ -381,6 +430,16 @@ export default function TradingChart({
           style={{ height }}
         >
           No data available for {symbol}
+        </div>
+      ) : !containerReady ? (
+        <div
+          className="flex items-center justify-center text-slate-400 text-sm bg-slate-900/50 rounded"
+          style={{ height }}
+        >
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+            <span>Initializing chart...</span>
+          </div>
         </div>
       ) : (
         <div ref={chartContainerRef} className="rounded overflow-hidden" />
