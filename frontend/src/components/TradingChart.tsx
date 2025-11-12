@@ -11,6 +11,7 @@ import {
   SeriesMarker,
   Time,
   CandlestickData,
+  UTCTimestamp,
   createChart,
   createSeriesMarkers,
 } from 'lightweight-charts'
@@ -18,6 +19,9 @@ import { analyticsApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import type { HistoricalBar, HistoricalDataResponse, Position, Order } from '../types'
 import { useChartTheme, getCandlestickColors, getVolumeColors } from '../hooks/useChartTheme'
+
+const toUnixTimestamp = (timestamp: string): UTCTimestamp =>
+  Math.floor(new Date(timestamp).getTime() / 1000) as UTCTimestamp
 
 const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d']
 
@@ -129,20 +133,24 @@ export default function TradingChart({
     if (!data?.bars || !candlestickSeriesRef.current || !volumeSeriesRef.current) return
 
     try {
-      const candlestickData: CandlestickData<Time>[] = data.bars.map((bar: HistoricalBar) => ({
-        time: (new Date(bar.timestamp).getTime() / 1000) as Time,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-      }))
+      const candlestickData: CandlestickData<Time>[] = data.bars
+        .map((bar: HistoricalBar) => ({
+          time: toUnixTimestamp(bar.timestamp),
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        }))
+        .sort((a, b) => (a.time as number) - (b.time as number))
 
       const volumeColors = getVolumeColors('dark')
-      const volumeData = data.bars.map((bar: HistoricalBar) => ({
-        time: (new Date(bar.timestamp).getTime() / 1000) as Time,
-        value: bar.volume,
-        color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
-      }))
+      const volumeData = data.bars
+        .map((bar: HistoricalBar) => ({
+          time: toUnixTimestamp(bar.timestamp),
+          value: bar.volume,
+          color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
+        }))
+        .sort((a, b) => (a.time as number) - (b.time as number))
 
       candlestickSeriesRef.current.setData(candlestickData)
       volumeSeriesRef.current.setData(volumeData)
@@ -169,7 +177,7 @@ export default function TradingChart({
       .filter((pos) => pos.symbol === symbol && pos.timestamp)
       .map((pos) => {
         const isLong = pos.side === 'LONG'
-        const time = (new Date(pos.timestamp!).getTime() / 1000) as Time
+        const time = toUnixTimestamp(pos.timestamp!)
 
         return {
           time,
@@ -235,7 +243,7 @@ export default function TradingChart({
 
       try {
         // Update the last candle with new data
-        const time = (new Date(data.timestamp).getTime() / 1000) as Time
+        const time = toUnixTimestamp(data.timestamp)
 
         if (data.bar) {
           candlestickSeriesRef.current.update({
