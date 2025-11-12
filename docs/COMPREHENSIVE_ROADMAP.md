@@ -35,6 +35,7 @@ Build a production-grade, scalable, autonomous futures trading platform that:
 - Persisted strategy toggles and dashboard settings in PostgreSQL; strategies auto-sync on deploy/account switch.
 - Overnight Range strategy now respects market window strictly—no catch-up trades after 09:30 ET.
 - Restored Parquet caching by bundling `polars` in deployment image.
+- Locked in dashboard parity plan to expose the full trading toolset (orders, positions, risk, notifications) through the web UI.
 
 ---
 
@@ -310,6 +311,15 @@ Build a production-grade, scalable, autonomous futures trading platform that:
 ### **Phase 3: Dashboard & Analytics (IN PLANNING)** 📋
 
 **Goal**: Build web dashboard for monitoring and control
+
+**Dashboard Parity Milestones**:
+- [ ] Orders: ticket for market/limit/stop/bracket, bulk cancel, account flatten
+- [ ] Positions: partial close, TP/SL adjustments, rich position detail drawer
+- [ ] Risk & Health: live DLL/MLL gauges, violation alerts, auto-flatten status
+- [ ] Activity Feed: surfaced order/position/strategy events ( Discord parity )
+- [ ] Strategy Tooling: per-strategy stats, enable/disable, test-fire endpoints
+- [ ] Automation Tools: trailing stop, breakeven toggles, overnight breakout tester
+- [ ] Data & Charts: TV-style price chart, CSV export, advanced performance analytics
 
 **Planned Features**:
 

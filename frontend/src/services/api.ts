@@ -10,6 +10,7 @@ import type {
   HistoricalDataResponse,
   DashboardSettings,
   DashboardSettingsResponse,
+  PlaceOrderPayload,
 } from '../types'
 
 // Auto-detect API base URL at runtime
@@ -128,8 +129,8 @@ export const orderApi = {
     await api.post(`/api/orders/${orderId}/cancel`)
   },
 
-  cancelAll: async (): Promise<void> => {
-    await api.post('/api/orders/cancel-all')
+  cancelAll: async (accountId?: string): Promise<void> => {
+    await api.post('/api/orders/cancel-all', accountId ? { account_id: accountId } : {})
   },
 
   modifyOrder: async (orderId: string, updates: {
@@ -141,14 +142,17 @@ export const orderApi = {
     return response.data
   },
 
-  placeOrder: async (order: {
-    symbol: string
-    side: 'BUY' | 'SELL'
-    quantity: number
-    type?: 'MARKET' | 'LIMIT' | 'STOP'
-    price?: number
-  }): Promise<Order> => {
-    const response = await api.post('/api/orders/place', order)
+  placeOrder: async (order: PlaceOrderPayload): Promise<any> => {
+    const payload: PlaceOrderPayload = {
+      ...order,
+    }
+    if (payload.symbol) {
+      payload.symbol = payload.symbol.trim().toUpperCase()
+    }
+    if (payload.order_type) {
+      payload.order_type = payload.order_type.toLowerCase() as PlaceOrderPayload['order_type']
+    }
+    const response = await api.post('/api/orders/place', payload)
     return response.data
   },
 }

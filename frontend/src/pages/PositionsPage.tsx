@@ -3,6 +3,7 @@ import { useAccount } from '../contexts/AccountContext'
 import { positionApi, orderApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import AccountSelector from '../components/AccountSelector'
+import OrderTicket from '../components/OrderTicket'
 import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
@@ -137,6 +138,9 @@ export default function PositionsPage() {
         />
       </div>
 
+      {/* Order Ticket */}
+      <OrderTicket />
+
       {/* Open Positions */}
       <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
         <h2 className="text-xl font-semibold mb-4">Open Positions ({positions.length})</h2>
@@ -238,6 +242,12 @@ export default function PositionsPage() {
               const orderType = order.type || 'UNKNOWN'
               const status = (order.status || 'PENDING').toUpperCase()
               const canModify = status !== 'FILLED' && status !== 'CANCELLED' && status !== 'REJECTED'
+              const stopPrice = order.stop_price ? Number(order.stop_price) : null
+              const stopLoss = order.stop_loss ? Number(order.stop_loss) : null
+              const takeProfit = order.take_profit ? Number(order.take_profit) : null
+              const bracketSummary = stopLoss || takeProfit
+                ? `${stopLoss ? `SL $${stopLoss.toFixed(2)}` : ''}${stopLoss && takeProfit ? ' / ' : ''}${takeProfit ? `TP $${takeProfit.toFixed(2)}` : ''}`
+                : '—'
 
               return (
                 <div
@@ -320,7 +330,7 @@ export default function PositionsPage() {
                       </div>
                     )}
                   </div>
-                  <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-4">
                     <div>
                       <p className="text-slate-400">Type</p>
                       <p className="font-semibold">{orderType}</p>
@@ -330,6 +340,20 @@ export default function PositionsPage() {
                       <p className="font-semibold">
                         {order.price ? `$${Number(order.price).toFixed(2)}` : 'Market'}
                       </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Stop</p>
+                      <p className="font-semibold">
+                        {stopPrice ? `$${stopPrice.toFixed(2)}` : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Bracket</p>
+                      <p className="font-semibold text-xs text-slate-200">{bracketSummary}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Time in Force</p>
+                      <p className="font-semibold text-slate-200">{order.time_in_force || 'DAY'}</p>
                     </div>
                     <div>
                       <p className="text-slate-400">Order ID</p>

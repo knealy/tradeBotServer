@@ -473,6 +473,12 @@ class AsyncWebhookServer:
             result = await self.dashboard_api.flatten_all_positions()
             if "error" in result:
                 return web.json_response(result, status=400)
+            
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": await self.dashboard_api.get_positions(),
+                "timestamp": time.time()
+            })
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error flattening positions: {e}")
@@ -628,9 +634,18 @@ class AsyncWebhookServer:
     async def handle_cancel_all_orders(self, request: web.Request) -> web.Response:
         """Cancel all open orders."""
         try:
-            result = await self.dashboard_api.cancel_all_orders()
+            data = await request.json() if request.content_length else {}
+            account_id = data.get('account_id')
+            result = await self.dashboard_api.cancel_all_orders(account_id=account_id)
             if "error" in result:
                 return web.json_response(result, status=400)
+            
+            # Broadcast updated orders list
+            await self.broadcast_to_websockets({
+                "type": "order_update",
+                "data": await self.dashboard_api.get_orders(),
+                "timestamp": time.time()
+            })
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error canceling all orders: {e}")
@@ -643,8 +658,39 @@ class AsyncWebhookServer:
             symbol = data.get('symbol')
             side = data.get('side')
             quantity = data.get('quantity')
-            order_type = data.get('type', 'market')
-            price = data.get('price')
+            order_type = data.get('order_type') or data.get('type', 'market')
+            limit_price = data.get('limit_price') or data.get('price')
+            stop_price = data.get('stop_price')
+            stop_loss_ticks = data.get('stop_loss_ticks')
+            take_profit_ticks = data.get('take_profit_ticks')
+            stop_loss_price = data.get('stop_loss_price')
+            take_profit_price = data.get('take_profit_price')
+            enable_bracket = bool(data.get('enable_bracket'))
+            enable_breakeven = bool(data.get('enable_breakeven'))
+            time_in_force = data.get('time_in_force')
+            reduce_only = bool(data.get('reduce_only'))
+            account_id = data.get('account_id')
+            
+            # Normalize numeric fields
+            def _to_int(value):
+                try:
+                    return int(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+            
+            def _to_float(value):
+                try:
+                    return float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+            
+            quantity = _to_int(quantity)
+            stop_loss_ticks = _to_int(stop_loss_ticks)
+            take_profit_ticks = _to_int(take_profit_ticks)
+            limit_price = _to_float(limit_price)
+            stop_price = _to_float(stop_price)
+            stop_loss_price = _to_float(stop_loss_price)
+            take_profit_price = _to_float(take_profit_price)
             
             if not all([symbol, side, quantity]):
                 return web.json_response(
@@ -657,11 +703,29 @@ class AsyncWebhookServer:
                 side=side,
                 quantity=quantity,
                 order_type=order_type,
-                price=price
+                limit_price=limit_price,
+                stop_price=stop_price,
+                stop_loss_ticks=stop_loss_ticks,
+                take_profit_ticks=take_profit_ticks,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                account_id=account_id,
+                enable_bracket=enable_bracket,
+                enable_breakeven=enable_breakeven,
+                time_in_force=time_in_force,
+                reduce_only=reduce_only,
             )
             
             if "error" in result:
                 return web.json_response(result, status=400)
+            
+            # Broadcast latest orders snapshot
+            await self.broadcast_to_websockets({
+                "type": "order_update",
+                "data": await self.dashboard_api.get_orders(),
+                "timestamp": time.time()
+            })
+            
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error placing order: {e}")

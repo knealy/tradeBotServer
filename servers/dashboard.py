@@ -640,15 +640,69 @@ class DashboardAPI:
             formatted_orders = []
             
             for order in orders:
+                raw_type = order.get('type')
+                type_map = {
+                    1: 'LIMIT',
+                    2: 'MARKET',
+                    3: 'MARKET',
+                    4: 'STOP',
+                    5: 'STOP_LIMIT',
+                    6: 'TRAILING_STOP',
+                }
+                status = order.get('status')
+                status_map = {
+                    0: 'PENDING',
+                    1: 'PENDING',
+                    2: 'FILLED',
+                    3: 'PARTIALLY_FILLED',
+                    4: 'CANCELLED',
+                    5: 'REJECTED',
+                    6: 'EXPIRED',
+                }
+                
+                symbol = (
+                    order.get('symbol') or
+                    order.get('contractSymbol') or
+                    order.get('instrumentSymbol')
+                )
+                if not symbol and order.get('contractId'):
+                    try:
+                        symbol = self.trading_bot._get_symbol_from_contract_id(order.get('contractId'))
+                    except Exception:
+                        symbol = str(order.get('contractId'))
+                
+                formatted_price = (
+                    order.get('limitPrice') or
+                    order.get('price') or
+                    order.get('averagePrice') or
+                    order.get('avgPrice')
+                )
+                stop_price = order.get('stopPrice') or order.get('triggerPrice')
+                
+                bracket = order.get('bracket') or {}
+                stop_loss = bracket.get('stopLossPrice') or order.get('stopLossPrice')
+                take_profit = bracket.get('takeProfitPrice') or order.get('takeProfitPrice')
+                
+                tif = order.get('timeInForce') or order.get('time_in_force') or 'DAY'
+                
                 formatted_orders.append({
                     "id": order.get('id'),
-                    "symbol": order.get('symbol'),
-                    "side": order.get('side'),
-                    "type": order.get('type'),
-                    "quantity": order.get('quantity'),
-                    "price": order.get('price'),
-                    "status": order.get('status'),
-                    "timestamp": order.get('timestamp')
+                    "symbol": symbol,
+                    "side": (order.get('side') or '').upper() if isinstance(order.get('side'), str) else 'BUY' if order.get('side') in (0, '0') else 'SELL',
+                    "type": type_map.get(raw_type, str(raw_type).upper() if raw_type is not None else 'UNKNOWN'),
+                    "raw_type": raw_type,
+                    "quantity": order.get('size') or order.get('quantity'),
+                    "price": formatted_price,
+                    "stop_price": stop_price,
+                    "status": status_map.get(status, str(status).upper() if status is not None else 'PENDING'),
+                    "raw_status": status,
+                    "time_in_force": tif,
+                    "reduce_only": order.get('reduceOnly'),
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "custom_tag": order.get('customTag'),
+                    "timestamp": order.get('createdAt') or order.get('timestamp'),
+                    "_raw": order,
                 })
             
             return formatted_orders
@@ -889,30 +943,106 @@ class DashboardAPI:
             logger.error(f"Error getting system logs: {e}")
             return []
     
-    async def place_order(self, symbol: str, side: str, quantity: int, order_type: str = "market", price: float = None) -> Dict[str, Any]:
-        """Place a new order"""
+    async def place_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        order_type: str = "market",
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        stop_loss_ticks: Optional[int] = None,
+        take_profit_ticks: Optional[int] = None,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        account_id: Optional[str] = None,
+        enable_bracket: bool = False,
+        enable_breakeven: bool = False,
+        time_in_force: Optional[str] = None,
+        reduce_only: bool = False,
+    ) -> Dict[str, Any]:
+        """Place a new order using the trading bot helper methods."""
         try:
-            if order_type == "market":
+            if not symbol or not side:
+                return {"error": "symbol and side are required"}
+            
+            symbol = symbol.upper().strip()
+            side = side.upper().strip()
+            
+            try:
+                quantity = int(quantity)
+            except (TypeError, ValueError):
+                return {"error": "quantity must be an integer"}
+            
+            if quantity <= 0:
+                return {"error": "quantity must be greater than 0"}
+            
+            normalized_type = (order_type or "market").lower()
+            
+            # Route to appropriate trading bot helper
+            if normalized_type in ("market", "limit", "bracket"):
                 result = await self.trading_bot.place_market_order(
                     symbol=symbol,
                     side=side,
-                    quantity=quantity
-                )
-            elif order_type == "limit":
-                if not price:
-                    return {"error": "Price required for limit orders"}
-                result = await self.trading_bot.place_limit_order(
-                    symbol=symbol,
-                    side=side,
                     quantity=quantity,
-                    price=price
+                    account_id=account_id,
+                    stop_loss_ticks=stop_loss_ticks if enable_bracket else stop_loss_ticks,
+                    take_profit_ticks=take_profit_ticks if enable_bracket else take_profit_ticks,
+                    order_type=normalized_type,
+                    limit_price=limit_price,
                 )
+            elif normalized_type == "stop":
+                if stop_price is None:
+                    return {"error": "stop_price required for stop orders"}
+                
+                # If we have explicit stop-loss/take-profit prices, treat as OCO bracket entry
+                if enable_bracket and stop_loss_price and take_profit_price:
+                    result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=float(stop_price),
+                        stop_loss_price=float(stop_loss_price),
+                        take_profit_price=float(take_profit_price),
+                        account_id=account_id,
+                        enable_breakeven=enable_breakeven,
+                    )
+                else:
+                    result = await self.trading_bot.place_stop_order(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        stop_price=float(stop_price),
+                        account_id=account_id,
+                    )
             else:
-                return {"error": "Unsupported order type"}
+                return {"error": f"Unsupported order_type '{order_type}'"}
+            
+            if isinstance(result, dict):
+                # Enrich response with metadata we know from request context
+                result.setdefault("requested", {})
+                result["requested"].update({
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                    "order_type": normalized_type,
+                    "limit_price": limit_price,
+                    "stop_price": stop_price,
+                    "stop_loss_ticks": stop_loss_ticks,
+                    "take_profit_ticks": take_profit_ticks,
+                    "stop_loss_price": stop_loss_price,
+                    "take_profit_price": take_profit_price,
+                    "enable_bracket": enable_bracket,
+                    "enable_breakeven": enable_breakeven,
+                    "time_in_force": time_in_force,
+                    "reduce_only": reduce_only,
+                    "account_id": account_id,
+                })
             
             return result
         except Exception as e:
             logger.error(f"Error placing order: {e}")
+            logger.exception(e)
             return {"error": str(e)}
     
     async def cancel_order(self, order_id: str) -> Dict[str, Any]:
@@ -942,20 +1072,24 @@ class DashboardAPI:
             logger.error(f"Error flattening positions: {e}")
             return {"error": str(e)}
     
-    async def cancel_all_orders(self) -> Dict[str, Any]:
+    async def cancel_all_orders(self, account_id: Optional[str] = None) -> Dict[str, Any]:
         """Cancel all open orders"""
         try:
-            orders = await self.trading_bot.get_open_orders()
+            orders = await self.trading_bot.get_open_orders(account_id=account_id)
             canceled_count = 0
             
             for order in orders:
                 try:
-                    await self.trading_bot.cancel_order(order.get('id'))
+                    await self.trading_bot.cancel_order(order.get('id'), account_id=account_id)
                     canceled_count += 1
                 except Exception as e:
                     logger.warning(f"Failed to cancel order {order.get('id')}: {e}")
             
-            return {"canceled": canceled_count, "total": len(orders)}
+            return {
+                "canceled": canceled_count,
+                "total": len(orders),
+                "account_id": account_id or (self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None)
+            }
         except Exception as e:
             logger.error(f"Error canceling all orders: {e}")
             return {"error": str(e)}

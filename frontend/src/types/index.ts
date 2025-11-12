@@ -23,6 +23,11 @@ export interface Position {
   current_price: number
   unrealized_pnl: number
   realized_pnl: number
+  unrealized_pnl_pct?: number
+  stop_loss?: number | null
+  take_profit?: number | null
+  timestamp?: string | null
+  [key: string]: any
 }
 
 // Order Types
@@ -30,11 +35,39 @@ export interface Order {
   id: string
   symbol: string
   side: 'BUY' | 'SELL'
-  type: 'MARKET' | 'LIMIT' | 'STOP' | 'BRACKET'
+  type: 'MARKET' | 'LIMIT' | 'STOP' | 'BRACKET' | string
+  raw_type?: number | string | null
   quantity: number
   price?: number
-  status: 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED'
-  created_at: string
+  stop_price?: number
+  status: 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'PARTIALLY_FILLED' | string
+  raw_status?: number | string | null
+  time_in_force?: string
+  reduce_only?: boolean
+  stop_loss?: number | null
+  take_profit?: number | null
+  custom_tag?: string | null
+  timestamp?: string
+  created_at?: string
+  [key: string]: any
+}
+
+export interface PlaceOrderPayload {
+  symbol: string
+  side: 'BUY' | 'SELL'
+  quantity: number
+  order_type?: 'market' | 'limit' | 'stop' | 'bracket'
+  limit_price?: number
+  stop_price?: number
+  stop_loss_ticks?: number
+  take_profit_ticks?: number
+  stop_loss_price?: number
+  take_profit_price?: number
+  enable_bracket?: boolean
+  enable_breakeven?: boolean
+  time_in_force?: string
+  reduce_only?: boolean
+  account_id?: string
 }
 
 // Strategy Types

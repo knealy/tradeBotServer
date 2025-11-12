@@ -60,3 +60,13 @@ priority 5 add a chat bar / side panel
 - Wire up authentication + admin panel once dashboard foundations are solid.
 - Add Redis layer to persist sessions and speed up hot data once Railway deployment is stable.
 
+## 🧭 Dashboard Functionality Parity
+
+- [ ] **Orders**: full ticket (market/limit/stop/bracket), bulk cancel, flatten account
+- [ ] **Positions**: partial close, TP/SL edits, detailed drawer
+- [ ] **Risk View**: DLL/MLL gauges, violation alerts, auto-flatten status
+- [ ] **Notifications Feed**: show order/position events (Discord parity)
+- [ ] **Automation Tools**: trailing stop, breakeven toggle, overnight breakout test
+- [ ] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
+- [ ] **Data Exports & Charts**: CSV download, upgraded candlestick/TV charts
+
