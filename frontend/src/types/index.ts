@@ -132,7 +132,7 @@ export interface PerformanceMetrics {
 
 // WebSocket Message Types
 export interface WebSocketMessage {
-  type: 'account_update' | 'position_update' | 'order_update' | 'metrics_update' | 'error'
+  type: 'account_update' | 'position_update' | 'order_update' | 'metrics_update' | 'risk_update' | 'error'
   data: any
   timestamp: string
 }
@@ -218,6 +218,40 @@ export interface HistoricalDataResponse {
   timeframe: string
   count: number
   bars: HistoricalBar[]
+}
+
+export interface RiskLimitSummary {
+  limit: number | null
+  used: number
+  remaining: number
+  violated: boolean
+  pct: number
+}
+
+export interface RiskEvent {
+  id: string
+  timestamp: string
+  message: string
+  level: 'info' | 'warning' | 'error' | 'success'
+  meta?: Record<string, any>
+}
+
+export interface RiskSnapshot {
+  account_id: string
+  account_name?: string
+  timestamp: string
+  balance: number
+  start_balance: number
+  highest_eod_balance: number
+  realized_pnl: number
+  unrealized_pnl: number
+  total_pnl: number
+  trailing_loss: number
+  compliance: boolean
+  dll: RiskLimitSummary
+  mll: RiskLimitSummary
+  violations: string[]
+  events: RiskEvent[]
 }
 
 export interface DashboardSettings {

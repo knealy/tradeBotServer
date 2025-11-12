@@ -11,6 +11,7 @@ import type {
   DashboardSettings,
   DashboardSettingsResponse,
   PlaceOrderPayload,
+  RiskSnapshot,
 } from '../types'
 
 // Auto-detect API base URL at runtime
@@ -198,6 +199,15 @@ export const metricsApi = {
     const response = await api.get('/api/metrics')
     // Extract performance data from response
     return response.data.performance || response.data
+  },
+}
+
+// Risk API
+export const riskApi = {
+  getRisk: async (accountId?: string): Promise<RiskSnapshot> => {
+    const params = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
+    const response = await api.get(`/api/risk${params}`)
+    return response.data
   },
 }
 

@@ -14,6 +14,7 @@ import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
 import HistoricalPriceChart from './HistoricalPriceChart'
 import TradesTable from './TradesTable'
+import RiskDrawer from './RiskDrawer'
 import { Activity, ExternalLink } from 'lucide-react'
 
 export default function Dashboard() {
@@ -220,6 +221,7 @@ export default function Dashboard() {
 
         {/* Right Column - Metrics and Trades */}
         <div className="space-y-6">
+          <RiskDrawer />
           {metrics && <MetricsCard metrics={metrics} />}
           <TradesTable />
         </div>

@@ -437,6 +437,7 @@ class AccountTracker:
                 # Return empty state if not initialized
                 return {
                     'account_id': target_id or 'unknown',
+                    'account_name': 'Unknown',
                     'starting_balance': 0.0,
                     'current_balance': 0.0,
                     'realized_pnl': 0.0,
@@ -452,6 +453,7 @@ class AccountTracker:
             state = self.accounts[target_id]
             return {
                 'account_id': state.account_id,
+                'account_name': state.account_name,
                 'starting_balance': state.starting_balance,
                 'current_balance': state.current_balance,
                 'realized_pnl': state.realised_PnL,

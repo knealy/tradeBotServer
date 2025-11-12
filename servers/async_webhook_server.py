@@ -11,8 +11,9 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Any
+from uuid import uuid4
 from aiohttp import web
 from aiohttp_cors import setup as cors_setup, ResourceOptions
 import aiohttp
@@ -75,6 +76,8 @@ class AsyncWebhookServer:
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         self.dashboard_api = DashboardAPI(trading_bot, None)
         self._settings_cache: Dict[str, Dict[str, Any]] = {}
+        self._risk_events: Dict[str, List[Dict[str, Any]]] = {}
+        self._risk_flags: Dict[str, Dict[str, bool]] = {}
         
         # WebSocket clients (integrated into main server)
         self.websocket_clients = set()
@@ -182,6 +185,7 @@ class AsyncWebhookServer:
         self.app.router.add_post('/api/orders/place', self.handle_place_order)
         self.app.router.add_get('/api/settings', self.handle_get_settings)
         self.app.router.add_post('/api/settings', self.handle_save_settings)
+        self.app.router.add_get('/api/risk', self.handle_get_risk)
         
         self.app.router.add_get('/api/strategies', self.handle_get_strategies)
         self.app.router.add_get('/api/strategies/status', self.handle_get_strategy_status)
@@ -198,11 +202,6 @@ class AsyncWebhookServer:
         
         # Order modification endpoint
         self.app.router.add_post('/api/orders/{order_id}/modify', self.handle_modify_order)
-        
-        # Position management endpoints
-        self.app.router.add_post('/api/positions/{position_id}/close', self.handle_close_position)
-        self.app.router.add_post('/api/positions/{position_id}/modify-stop', self.handle_modify_position_stop)
-        self.app.router.add_post('/api/positions/{position_id}/modify-tp', self.handle_modify_position_take_profit)
         
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
     
@@ -259,6 +258,14 @@ class AsyncWebhookServer:
                     "data": orders,
                     "timestamp": time.time()
                 })
+                
+                risk_snapshot = self._collect_risk_snapshot(emit_events=False)
+                if risk_snapshot:
+                    await ws.send_json({
+                        "type": "risk_update",
+                        "data": risk_snapshot,
+                        "timestamp": time.time()
+                    })
             except Exception as e:
                 logger.error(f"Error sending initial WebSocket data: {e}")
             
@@ -434,6 +441,8 @@ class AsyncWebhookServer:
             if hasattr(self.trading_bot, 'strategy_manager'):
                 await self.trading_bot.strategy_manager.apply_persisted_states()
             
+            await self._broadcast_risk_snapshot(account_id)
+            
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error switching account: {e}")
@@ -484,6 +493,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_positions(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error flattening positions: {e}")
@@ -521,6 +531,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_orders(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             
             return web.json_response(result)
         except Exception as e:
@@ -560,6 +571,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_orders(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             
             return web.json_response(result)
         except Exception as e:
@@ -593,6 +605,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_positions(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             
             return web.json_response(result)
         except Exception as e:
@@ -629,6 +642,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_positions(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             
             return web.json_response(result)
         except Exception as e:
@@ -664,6 +678,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_positions(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             
             return web.json_response(result)
         except Exception as e:
@@ -686,6 +701,7 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_orders(),
                 "timestamp": time.time()
             })
+            await self._broadcast_risk_snapshot()
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error canceling all orders: {e}")
@@ -1165,6 +1181,158 @@ class AsyncWebhookServer:
             logger.error(f"❌ Failed to initialize database: {db_err}")
             self.trading_bot.db = None
             return None
+    
+    def _get_selected_account_id(self) -> Optional[str]:
+        """Return the currently selected account ID as a string."""
+        selected = getattr(self.trading_bot, 'selected_account', None)
+        if selected:
+            for key in ('id', 'account_id', 'accountId'):
+                if selected.get(key) is not None:
+                    return str(selected.get(key))
+        tracker = getattr(self.trading_bot, 'account_tracker', None)
+        if tracker and tracker.current_account_id:
+            return str(tracker.current_account_id)
+        return None
+    
+    def _get_selected_account_name(self) -> Optional[str]:
+        """Return the currently selected account name if available."""
+        selected = getattr(self.trading_bot, 'selected_account', None)
+        if selected and selected.get('name'):
+            return str(selected.get('name'))
+        tracker = getattr(self.trading_bot, 'account_tracker', None)
+        if tracker and tracker.current_account_id and tracker.current_account_id in tracker.accounts:
+            return tracker.accounts[tracker.current_account_id].account_name
+        return None
+    
+    def _record_risk_event(self, account_id: str, message: str, level: str = "info", meta: Optional[Dict[str, Any]] = None) -> None:
+        """Record a risk-related event for the specified account."""
+        events = self._risk_events.setdefault(account_id, [])
+        event = {
+            "id": str(uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": message,
+            "level": level,
+        }
+        if meta:
+            event["meta"] = meta
+        events.append(event)
+        if len(events) > 50:
+            del events[:-50]
+    
+    def _collect_risk_snapshot(self, account_id: Optional[str] = None, emit_events: bool = False) -> Optional[Dict[str, Any]]:
+        """Collect current risk metrics for the specified (or active) account."""
+        tracker = getattr(self.trading_bot, 'account_tracker', None)
+        if not tracker:
+            logger.warning("Risk snapshot requested but account tracker unavailable")
+            return None
+        
+        account_id = account_id or self._get_selected_account_id()
+        if not account_id:
+            logger.warning("Risk snapshot requested but no account selected")
+            return None
+        
+        state = tracker.get_state(account_id)
+        compliance = tracker.check_compliance(account_id)
+        account_name = state.get('account_name') or self._get_selected_account_name() or 'Unknown'
+        
+        dll_limit = float(compliance.get('dll_limit') or 0.0)
+        dll_used = float(compliance.get('dll_used') or 0.0)
+        dll_remaining = float(compliance.get('dll_remaining') or 0.0)
+        dll_pct = min(1.0, dll_used / dll_limit) if dll_limit else 0.0
+        
+        mll_limit = float(compliance.get('mll_limit') or 0.0)
+        mll_used = float(compliance.get('mll_used') or 0.0)
+        mll_remaining = float(compliance.get('mll_remaining') or 0.0)
+        mll_pct = min(1.0, mll_used / mll_limit) if mll_limit else 0.0
+        
+        trailing_loss = float(compliance.get('trailing_loss') or 0.0)
+        violations = compliance.get('violations') or []
+        is_compliant = bool(compliance.get('is_compliant', True))
+        dll_violated = bool(compliance.get('dll_violated', False))
+        mll_violated = bool(compliance.get('mll_violated', False))
+        
+        snapshot = {
+            "account_id": str(state.get('account_id') or account_id),
+            "account_name": account_name,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "balance": float(state.get('current_balance') or 0.0),
+            "start_balance": float(state.get('starting_balance') or 0.0),
+            "highest_eod_balance": float(state.get('highest_eod_balance') or 0.0),
+            "realized_pnl": float(state.get('realized_pnl') or 0.0),
+            "unrealized_pnl": float(state.get('unrealized_pnl') or 0.0),
+            "total_pnl": float(state.get('total_pnl') or 0.0),
+            "trailing_loss": trailing_loss,
+            "compliance": is_compliant,
+            "dll": {
+                "limit": dll_limit if dll_limit else None,
+                "used": dll_used,
+                "remaining": dll_remaining,
+                "violated": dll_violated,
+                "pct": dll_pct,
+            },
+            "mll": {
+                "limit": mll_limit if mll_limit else None,
+                "used": mll_used,
+                "remaining": mll_remaining,
+                "violated": mll_violated,
+                "pct": mll_pct,
+            },
+            "violations": violations,
+        }
+        
+        # Initialize or update last known flags
+        last_flags = self._risk_flags.setdefault(str(account_id), {
+            "dll_violated": dll_violated,
+            "mll_violated": mll_violated,
+            "is_compliant": is_compliant,
+        })
+        
+        if emit_events:
+            if last_flags["dll_violated"] != dll_violated:
+                if dll_violated:
+                    self._record_risk_event(str(account_id), "Daily loss limit violated", level="error", meta={"used": dll_used, "limit": dll_limit})
+                else:
+                    self._record_risk_event(str(account_id), "Daily loss back within limit", level="success")
+            if last_flags["mll_violated"] != mll_violated:
+                if mll_violated:
+                    self._record_risk_event(str(account_id), "Maximum loss limit violated", level="error", meta={"used": mll_used, "limit": mll_limit})
+                else:
+                    self._record_risk_event(str(account_id), "Maximum loss back within limit", level="success")
+            if last_flags["is_compliant"] != is_compliant:
+                if is_compliant:
+                    self._record_risk_event(str(account_id), "Account returned to compliant status", level="success")
+                else:
+                    self._record_risk_event(str(account_id), "Account marked non-compliant", level="warning")
+        
+        # Update cached flags
+        self._risk_flags[str(account_id)] = {
+            "dll_violated": dll_violated,
+            "mll_violated": mll_violated,
+            "is_compliant": is_compliant,
+        }
+        
+        events = self._risk_events.get(str(account_id), [])
+        snapshot["events"] = events[-10:]
+        return snapshot
+    
+    async def _broadcast_risk_snapshot(self, account_id: Optional[str] = None) -> None:
+        """Broadcast current risk snapshot over WebSocket."""
+        snapshot = self._collect_risk_snapshot(account_id, emit_events=True)
+        if not snapshot:
+            return
+        await self.broadcast_to_websockets({
+            "type": "risk_update",
+            "data": snapshot,
+            "timestamp": time.time()
+        })
+    
+    async def handle_get_risk(self, request: web.Request) -> web.Response:
+        """Return current risk metrics for the selected or requested account."""
+        account_scope = request.rel_url.query.get('account_id')
+        snapshot = self._collect_risk_snapshot(account_scope, emit_events=False)
+        if not snapshot:
+            return web.json_response({"error": "risk data unavailable"}, status=503)
+        return web.json_response(snapshot)
     
     async def handle_favicon(self, request: web.Request) -> web.Response:
         """Return an empty favicon to silence browser 404s."""
