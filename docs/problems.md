@@ -28,14 +28,6 @@
 └─────────────────────────────────────────────────────┘
 
 
-
-Next Priorities:
-Build React/JS dashboard [in progress]
-Add real-time WebSocket updates [in progress]
-Implement user authentication 
-Create admin panel
-
-
 ## ✅ Recently Completed
 
 - Strategy enable/disable buttons now persist to PostgreSQL and reload correctly after redeploys or account switches.
@@ -43,25 +35,10 @@ Create admin panel
 - Overnight Range strategy no longer backfills trades after the 09:30 ET window – runs only when the toggle is on and within the trading session.
 - Parquet caching restored on Railway by bundling `polars` in the runtime image.
 
-## ⏭️ Still Open / Upcoming
-
-- Swap price charts to a more responsive library (TradingView LW charts or Chart.js plugin) with zoom + crosshair UX.
-- Wire up authentication + admin panel once dashboard foundations are solid.
-- Add Redis layer to persist sessions and speed up hot data once Railway deployment is stable.
-
-Priority 1 (NOW): ✅ PostgreSQL (DONE!)
-Priority 2 (NEXT): ⏳ Redis for sessions
-Priority 3 (When scaling): ⏳ Redis for distributed cache
-Priority 4 (Optional): ⏳ Redis for HFT quotes
-priority 5 add a chat bar / side panel
-
-#### J. Go/Rust Migration (Future)
-**Problem**: Python GIL limits concurrency
-  **Solution**: Migrate hot paths to Go/Rust
-  **Impact**: 10-100x performance improvement for I/O-bound operations
-
 
 ## 🧭 Dashboard Functionality Parity
+
+## ⏭️ Still Open 
 
 - [x] **Orders**: full ticket (market/limit/stop/bracket), bulk cancel, flatten account
 - [x] **Positions**: partial close, TP/SL edits, detailed drawer
@@ -70,4 +47,27 @@ priority 5 add a chat bar / side panel
 - [x] **Automation Tools**: trailing stop, breakeven toggle, overnight breakout test
 - [x] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
 - [x] **Data Exports & Charts**: CSV download for trades and performance data
-- [ ] **Chart Upgrades**: Upgrade to TradingView LW charts or Chart.js (future enhancement)
+- [x] **Chart Upgrades**: Upgraded to TradingView Lightweight Charts with candlesticks, volume, position markers, order lines, and real-time WebSocket updates! ✨
+- [ ] Add more technical indicators (MA, RSI, MACD) to charts (future enhancement)
+- [ ] Wire up authentication + admin panel once dashboard foundations are solid
+- [ ] Add Redis layer to persist sessions and speed up hot data once Railway deployment is stable
+
+Priority 1 (NOW): ✅ PostgreSQL (DONE!)
+Priority 2 (NEXT): ⏳ Redis for sessions
+Priority 3 (When scaling): ⏳ Redis for distributed cache
+Priority 4 (Optional): ⏳ Redis for HFT quotes
+priority 5 add a chat bar / side panel
+
+Next Priorities:
+Build React/JS dashboard [in progress]
+Add real-time WebSocket updates [in progress]
+Implement user authentication 
+Create admin panel
+
+#### J. Go/Rust Migration (Future)
+**Problem**: Python GIL limits concurrency
+  **Solution**: Migrate hot paths to Go/Rust
+  **Impact**: 10-100x performance improvement for I/O-bound operations
+
+
+
