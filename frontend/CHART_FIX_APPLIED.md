@@ -1,146 +1,79 @@
-# 🔧 Chart Fix Applied - v4 API
+# 🔧 Chart Migration Notes – Lightweight Charts v5
 
-## Issue
+## What Changed
 
-The chart was not displaying and throwing error:
-```
-TypeError: v.addCandlestickSeries is not a function
-```
+- Upgraded `lightweight-charts` from **v4.2.0 → v5.0.9**
+- Replaced deprecated `chart.addCandlestickSeries / addHistogramSeries` with `chart.addSeries(...)`
+- Integrated the new `createSeriesMarkers` plugin for position markers
+- Added cleanup for price lines to prevent duplicate order overlays
+- Verified build & type-check with the new API surface
 
-## Root Cause
-
-**lightweight-charts v5.0.9** was automatically installed, which has a completely different API from v4.x. Our code was designed for the v4 API.
-
-## Solution Applied
-
-1. ✅ **Downgraded** to `lightweight-charts@4.2.0`
-2. ✅ **Pinned** the version in package.json
-3. ✅ **Verified** TypeScript compilation
-4. ✅ **Rebuilt** the production bundle
-
-## Commands Executed
+## Key Commands
 
 ```bash
-# Remove v5
-npm uninstall lightweight-charts
+# Upgrade dependency
+npm install lightweight-charts@5.0.9
 
-# Install v4.2.0 (pinned)
-npm install lightweight-charts@4.2.0
+# Validate TypeScript types
+npm run type-check
 
-# Verify types
-npm run type-check  # ✅ PASS
-
-# Build production
-npm run build  # ✅ SUCCESS
+# Produce production bundle
+npm run build
 ```
 
-## Version Info
+## Updated Code Patterns
 
-### Before (Broken)
-- Package: `lightweight-charts@5.0.9`
-- API: Incompatible v5 API
-- Status: ❌ Not working
+```typescript
+import {
+  CandlestickSeries,
+  HistogramSeries,
+  createSeriesMarkers,
+} from 'lightweight-charts'
 
-### After (Fixed)
-- Package: `lightweight-charts@4.2.0`
-- API: Compatible v4 API
-- Status: ✅ Working
+const chart = createChart(container, options)
 
-## Code Changes
+const candleSeries = chart.addSeries(CandlestickSeries, candleOptions)
+const volumeSeries = chart.addSeries(HistogramSeries, volumeOptions)
 
-No code changes were needed! The issue was purely a version mismatch. The code was correct for v4 API.
+const markersPlugin = createSeriesMarkers(candleSeries, [])
+markersPlugin.setMarkers(markersFromPositions)
+```
 
-## Bundle Impact
+```typescript
+// Price line hygiene
+priceLines.current.forEach(line => candleSeries.removePriceLine(line))
+priceLines.current = []
+```
+
+## Bundle Snapshot (post-upgrade)
 
 ```
-Final bundle sizes:
+> npm run build
+
 - chart-vendor: 383.04 kB │ gzip: 104.96 kB
-- main bundle:  352.76 kB │ gzip: 101.61 kB
+- main bundle:  354.85 kB │ gzip: 102.35 kB
 - react-vendor: 161.81 kB │ gzip:  52.78 kB
 - styles:        24.48 kB │ gzip:   5.15 kB
 ```
 
-## API Differences (v4 vs v5)
-
-### v4 API (What We Use)
-```typescript
-// ✅ This works
-const chart = createChart(container, options)
-chart.addCandlestickSeries({ ... })
-chart.addHistogramSeries({ ... })
-series.setMarkers(markers)
-series.createPriceLine({ ... })
-```
-
-### v5 API (Breaking Changes)
-```typescript
-// ❌ This doesn't work with v4 code
-const chart = createChart(container, options)
-chart.addSeries('Candlestick', { ... })  // Different!
-chart.addSeries('Histogram', { ... })     // Different!
-series.setMarkers(markers)  // May be different
-series.createPriceLine({ ... })  // May be different
-```
-
-## Prevention
-
-To prevent this from happening again:
-
-1. ✅ **Pinned version** in package.json to `4.2.0`
-2. ✅ **Documented** the version requirement
-3. ✅ **Added warning** in CHARTING_GUIDE.md
-
-### package.json
-```json
-{
-  "dependencies": {
-    "lightweight-charts": "4.2.0"
-  }
-}
-```
-
 ## Testing Checklist
 
-After applying this fix:
-
-- [x] TypeScript compilation passes
-- [x] Production build succeeds
-- [x] No console errors
-- [ ] Chart renders correctly (test with live server)
-- [ ] Candlesticks display
-- [ ] Volume histogram shows
-- [ ] Real-time updates work
-- [ ] Position markers appear
-- [ ] Order lines display
+- [x] `npm run type-check`
+- [x] `npm run build`
+- [x] Chart renders without console errors
+- [x] Position markers display & hide with toggle
+- [x] Pending order lines clear when orders change
+- [x] WebSocket updates move the active candle
 
 ## Next Steps
 
-1. **Test the chart** - Run `npm run dev` and verify chart displays
-2. **Check browser console** - Ensure no errors
-3. **Test real-time updates** - Verify WebSocket connection works
-4. **Test markers** - Add positions and verify arrows appear
-5. **Test order lines** - Create pending orders and verify lines show
-
-## Support
-
-If the chart still doesn't display:
-
-1. **Clear browser cache** - Hard refresh (Cmd+Shift+R on Mac, Ctrl+Shift+R on Windows)
-2. **Check console** - Look for any JavaScript errors
-3. **Verify data** - Ensure historical data API returns valid bars
-4. **Check WebSocket** - Ensure WS connection is established
-
-## Summary
-
-✅ **Fixed!** The chart should now work correctly with v4.2.0 API.
-
-**The issue was**: Version mismatch  
-**The solution**: Downgrade to v4.2.0 and pin the version  
-**Status**: Ready for testing
+- Monitor in staging/production with live data
+- Gather feedback on marker & order overlays
+- Plan follow-up work (indicators, annotations, multi-pane layouts)
 
 ---
 
 **Applied**: November 12, 2025  
-**Version**: lightweight-charts@4.2.0  
-**Build**: Successful ✅
+**Version**: lightweight-charts@5.0.9  
+**Status**: ✅ Migration complete
 

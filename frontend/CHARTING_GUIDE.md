@@ -16,14 +16,12 @@ We've successfully migrated from Recharts to **TradingView Lightweight Charts** 
 ## Installation
 
 ```bash
-npm install lightweight-charts@4.2.0
+npm install lightweight-charts@5.0.9
 ```
 
-**Package**: `lightweight-charts@4.2.0` (pinned)  
-**Bundle Size**: ~105KB gzipped  
+**Package**: `lightweight-charts@5.0.9`  
+**Bundle Size**: ~105KB gzipped (current production build)  
 **TypeScript**: Full support ✅
-
-**⚠️ Important**: We use v4.2.0 specifically. Do NOT upgrade to v5.x as the API has breaking changes.
 
 ---
 

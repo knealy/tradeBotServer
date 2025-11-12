@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from 'react-query'
 import {
-  createChart,
+  CandlestickSeries,
+  HistogramSeries,
   IChartApi,
+  ISeriesApi,
+  ISeriesMarkersPluginApi,
+  IPriceLine,
   LineStyle,
   SeriesMarker,
   Time,
   CandlestickData,
+  createChart,
+  createSeriesMarkers,
 } from 'lightweight-charts'
 import { analyticsApi } from '../services/api'
 import { wsService } from '../services/websocket'
@@ -38,8 +44,10 @@ export default function TradingChart({
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const candlestickSeriesRef = useRef<any>(null)
-  const volumeSeriesRef = useRef<any>(null)
+  const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  const priceLinesRef = useRef<IPriceLine[]>([])
   
   // Chart theme configuration
   const chartTheme = useChartTheme({ theme: 'dark', height })
@@ -71,10 +79,13 @@ export default function TradingChart({
     })
 
     // Add candlestick series
-    const candlestickSeries = chart.addCandlestickSeries(getCandlestickColors('dark'))
+    const candlestickSeries = chart.addSeries(
+      CandlestickSeries,
+      getCandlestickColors('dark')
+    )
 
     // Add volume series
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       color: '#26A69A',
       priceFormat: {
         type: 'volume',
@@ -92,6 +103,7 @@ export default function TradingChart({
     chartRef.current = chart
     candlestickSeriesRef.current = candlestickSeries
     volumeSeriesRef.current = volumeSeries
+    markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
 
     // Handle resize
     const handleResize = () => {
@@ -106,6 +118,8 @@ export default function TradingChart({
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      markersPluginRef.current?.detach()
+      markersPluginRef.current = null
       chart.remove()
     }
   }, [height])
@@ -144,7 +158,12 @@ export default function TradingChart({
 
   // Add position markers
   useEffect(() => {
-    if (!candlestickSeriesRef.current || !showPositions) return
+    if (!candlestickSeriesRef.current || !markersPluginRef.current) return
+
+    if (!showPositions) {
+      markersPluginRef.current.setMarkers([])
+      return
+    }
 
     const markers: SeriesMarker<Time>[] = positions
       .filter((pos) => pos.symbol === symbol && pos.timestamp)
@@ -162,20 +181,28 @@ export default function TradingChart({
         } as SeriesMarker<Time>
       })
 
-    if (markers.length > 0 && candlestickSeriesRef.current) {
-      candlestickSeriesRef.current.setMarkers(markers)
-    }
+    markersPluginRef.current.setMarkers(markers)
   }, [positions, symbol, showPositions])
 
   // Add order price lines
   useEffect(() => {
-    if (!candlestickSeriesRef.current || !showOrders) return
+    if (!candlestickSeriesRef.current) return
 
-    // Remove old price lines
-    // Note: Lightweight Charts doesn't have a built-in way to remove all price lines
-    // so we'll create new ones when needed
+    // Remove existing price lines
+    priceLinesRef.current.forEach((line) => {
+      try {
+        candlestickSeriesRef.current?.removePriceLine(line)
+      } catch (error) {
+        console.warn('Failed to remove price line', error)
+      }
+    })
+    priceLinesRef.current = []
 
-      orders
+    if (!showOrders) {
+      return
+    }
+
+    orders
       .filter((order) => order.symbol === symbol && order.status === 'PENDING' && order.price)
       .forEach((order) => {
         if (!candlestickSeriesRef.current) return
@@ -183,7 +210,7 @@ export default function TradingChart({
         const isLongOrder = order.side === 'BUY'
 
         try {
-          candlestickSeriesRef.current.createPriceLine({
+          const line = candlestickSeriesRef.current.createPriceLine({
             price: order.price!,
             color: isLongOrder ? '#10B981' : '#F59E0B',
             lineWidth: 2,
@@ -191,6 +218,7 @@ export default function TradingChart({
             axisLabelVisible: true,
             title: `${order.side} ${order.quantity}`,
           })
+          priceLinesRef.current.push(line)
         } catch (error) {
           console.error('Error creating price line:', error)
         }
