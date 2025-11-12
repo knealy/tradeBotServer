@@ -149,15 +149,16 @@ class DatabaseManager:
         except Exception as e:
             if conn:
                 try:
-                conn.rollback()
+                    conn.rollback()
                 except:
-                    pass  # Rollback might fail if connection is already closed
+                    # Rollback might fail if connection is already closed
+                    pass
             logger.error(f"Database error: {e}")
             raise
         finally:
             if conn:
                 try:
-                self.pool.putconn(conn)
+                    self.pool.putconn(conn)
                 except:
                     # Connection might be already closed, that's ok
                     pass
