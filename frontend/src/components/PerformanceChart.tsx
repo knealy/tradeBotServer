@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { analyticsApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { PerformanceHistoryResponse } from '../types'
+import { Download } from 'lucide-react'
 
 const INTERVAL_OPTIONS = [
   { label: 'Trade', value: 'trade' },
@@ -108,10 +109,28 @@ export default function PerformanceChart() {
     })
   }, [data, interval, summary])
 
+  const handleExportCSV = () => {
+    const accountId = selectedAccount?.id
+    const params = new URLSearchParams()
+    if (accountId) params.append('account_id', accountId)
+    params.append('interval', interval)
+    
+    const url = `/api/performance/export${params.toString() ? `?${params.toString()}` : ''}`
+    window.open(url, '_blank')
+  }
+
   return (
     <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 space-y-4">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <h2 className="text-xl font-semibold">Performance</h2>
+        <button
+          onClick={handleExportCSV}
+          className="px-3 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2 text-sm"
+          disabled={!selectedAccount || !data}
+        >
+          <Download className="w-4 h-4" />
+          Export CSV
+        </button>
         <div className="flex flex-wrap gap-2">
           {INTERVAL_OPTIONS.map((option) => (
             <button
