@@ -68,13 +68,18 @@ export default function PerformanceChart() {
     if (!data?.summary) return null
     const lastPoint = data.points?.[data.points.length - 1]
     const cumulativeAtEnd = lastPoint?.cumulative_pnl ?? data.summary.total_pnl ?? 0
-    const accountBalance =
-      typeof selectedAccount?.balance === 'number' ? selectedAccount.balance : undefined
+    const accountBalanceRaw = selectedAccount?.balance ?? selectedAccount?.equity
+    const accountBalanceNum =
+      accountBalanceRaw !== undefined && accountBalanceRaw !== null && !Number.isNaN(Number(accountBalanceRaw))
+        ? Number(accountBalanceRaw)
+        : undefined
     const endBalance =
-      accountBalance ??
+      accountBalanceNum ??
       data.summary.end_balance ??
       ((data.summary.start_balance ?? 0) + cumulativeAtEnd)
-    const startBalance = endBalance - cumulativeAtEnd
+    const startBalance =
+      data.summary.start_balance ??
+      (endBalance - cumulativeAtEnd)
     return {
       ...data.summary,
       start_balance: startBalance,

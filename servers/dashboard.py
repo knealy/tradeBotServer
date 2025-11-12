@@ -11,6 +11,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
 
@@ -754,8 +755,10 @@ class DashboardAPI:
             if cursor_payload and cursor_payload.get('t'):
                 end_dt = self._parse_iso_datetime(cursor_payload['t'], end_dt) - timedelta(microseconds=1)
 
-            # Default start window: last 7 days
-            default_start = end_dt - timedelta(days=7)
+            # Default lookback window scales with requested limit (more rows => wider window)
+            window_multiplier = max(1, math.ceil(limit / 20))
+            default_window_days = min(90, 7 * window_multiplier)
+            default_start = end_dt - timedelta(days=default_window_days)
             start_dt = self._parse_iso_datetime(start_date, default_start)
             if start_dt >= end_dt:
                 start_dt = end_dt - timedelta(days=1)
@@ -1286,8 +1289,32 @@ class DashboardAPI:
                 
                 points.append(bucket)
 
-            current_balance = await self.trading_bot.get_account_balance(account) or 0.0
-            start_balance = current_balance - total_pnl
+            balance_source = "api"
+            current_balance = await self.trading_bot.get_account_balance(account)
+            tracker_state = None
+            tracker = getattr(self.trading_bot, 'account_tracker', None)
+            if tracker:
+                tracker_state = tracker.accounts.get(str(account))
+            if not current_balance and tracker_state:
+                current_balance = tracker_state.current_balance or tracker_state.starting_balance
+                balance_source = "account_tracker"
+            if not current_balance:
+                account_info = await self.trading_bot.get_account_info(account)
+                if account_info:
+                    balance_value = account_info.get('balance') or account_info.get('equity') or account_info.get('cash')
+                    if balance_value:
+                        current_balance = float(balance_value)
+                        balance_source = "account_info"
+            if not current_balance and tracker_state:
+                current_balance = tracker_state.starting_balance
+                balance_source = "tracker_start"
+            if not current_balance and points:
+                current_balance = total_pnl
+                balance_source = "pnl_fallback"
+            current_balance = float(current_balance or 0.0)
+            start_balance = tracker_state.starting_balance if tracker_state and tracker_state.starting_balance else current_balance - total_pnl
+            if not math.isfinite(start_balance):
+                start_balance = current_balance - total_pnl
             
             # Log summary for debugging
             logger.info(f"📊 Performance Summary: total_trades={trade_count}, total_pnl={round(total_pnl, 2)}, wins={total_wins}, losses={total_losses}, current_balance={current_balance}")
@@ -1318,6 +1345,7 @@ class DashboardAPI:
                 "trade_count": trade_count,
                 "winning_trades": total_wins,
                 "losing_trades": total_losses,
+                "balance_source": balance_source,
             }
 
             return {
