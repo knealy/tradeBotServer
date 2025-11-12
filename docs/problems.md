@@ -68,5 +68,5 @@ priority 5 add a chat bar / side panel
 - [x] **Risk View**: DLL/MLL gauges, collapsible sidebar widget, violation alerts
 - [x] **Notifications Feed**: show order/position events (Discord parity)
 - [x] **Automation Tools**: trailing stop, breakeven toggle, overnight breakout test
-- [ ] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
+- [x] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
 - [ ] **Data Exports & Charts**: CSV download, upgraded candlestick/TV charts
