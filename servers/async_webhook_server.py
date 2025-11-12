@@ -1707,6 +1707,76 @@ class AsyncWebhookServer:
             logger.error(f"Error getting trades: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
+    async def handle_export_trades_csv(self, request: web.Request) -> web.Response:
+        """Export trades to CSV."""
+        try:
+            account_id = request.rel_url.query.get('account_id') or self._get_selected_account_id()
+            start_date = request.rel_url.query.get('start')
+            end_date = request.rel_url.query.get('end')
+            
+            csv_content = await self.dashboard_api.export_trades_to_csv(
+                account_id=account_id,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if not csv_content:
+                return web.json_response({"error": "No trades to export"}, status=404)
+            
+            # Generate filename
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"trades_export_{timestamp}.csv"
+            
+            # Return CSV as download
+            response = web.Response(
+                body=csv_content.encode('utf-8'),
+                headers={
+                    'Content-Type': 'text/csv',
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                }
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error exporting trades CSV: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_export_performance_csv(self, request: web.Request) -> web.Response:
+        """Export performance history to CSV."""
+        try:
+            account_id = request.rel_url.query.get('account_id') or self._get_selected_account_id()
+            interval = request.rel_url.query.get('interval', 'day')
+            start_date = request.rel_url.query.get('start')
+            end_date = request.rel_url.query.get('end')
+            
+            csv_content = await self.dashboard_api.export_performance_to_csv(
+                account_id=account_id,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if not csv_content:
+                return web.json_response({"error": "No performance data to export"}, status=404)
+            
+            # Generate filename
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"performance_{interval}_{timestamp}.csv"
+            
+            # Return CSV as download
+            response = web.Response(
+                body=csv_content.encode('utf-8'),
+                headers={
+                    'Content-Type': 'text/csv',
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                }
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error exporting performance CSV: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
     async def handle_get_performance(self, request: web.Request) -> web.Response:
         """Get performance statistics."""
         try:
