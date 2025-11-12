@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
-import { positionApi, orderApi } from '../services/api'
+import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import AccountSelector from '../components/AccountSelector'
 import OrderTicket from '../components/OrderTicket'
-import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info } from 'lucide-react'
+import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info, Zap, Target, Play } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
 
@@ -144,6 +144,89 @@ export default function PositionsPage() {
     }
   )
 
+  // Trailing stop mutations
+  const enableTrailingStopMutation = useMutation(
+    ({ positionId, trailAmount }: { positionId: string; trailAmount: number }) =>
+      positionApi.enableTrailingStop(positionId, trailAmount),
+    {
+      onSuccess: (_, variables) => {
+        queryClient.invalidateQueries(['positions', accountId])
+        queryClient.invalidateQueries(['orders', accountId])
+        setTrailingStopInputs((prev) => ({ ...prev, [variables.positionId]: '' }))
+        setTrailingStopEnabled((prev) => ({ ...prev, [variables.positionId]: true }))
+        pushFeedback('success', 'Trailing stop enabled')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to enable trailing stop'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
+  const disableTrailingStopMutation = useMutation(
+    (positionId: string) => positionApi.disableTrailingStop(positionId),
+    {
+      onSuccess: (_, positionId) => {
+        queryClient.invalidateQueries(['positions', accountId])
+        queryClient.invalidateQueries(['orders', accountId])
+        setTrailingStopEnabled((prev) => ({ ...prev, [positionId]: false }))
+        pushFeedback('success', 'Trailing stop disabled')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to disable trailing stop'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
+  // Breakeven mutations
+  const enableBreakevenMutation = useMutation(
+    (positionId: string) => positionApi.enableBreakeven(positionId),
+    {
+      onSuccess: (_, positionId) => {
+        queryClient.invalidateQueries(['positions', accountId])
+        setBreakevenEnabled((prev) => ({ ...prev, [positionId]: true }))
+        pushFeedback('success', 'Breakeven enabled - stop moved to entry price')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to enable breakeven'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
+  const disableBreakevenMutation = useMutation(
+    (positionId: string) => positionApi.disableBreakeven(positionId),
+    {
+      onSuccess: (_, positionId) => {
+        queryClient.invalidateQueries(['positions', accountId])
+        setBreakevenEnabled((prev) => ({ ...prev, [positionId]: false }))
+        pushFeedback('success', 'Breakeven disabled')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to disable breakeven'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
+  // Test overnight breakout mutation
+  const testBreakoutMutation = useMutation(
+    ({ symbol, quantity, accountName }: { symbol?: string; quantity?: number; accountName?: string }) =>
+      automationApi.testOvernightBreakout(symbol, quantity, accountName),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['positions', accountId])
+        queryClient.invalidateQueries(['orders', accountId])
+        pushFeedback('success', 'Overnight breakout test executed')
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.error || error?.message || 'Failed to execute test'
+        pushFeedback('error', message)
+      },
+    }
+  )
+
   const handleClosePosition = (positionId?: string, quantity?: number) => {
     if (!positionId) {
       pushFeedback('error', 'Unable to close position: missing identifier')
@@ -242,6 +325,38 @@ export default function PositionsPage() {
     setExpandedPosition((prev) => (prev === positionId ? null : positionId))
   }
 
+  const handleTrailingStop = (position: Position) => {
+    if (!position.id) {
+      pushFeedback('error', 'Position ID missing')
+      return
+    }
+    const isEnabled = trailingStopEnabled[position.id]
+    if (isEnabled) {
+      disableTrailingStopMutation.mutate(position.id)
+    } else {
+      const rawValue = trailingStopInputs[position.id] || ''
+      const trailAmount = parseFloat(rawValue)
+      if (!Number.isFinite(trailAmount) || trailAmount <= 0) {
+        pushFeedback('error', 'Enter a valid trail amount (e.g., 25.00)')
+        return
+      }
+      enableTrailingStopMutation.mutate({ positionId: position.id, trailAmount })
+    }
+  }
+
+  const handleBreakevenToggle = (position: Position) => {
+    if (!position.id) {
+      pushFeedback('error', 'Position ID missing')
+      return
+    }
+    const isEnabled = breakevenEnabled[position.id]
+    if (isEnabled) {
+      disableBreakevenMutation.mutate(position.id)
+    } else {
+      enableBreakevenMutation.mutate(position.id)
+    }
+  }
+
   const isLoading = positionsLoading || ordersLoading
 
   return (
@@ -277,6 +392,29 @@ export default function PositionsPage() {
       {/* Order Ticket */}
       <OrderTicket />
 
+      {/* Automation Tools */}
+      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+          <Zap className="w-5 h-5" />
+          Automation Tools
+        </h2>
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => testBreakoutMutation.mutate({ symbol: 'MNQ', quantity: 1, accountName: 'PRAC' })}
+              className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2"
+              disabled={testBreakoutMutation.isLoading || !accountId}
+            >
+              <Play className="w-4 h-4" />
+              {testBreakoutMutation.isLoading ? 'Testing...' : 'Test Overnight Breakout'}
+            </button>
+            <p className="text-sm text-slate-400">
+              Simulates overnight breakout trades on practice account (MNQ, 1 contract)
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Open Positions */}
       <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
         <h2 className="text-xl font-semibold mb-4">Open Positions ({positions.length})</h2>
@@ -304,6 +442,9 @@ export default function PositionsPage() {
               const partialValue = stateKey ? partialCloseQty[stateKey] ?? '' : ''
               const stopValue = stateKey ? stopInputs[stateKey] ?? '' : ''
               const takeValue = stateKey ? takeProfitInputs[stateKey] ?? '' : ''
+              const trailingValue = stateKey ? trailingStopInputs[stateKey] ?? '' : ''
+              const isTrailingEnabled = stateKey ? trailingStopEnabled[stateKey] ?? false : false
+              const isBreakevenEnabled = stateKey ? breakevenEnabled[stateKey] ?? false : false
               const openedLabel = position.timestamp ? new Date(position.timestamp).toLocaleString() : '—'
               const unrealizedPct =
                 typeof position.unrealized_pnl_pct === 'number' && isFinite(position.unrealized_pnl_pct)
@@ -479,6 +620,46 @@ export default function PositionsPage() {
                         Partial Close
                       </button>
                     </div>
+                    {/* Automation Tools */}
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={trailingValue}
+                        onChange={(e) => {
+                          if (position.id) {
+                            setTrailingStopInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                          }
+                        }}
+                        placeholder="Trail $"
+                        className="w-24 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                        disabled={!canControl || isTrailingEnabled}
+                      />
+                      <button
+                        onClick={() => handleTrailingStop(position)}
+                        className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
+                          isTrailingEnabled
+                            ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
+                            : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'
+                        }`}
+                        disabled={!canControl || enableTrailingStopMutation.isLoading || disableTrailingStopMutation.isLoading}
+                      >
+                        <Zap className="w-3 h-3" />
+                        {isTrailingEnabled ? 'Disable Trail' : 'Enable Trail'}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => handleBreakevenToggle(position)}
+                      className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
+                        isBreakevenEnabled
+                          ? 'bg-green-500/20 text-green-300 hover:bg-green-500/30'
+                          : 'bg-slate-600/40 text-slate-200 hover:bg-slate-600/60'
+                      }`}
+                      disabled={!canControl || enableBreakevenMutation.isLoading || disableBreakevenMutation.isLoading}
+                    >
+                      <Target className="w-3 h-3" />
+                      {isBreakevenEnabled ? 'Breakeven ON' : 'Set Breakeven'}
+                    </button>
                     <button
                       onClick={() => toggleExpandedPosition(position.id)}
                       className="px-3 py-1 text-xs bg-slate-600/40 text-slate-200 rounded hover:bg-slate-600/60 transition-colors flex items-center gap-1"

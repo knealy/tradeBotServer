@@ -179,6 +179,8 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/positions', self.handle_get_positions)
         self.app.router.add_post('/api/positions/{position_id}/close', self.handle_close_position)
         self.app.router.add_post('/api/positions/flatten', self.handle_flatten_positions)
+        self.app.router.add_post('/api/positions/{position_id}/trailing-stop', self.handle_trailing_stop)
+        self.app.router.add_post('/api/positions/{position_id}/breakeven', self.handle_breakeven_toggle)
         
         self.app.router.add_get('/api/orders', self.handle_get_orders)
         self.app.router.add_post('/api/orders/{order_id}/cancel', self.handle_cancel_order)
@@ -697,6 +699,160 @@ class AsyncWebhookServer:
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error modifying position take profit: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_trailing_stop(self, request: web.Request) -> web.Response:
+        """Enable or disable trailing stop for a position."""
+        try:
+            position_id = request.match_info.get('position_id')
+            if not position_id:
+                return web.json_response({"error": "position_id required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            enabled = data.get('enabled', True)
+            trail_amount = data.get('trail_amount')  # Optional: trail amount in price units
+            
+            if enabled and trail_amount is None:
+                return web.json_response({"error": "trail_amount required when enabling trailing stop"}, status=400)
+            
+            # Get position details
+            positions = await self.dashboard_api.get_positions()
+            position = next((p for p in positions if str(p.get('id')) == str(position_id)), None)
+            
+            if not position:
+                return web.json_response({"error": "Position not found"}, status=404)
+            
+            symbol = position.get('symbol')
+            side = position.get('side')
+            quantity = position.get('quantity')
+            
+            if not all([symbol, side, quantity]):
+                return web.json_response({"error": "Position missing required fields"}, status=400)
+            
+            if enabled:
+                # Place trailing stop order
+                logger.info(f"Enabling trailing stop for position {position_id}: {symbol} {side} x{quantity}, trail=${trail_amount}")
+                result = await self.trading_bot.place_trailing_stop_order(
+                    symbol=symbol,
+                    side='BUY' if side == 'LONG' else 'SELL',
+                    quantity=int(quantity),
+                    trail_amount=float(trail_amount)
+                )
+                
+                if "error" in result:
+                    return web.json_response(result, status=400)
+                
+                # Record notification
+                account_id = self._get_selected_account_id()
+                if account_id:
+                    self._record_notification(
+                        account_id,
+                        'automation',
+                        f"Trailing stop enabled: {symbol} {side} x{quantity} (trail: ${trail_amount})",
+                        level='info',
+                        meta={"position_id": position_id, "symbol": symbol, "trail_amount": trail_amount}
+                    )
+            else:
+                # Disable trailing stop (cancel trailing stop orders)
+                logger.info(f"Disabling trailing stop for position {position_id}")
+                # Find and cancel trailing stop orders for this position
+                orders = await self.dashboard_api.get_orders()
+                trailing_orders = [o for o in orders if 
+                                  o.get('symbol') == symbol and 
+                                  o.get('type') == 'TRAILING_STOP' and
+                                  str(o.get('position_id', '')) == str(position_id)]
+                
+                cancelled_count = 0
+                for order in trailing_orders:
+                    cancel_result = await self.dashboard_api.cancel_order(str(order.get('id')))
+                    if "error" not in cancel_result:
+                        cancelled_count += 1
+                
+                result = {
+                    "success": True,
+                    "message": f"Trailing stop disabled, cancelled {cancelled_count} trailing stop orders",
+                    "cancelled_orders": cancelled_count
+                }
+            
+            # Broadcast updates
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": await self.dashboard_api.get_positions(),
+                "timestamp": time.time()
+            })
+            await self.broadcast_to_websockets({
+                "type": "order_update",
+                "data": await self.dashboard_api.get_orders(),
+                "timestamp": time.time()
+            })
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error managing trailing stop: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_breakeven_toggle(self, request: web.Request) -> web.Response:
+        """Enable or disable breakeven monitoring for a position."""
+        try:
+            position_id = request.match_info.get('position_id')
+            if not position_id:
+                return web.json_response({"error": "position_id required"}, status=400)
+            
+            data = await request.json() if request.content_length else {}
+            enabled = data.get('enabled', True)
+            
+            # Get position details
+            positions = await self.dashboard_api.get_positions()
+            position = next((p for p in positions if str(p.get('id')) == str(position_id)), None)
+            
+            if not position:
+                return web.json_response({"error": "Position not found"}, status=404)
+            
+            symbol = position.get('symbol')
+            entry_price = position.get('entry_price')
+            
+            if not entry_price:
+                return web.json_response({"error": "Position missing entry price"}, status=400)
+            
+            # Move stop to breakeven if enabling
+            if enabled:
+                logger.info(f"Enabling breakeven for position {position_id}: {symbol} @ ${entry_price}")
+                result = await self.trading_bot.modify_stop_loss(
+                    position_id=position_id,
+                    new_stop_price=float(entry_price)
+                )
+                
+                if "error" in result:
+                    return web.json_response(result, status=400)
+                
+                # Record notification
+                account_id = self._get_selected_account_id()
+                if account_id:
+                    self._record_notification(
+                        account_id,
+                        'automation',
+                        f"Breakeven enabled: {symbol} stop moved to entry ${entry_price}",
+                        level='success',
+                        meta={"position_id": position_id, "symbol": symbol, "entry_price": entry_price}
+                    )
+            else:
+                result = {
+                    "success": True,
+                    "message": "Breakeven monitoring disabled (stop remains at current level)"
+                }
+            
+            # Broadcast updates
+            await self.broadcast_to_websockets({
+                "type": "position_update",
+                "data": await self.dashboard_api.get_positions(),
+                "timestamp": time.time()
+            })
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Error toggling breakeven: {e}")
             logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
     

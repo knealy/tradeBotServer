@@ -121,6 +121,35 @@ export const positionApi = {
   flattenAll: async (): Promise<void> => {
     await api.post('/api/positions/flatten')
   },
+
+  enableTrailingStop: async (positionId: string, trailAmount: number): Promise<any> => {
+    const response = await api.post(`/api/positions/${positionId}/trailing-stop`, {
+      enabled: true,
+      trail_amount: trailAmount
+    })
+    return response.data
+  },
+
+  disableTrailingStop: async (positionId: string): Promise<any> => {
+    const response = await api.post(`/api/positions/${positionId}/trailing-stop`, {
+      enabled: false
+    })
+    return response.data
+  },
+
+  enableBreakeven: async (positionId: string): Promise<any> => {
+    const response = await api.post(`/api/positions/${positionId}/breakeven`, {
+      enabled: true
+    })
+    return response.data
+  },
+
+  disableBreakeven: async (positionId: string): Promise<any> => {
+    const response = await api.post(`/api/positions/${positionId}/breakeven`, {
+      enabled: false
+    })
+    return response.data
+  },
 }
 
 // Order API
@@ -287,6 +316,18 @@ export const notificationsApi = {
   getNotifications: async (accountId?: string): Promise<NotificationsResponse> => {
     const params = accountId ? `?account_id=${accountId}` : ''
     const response = await api.get(`/api/notifications${params}`)
+    return response.data
+  },
+}
+
+// Automation API
+export const automationApi = {
+  testOvernightBreakout: async (symbol?: string, quantity?: number, accountName?: string): Promise<any> => {
+    const response = await api.post('/api/test/overnight-breakout', {
+      symbol: symbol || 'MNQ',
+      quantity: quantity || 1,
+      account_name: accountName || 'PRAC'
+    })
     return response.data
   },
 }
