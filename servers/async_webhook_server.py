@@ -1073,17 +1073,6 @@ class AsyncWebhookServer:
     async def handle_get_settings(self, request: web.Request) -> web.Response:
         """Fetch dashboard/settings preferences."""
         try:
-            db = self._ensure_database()
-            if not db:
-                scope_key = account_scope or "__global__"
-                cached = self._settings_cache.get(scope_key, {})
-                logger.warning("⚠️  Database unavailable when requesting settings - serving from cache")
-                return web.json_response({
-                    "settings": cached,
-                    "scope": scope_key,
-                    "warning": "database unavailable (serving cached settings)"
-                })
-            
             account_scope = request.rel_url.query.get('account_id')
             if account_scope == 'current':
                 selected = getattr(self.trading_bot, 'selected_account', None)
@@ -1091,6 +1080,16 @@ class AsyncWebhookServer:
                     account_scope = str(selected.get('id') or selected.get('account_id') or selected.get('accountId'))
                 else:
                     account_scope = None
+            scope_key = account_scope or "__global__"
+            db = self._ensure_database()
+            if not db:
+                cached = self._settings_cache.get(scope_key, {})
+                logger.warning("⚠️  Database unavailable when requesting settings - serving from cache")
+                return web.json_response({
+                    "settings": cached,
+                    "scope": scope_key,
+                    "warning": "database unavailable (serving cached settings)"
+                })
             
             settings = db.get_dashboard_settings(account_scope)
             scope_label = account_scope or "global"
@@ -1108,18 +1107,6 @@ class AsyncWebhookServer:
     async def handle_save_settings(self, request: web.Request) -> web.Response:
         """Persist dashboard/settings preferences."""
         try:
-            db = self._ensure_database()
-            if not db:
-                scope_key = account_scope or "__global__"
-                self._settings_cache[scope_key] = settings_to_store
-                scope_label = account_scope or "global"
-                logger.warning("⚠️  Database unavailable - settings stored in memory cache")
-                return web.json_response({
-                    "success": True,
-                    "scope": scope_label,
-                    "warning": "database unavailable - settings stored in memory"
-                })
-            
             payload = await request.json()
             if not isinstance(payload, dict):
                 return web.json_response({"error": "payload must be a JSON object"}, status=400)
@@ -1134,9 +1121,20 @@ class AsyncWebhookServer:
                 k: v for k, v in payload.items()
                 if k not in ('account_id', 'scope') and not k.startswith('_')
             }
+            scope_label = account_scope or "global"
+            scope_key = account_scope or "__global__"
+            
+            db = self._ensure_database()
+            if not db:
+                self._settings_cache[scope_key] = settings_to_store
+                logger.warning("⚠️  Database unavailable - settings stored in memory cache")
+                return web.json_response({
+                    "success": True,
+                    "scope": scope_label,
+                    "warning": "database unavailable - settings stored in memory"
+                })
             
             if not db.save_dashboard_settings(settings_to_store, account_scope):
-                scope_key = account_scope or "__global__"
                 self._settings_cache[scope_key] = settings_to_store
                 logger.error("❌ Failed to persist settings to database - stored in memory instead")
                 return web.json_response({
@@ -1145,7 +1143,6 @@ class AsyncWebhookServer:
                     "warning": "failed to persist to database - settings stored in memory"
                 })
             
-            scope_label = account_scope or "global"
             logger.info(f"💾 Saved dashboard settings ({scope_label})")
             cache_key = account_scope or "__global__"
             self._settings_cache[cache_key] = settings_to_store
