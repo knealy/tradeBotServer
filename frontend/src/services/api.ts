@@ -8,6 +8,8 @@ import type {
   TradesResponse,
   PerformanceHistoryResponse,
   HistoricalDataResponse,
+  DashboardSettings,
+  DashboardSettingsResponse,
 } from '../types'
 
 // Auto-detect API base URL at runtime
@@ -242,6 +244,21 @@ export const analyticsApi = {
     if (options.end) params.append('end', options.end)
 
     const response = await api.get(`/api/history?${params.toString()}`)
+    return response.data
+  },
+}
+
+// Settings API
+export const settingsApi = {
+  getSettings: async (scope: 'global' | 'current' | string = 'global'): Promise<DashboardSettingsResponse> => {
+    const params = scope && scope !== 'global' ? `?account_id=${scope}` : ''
+    const response = await api.get(`/api/settings${params}`)
+    return response.data
+  },
+
+  saveSettings: async (settings: DashboardSettings & { account_id?: string | null; scope?: string }): Promise<{ success: boolean; scope: string }> => {
+    const payload = { ...settings }
+    const response = await api.post('/api/settings', payload)
     return response.data
   },
 }

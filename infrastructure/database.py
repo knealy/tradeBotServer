@@ -149,7 +149,7 @@ class DatabaseManager:
         except Exception as e:
             if conn:
                 try:
-                    conn.rollback()
+                conn.rollback()
                 except:
                     pass  # Rollback might fail if connection is already closed
             logger.error(f"Database error: {e}")
@@ -157,7 +157,7 @@ class DatabaseManager:
         finally:
             if conn:
                 try:
-                    self.pool.putconn(conn)
+                self.pool.putconn(conn)
                 except:
                     # Connection might be already closed, that's ok
                     pass
@@ -303,6 +303,30 @@ class DatabaseManager:
         
         CREATE INDEX IF NOT EXISTS idx_cache_type 
             ON cache_metadata(cache_type, last_updated DESC);
+
+        -- Strategy state persistence
+        CREATE TABLE IF NOT EXISTS strategy_states (
+            account_id VARCHAR(50) NOT NULL,
+            strategy_name VARCHAR(50) NOT NULL,
+            enabled BOOLEAN DEFAULT FALSE,
+            symbols TEXT[] DEFAULT ARRAY[]::TEXT[],
+            settings JSONB,
+            metadata JSONB,
+            last_started TIMESTAMPTZ,
+            last_stopped TIMESTAMPTZ,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (account_id, strategy_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_states_account
+            ON strategy_states(account_id);
+
+        -- Dashboard/UI settings persistence
+        CREATE TABLE IF NOT EXISTS dashboard_settings (
+            account_id VARCHAR(50) PRIMARY KEY,
+            settings JSONB NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
         """
         
         try:
@@ -625,6 +649,154 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"❌ Failed to retrieve account state: {e}")
             return None
+    
+    # ==================== Strategy State Methods ====================
+    
+    def save_strategy_state(
+        self,
+        account_id: str,
+        strategy_name: str,
+        enabled: bool,
+        symbols: Optional[List[str]] = None,
+        settings: Optional[Dict] = None,
+        metadata: Optional[Dict] = None,
+        last_started: Optional[datetime] = None,
+        last_stopped: Optional[datetime] = None,
+    ) -> bool:
+        """Persist strategy toggle/configuration state for an account."""
+        if not account_id:
+            logger.warning("⚠️  Cannot save strategy state without account_id")
+            return False
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    upsert_sql = """
+                        INSERT INTO strategy_states
+                        (account_id, strategy_name, enabled, symbols, settings, metadata, last_started, last_stopped, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (account_id, strategy_name)
+                        DO UPDATE SET
+                            enabled = EXCLUDED.enabled,
+                            symbols = EXCLUDED.symbols,
+                            settings = EXCLUDED.settings,
+                            metadata = EXCLUDED.metadata,
+                            last_started = COALESCE(EXCLUDED.last_started, strategy_states.last_started),
+                            last_stopped = COALESCE(EXCLUDED.last_stopped, strategy_states.last_stopped),
+                            updated_at = NOW()
+                    """
+                    
+                    cur.execute(
+                        upsert_sql,
+                        (
+                            account_id,
+                            strategy_name,
+                            enabled,
+                            symbols if symbols is not None else None,
+                            json.dumps(settings) if settings else None,
+                            json.dumps(metadata) if metadata else None,
+                            last_started,
+                            last_stopped,
+                        ),
+                    )
+                    
+                    logger.debug(f"💾 Saved strategy state for {strategy_name} ({account_id}) -> enabled={enabled}")
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to save strategy state ({strategy_name}): {e}")
+            return False
+    
+    def get_strategy_states(self, account_id: str) -> Dict[str, Dict]:
+        """Retrieve strategy state map keyed by strategy name."""
+        states: Dict[str, Dict] = {}
+        
+        if not account_id:
+            return states
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT strategy_name, enabled, symbols, settings, metadata,
+                               last_started, last_stopped, created_at, updated_at
+                        FROM strategy_states
+                        WHERE account_id = %s
+                        """,
+                        (account_id,),
+                    )
+                    
+                    for row in cur.fetchall():
+                        name = row['strategy_name']
+                        states[name] = {
+                            "enabled": row['enabled'],
+                            "symbols": list(row['symbols']) if row.get('symbols') else [],
+                            "settings": row['settings'] or {},
+                            "metadata": row['metadata'] or {},
+                            "last_started": row['last_started'].isoformat() if row.get('last_started') else None,
+                            "last_stopped": row['last_stopped'].isoformat() if row.get('last_stopped') else None,
+                            "created_at": row['created_at'].isoformat() if row.get('created_at') else None,
+                            "updated_at": row['updated_at'].isoformat() if row.get('updated_at') else None,
+                        }
+            return states
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch strategy states for account {account_id}: {e}")
+            return states
+    
+    def get_strategy_state(self, account_id: str, strategy_name: str) -> Optional[Dict]:
+        """Retrieve a single strategy state."""
+        states = self.get_strategy_states(account_id)
+        return states.get(strategy_name)
+    
+    # ==================== Dashboard Settings Methods ====================
+    
+    def save_dashboard_settings(self, settings: Dict, account_id: Optional[str] = None) -> bool:
+        """Persist dashboard/settings preferences."""
+        key = account_id or "__global__"
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    upsert_sql = """
+                        INSERT INTO dashboard_settings (account_id, settings, updated_at)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (account_id)
+                        DO UPDATE SET
+                            settings = EXCLUDED.settings,
+                            updated_at = NOW()
+                    """
+                    cur.execute(upsert_sql, (key, json.dumps(settings)))
+                    logger.debug(f"💾 Saved dashboard settings for {key}")
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to save dashboard settings ({key}): {e}")
+            return False
+    
+    def get_dashboard_settings(self, account_id: Optional[str] = None) -> Dict:
+        """Retrieve dashboard/settings preferences."""
+        key = account_id or "__global__"
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT settings, updated_at
+                        FROM dashboard_settings
+                        WHERE account_id = %s
+                        """,
+                        (key,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        result = row['settings'] or {}
+                        if row.get('updated_at'):
+                            result['_updated_at'] = row['updated_at'].isoformat()
+                        return result
+        except Exception as e:
+            logger.error(f"❌ Failed to load dashboard settings ({key}): {e}")
+        
+        return {}
     
     # ==================== Strategy Performance Methods ====================
     

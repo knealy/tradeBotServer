@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react'
+import { useMutation, useQuery, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
 import AccountSelector from '../components/AccountSelector'
+import { settingsApi } from '../services/api'
+import type { Account } from '../types'
 
 export default function SettingsPage() {
   const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+  const queryClient = useQueryClient()
   const [defaultAccount, setDefaultAccount] = useState<string>('auto')
   const [riskManagementEnabled, setRiskManagementEnabled] = useState(true)
   const [discordNotificationsEnabled, setDiscordNotificationsEnabled] = useState(true)
@@ -11,34 +15,56 @@ export default function SettingsPage() {
   const [apiUrl, setApiUrl] = useState('http://localhost:8080')
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
 
-  // Load settings from localStorage on mount
-  useEffect(() => {
-    const savedSettings = localStorage.getItem('tradingBotSettings')
-    if (savedSettings) {
-      try {
-        const settings = JSON.parse(savedSettings)
-        setDefaultAccount(settings.defaultAccount || 'auto')
-        setRiskManagementEnabled(settings.riskManagementEnabled ?? true)
-        setDiscordNotificationsEnabled(settings.discordNotificationsEnabled ?? true)
-        setWsUrl(settings.wsUrl || 'ws://localhost:8081')
-        setApiUrl(settings.apiUrl || 'http://localhost:8080')
-      } catch (e) {
-        console.error('Failed to load settings:', e)
-      }
+  const { data: settingsResponse, isLoading: settingsLoading } = useQuery(
+    ['settings', 'global'],
+    () => settingsApi.getSettings('global'),
+    {
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
     }
-  }, [])
+  )
+
+  useEffect(() => {
+    if (settingsResponse?.settings) {
+      const settings = settingsResponse.settings
+      setDefaultAccount(settings.defaultAccount ?? 'auto')
+      setRiskManagementEnabled(settings.riskManagementEnabled ?? true)
+      setDiscordNotificationsEnabled(settings.discordNotificationsEnabled ?? true)
+      setWsUrl(settings.wsUrl || 'ws://localhost:8081')
+      setApiUrl(settings.apiUrl || 'http://localhost:8080')
+    }
+  }, [settingsResponse])
+
+  const saveMutation = useMutation(
+    (payload: {
+      defaultAccount: string
+      riskManagementEnabled: boolean
+      discordNotificationsEnabled: boolean
+      wsUrl: string
+      apiUrl: string
+    }) => settingsApi.saveSettings(payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['settings', 'global'])
+        setSaveStatus('✅ Settings saved successfully!')
+        setTimeout(() => setSaveStatus(null), 3000)
+      },
+      onError: (error: any) => {
+        console.error('Failed to save settings:', error)
+        setSaveStatus('❌ Failed to save settings')
+        setTimeout(() => setSaveStatus(null), 4000)
+      },
+    }
+  )
 
   const saveSettings = () => {
-    const settings = {
-      defaultAccount,
+    saveMutation.mutate({
+      defaultAccount: defaultAccount === 'auto' ? null : defaultAccount,
       riskManagementEnabled,
       discordNotificationsEnabled,
       wsUrl,
       apiUrl,
-    }
-    localStorage.setItem('tradingBotSettings', JSON.stringify(settings))
-    setSaveStatus('✅ Settings saved successfully!')
-    setTimeout(() => setSaveStatus(null), 3000)
+    })
   }
 
   const toggleRiskManagement = () => {
@@ -47,6 +73,21 @@ export default function SettingsPage() {
 
   const toggleDiscordNotifications = () => {
     setDiscordNotificationsEnabled(!discordNotificationsEnabled)
+  }
+
+  const handleAccountChange = (account: Account | null) => {
+    setSelectedAccount(account)
+    if (account) {
+      setDefaultAccount(String(account.id))
+    }
+  }
+
+  if (settingsLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-slate-400">Loading settings...</div>
+      </div>
+    )
   }
 
   return (
@@ -68,7 +109,7 @@ export default function SettingsPage() {
         <AccountSelector
           accounts={accounts}
           selectedAccount={selectedAccount}
-          onAccountChange={setSelectedAccount}
+          onAccountChange={handleAccountChange}
         />
       </div>
 
@@ -180,9 +221,10 @@ export default function SettingsPage() {
         <div className="flex justify-end">
           <button
             onClick={saveSettings}
-            className="bg-primary-600 hover:bg-primary-500 text-white px-6 py-3 rounded-lg font-semibold transition-colors"
+            className="bg-primary-600 hover:bg-primary-500 text-white px-6 py-3 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={saveMutation.isLoading}
           >
-            Save All Settings
+            {saveMutation.isLoading ? 'Saving...' : 'Save All Settings'}
           </button>
         </div>
       </div>

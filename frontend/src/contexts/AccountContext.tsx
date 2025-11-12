@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import { useQuery } from 'react-query'
-import { accountApi } from '../services/api'
+import { accountApi, settingsApi } from '../services/api'
 import { Account } from '../types'
 
 interface AccountContextType {
@@ -25,12 +25,30 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     }
   )
 
+  const { data: settingsResponse } = useQuery(
+    ['settings', 'global'],
+    () => settingsApi.getSettings('global'),
+    {
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    }
+  )
+
   // Auto-select first account on mount
   useEffect(() => {
     if (accounts.length > 0 && !selectedAccount) {
-      setSelectedAccount(accounts[0])
+      const preferredId = settingsResponse?.settings?.defaultAccount
+      const preferred = preferredId
+        ? accounts.find(
+            (account) =>
+              String(account.id) === String(preferredId) ||
+              String(account.account_id) === String(preferredId) ||
+              String(account.accountId) === String(preferredId)
+          )
+        : null
+      setSelectedAccount(preferred || accounts[0])
     }
-  }, [accounts, selectedAccount])
+  }, [accounts, selectedAccount, settingsResponse])
 
   return (
     <AccountContext.Provider

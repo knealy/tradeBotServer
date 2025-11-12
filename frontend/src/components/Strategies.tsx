@@ -96,9 +96,9 @@ export default function Strategies() {
     const symbols = strategy?.symbols ?? []
 
     const normalizedStatus = (currentStatus || '').toLowerCase()
-    const isActive = ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+    const isEnabled = strategy?.enabled ?? ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
 
-    if (isActive) {
+    if (isEnabled) {
       stopMutation.mutate({ name: strategyName })
     } else {
       startMutation.mutate({ name: strategyName, symbols })
@@ -156,14 +156,14 @@ export default function Strategies() {
                     <h3 className="text-lg font-semibold">{strategy.name}</h3>
                     {(() => {
                       const normalizedStatus = (strategy.status || '').toLowerCase()
-                      const isActive = ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
-                      const isStopped = ['stopped', 'idle', 'disabled'].includes(normalizedStatus)
-                      const badgeClasses = isActive
+                      const isRunning = strategy.is_running ?? ['running', 'active', 'started'].includes(normalizedStatus)
+                      const isEnabled = strategy.enabled ?? ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+                      const badgeClasses = isRunning
                         ? 'bg-green-500/20 text-green-400'
-                        : isStopped
-                        ? 'bg-slate-600/50 text-slate-400'
-                        : 'bg-yellow-500/20 text-yellow-300'
-                      const label = isActive ? 'active' : normalizedStatus || 'unknown'
+                        : isEnabled
+                        ? 'bg-blue-500/20 text-blue-400'
+                        : 'bg-slate-600/50 text-slate-400'
+                      const label = isRunning ? 'running' : isEnabled ? 'enabled' : normalizedStatus || 'disabled'
                       return (
                         <span className={`px-2 py-1 rounded text-xs font-semibold ${badgeClasses}`}>
                           {label}
@@ -223,13 +223,13 @@ export default function Strategies() {
                 <div className="flex flex-col gap-2">
                   {(() => {
                     const normalizedStatus = (strategy.status || '').toLowerCase()
-                    const isActive = ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+                    const isEnabled = strategy.enabled ?? ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
                     const buttonLabel = startMutation.isLoading || stopMutation.isLoading
                       ? 'Loading...'
-                      : isActive
+                      : isEnabled
                       ? 'Disable'
                       : 'Enable'
-                    const buttonClasses = isActive
+                    const buttonClasses = isEnabled
                       ? 'bg-red-600 hover:bg-red-500 text-white'
                       : 'bg-green-600 hover:bg-green-500 text-white'
 

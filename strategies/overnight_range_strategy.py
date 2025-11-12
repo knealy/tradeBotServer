@@ -1061,12 +1061,13 @@ class OvernightRangeStrategy(BaseStrategy):
                 
                 if now >= market_open_today:
                     if not ran_today:
-                        within_trading_window = now <= (trading_end_today + timedelta(minutes=30))
-                        if within_trading_window:
-                            logger.info("🔔 Market open window already passed today—running catch-up execution now.")
+                        grace_minutes = float(os.getenv('MARKET_OPEN_GRACE_MINUTES', '5'))
+                        grace_deadline = market_open_today + timedelta(minutes=grace_minutes)
+                        if now <= grace_deadline:
+                            logger.info("🔔 Market open reached—executing scheduled sequence.")
                             await self._execute_market_open_sequence()
                         else:
-                            logger.info("⏭️  Market open already passed and we are outside the trading window. Skipping until next session.")
+                            logger.info("⏭️  Market open already passed; skipping catch-up and waiting for next session.")
                         self._last_market_open_run = market_open_today.date()
                     
                     next_open = market_open_today + timedelta(days=1)

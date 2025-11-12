@@ -40,8 +40,10 @@ export interface Order {
 // Strategy Types
 export interface Strategy {
   name: string
-  status: 'ACTIVE' | 'INACTIVE' | 'PAUSED' | 'running' | 'stopped'
+  status: 'ACTIVE' | 'INACTIVE' | 'PAUSED' | 'running' | 'stopped' | string
   symbols: string[]
+  enabled?: boolean
+  is_running?: boolean
   config?: Record<string, any>
   description?: string
   stats?: {
@@ -178,5 +180,20 @@ export interface HistoricalDataResponse {
   timeframe: string
   count: number
   bars: HistoricalBar[]
+}
+
+export interface DashboardSettings {
+  defaultAccount?: string | null
+  riskManagementEnabled?: boolean
+  discordNotificationsEnabled?: boolean
+  wsUrl?: string
+  apiUrl?: string
+  [key: string]: any
+}
+
+export interface DashboardSettingsResponse {
+  settings: DashboardSettings
+  scope: string
+  warning?: string
 }
 

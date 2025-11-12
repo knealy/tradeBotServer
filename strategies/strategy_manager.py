@@ -8,8 +8,8 @@ market conditions, and coordinates their execution.
 import os
 import logging
 import asyncio
-from typing import Dict, List, Optional, Type
-from datetime import datetime
+from typing import Dict, List, Optional, Type, Any
+from datetime import datetime, timezone
 from strategies.strategy_base import BaseStrategy, StrategyConfig, StrategyStatus, MarketCondition
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class StrategyManager:
         # State
         self._tasks: List[asyncio.Task] = []
         self._running = False
+        self._state_cache: Dict[str, Dict] = {}
         
         logger.info("✨ Strategy Manager initialized")
     
@@ -90,6 +91,122 @@ class StrategyManager:
     def load_strategies_from_config(self):
         """Alias for load_strategies() for backward compatibility."""
         return self.load_strategies()
+
+    def _get_account_id(self) -> Optional[str]:
+        """Resolve the currently selected account id from the trading bot."""
+        account = getattr(self.trading_bot, 'selected_account', None)
+        if not account:
+            return None
+        return str(
+            account.get('id')
+            or account.get('account_id')
+            or account.get('accountId')
+        )
+    
+    def _serialize_config(self, config: StrategyConfig) -> Dict[str, Any]:
+        """Serialize strategy config for persistence."""
+        return {
+            "max_positions": config.max_positions,
+            "position_size": config.position_size,
+            "risk_per_trade_percent": config.risk_per_trade_percent,
+            "max_daily_trades": config.max_daily_trades,
+            "preferred_conditions": [c.value for c in config.preferred_conditions],
+            "avoid_conditions": [c.value for c in config.avoid_conditions],
+            "trading_start_time": config.trading_start_time,
+            "trading_end_time": config.trading_end_time,
+            "no_trade_start": config.no_trade_start,
+            "no_trade_end": config.no_trade_end,
+            "respect_dll": config.respect_dll,
+            "respect_mll": config.respect_mll,
+            "max_dll_usage_percent": config.max_dll_usage_percent,
+        }
+    
+    def _apply_config_settings(self, strategy: BaseStrategy, settings: Dict[str, Any]) -> None:
+        """Apply persisted settings onto a strategy config."""
+        if not settings:
+            return
+        
+        config = strategy.config
+        if 'max_positions' in settings:
+            config.max_positions = int(settings['max_positions'])
+        if 'position_size' in settings:
+            config.position_size = int(settings['position_size'])
+        if 'risk_per_trade_percent' in settings:
+            config.risk_per_trade_percent = float(settings['risk_per_trade_percent'])
+        if 'max_daily_trades' in settings:
+            config.max_daily_trades = int(settings['max_daily_trades'])
+        if 'preferred_conditions' in settings:
+            config.preferred_conditions = [
+                MarketCondition(value) for value in settings['preferred_conditions']
+                if value in MarketCondition._value2member_map_
+            ]
+        if 'avoid_conditions' in settings:
+            config.avoid_conditions = [
+                MarketCondition(value) for value in settings['avoid_conditions']
+                if value in MarketCondition._value2member_map_
+            ]
+        if 'trading_start_time' in settings:
+            config.trading_start_time = settings['trading_start_time']
+        if 'trading_end_time' in settings:
+            config.trading_end_time = settings['trading_end_time']
+        if 'no_trade_start' in settings:
+            config.no_trade_start = settings['no_trade_start']
+        if 'no_trade_end' in settings:
+            config.no_trade_end = settings['no_trade_end']
+        if 'respect_dll' in settings:
+            config.respect_dll = bool(settings['respect_dll'])
+        if 'respect_mll' in settings:
+            config.respect_mll = bool(settings['respect_mll'])
+        if 'max_dll_usage_percent' in settings:
+            config.max_dll_usage_percent = float(settings['max_dll_usage_percent'])
+    
+    def _save_strategy_state(
+        self,
+        strategy_name: str,
+        enabled: bool,
+        symbols: Optional[List[str]] = None,
+        persist: bool = True,
+    ) -> None:
+        """Persist state to database if available."""
+        strategy = self.strategies.get(strategy_name)
+        config_settings = self._serialize_config(strategy.config) if strategy else {}
+        metadata = {
+            "manager_saved_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        last_started = datetime.now(timezone.utc) if enabled else None
+        last_stopped = datetime.now(timezone.utc) if not enabled else None
+        
+        cached_entry = {
+            "enabled": enabled,
+            "symbols": symbols or (strategy.config.symbols if strategy else []),
+            "settings": config_settings,
+            "last_started": last_started.isoformat() if last_started else None,
+            "last_stopped": last_stopped.isoformat() if last_stopped else None,
+        }
+        self._state_cache[strategy_name] = cached_entry
+        
+        if not persist:
+            return
+        
+        db = getattr(self.trading_bot, 'db', None)
+        if not db:
+            return
+        
+        account_id = self._get_account_id()
+        if not account_id:
+            return
+        
+        db.save_strategy_state(
+            account_id=account_id,
+            strategy_name=strategy_name,
+            enabled=enabled,
+            symbols=symbols or (strategy.config.symbols if strategy else None),
+            settings=config_settings,
+            metadata=metadata,
+            last_started=last_started,
+            last_stopped=last_stopped,
+        )
     
     def get_strategy(self, name: str) -> Optional[BaseStrategy]:
         """Get strategy by name."""
@@ -103,7 +220,100 @@ class StrategyManager:
         """Get currently active strategies."""
         return [self.strategies[name] for name in self.active_strategies if name in self.strategies]
     
-    async def start_strategy(self, name: str, symbols: List[str] = None):
+    async def apply_persisted_states(self):
+        """
+        Load persisted state from the database and sync running strategies.
+        """
+        db = getattr(self.trading_bot, 'db', None)
+        account_id = self._get_account_id()
+        
+        if not db or not account_id:
+            logger.info("⚠️  Skipping persisted state sync (database or account unavailable)")
+            return
+        
+        logger.info("💾 Loading persisted strategy state...")
+        persisted_states = db.get_strategy_states(account_id)
+        self._state_cache = dict(persisted_states)
+        
+        for name, strategy_class in self.available_strategies.items():
+            strategy = self.strategies.get(name)
+            state = persisted_states.get(name)
+            
+            if not strategy:
+                # Instantiate strategy with base config
+                config = StrategyConfig.from_env(name)
+                strategy = strategy_class(self.trading_bot, config)
+                self.strategies[name] = strategy
+            
+            # Apply persisted configuration overrides
+            if state:
+                if state.get('symbols'):
+                    strategy.config.symbols = state['symbols']
+                if state.get('settings'):
+                    self._apply_config_settings(strategy, state['settings'])
+                strategy.config.enabled = bool(state.get('enabled', strategy.config.enabled))
+            else:
+                # Persist initial state for new strategies
+                self._save_strategy_state(name, strategy.config.enabled, strategy.config.symbols, persist=True)
+                state = {
+                    "enabled": strategy.config.enabled,
+                    "symbols": strategy.config.symbols,
+                }
+                persisted_states[name] = state
+            
+            # Ensure runtime state matches persisted toggle
+            should_be_active = bool(state.get('enabled'))
+            is_active = name in self.active_strategies
+            
+            if should_be_active and not is_active:
+                logger.info(f"▶️  Auto-starting strategy from persisted state: {name}")
+                await self.start_strategy(name, symbols=strategy.config.symbols, persist=False)
+            elif not should_be_active and is_active:
+                logger.info(f"⏹️  Auto-stopping strategy from persisted state: {name}")
+                await self.stop_strategy(name, persist=False)
+    
+    def get_strategy_summaries(self) -> List[Dict[str, Any]]:
+        """
+        Build a summary list combining runtime and persisted state.
+        """
+        summaries: List[Dict[str, Any]] = []
+        account_id = self._get_account_id()
+        persisted = self._state_cache
+        
+        # Refresh cache from DB if available
+        db = getattr(self.trading_bot, 'db', None)
+        if db and account_id:
+            persisted = db.get_strategy_states(account_id)
+            self._state_cache = dict(persisted)
+        
+        for name, strategy_class in self.available_strategies.items():
+            strategy = self.strategies.get(name)
+            state = persisted.get(name, {})
+            
+            symbols = state.get('symbols') or (strategy.config.symbols if strategy else [])
+            enabled = state.get('enabled')
+            if enabled is None and strategy:
+                enabled = strategy.config.enabled
+            enabled = bool(enabled)
+            
+            is_running = name in self.active_strategies
+            status = 'running' if is_running else ('enabled' if enabled else 'disabled')
+            
+            summaries.append({
+                "name": name,
+                "description": getattr(strategy_class, '__doc__', '') or '',
+                "status": status,
+                "enabled": enabled,
+                "is_running": is_running,
+                "symbols": symbols,
+                "settings": state.get('settings') or {},
+                "last_started": state.get('last_started'),
+                "last_stopped": state.get('last_stopped'),
+            })
+        
+        return summaries
+    
+    async def start_strategy(self, name: str, symbols: List[str] = None, persist: bool = True):
         """
         Start a specific strategy.
         
@@ -158,15 +368,22 @@ class StrategyManager:
         
         strategy.status = StrategyStatus.ACTIVE
         self.active_strategies.append(name)
+        strategy.config.enabled = True
         
-        # Start strategy monitoring task
-        task = asyncio.create_task(self._run_strategy(strategy))
-        self._tasks.append(task)
+        # Strategies with their own event loop can implement an async start() hook
+        custom_start = getattr(strategy, 'start', None)
+        if callable(custom_start) and asyncio.iscoroutinefunction(custom_start):
+            await custom_start(symbols or strategy.config.symbols)
+            logger.debug(f"▶️  Invoked custom start() for strategy {name}")
+        else:
+            task = asyncio.create_task(self._run_strategy(strategy))
+            self._tasks.append(task)
         
         logger.info(f"🚀 Started strategy: {name}")
+        self._save_strategy_state(name, enabled=True, symbols=strategy.config.symbols, persist=persist)
         return True, f"Strategy started: {name} on {', '.join(strategy.config.symbols)}"
     
-    async def stop_strategy(self, name: str):
+    async def stop_strategy(self, name: str, persist: bool = True):
         """
         Stop a specific strategy.
         
@@ -183,11 +400,13 @@ class StrategyManager:
         strategy = self.strategies[name]
         strategy.status = StrategyStatus.IDLE
         self.active_strategies.remove(name)
+        strategy.config.enabled = False
         
         # Cleanup strategy
         await strategy.cleanup()
         
         logger.info(f"🛑 Stopped strategy: {name}")
+        self._save_strategy_state(name, enabled=False, symbols=strategy.config.symbols, persist=persist)
         return True, f"Strategy stopped: {name}"
     
     async def start_all_strategies(self):

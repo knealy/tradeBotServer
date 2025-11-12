@@ -176,6 +176,8 @@ class AsyncWebhookServer:
         self.app.router.add_post('/api/orders/{order_id}/cancel', self.handle_cancel_order)
         self.app.router.add_post('/api/orders/cancel-all', self.handle_cancel_all_orders)
         self.app.router.add_post('/api/orders/place', self.handle_place_order)
+        self.app.router.add_get('/api/settings', self.handle_get_settings)
+        self.app.router.add_post('/api/settings', self.handle_save_settings)
         
         self.app.router.add_get('/api/strategies', self.handle_get_strategies)
         self.app.router.add_get('/api/strategies/status', self.handle_get_strategy_status)
@@ -368,10 +370,10 @@ class AsyncWebhookServer:
             
             # Broadcast metrics update via WebSocket
             await self.broadcast_to_websockets({
-                "type": "metrics_update",
-                "data": metrics_data,
-                "timestamp": time.time()
-            })
+                    "type": "metrics_update",
+                    "data": metrics_data,
+                    "timestamp": time.time()
+                })
             
             return web.json_response(metrics_data)
         
@@ -386,10 +388,10 @@ class AsyncWebhookServer:
             accounts = await self.dashboard_api.get_accounts()
             # Broadcast update via WebSocket
             await self.broadcast_to_websockets({
-                "type": "accounts_update",
-                "data": accounts,
-                "timestamp": time.time()
-            })
+                    "type": "accounts_update",
+                    "data": accounts,
+                    "timestamp": time.time()
+                })
             return web.json_response(accounts)
         except Exception as e:
             logger.error(f"Error getting accounts: {e}")
@@ -423,6 +425,10 @@ class AsyncWebhookServer:
             result = await self.dashboard_api.switch_account(account_id)
             if "error" in result:
                 return web.json_response(result, status=400)
+            
+            if hasattr(self.trading_bot, 'strategy_manager'):
+                await self.trading_bot.strategy_manager.apply_persisted_states()
+            
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error switching account: {e}")
@@ -829,15 +835,8 @@ class AsyncWebhookServer:
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
-            strategies = []
-            for name, strategy_class in self.trading_bot.strategy_manager.available_strategies.items():
-                strategies.append({
-                    "name": name,
-                    "description": getattr(strategy_class, '__doc__', ''),
-                    "enabled": name in self.trading_bot.strategy_manager.active_strategies
-                })
-            
-            return web.json_response(strategies)
+            summaries = self.trading_bot.strategy_manager.get_strategy_summaries()
+            return web.json_response(summaries)
         except Exception as e:
             logger.error(f"Error getting strategies: {e}")
             return web.json_response({"error": str(e)}, status=500)
@@ -917,13 +916,12 @@ class AsyncWebhookServer:
             
             logger.info(f"Strategy start result: success={success}, message={message}")
             
-            if success or ('already active' in message.lower()):
+            if success:
                 return web.json_response({
                     "success": True,
-                    "message": message,
-                    "alreadyActive": not success
+                    "message": message
                 })
-            else:
+            
                 return web.json_response({"error": message}, status=400)
         except Exception as e:
             logger.error(f"Error starting strategy: {e}")
@@ -957,16 +955,79 @@ class AsyncWebhookServer:
 
             success, message = result
             
-            if success or ('not active' in message.lower()):
+            if success:
                 return web.json_response({
                     "success": True,
-                    "message": message,
-                    "alreadyStopped": not success
+                    "message": message
                 })
-            else:
+            
                 return web.json_response({"error": message}, status=400)
         except Exception as e:
             logger.error(f"Error stopping strategy: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_settings(self, request: web.Request) -> web.Response:
+        """Fetch dashboard/settings preferences."""
+        try:
+            db = getattr(self.trading_bot, 'db', None)
+            if not db:
+                logger.warning("⚠️  Database unavailable when requesting settings")
+                return web.json_response({
+                    "settings": {},
+                    "scope": "global",
+                    "warning": "database unavailable"
+                })
+            
+            account_scope = request.rel_url.query.get('account_id')
+            if account_scope == 'current':
+                selected = getattr(self.trading_bot, 'selected_account', None)
+                if selected:
+                    account_scope = str(selected.get('id') or selected.get('account_id') or selected.get('accountId'))
+                else:
+                    account_scope = None
+            
+            settings = db.get_dashboard_settings(account_scope)
+            scope_label = account_scope or "global"
+            
+            return web.json_response({
+                "settings": settings,
+                "scope": scope_label
+            })
+        except Exception as e:
+            logger.error(f"Error getting dashboard settings: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_save_settings(self, request: web.Request) -> web.Response:
+        """Persist dashboard/settings preferences."""
+        try:
+            db = getattr(self.trading_bot, 'db', None)
+            if not db:
+                return web.json_response({"error": "database unavailable"}, status=503)
+            
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                return web.json_response({"error": "payload must be a JSON object"}, status=400)
+            
+            account_scope = payload.get('account_id')
+            if account_scope == 'current':
+                selected = getattr(self.trading_bot, 'selected_account', None)
+                account_scope = str(selected.get('id') or selected.get('account_id') or selected.get('accountId')) if selected else None
+            
+            # Remove routing keys from settings blob
+            settings_to_store = {
+                k: v for k, v in payload.items()
+                if k not in ('account_id', 'scope') and not k.startswith('_')
+            }
+            
+            if not db.save_dashboard_settings(settings_to_store, account_scope):
+                return web.json_response({"error": "failed to persist settings"}, status=500)
+            
+            scope_label = account_scope or "global"
+            logger.info(f"💾 Saved dashboard settings ({scope_label})")
+            
+            return web.json_response({"success": True, "scope": scope_label})
+        except Exception as e:
+            logger.error(f"Error saving dashboard settings: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_get_trades(self, request: web.Request) -> web.Response:
@@ -1344,20 +1405,35 @@ async def main():
         logger.error("❌ No accounts found")
         sys.exit(1)
     
-    # Auto-select first account or use env variable
-    account_id = os.getenv('TOPSETPX_ACCOUNT_ID')
-    if account_id:
-        selected_account = next((acc for acc in accounts if str(acc['id']) == str(account_id)), None)
+    # Determine preferred account order: env override > persisted default > first account
+    env_account_id = os.getenv('TOPSETPX_ACCOUNT_ID')
+    persisted_account_id = None
+    if getattr(trading_bot, 'db', None):
+        try:
+            settings = trading_bot.db.get_dashboard_settings()
+            persisted_account_id = settings.get('defaultAccount') or settings.get('default_account')
+            if persisted_account_id:
+                logger.info(f"📝 Persisted default account from settings: {persisted_account_id}")
+        except Exception as settings_err:
+            logger.warning(f"⚠️  Failed to load persisted settings: {settings_err}")
+    
+    account_choice = env_account_id or persisted_account_id
+    if account_choice:
+        selected_account = next((acc for acc in accounts if str(acc['id']) == str(account_choice)), None)
         if selected_account:
             trading_bot.selected_account = selected_account
-            logger.info(f"✅ Selected account: {selected_account['name']}")
+            logger.info(f"✅ Selected account: {selected_account['name']} (source={'env' if env_account_id else 'settings'})")
         else:
-            logger.error(f"❌ Account ID {account_id} not found")
+            logger.error(f"❌ Preferred account ID {account_choice} not found among available accounts")
             sys.exit(1)
     else:
-        # Select first account
+        # Fallback: select first account
         trading_bot.selected_account = accounts[0]
         logger.info(f"✅ Auto-selected account: {accounts[0]['name']}")
+    
+    # Apply persisted strategy state (if available)
+    if hasattr(trading_bot, 'strategy_manager'):
+        await trading_bot.strategy_manager.apply_persisted_states()
     
     # Start webhook server
     server = AsyncWebhookServer(trading_bot, host=host, port=port)

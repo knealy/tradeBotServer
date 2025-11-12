@@ -27,9 +27,14 @@ Build a production-grade, scalable, autonomous futures trading platform that:
 | Priority Task Queue | ✅ Production | Intelligent scheduling |
 | Discord Notifications | ✅ Production | Real-time alerts |
 | Railway Deployment | ✅ Production | Auto-deploy, hosted DB |
-| Dashboard | ⏳ In Planning | React + WebSocket |
+| Dashboard | 🔄 In Progress | React + WebSocket |
 | Redis Cache | ⏳ Future | Hot cache layer |
 | Go/Rust Migration | ⏳ Future | 10-100x performance |
+
+### **Recent Progress (Nov 12, 2025)**
+- Persisted strategy toggles and dashboard settings in PostgreSQL; strategies auto-sync on deploy/account switch.
+- Overnight Range strategy now respects market window strictly—no catch-up trades after 09:30 ET.
+- Restored Parquet caching by bundling `polars` in deployment image.
 
 ---
 
@@ -861,13 +866,13 @@ TOTAL:                    ~$300-500/month
 - [x] Comprehensive documentation
 
 ### **Phase 3 (Next)**
-- [ ] React dashboard design
-- [ ] REST API for dashboard
-- [ ] WebSocket integration
+- [x] React dashboard design (initial shell)
+- [x] REST API for dashboard (core endpoints in async server)
+- [x] WebSocket integration
 - [ ] User authentication
 - [ ] Redis hot cache
-- [ ] Real-time charts
-- [ ] Strategy control panel
+- [ ] Real-time charts (TradingView/Chart.js upgrade)
+- [x] Strategy control panel (persisted enable/disable)
 - [ ] Analytics dashboard
 
 ### **Phase 4 (Future)**

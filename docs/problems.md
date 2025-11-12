@@ -10,13 +10,6 @@
   **Solution**: Migrate hot paths to Go/Rust
   **Impact**: 10-100x performance improvement for I/O-bound operations
 
-go over options for fastest / most effecient frontend - bridge - backend structures 
-- choose a final tech stack 
-- make a plan to port / convert 
-- (probably to Go + React + JS at the core with python for certain features) 
-- is Go the best choice?
-
-
 Next Priorities:
 Build React/JS dashboard [in progress]
 Add real-time WebSocket updates [in progress]
@@ -49,9 +42,21 @@ Create admin panel
 
 
 Priority 1 (NOW): ✅ PostgreSQL (DONE!)
-Priority 2 (When building dashboard): ⏳ Redis for sessions
+Priority 2 (NEXT): ⏳ Redis for sessions
 Priority 3 (When scaling): ⏳ Redis for distributed cache
 Priority 4 (Optional): ⏳ Redis for HFT quotes
 priority 5 add a chat bar / side panel
 
+## ✅ Recently Completed
+
+- Strategy enable/disable buttons now persist to PostgreSQL and reload correctly after redeploys or account switches.
+- Dashboard settings (default account, risk controls, WS/API overrides) are stored via `/api/settings` and restored on load.
+- Overnight Range strategy no longer backfills trades after the 09:30 ET window – runs only when the toggle is on and within the trading session.
+- Parquet caching restored on Railway by bundling `polars` in the runtime image.
+
+## ⏭️ Still Open / Upcoming
+
+- Swap price charts to a more responsive library (TradingView LW charts or Chart.js plugin) with zoom + crosshair UX.
+- Wire up authentication + admin panel once dashboard foundations are solid.
+- Add Redis layer to persist sessions and speed up hot data once Railway deployment is stable.
 
