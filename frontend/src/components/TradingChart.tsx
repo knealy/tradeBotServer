@@ -49,7 +49,6 @@ export default function TradingChart({
   const [symbol, setSymbol] = useState(propSymbol || 'MNQ')
   const [timeframe, setTimeframe] = useState('5m')
   const [barLimit, setBarLimit] = useState(300)
-  const [containerReady, setContainerReady] = useState(false)
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -78,109 +77,127 @@ export default function TradingChart({
     }
   )
 
-  // Wait for container to be ready with dimensions
+  // Initialize chart
   useEffect(() => {
     if (!chartContainerRef.current) return
-    
     const container = chartContainerRef.current
-    
+
     // Ensure container has explicit dimensions
     container.style.position = 'relative'
     container.style.height = `${height}px`
     container.style.width = '100%'
 
-    // Check if container has dimensions, if not wait a bit
-    const checkReady = () => {
-      if (container.clientWidth > 0 && container.clientHeight > 0) {
-        setContainerReady(true)
-      } else {
-        // Retry after a short delay
-        setTimeout(checkReady, 50)
+    let chart: IChartApi | null = null
+    let resizeObserver: ResizeObserver | null = null
+    let handleWindowResize: (() => void) | null = null
+
+    // Wait for next frame to ensure container is rendered
+    const initChart = () => {
+      if (!container) return
+
+      // Get initial width, with fallback and minimum
+      const getWidth = () => {
+        const width = container.clientWidth || container.offsetWidth || container.parentElement?.clientWidth || 600
+        return Math.max(width, 400) // Minimum 400px
       }
-    }
-    
-    checkReady()
-  }, [height])
 
-  // Initialize chart once container is ready
-  useEffect(() => {
-    if (!containerReady || !chartContainerRef.current) return
-    const container = chartContainerRef.current
+      const initialWidth = getWidth()
 
-    const initialWidth = container.clientWidth || 600
-
-    const chart = createChart(container, {
-      ...chartTheme,
-      width: initialWidth,
-      height,
-      timeScale: {
-        ...chartTheme.timeScale,
-        // Custom formatter to display times in ET (UTC-5 or UTC-4)
-        tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => {
-          const date = new Date((time as number) * 1000)
-          
-          // Format based on current timeframe using ET timezone
-          const currentTimeframe = timeframe
-          const formatterOptions: Intl.DateTimeFormatOptions = {
-            timeZone: 'America/New_York', // Automatically handles EST/EDT
-          }
-          
-          if (currentTimeframe === '1d') {
-            formatterOptions.month = 'short'
-            formatterOptions.day = 'numeric'
-            return date.toLocaleDateString('en-US', formatterOptions)
-          } else {
-            formatterOptions.hour = '2-digit'
-            formatterOptions.minute = '2-digit'
-            formatterOptions.hour12 = false
-            return date.toLocaleTimeString('en-US', formatterOptions)
-          }
+      chart = createChart(container, {
+        ...chartTheme,
+        width: initialWidth,
+        height,
+        timeScale: {
+          ...chartTheme.timeScale,
+          // Custom formatter to display times in ET (UTC-5 or UTC-4)
+          tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => {
+            const date = new Date((time as number) * 1000)
+            
+            // Format based on current timeframe using ET timezone
+            const currentTimeframe = timeframe
+            const formatterOptions: Intl.DateTimeFormatOptions = {
+              timeZone: 'America/New_York', // Automatically handles EST/EDT
+            }
+            
+            if (currentTimeframe === '1d') {
+              formatterOptions.month = 'short'
+              formatterOptions.day = 'numeric'
+              return date.toLocaleDateString('en-US', formatterOptions)
+            } else {
+              formatterOptions.hour = '2-digit'
+              formatterOptions.minute = '2-digit'
+              formatterOptions.hour12 = false
+              return date.toLocaleTimeString('en-US', formatterOptions)
+            }
+          },
         },
-      },
+      })
+
+      // Add candlestick series
+      const candlestickSeries = chart.addSeries(
+        CandlestickSeries,
+        getCandlestickColors('dark')
+      )
+
+      // Add volume series
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        color: '#26A69A',
+        priceFormat: {
+          type: 'volume',
+        },
+        priceScaleId: 'volume',
+      })
+
+      chart.priceScale('volume').applyOptions({
+        scaleMargins: {
+          top: 0.8,
+          bottom: 0,
+        },
+      })
+
+      chartRef.current = chart
+      candlestickSeriesRef.current = candlestickSeries
+      volumeSeriesRef.current = volumeSeries
+      markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
+
+      resizeObserver = new ResizeObserver((entries) => {
+        if (!entries.length || !chartRef.current) return
+        const { width } = entries[0].contentRect
+        const newWidth = Math.max(width, 400) // Minimum 400px
+        chartRef.current.applyOptions({ width: newWidth })
+      })
+      resizeObserver.observe(container)
+
+      // Also handle window resize as fallback
+      handleWindowResize = () => {
+        if (chartRef.current && container) {
+          const newWidth = Math.max(container.clientWidth || 600, 400)
+          chartRef.current.applyOptions({ width: newWidth })
+        }
+      }
+      window.addEventListener('resize', handleWindowResize)
+    }
+
+    // Use requestAnimationFrame to ensure DOM is ready
+    const rafId = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        initChart()
+      })
     })
-
-    // Add candlestick series
-    const candlestickSeries = chart.addSeries(
-      CandlestickSeries,
-      getCandlestickColors('dark')
-    )
-
-    // Add volume series
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      color: '#26A69A',
-      priceFormat: {
-        type: 'volume',
-      },
-      priceScaleId: 'volume',
-    })
-
-    chart.priceScale('volume').applyOptions({
-      scaleMargins: {
-        top: 0.8,
-        bottom: 0,
-      },
-    })
-
-    chartRef.current = chart
-    candlestickSeriesRef.current = candlestickSeries
-    volumeSeriesRef.current = volumeSeries
-    markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      if (!entries.length || !chartRef.current) return
-      const { width } = entries[0].contentRect
-      chartRef.current.applyOptions({ width: Math.max(0, width) })
-    })
-    resizeObserver.observe(container)
 
     return () => {
-      resizeObserver.disconnect()
+      cancelAnimationFrame(rafId)
+      if (handleWindowResize) {
+        window.removeEventListener('resize', handleWindowResize)
+      }
+      resizeObserver?.disconnect()
       markersPluginRef.current?.detach()
       markersPluginRef.current = null
-      chart.remove()
-      setContainerReady(false)
+      if (chart) {
+        chart.remove()
+      }
     }
-  }, [containerReady, height, chartTheme, timeframe])
+  }, [height, chartTheme, timeframe])
 
   // Update chart data
   useEffect(() => {
@@ -431,18 +448,8 @@ export default function TradingChart({
         >
           No data available for {symbol}
         </div>
-      ) : !containerReady ? (
-        <div
-          className="flex items-center justify-center text-slate-400 text-sm bg-slate-900/50 rounded"
-          style={{ height }}
-        >
-          <div className="flex flex-col items-center gap-2">
-            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-            <span>Initializing chart...</span>
-          </div>
-        </div>
       ) : (
-        <div ref={chartContainerRef} className="rounded overflow-hidden" />
+        <div ref={chartContainerRef} className="rounded overflow-hidden" style={{ minHeight: height }} />
       )}
 
       {/* Chart Legend/Info */}
