@@ -200,8 +200,10 @@ class AsyncWebhookServer:
         self.app.router.add_post('/api/strategies/{name}/test', self.handle_test_strategy)
         
         self.app.router.add_get('/api/trades', self.handle_get_trades)
+        self.app.router.add_get('/api/trades/export', self.handle_export_trades_csv)
         self.app.router.add_get('/api/performance', self.handle_get_performance)
         self.app.router.add_get('/api/performance/history', self.handle_get_performance_history)
+        self.app.router.add_get('/api/performance/export', self.handle_export_performance_csv)
         self.app.router.add_get('/api/history', self.handle_get_historical_data)
         
         # Test endpoint for trade execution testing

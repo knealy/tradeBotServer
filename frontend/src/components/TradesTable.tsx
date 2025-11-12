@@ -3,6 +3,7 @@ import { useQuery } from 'react-query'
 import { tradeApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { TradesResponse, Trade } from '../types'
+import { Download } from 'lucide-react'
 
 const formatterCurrency = new Intl.NumberFormat(undefined, {
   style: 'currency',
@@ -44,10 +45,27 @@ export default function TradesTable() {
     return data.summary
   }, [data])
 
+  const handleExportCSV = () => {
+    const accountId = selectedAccount?.id
+    const params = new URLSearchParams()
+    if (accountId) params.append('account_id', accountId)
+    
+    const url = `/api/trades/export${params.toString() ? `?${params.toString()}` : ''}`
+    window.open(url, '_blank')
+  }
+
   return (
     <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold">Recent Trades</h2>
+        <button
+          onClick={handleExportCSV}
+          className="px-3 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2 text-sm"
+          disabled={!selectedAccount || trades.length === 0}
+        >
+          <Download className="w-4 h-4" />
+          Export CSV
+        </button>
         <div className="flex items-center gap-4">
           <label className="text-xs text-slate-400 flex items-center gap-2">
             Rows
