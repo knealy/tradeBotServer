@@ -88,7 +88,7 @@ export default function TradesTable() {
         <div className="py-10 text-center text-slate-500 text-sm">No trades in this period.</div>
       ) : (
         <div className="overflow-x-auto">
-          <div className="max-h-80 overflow-y-auto pr-1">
+          <div className="max-h-[32rem] overflow-y-auto pr-1">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-slate-800">
                 <tr className="text-slate-400 text-xs uppercase tracking-wide">

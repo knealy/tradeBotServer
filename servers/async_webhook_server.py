@@ -74,6 +74,7 @@ class AsyncWebhookServer:
         self.task_queue = get_task_queue(max_concurrent=20)  # 20 concurrent background tasks
         self.metrics = get_metrics_tracker(db=getattr(trading_bot, 'db', None))
         self.dashboard_api = DashboardAPI(trading_bot, None)
+        self._settings_cache: Dict[str, Dict[str, Any]] = {}
         
         # WebSocket clients (integrated into main server)
         self.websocket_clients = set()
@@ -1074,11 +1075,13 @@ class AsyncWebhookServer:
         try:
             db = self._ensure_database()
             if not db:
-                logger.warning("⚠️  Database unavailable when requesting settings")
+                scope_key = account_scope or "__global__"
+                cached = self._settings_cache.get(scope_key, {})
+                logger.warning("⚠️  Database unavailable when requesting settings - serving from cache")
                 return web.json_response({
-                    "settings": {},
-                    "scope": "global",
-                    "warning": "database unavailable"
+                    "settings": cached,
+                    "scope": scope_key,
+                    "warning": "database unavailable (serving cached settings)"
                 })
             
             account_scope = request.rel_url.query.get('account_id')
@@ -1091,6 +1094,8 @@ class AsyncWebhookServer:
             
             settings = db.get_dashboard_settings(account_scope)
             scope_label = account_scope or "global"
+            cache_key = account_scope or "__global__"
+            self._settings_cache[cache_key] = settings or {}
             
             return web.json_response({
                 "settings": settings,
@@ -1105,8 +1110,15 @@ class AsyncWebhookServer:
         try:
             db = self._ensure_database()
             if not db:
-                logger.error("❌ Unable to save settings: database unavailable after reinitialization attempt")
-                return web.json_response({"error": "database unavailable"}, status=503)
+                scope_key = account_scope or "__global__"
+                self._settings_cache[scope_key] = settings_to_store
+                scope_label = account_scope or "global"
+                logger.warning("⚠️  Database unavailable - settings stored in memory cache")
+                return web.json_response({
+                    "success": True,
+                    "scope": scope_label,
+                    "warning": "database unavailable - settings stored in memory"
+                })
             
             payload = await request.json()
             if not isinstance(payload, dict):
@@ -1124,10 +1136,19 @@ class AsyncWebhookServer:
             }
             
             if not db.save_dashboard_settings(settings_to_store, account_scope):
-                return web.json_response({"error": "failed to persist settings"}, status=500)
+                scope_key = account_scope or "__global__"
+                self._settings_cache[scope_key] = settings_to_store
+                logger.error("❌ Failed to persist settings to database - stored in memory instead")
+                return web.json_response({
+                    "success": True,
+                    "scope": scope_label,
+                    "warning": "failed to persist to database - settings stored in memory"
+                })
             
             scope_label = account_scope or "global"
             logger.info(f"💾 Saved dashboard settings ({scope_label})")
+            cache_key = account_scope or "__global__"
+            self._settings_cache[cache_key] = settings_to_store
             
             return web.json_response({"success": True, "scope": scope_label})
         except Exception as e:
