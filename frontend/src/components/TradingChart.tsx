@@ -3,7 +3,6 @@ import { useQuery } from 'react-query'
 import {
   createChart,
   IChartApi,
-  ISeriesApi,
   LineStyle,
   SeriesMarker,
   Time,
@@ -39,8 +38,8 @@ export default function TradingChart({
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
-  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const candlestickSeriesRef = useRef<any>(null)
+  const volumeSeriesRef = useRef<any>(null)
   
   // Chart theme configuration
   const chartTheme = useChartTheme({ theme: 'dark', height })
@@ -72,10 +71,10 @@ export default function TradingChart({
     })
 
     // Add candlestick series
-    const candlestickSeries = (chart as any).addCandlestickSeries(getCandlestickColors('dark'))
+    const candlestickSeries = chart.addCandlestickSeries(getCandlestickColors('dark'))
 
     // Add volume series
-    const volumeSeries = (chart as any).addHistogramSeries({
+    const volumeSeries = chart.addHistogramSeries({
       color: '#26A69A',
       priceFormat: {
         type: 'volume',
@@ -163,8 +162,8 @@ export default function TradingChart({
         } as SeriesMarker<Time>
       })
 
-    if (markers.length > 0) {
-      ;(candlestickSeriesRef.current as any).setMarkers(markers)
+    if (markers.length > 0 && candlestickSeriesRef.current) {
+      candlestickSeriesRef.current.setMarkers(markers)
     }
   }, [positions, symbol, showPositions])
 
@@ -176,21 +175,25 @@ export default function TradingChart({
     // Note: Lightweight Charts doesn't have a built-in way to remove all price lines
     // so we'll create new ones when needed
 
-    orders
+      orders
       .filter((order) => order.symbol === symbol && order.status === 'PENDING' && order.price)
       .forEach((order) => {
         if (!candlestickSeriesRef.current) return
 
         const isLongOrder = order.side === 'BUY'
 
-        candlestickSeriesRef.current.createPriceLine({
-          price: order.price!,
-          color: isLongOrder ? '#10B981' : '#F59E0B',
-          lineWidth: 2,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `${order.side} ${order.quantity}`,
-        })
+        try {
+          candlestickSeriesRef.current.createPriceLine({
+            price: order.price!,
+            color: isLongOrder ? '#10B981' : '#F59E0B',
+            lineWidth: 2,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${order.side} ${order.quantity}`,
+          })
+        } catch (error) {
+          console.error('Error creating price line:', error)
+        }
       })
   }, [orders, symbol, showOrders])
 

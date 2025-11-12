@@ -10,7 +10,7 @@
 ## 🎉 What Was Implemented
 
 ### ✅ Week 1: Basic Chart
-- [x] Installed `lightweight-charts` package (v4.x)
+- [x] Installed `lightweight-charts` package (v4.2.0 - pinned)
 - [x] Created `TradingChart` component with candlestick series
 - [x] Added volume histogram in separate pane
 - [x] Connected to existing `/api/historical-data` endpoint
