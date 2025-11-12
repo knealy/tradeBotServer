@@ -76,10 +76,19 @@ export default function TradingChart({
   // Initialize chart
   useEffect(() => {
     if (!chartContainerRef.current) return
+    const container = chartContainerRef.current
 
-    const chart = createChart(chartContainerRef.current, {
+    // Ensure container has explicit dimensions so canvas can render
+    container.style.position = 'relative'
+    container.style.height = `${height}px`
+    container.style.width = '100%'
+
+    const initialWidth = container.clientWidth || 600
+
+    const chart = createChart(container, {
       ...chartTheme,
-      width: chartContainerRef.current.clientWidth,
+      width: initialWidth,
+      height,
     })
 
     // Add candlestick series
@@ -109,24 +118,20 @@ export default function TradingChart({
     volumeSeriesRef.current = volumeSeries
     markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
 
-    // Handle resize
-    const handleResize = () => {
-      if (chartContainerRef.current && chartRef.current) {
-        chartRef.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        })
-      }
-    }
-
-    window.addEventListener('resize', handleResize)
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries.length || !chartRef.current) return
+      const { width } = entries[0].contentRect
+      chartRef.current.applyOptions({ width: Math.max(0, width) })
+    })
+    resizeObserver.observe(container)
 
     return () => {
-      window.removeEventListener('resize', handleResize)
+      resizeObserver.disconnect()
       markersPluginRef.current?.detach()
       markersPluginRef.current = null
       chart.remove()
     }
-  }, [height])
+  }, [height, chartTheme])
 
   // Update chart data
   useEffect(() => {
