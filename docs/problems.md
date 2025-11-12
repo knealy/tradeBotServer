@@ -69,4 +69,5 @@ priority 5 add a chat bar / side panel
 - [x] **Notifications Feed**: show order/position events (Discord parity)
 - [x] **Automation Tools**: trailing stop, breakeven toggle, overnight breakout test
 - [x] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
-- [ ] **Data Exports & Charts**: CSV download, upgraded candlestick/TV charts
+- [x] **Data Exports & Charts**: CSV download for trades and performance data
+- [ ] **Chart Upgrades**: Upgrade to TradingView LW charts or Chart.js (future enhancement)
