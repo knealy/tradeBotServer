@@ -509,7 +509,7 @@ class DashboardAPI:
             accounts = await self.trading_bot.list_accounts()
             target_account = None
             for account in accounts:
-                if account.get('id') == account_id:
+                if str(account.get('id')) == str(account_id):
                     target_account = account
                     break
             
@@ -521,6 +521,27 @@ class DashboardAPI:
             cache_key = str(account_id)
             self._order_history_cache.pop(cache_key, None)
             self._positions_cache.pop(cache_key, None)
+            
+            # Initialize account tracker for this account if not already initialized
+            tracker = getattr(self.trading_bot, 'account_tracker', None)
+            if tracker:
+                account_balance = float(target_account.get('balance', 0.0))
+                account_type = target_account.get('account_type') or target_account.get('type', 'unknown')
+                account_name = target_account.get('name', f"Account-{account_id}")
+                
+                # Check if account is already tracked
+                if str(account_id) not in tracker.accounts:
+                    logger.info(f"Initializing account tracker for {account_name} (ID: {account_id})")
+                    tracker.initialize_account(
+                        account_id=str(account_id),
+                        account_name=account_name,
+                        account_type=account_type,
+                        starting_balance=account_balance
+                    )
+                else:
+                    # Update current account ID in tracker
+                    tracker.current_account_id = str(account_id)
+                    logger.info(f"Switched tracker to account {account_name} (ID: {account_id})")
             
             # Get updated account info
             account_info = await self.trading_bot.get_account_info()
@@ -542,6 +563,7 @@ class DashboardAPI:
             }
         except Exception as e:
             logger.error(f"Error switching account: {e}")
+            logger.exception(e)
             return {"error": str(e)}
     
     async def get_positions(self) -> List[Dict[str, Any]]:

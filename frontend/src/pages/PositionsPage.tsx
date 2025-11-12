@@ -273,7 +273,7 @@ export default function PositionsPage() {
           onAccountChange={setSelectedAccount}
         />
       </div>
-
+      
       {/* Order Ticket */}
       <OrderTicket />
 

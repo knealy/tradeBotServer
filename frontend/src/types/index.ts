@@ -213,6 +213,21 @@ export interface HistoricalBar {
   volume: number
 }
 
+export interface Notification {
+  id: string
+  timestamp: string
+  type: 'order_fill' | 'order_placed' | 'position_close' | 'risk_alert' | 'strategy_status' | string
+  message: string
+  level: 'info' | 'success' | 'warning' | 'error'
+  meta?: Record<string, any>
+}
+
+export interface NotificationsResponse {
+  notifications: Notification[]
+  account_id: string | null
+  total: number
+}
+
 export interface HistoricalDataResponse {
   symbol: string
   timeframe: string

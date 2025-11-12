@@ -78,6 +78,7 @@ class AsyncWebhookServer:
         self._settings_cache: Dict[str, Dict[str, Any]] = {}
         self._risk_events: Dict[str, List[Dict[str, Any]]] = {}
         self._risk_flags: Dict[str, Dict[str, bool]] = {}
+        self._notifications: Dict[str, List[Dict[str, Any]]] = {}  # Account ID -> list of notifications
         
         # WebSocket clients (integrated into main server)
         self.websocket_clients = set()
@@ -186,6 +187,7 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/settings', self.handle_get_settings)
         self.app.router.add_post('/api/settings', self.handle_save_settings)
         self.app.router.add_get('/api/risk', self.handle_get_risk)
+        self.app.router.add_get('/api/notifications', self.handle_get_notifications)
         
         self.app.router.add_get('/api/strategies', self.handle_get_strategies)
         self.app.router.add_get('/api/strategies/status', self.handle_get_strategy_status)
@@ -259,7 +261,7 @@ class AsyncWebhookServer:
                     "timestamp": time.time()
                 })
                 
-                risk_snapshot = self._collect_risk_snapshot(emit_events=False)
+                risk_snapshot = self._collect_risk_snapshot(account_id=None, emit_events=False)
                 if risk_snapshot:
                     await ws.send_json({
                         "type": "risk_update",
@@ -607,6 +609,18 @@ class AsyncWebhookServer:
             })
             await self._broadcast_risk_snapshot()
             
+            # Record notification
+            account_id = self._get_selected_account_id()
+            if account_id:
+                qty_msg = f" ({quantity} contracts)" if quantity else ""
+                self._record_notification(
+                    account_id,
+                    'position_close',
+                    f"Position closed{qty_msg}",
+                    level='info',
+                    meta={"position_id": position_id, "quantity": quantity}
+                )
+            
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Error closing position: {e}")
@@ -781,6 +795,17 @@ class AsyncWebhookServer:
                 "data": await self.dashboard_api.get_orders(),
                 "timestamp": time.time()
             })
+            
+            # Record notification
+            account_id = self._get_selected_account_id()
+            if account_id and result and not result.get('error'):
+                self._record_notification(
+                    account_id,
+                    'order_placed',
+                    f"Order placed: {symbol} {side} x{quantity}",
+                    level='info',
+                    meta={"symbol": symbol, "side": side, "quantity": quantity, "order_type": order_type}
+                )
             
             return web.json_response(result)
         except Exception as e:
@@ -1291,18 +1316,24 @@ class AsyncWebhookServer:
             if last_flags["dll_violated"] != dll_violated:
                 if dll_violated:
                     self._record_risk_event(str(account_id), "Daily loss limit violated", level="error", meta={"used": dll_used, "limit": dll_limit})
+                    self._record_notification(str(account_id), "risk_alert", "Daily loss limit violated", level="error", meta={"used": dll_used, "limit": dll_limit})
                 else:
                     self._record_risk_event(str(account_id), "Daily loss back within limit", level="success")
+                    self._record_notification(str(account_id), "risk_alert", "Daily loss back within limit", level="success")
             if last_flags["mll_violated"] != mll_violated:
                 if mll_violated:
                     self._record_risk_event(str(account_id), "Maximum loss limit violated", level="error", meta={"used": mll_used, "limit": mll_limit})
+                    self._record_notification(str(account_id), "risk_alert", "Maximum loss limit violated", level="error", meta={"used": mll_used, "limit": mll_limit})
                 else:
                     self._record_risk_event(str(account_id), "Maximum loss back within limit", level="success")
+                    self._record_notification(str(account_id), "risk_alert", "Maximum loss back within limit", level="success")
             if last_flags["is_compliant"] != is_compliant:
                 if is_compliant:
                     self._record_risk_event(str(account_id), "Account returned to compliant status", level="success")
+                    self._record_notification(str(account_id), "risk_alert", "Account returned to compliant status", level="success")
                 else:
                     self._record_risk_event(str(account_id), "Account marked non-compliant", level="warning")
+                    self._record_notification(str(account_id), "risk_alert", "Account marked non-compliant", level="warning")
         
         # Update cached flags
         self._risk_flags[str(account_id)] = {
@@ -1333,6 +1364,57 @@ class AsyncWebhookServer:
         if not snapshot:
             return web.json_response({"error": "risk data unavailable"}, status=503)
         return web.json_response(snapshot)
+    
+    async def handle_get_notifications(self, request: web.Request) -> web.Response:
+        """Get recent notifications for the selected or requested account."""
+        try:
+            account_id = request.rel_url.query.get('account_id') or self._get_selected_account_id()
+            if not account_id:
+                return web.json_response({"notifications": [], "account_id": None})
+            
+            notifications = self._notifications.get(str(account_id), [])
+            # Return most recent 50 notifications
+            recent = notifications[-50:] if len(notifications) > 50 else notifications
+            return web.json_response({
+                "notifications": recent,
+                "account_id": str(account_id),
+                "total": len(notifications)
+            })
+        except Exception as e:
+            logger.error(f"Error getting notifications: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    def _record_notification(self, account_id: str, notification_type: str, message: str, 
+                             level: str = "info", meta: Optional[Dict[str, Any]] = None) -> None:
+        """Record a notification for the specified account."""
+        notifications = self._notifications.setdefault(str(account_id), [])
+        notification = {
+            "id": str(uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": notification_type,  # 'order_fill', 'position_close', 'risk_alert', 'strategy_status', etc.
+            "message": message,
+            "level": level,  # 'info', 'success', 'warning', 'error'
+        }
+        if meta:
+            notification["meta"] = meta
+        notifications.append(notification)
+        # Keep only last 100 notifications per account
+        if len(notifications) > 100:
+            del notifications[:-100]
+        
+        # Broadcast via WebSocket
+        asyncio.create_task(self._broadcast_notification(str(account_id), notification))
+    
+    async def _broadcast_notification(self, account_id: str, notification: Dict[str, Any]) -> None:
+        """Broadcast a single notification over WebSocket."""
+        await self.broadcast_to_websockets({
+            "type": "notification",
+            "data": {
+                "account_id": account_id,
+                "notification": notification
+            },
+            "timestamp": time.time()
+        })
     
     async def handle_favicon(self, request: web.Request) -> web.Response:
         """Return an empty favicon to silence browser 404s."""
@@ -1597,7 +1679,18 @@ class AsyncWebhookServer:
         async def check_fills():
             while True:
                 try:
-                    await self.trading_bot.check_order_fills()
+                    result = await self.trading_bot.check_order_fills()
+                    # Record notifications for new fills
+                    if result and result.get('new_fills'):
+                        account_id = self._get_selected_account_id()
+                        if account_id:
+                            for order_id in result['new_fills']:
+                                self._record_notification(
+                                    account_id,
+                                    'order_fill',
+                                    f"Order {order_id} filled",
+                                    level='success'
+                                )
                     await asyncio.sleep(30)
                 except Exception as e:
                     logger.error(f"Fill check error: {e}")

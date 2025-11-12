@@ -65,7 +65,7 @@ priority 5 add a chat bar / side panel
 - [x] **Orders**: full ticket (market/limit/stop/bracket), bulk cancel, flatten account
 - [x] **Positions**: partial close, TP/SL edits, detailed drawer
 - [x] **Risk View**: DLL/MLL gauges, collapsible sidebar widget, violation alerts
-- [ ] **Notifications Feed**: show order/position events (Discord parity)
+- [x] **Notifications Feed**: show order/position events (Discord parity)
 - [ ] **Automation Tools**: trailing stop, breakeven toggle, overnight breakout test
 - [ ] **Strategy Insights**: per-strategy stats, logs, test trigger buttons
 - [ ] **Data Exports & Charts**: CSV download, upgraded candlestick/TV charts

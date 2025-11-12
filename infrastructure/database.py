@@ -149,7 +149,7 @@ class DatabaseManager:
         except Exception as e:
             if conn:
                 try:
-                    conn.rollback()
+                conn.rollback()
                 except:
                     # Rollback might fail if connection is already closed
                     pass
@@ -158,7 +158,7 @@ class DatabaseManager:
         finally:
             if conn:
                 try:
-                    self.pool.putconn(conn)
+                self.pool.putconn(conn)
                 except:
                     # Connection might be already closed, that's ok
                     pass

@@ -12,6 +12,7 @@ import type {
   DashboardSettingsResponse,
   PlaceOrderPayload,
   RiskSnapshot,
+  NotificationsResponse,
 } from '../types'
 
 // Auto-detect API base URL at runtime
@@ -277,6 +278,15 @@ export const settingsApi = {
   saveSettings: async (settings: DashboardSettings & { account_id?: string | null; scope?: string }): Promise<{ success: boolean; scope: string }> => {
     const payload = { ...settings }
     const response = await api.post('/api/settings', payload)
+    return response.data
+  },
+}
+
+// Notifications API
+export const notificationsApi = {
+  getNotifications: async (accountId?: string): Promise<NotificationsResponse> => {
+    const params = accountId ? `?account_id=${accountId}` : ''
+    const response = await api.get(`/api/notifications${params}`)
     return response.data
   },
 }

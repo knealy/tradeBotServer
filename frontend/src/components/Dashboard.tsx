@@ -15,6 +15,7 @@ import PerformanceChart from './PerformanceChart'
 import HistoricalPriceChart from './HistoricalPriceChart'
 import TradesTable from './TradesTable'
 import RiskDrawer from './RiskDrawer'
+import NotificationsFeed from './NotificationsFeed'
 import { Activity, ExternalLink } from 'lucide-react'
 
 export default function Dashboard() {
@@ -150,6 +151,9 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Notifications Feed */}
+      <NotificationsFeed />
+      
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

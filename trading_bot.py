@@ -1175,8 +1175,8 @@ class TopStepXTradingBot:
             # Warm-up notifications after restart so we don't re-announce historical fills
             if not self._notification_warmup_done.get(account_key):
                 warmup_count = 0
-                for order in orders:
-                    order_id = str(order.get('id', ''))
+            for order in orders:
+                order_id = str(order.get('id', ''))
                     status = order.get('status', '')
                     if isinstance(status, int):
                         is_filled = status in [2, 3, 4]
@@ -1387,8 +1387,8 @@ class TopStepXTradingBot:
             
             if not self._notification_warmup_done.get(account_key):
                 warmup_count = 0
-                for order in orders:
-                    order_id = str(order.get('id', ''))
+            for order in orders:
+                order_id = str(order.get('id', ''))
                     status = order.get('status', '')
                     if isinstance(status, int):
                         is_filled = status in [2, 3, 4]
