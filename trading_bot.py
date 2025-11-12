@@ -271,6 +271,8 @@ class TopStepXTradingBot:
         
         # Track filled orders to avoid duplicate notifications
         self._notified_orders = set()
+        self._notification_warmup_done: Dict[str, bool] = {}
+        self._startup_time = datetime.utcnow()
         self._notified_positions = set()  # Track position close notifications
         
         # Auto fills settings
@@ -1168,9 +1170,33 @@ class TopStepXTradingBot:
             orders = await self.get_order_history(target_account, limit=10)  # Reduced from 50 to 10
             filled_orders = []
 
+            account_key = str(target_account)
+
+            # Warm-up notifications after restart so we don't re-announce historical fills
+            if not self._notification_warmup_done.get(account_key):
+                warmup_count = 0
+                for order in orders:
+                    order_id = str(order.get('id', ''))
+                    status = order.get('status', '')
+                    if isinstance(status, int):
+                        is_filled = status in [2, 3, 4]
+                    else:
+                        status_str = str(status).lower()
+                        is_filled = status_str in ['filled', 'executed', 'complete']
+
+                    if is_filled:
+                        unique_id = f"{account_key}:{order_id}"
+                        self._notified_orders.add(unique_id)
+                        warmup_count += 1
+
+                if warmup_count:
+                    logger.info(f"🔕 Notification warm-up: marked {warmup_count} existing filled orders for account {account_key}")
+                self._notification_warmup_done[account_key] = True
+
             for order in orders:
                 order_id = str(order.get('id', ''))
-                if order_id in self._notified_orders:
+                unique_id = f"{account_key}:{order_id}"
+                if unique_id in self._notified_orders:
                     continue  # Already notified
 
                 # Check if order is filled
@@ -1189,14 +1215,14 @@ class TopStepXTradingBot:
                     custom_tag = order.get('customTag', '')
                     if not custom_tag or not custom_tag.startswith('TradingBot-v1.0'):
                         # Skip orders not placed by our bot, but still mark as notified to avoid re-checking
-                        self._notified_orders.add(order_id)
+                        self._notified_orders.add(unique_id)
                         continue
                     
                     # Additional validation: ensure order has a fill price (actually filled, not just status change)
                     fill_price = order.get('fillPrice') or order.get('executionPrice') or order.get('filledPrice')
                     if not fill_price:
                         logger.debug(f"Order {order_id} marked as filled but has no fill price - skipping notification")
-                        self._notified_orders.add(order_id)
+                        self._notified_orders.add(unique_id)
                         continue
                     
                     # Get order details
@@ -1228,13 +1254,13 @@ class TopStepXTradingBot:
 
                         logger.info(f"📢 Sending Discord notification for filled order: {order_id} ({symbol} {side} x{quantity} @ ${fill_price})")
                         self.discord_notifier.send_order_fill_notification(notification_data, account_name)
-                        self._notified_orders.add(order_id)
+                        self._notified_orders.add(unique_id)
                         filled_orders.append(order_id)
 
                     except Exception as notif_err:
                         logger.warning(f"Failed to send order fill notification: {notif_err}")
                         # Still mark as notified to avoid retrying
-                        self._notified_orders.add(order_id)
+                        self._notified_orders.add(unique_id)
 
             # Also check for position closes (manual closes, TP hits, stop hits)
             await self._check_position_closes(target_account)
@@ -1357,10 +1383,32 @@ class TopStepXTradingBot:
         try:
             # Get order history to check for fills - limit to recent orders only
             orders = await self.get_order_history(account_id, limit=10)
+            account_key = str(account_id)
+
+            if not self._notification_warmup_done.get(account_key):
+                warmup_count = 0
+                for order in orders:
+                    order_id = str(order.get('id', ''))
+                    status = order.get('status', '')
+                    if isinstance(status, int):
+                        is_filled = status in [2, 3, 4]
+                    else:
+                        status_str = str(status).lower()
+                        is_filled = status_str in ['filled', 'executed', 'complete']
+
+                    if is_filled:
+                        unique_id = f"{account_key}:{order_id}"
+                        self._notified_orders.add(unique_id)
+                        warmup_count += 1
+
+                if warmup_count:
+                    logger.info(f"🔕 Notification warm-up (close check): marked {warmup_count} filled orders for account {account_key}")
+                self._notification_warmup_done[account_key] = True
             
             for order in orders:
                 order_id = str(order.get('id', ''))
-                if order_id in self._notified_orders:
+                unique_id = f"{account_key}:{order_id}"
+                if unique_id in self._notified_orders:
                     continue  # Already notified
                 
                 # Check if order is filled and closes a position
@@ -1410,7 +1458,7 @@ class TopStepXTradingBot:
                         }
                         
                         self.discord_notifier.send_order_fill_notification(notification_data, account_name)
-                        self._notified_orders.add(order_id)
+                        self._notified_orders.add(unique_id)
                         
                         logger.info(f"Sent Discord notification for closing order {order_id}")
                         
@@ -8293,6 +8341,7 @@ class TopStepXTradingBot:
                 elif command_lower == "clear_notifications":
                     # Clear notification cache to re-check all orders
                     self._notified_orders.clear()
+                    self._notification_warmup_done.clear()
                     self._notified_positions.clear()
                     if hasattr(self, '_tracked_positions'):
                         self._tracked_positions.clear()

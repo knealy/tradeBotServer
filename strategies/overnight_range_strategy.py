@@ -19,7 +19,7 @@ Strategy Logic:
 import os
 import logging
 import asyncio
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, date, time, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import deque
@@ -107,6 +107,7 @@ class OvernightRangeStrategy(BaseStrategy):
         
         # Tick size cache: {symbol: tick_size}
         self._tick_size_cache: Dict[str, float] = {}
+        self._last_market_open_run: Optional[date] = None
         
         # Load strategy-specific configuration from environment
         self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
@@ -167,6 +168,44 @@ class OvernightRangeStrategy(BaseStrategy):
         logger.info(f"     Gap Filter: {'ENABLED' if self.filter_gap_enabled else 'DISABLED'} (max {self.filter_gap_max:.0f} pts)")
         logger.info(f"     Volatility Filter: {'ENABLED' if self.filter_volatility_enabled else 'DISABLED'} (ATR {self.filter_atr_min:.0f}-{self.filter_atr_max:.0f})")
         logger.info(f"     DLL Proximity: {'ENABLED' if self.filter_dll_proximity_enabled else 'DISABLED'} (threshold {self.filter_dll_threshold:.0%})")
+    
+    def _get_trade_symbols(self, symbols: Optional[List[str]] = None) -> List[str]:
+        """Determine which symbols to trade for the next execution."""
+        if symbols:
+            candidates = symbols
+        elif getattr(self.config, 'symbols', None):
+            candidates = self.config.symbols
+        else:
+            candidates = os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES').split(',')
+
+        return [sym.strip().upper() for sym in candidates if sym and sym.strip()]
+    
+    async def _execute_market_open_sequence(self, symbols: Optional[List[str]] = None) -> None:
+        """Execute the range break strategy for the configured symbols."""
+        trade_symbols = self._get_trade_symbols(symbols)
+
+        if not trade_symbols:
+            logger.warning("⚠️  No symbols configured for overnight range strategy - skipping execution")
+            return
+
+        logger.info(f"🔔 Executing overnight range break strategy for symbols: {', '.join(trade_symbols)}")
+
+        for symbol in trade_symbols:
+            logger.info(f"📊 Processing {symbol}...")
+
+            try:
+                await self.track_overnight_range(symbol)
+                result = await self.place_range_break_orders(symbol)
+
+                if result.get('success'):
+                    logger.info(f"✅ Successfully placed orders for {symbol}")
+                else:
+                    logger.error(f"❌ Failed to place orders for {symbol}: {result.get('error')}")
+
+            except Exception as exc:
+                logger.error(f"❌ Error executing overnight range for {symbol}: {exc}")
+
+            await asyncio.sleep(1)  # Small delay between symbols
     
     async def get_tick_size(self, symbol: str) -> float:
         """
@@ -1005,64 +1044,45 @@ class OvernightRangeStrategy(BaseStrategy):
     
     async def market_open_scanner(self):
         """
-        Background task that runs at market open (9:30am EST by default).
-        
-        At market open:
-        1. Analyzes overnight ranges
-        2. Calculates ATR zones
-        3. Places stop bracket orders for range breakouts
+        Background task that aligns strategy execution with the configured market open.
+        Handles catch-up execution when the bot starts after the market open.
         """
-        logger.info(f"📅 Market open scanner started - will run at {self.market_open_time} {self.timezone}")
+        logger.info(f"📅 Market open scanner started - targeting {self.market_open_time} {self.timezone}")
         
         while self.is_trading:
             try:
                 now = datetime.now(self.timezone)
-                
-                # Parse market open time
                 open_hour, open_min = map(int, self.market_open_time.split(':'))
-                market_open = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+                market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+                trading_end_hour, trading_end_min = map(int, self.config.trading_end_time.split(':'))
+                trading_end_today = now.replace(hour=trading_end_hour, minute=trading_end_min, second=0, microsecond=0)
                 
-                # Check if we're past market open today
-                if now >= market_open:
-                    # Wait until tomorrow's market open
-                    market_open = market_open + timedelta(days=1)
+                ran_today = self._last_market_open_run == market_open_today.date()
                 
-                # Calculate sleep time
-                sleep_seconds = (market_open - now).total_seconds()
-                logger.info(f"⏰ Next market open: {market_open} (in {sleep_seconds/3600:.1f} hours)")
+                if now >= market_open_today:
+                    if not ran_today:
+                        within_trading_window = now <= (trading_end_today + timedelta(minutes=30))
+                        if within_trading_window:
+                            logger.info("🔔 Market open window already passed today—running catch-up execution now.")
+                            await self._execute_market_open_sequence()
+                        else:
+                            logger.info("⏭️  Market open already passed and we are outside the trading window. Skipping until next session.")
+                        self._last_market_open_run = market_open_today.date()
+                    
+                    next_open = market_open_today + timedelta(days=1)
+                else:
+                    next_open = market_open_today
                 
-                # Sleep until market open
+                sleep_seconds = max((next_open - now).total_seconds(), 5.0)
+                logger.info(
+                    f"⏰ Next market open execution scheduled for {next_open.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                    f"(in {sleep_seconds/3600:.2f} hours)"
+                )
                 await asyncio.sleep(sleep_seconds)
-                
-                # Market open! Execute strategy
-                logger.info(f"🔔 Market open! Executing overnight range break strategy...")
-                
-                # Get symbols to trade from environment
-                symbols = os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES').split(',')
-                
-                for symbol in symbols:
-                    symbol = symbol.strip()
-                    if not symbol:
-                        continue
-                    
-                    logger.info(f"📊 Processing {symbol}...")
-                    
-                    # Track overnight range
-                    await self.track_overnight_range(symbol)
-                    
-                    # Place range break orders
-                    result = await self.place_range_break_orders(symbol)
-                    
-                    if result.get('success'):
-                        logger.info(f"✅ Successfully placed orders for {symbol}")
-                    else:
-                        logger.error(f"❌ Failed to place orders for {symbol}: {result.get('error')}")
-                    
-                    # Small delay between symbols
-                    await asyncio.sleep(1)
-                
-                logger.info("🎯 Market open strategy execution complete!")
-                
+            
+            except asyncio.CancelledError:
+                logger.info("Market open scanner cancelled.")
+                break
             except Exception as e:
                 logger.error(f"Error in market open scanner: {e}")
                 await asyncio.sleep(300)  # Wait 5 minutes on error
@@ -1078,6 +1098,9 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.warning("Strategy is already running")
             return
         
+        if symbols:
+            self.config.symbols = symbols
+        self._last_market_open_run = None
         self.is_trading = True
         
         # Start background tasks
@@ -1095,6 +1118,7 @@ class OvernightRangeStrategy(BaseStrategy):
             return
         
         self.is_trading = False
+        self._last_market_open_run = None
         
         # Cancel background tasks
         if self._tracking_task:

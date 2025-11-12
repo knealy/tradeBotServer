@@ -95,7 +95,10 @@ export default function Strategies() {
     const strategy = strategies?.find((s) => s.name === strategyName)
     const symbols = strategy?.symbols ?? []
 
-    if (currentStatus === 'running') {
+    const normalizedStatus = (currentStatus || '').toLowerCase()
+    const isActive = ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+
+    if (isActive) {
       stopMutation.mutate({ name: strategyName })
     } else {
       startMutation.mutate({ name: strategyName, symbols })
@@ -151,17 +154,22 @@ export default function Strategies() {
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
                     <h3 className="text-lg font-semibold">{strategy.name}</h3>
-                    <span
-                      className={`px-2 py-1 rounded text-xs font-semibold ${
-                        strategy.status === 'running'
-                          ? 'bg-green-500/20 text-green-400'
-                          : strategy.status === 'stopped'
-                          ? 'bg-slate-600/50 text-slate-400'
-                          : 'bg-red-500/20 text-red-400'
-                      }`}
-                    >
-                      {strategy.status === 'running' ? 'active' : strategy.status}
-                    </span>
+                    {(() => {
+                      const normalizedStatus = (strategy.status || '').toLowerCase()
+                      const isActive = ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+                      const isStopped = ['stopped', 'idle', 'disabled'].includes(normalizedStatus)
+                      const badgeClasses = isActive
+                        ? 'bg-green-500/20 text-green-400'
+                        : isStopped
+                        ? 'bg-slate-600/50 text-slate-400'
+                        : 'bg-yellow-500/20 text-yellow-300'
+                      const label = isActive ? 'active' : normalizedStatus || 'unknown'
+                      return (
+                        <span className={`px-2 py-1 rounded text-xs font-semibold ${badgeClasses}`}>
+                          {label}
+                        </span>
+                      )
+                    })()}
                   </div>
                   
                   <div className="text-sm text-slate-400 space-y-1">
@@ -213,21 +221,28 @@ export default function Strategies() {
                 </div>
 
                 <div className="flex flex-col gap-2">
-                  <button
-                    onClick={() => handleToggleStrategy(strategy.name, strategy.status)}
-                    disabled={startMutation.isLoading || stopMutation.isLoading || !selectedAccount}
-                    className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${
-                      strategy.status === 'running' || strategy.status === 'active'
-                        ? 'bg-red-600 hover:bg-red-500 text-white'
-                        : 'bg-green-600 hover:bg-green-500 text-white'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    {startMutation.isLoading || stopMutation.isLoading
+                  {(() => {
+                    const normalizedStatus = (strategy.status || '').toLowerCase()
+                    const isActive = ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+                    const buttonLabel = startMutation.isLoading || stopMutation.isLoading
                       ? 'Loading...'
-                      : strategy.status === 'running' || strategy.status === 'active'
+                      : isActive
                       ? 'Disable'
-                      : 'Enable'}
-                  </button>
+                      : 'Enable'
+                    const buttonClasses = isActive
+                      ? 'bg-red-600 hover:bg-red-500 text-white'
+                      : 'bg-green-600 hover:bg-green-500 text-white'
+
+                    return (
+                      <button
+                        onClick={() => handleToggleStrategy(strategy.name, strategy.status)}
+                        disabled={startMutation.isLoading || stopMutation.isLoading || !selectedAccount}
+                        className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${buttonClasses} disabled:opacity-50 disabled:cursor-not-allowed`}
+                      >
+                        {buttonLabel}
+                      </button>
+                    )
+                  })()}
                 </div>
               </div>
             </div>

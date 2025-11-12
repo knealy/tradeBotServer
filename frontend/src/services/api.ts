@@ -163,7 +163,7 @@ export const strategyApi = {
     return response.data
   },
 
-  startStrategy: async (name: string, symbols?: string[], accountId?: string): Promise<{ success: boolean; message: string }> => {
+  startStrategy: async (name: string, symbols?: string[], accountId?: string): Promise<{ success: boolean; message: string; error?: string }> => {
     // Always send payload with accountId and symbols (even if empty)
     const payload: { symbols: string[]; accountId?: string } = {
       symbols: symbols ?? []
@@ -173,7 +173,7 @@ export const strategyApi = {
     return response.data
   },
 
-  stopStrategy: async (name: string, accountId?: string): Promise<{ success: boolean; message: string }> => {
+  stopStrategy: async (name: string, accountId?: string): Promise<{ success: boolean; message: string; error?: string }> => {
     // Always send payload with accountId
     const payload: { accountId?: string } = {}
     if (accountId) payload.accountId = accountId
