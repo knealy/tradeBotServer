@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { useQuery } from 'react-query'
 import {
   CandlestickSeries,
@@ -278,50 +278,51 @@ export default function TradingChart({
     }
   }, [height, chartTheme, timeframe]) // Chart initialization - data is handled by separate effect
 
+  // Memoize chart data to prevent unnecessary recalculations
+  const chartData = useMemo(() => {
+    if (!data?.bars || data.bars.length === 0) return null
+
+    const candlestickData: CandlestickData<Time>[] = data.bars
+      .map((bar: HistoricalBar) => ({
+        time: toUnixTimestamp(bar.timestamp),
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number))
+
+    const volumeColors = getVolumeColors('dark')
+    const volumeData = data.bars
+      .map((bar: HistoricalBar) => ({
+        time: toUnixTimestamp(bar.timestamp),
+        value: bar.volume,
+        color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number))
+
+    return { candlestickData, volumeData }
+  }, [data])
+
   // Update chart data when data changes (including timeframe/barLimit changes)
   useEffect(() => {
     if (!chartInitialized) {
-      console.log('[TradingChart] Chart not initialized yet, skipping data update')
       return
     }
-    if (!data?.bars || !candlestickSeriesRef.current || !volumeSeriesRef.current) {
-      console.log('[TradingChart] Missing data or series refs', { 
-        hasData: !!data?.bars, 
-        hasCandlestick: !!candlestickSeriesRef.current, 
-        hasVolume: !!volumeSeriesRef.current 
-      })
+    if (!chartData || !candlestickSeriesRef.current || !volumeSeriesRef.current) {
       return
     }
 
     console.log('[TradingChart] Updating chart data', { 
-      barCount: data.bars.length, 
+      barCount: chartData.candlestickData.length, 
       symbol, 
       timeframe, 
       barLimit 
     })
 
     try {
-      const candlestickData: CandlestickData<Time>[] = data.bars
-        .map((bar: HistoricalBar) => ({
-          time: toUnixTimestamp(bar.timestamp),
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-        }))
-        .sort((a, b) => (a.time as number) - (b.time as number))
-
-      const volumeColors = getVolumeColors('dark')
-      const volumeData = data.bars
-        .map((bar: HistoricalBar) => ({
-          time: toUnixTimestamp(bar.timestamp),
-          value: bar.volume,
-          color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
-        }))
-        .sort((a, b) => (a.time as number) - (b.time as number))
-
-      candlestickSeriesRef.current.setData(candlestickData)
-      volumeSeriesRef.current.setData(volumeData)
+      candlestickSeriesRef.current.setData(chartData.candlestickData)
+      volumeSeriesRef.current.setData(chartData.volumeData)
 
       // Fit content
       if (chartRef.current) {
@@ -331,41 +332,50 @@ export default function TradingChart({
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
-  }, [data, chartInitialized, symbol, timeframe, barLimit])
+  }, [chartData, chartInitialized])
+
+  // Memoize relevant positions to prevent unnecessary recalculations
+  const relevantPositions = useMemo(() => {
+    return positions.filter((pos) => pos.symbol === symbol && pos.timestamp)
+  }, [positions, symbol])
+
+  // Memoize position markers
+  const positionMarkers = useMemo(() => {
+    if (!showPositions || relevantPositions.length === 0) return []
+
+    return relevantPositions.map((pos) => {
+      const isLong = pos.side === 'LONG'
+      const time = toUnixTimestamp(pos.timestamp!)
+
+      return {
+        time,
+        position: isLong ? 'belowBar' : 'aboveBar',
+        color: isLong ? '#26A69A' : '#EF5350',
+        shape: isLong ? 'arrowUp' : 'arrowDown',
+        text: `${pos.side} ${pos.quantity}@${pos.entry_price.toFixed(2)}`,
+        size: 1,
+      } as SeriesMarker<Time>
+    })
+  }, [relevantPositions, showPositions])
 
   // Add position markers
   useEffect(() => {
-    if (!chartInitialized || !candlestickSeriesRef.current || !markersPluginRef.current) return
+    if (!chartInitialized || !markersPluginRef.current) return
 
-    if (!showPositions) {
-      markersPluginRef.current.setMarkers([])
-      return
-    }
-
-    const relevantPositions = positions.filter((pos) => pos.symbol === symbol && pos.timestamp)
     console.log('[TradingChart] Updating position markers', { 
-      totalPositions: positions.length, 
-      relevantPositions: relevantPositions.length,
+      markerCount: positionMarkers.length,
       symbol 
     })
 
-    const markers: SeriesMarker<Time>[] = relevantPositions
-      .map((pos) => {
-        const isLong = pos.side === 'LONG'
-        const time = toUnixTimestamp(pos.timestamp!)
+    markersPluginRef.current.setMarkers(positionMarkers)
+  }, [positionMarkers, chartInitialized, symbol])
 
-        return {
-          time,
-          position: isLong ? 'belowBar' : 'aboveBar',
-          color: isLong ? '#26A69A' : '#EF5350',
-          shape: isLong ? 'arrowUp' : 'arrowDown',
-          text: `${pos.side} ${pos.quantity}@${pos.entry_price.toFixed(2)}`,
-          size: 1,
-        } as SeriesMarker<Time>
-      })
-
-    markersPluginRef.current.setMarkers(markers)
-  }, [positions, symbol, showPositions, chartInitialized])
+  // Memoize relevant orders to prevent unnecessary recalculations
+  const relevantOrders = useMemo(() => {
+    return orders.filter(
+      (order) => order.symbol === symbol && order.status === 'PENDING' && order.price
+    )
+  }, [orders, symbol])
 
   // Add order price lines
   useEffect(() => {
@@ -381,15 +391,11 @@ export default function TradingChart({
     })
     priceLinesRef.current = []
 
-    if (!showOrders) {
+    if (!showOrders || relevantOrders.length === 0) {
       return
     }
 
-    const relevantOrders = orders.filter(
-      (order) => order.symbol === symbol && order.status === 'PENDING' && order.price
-    )
     console.log('[TradingChart] Updating order price lines', { 
-      totalOrders: orders.length, 
       relevantOrders: relevantOrders.length,
       symbol 
     })
@@ -413,7 +419,7 @@ export default function TradingChart({
         console.error('[TradingChart] Error creating price line:', error)
       }
     })
-  }, [orders, symbol, showOrders, chartInitialized])
+  }, [relevantOrders, showOrders, chartInitialized])
 
   // WebSocket integration for live updates
   useEffect(() => {
