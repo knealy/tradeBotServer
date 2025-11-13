@@ -1,6 +1,6 @@
 import { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Activity, TrendingUp, Settings, BarChart3, Shield } from 'lucide-react'
+import { Activity, TrendingUp, Settings, BarChart3 } from 'lucide-react'
 
 interface LayoutProps {
   children: ReactNode
@@ -14,7 +14,6 @@ export default function Layout({ children }: LayoutProps) {
     { path: '/positions', icon: TrendingUp, label: 'Positions' },
     { path: '/strategies', icon: Activity, label: 'Strategies' },
     { path: '/settings', icon: Settings, label: 'Settings' },
-    { path: '/admin', icon: Shield, label: 'Admin' },
   ]
 
   return (

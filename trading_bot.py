@@ -218,18 +218,6 @@ class TopStepXTradingBot:
             logger.warning(f"⚠️  PostgreSQL unavailable (will use memory cache only): {e}")
             self.db = None
         
-        # Initialize Redis cache (for hot data - real-time quotes, recent bars, positions)
-        try:
-            from infrastructure.redis_cache import get_redis_cache
-            self.redis_cache = get_redis_cache()
-            if self.redis_cache.is_enabled():
-                logger.info("✅ Redis cache initialized")
-            else:
-                logger.info("ℹ️  Redis cache disabled (using fallback)")
-        except Exception as e:
-            logger.warning(f"⚠️  Redis unavailable: {e}")
-            self.redis_cache = None
-        
         # Initialize Strategy Manager (modular strategy system)
         self.strategy_manager = StrategyManager(trading_bot=self)
         logger.debug("Strategy manager initialized")
@@ -5608,12 +5596,7 @@ class TopStepXTradingBot:
     
     def _get_from_memory_cache(self, cache_key: str, max_age_minutes: Optional[int] = None) -> Optional[List[Dict]]:
         """
-        Get data from cache (Redis -> Memory -> None).
-        
-        Uses 3-tier strategy:
-        1. Redis cache (if enabled) - <1ms
-        2. Memory cache - <1ms
-        3. None (cache miss)
+        Get data from in-memory cache (ultra-fast, <1ms).
         
         Args:
             cache_key: Cache key for the data
@@ -5625,18 +5608,6 @@ class TopStepXTradingBot:
         if max_age_minutes is None:
             max_age_minutes = self._get_cache_ttl_minutes()
         
-        # Tier 1: Try Redis cache first (if enabled)
-        if hasattr(self, 'redis_cache') and self.redis_cache and self.redis_cache.is_enabled():
-            try:
-                redis_key = f"bars:{cache_key}"
-                cached_data = self.redis_cache.get(redis_key)
-                if cached_data is not None:
-                    logger.debug(f"✅ Redis cache HIT: {cache_key}")
-                    return cached_data
-            except Exception as e:
-                logger.debug(f"Redis cache get error: {e}")
-        
-        # Tier 2: Check in-memory cache
         with self._memory_cache_lock:
             if cache_key not in self._memory_cache:
                 return None
@@ -5656,21 +5627,7 @@ class TopStepXTradingBot:
             return data.copy()  # Return copy to prevent mutation
     
     def _save_to_memory_cache(self, cache_key: str, data: List[Dict]) -> None:
-        """
-        Save data to cache (Redis -> Memory).
-        
-        Saves to both Redis (if enabled) and memory cache.
-        """
-        # Tier 1: Save to Redis (if enabled) with 60s TTL for hot data
-        if hasattr(self, 'redis_cache') and self.redis_cache and self.redis_cache.is_enabled():
-            try:
-                redis_key = f"bars:{cache_key}"
-                self.redis_cache.set(redis_key, data, ttl=60)  # 60 second TTL for hot bars
-                logger.debug(f"💾 Saved to Redis cache: {cache_key}")
-            except Exception as e:
-                logger.debug(f"Redis cache set error: {e}")
-        
-        # Tier 2: Save to in-memory cache
+        """Save data to in-memory cache (LRU eviction)."""
         with self._memory_cache_lock:
             # Remove oldest if at capacity
             if len(self._memory_cache) >= self._memory_cache_max_size:

@@ -4,8 +4,8 @@ import { ShieldAlert, ShieldCheck, AlertTriangle, CheckCircle2, ChevronDown, Che
 import { useAccount } from '../contexts/AccountContext'
 import { riskApi } from '../services/api'
 import { wsService } from '../services/websocket'
-import { useWidgetState } from '../hooks/useWidgetState'
 import type { RiskSnapshot, RiskEvent } from '../types'
+import { useWidgetState } from '../hooks/useWidgetState'
 
 const currencyFormatter = new Intl.NumberFormat(undefined, {
   style: 'currency',

@@ -2,9 +2,9 @@ import { useState, FormEvent } from 'react'
 import { useMutation, useQueryClient } from 'react-query'
 import { orderApi, positionApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
-import { useWidgetState } from '../hooks/useWidgetState'
 import type { PlaceOrderPayload } from '../types'
 import { Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { useWidgetState } from '../hooks/useWidgetState'
 
 interface OrderTicketProps {
   onOrderPlaced?: () => void

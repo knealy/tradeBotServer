@@ -35,10 +35,6 @@ psutil>=5.9.0  # For efficient SDK resource monitoring (significantly improves p
 # Database (PostgreSQL for persistent caching)
 psycopg2-binary>=2.9.0  # PostgreSQL adapter for Python
 
-# Redis (In-memory cache for hot data)
-redis>=5.0.0  # Redis client for Python
-hiredis>=2.2.0  # Fast Redis protocol parser (optional but recommended)
-
 # DataFrame engine for fast Parquet caching
 polars>=0.20.27
 

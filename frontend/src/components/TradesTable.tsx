@@ -2,9 +2,9 @@ import { useMemo, useState } from 'react'
 import { useQuery } from 'react-query'
 import { tradeApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
-import { useWidgetState } from '../hooks/useWidgetState'
 import type { TradesResponse, Trade } from '../types'
 import { Download, ChevronDown, ChevronUp } from 'lucide-react'
+import { useWidgetState } from '../hooks/useWidgetState'
 
 const formatterCurrency = new Intl.NumberFormat(undefined, {
   style: 'currency',
@@ -24,7 +24,7 @@ const formatterDate = new Intl.DateTimeFormat(undefined, {
 export default function TradesTable() {
   const { selectedAccount } = useAccount()
   const [limit, setLimit] = useState(20)
-  const [isOpen, setIsOpen] = useWidgetState('tradesTable', true)
+  const [isOpen, setIsOpen] = useWidgetState('recentTrades', true)
 
   const { data, isLoading } = useQuery<TradesResponse>(
     ['trades', selectedAccount?.id, limit],

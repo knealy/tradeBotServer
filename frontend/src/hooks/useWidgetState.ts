@@ -2,88 +2,92 @@ import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { settingsApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
-import { useDebounce } from './useDebounce'
-
-interface WidgetStates {
-  [widgetId: string]: boolean // true = open, false = closed
-}
 
 /**
- * Hook to manage widget collapsed/expanded state with database persistence
- * @param widgetId - Unique identifier for the widget (e.g., 'riskDrawer', 'metricsCard')
- * @param defaultOpen - Default state if not found in database
- * @returns [isOpen, setIsOpen] - State and setter function
+ * Hook to manage widget state with database persistence
+ * 
+ * @param widgetId - Unique identifier for the widget (e.g., 'positionsOverview', 'riskDrawer')
+ * @param defaultValue - Default state value if not found in database
+ * @returns [state, setState] - Similar to useState but with persistence
  */
-export function useWidgetState(widgetId: string, defaultOpen: boolean = true) {
+export function useWidgetState<T = boolean>(
+  widgetId: string,
+  defaultValue: T
+): [T, (value: T | ((prev: T) => T)) => void] {
   const { selectedAccount } = useAccount()
   const queryClient = useQueryClient()
-  const accountId = selectedAccount?.id || 'global'
-  
-  // Load settings from database
+  const accountId = selectedAccount?.id
+
+  // Load widget states from settings
   const { data: settingsResponse } = useQuery(
-    ['settings', accountId],
-    () => settingsApi.getSettings(accountId === 'global' ? 'global' : accountId),
+    ['settings', 'global', accountId],
+    () => settingsApi.getSettings(accountId || 'global'),
     {
       staleTime: 60_000,
       refetchOnWindowFocus: false,
     }
   )
 
-  // Get initial state from settings or use default
-  const widgetStates = (settingsResponse?.settings?.widgetStates as WidgetStates) || {}
-  const initialState = widgetStates[widgetId] !== undefined ? widgetStates[widgetId] : defaultOpen
-  const [isOpen, setIsOpenState] = useState(initialState)
+  // Initialize state from settings or use default
+  const [state, setStateInternal] = useState<T>(() => {
+    const widgetStates = settingsResponse?.settings?.widgetStates || {}
+    return widgetStates[widgetId] !== undefined ? widgetStates[widgetId] : defaultValue
+  })
 
-  // Update local state when settings load
+  // Update state when settings load
   useEffect(() => {
     if (settingsResponse?.settings?.widgetStates) {
-      const states = settingsResponse.settings.widgetStates as WidgetStates
-      if (states[widgetId] !== undefined) {
-        setIsOpenState(states[widgetId])
+      const widgetStates = settingsResponse.settings.widgetStates
+      if (widgetStates[widgetId] !== undefined) {
+        setStateInternal(widgetStates[widgetId])
       }
     }
   }, [settingsResponse, widgetId])
 
-  // Debounce state changes to avoid too many API calls
-  const debouncedIsOpen = useDebounce(isOpen, 500)
-
   // Save mutation
   const saveMutation = useMutation(
-    (newStates: WidgetStates) => {
+    async (newState: T) => {
       const currentSettings = settingsResponse?.settings || {}
-      return settingsApi.saveSettings({
+      const widgetStates = currentSettings.widgetStates || {}
+      
+      const updatedSettings = {
         ...currentSettings,
-        widgetStates: newStates,
-        account_id: accountId === 'global' ? null : accountId,
+        widgetStates: {
+          ...widgetStates,
+          [widgetId]: newState,
+        },
+      }
+
+      await settingsApi.saveSettings({
+        ...updatedSettings,
+        account_id: accountId,
       })
     },
     {
       onSuccess: () => {
-        queryClient.invalidateQueries(['settings', accountId])
+        // Invalidate settings query to refresh cache
+        queryClient.invalidateQueries(['settings'])
       },
     }
   )
 
-  // Save state changes to database
-  useEffect(() => {
-    if (!settingsResponse?.settings) return // Don't save until settings are loaded
+  // Wrapper for setState that also saves to database
+  const setState = useCallback(
+    (value: T | ((prev: T) => T)) => {
+      setStateInternal((prev) => {
+        const newValue = typeof value === 'function' ? (value as (prev: T) => T)(prev) : value
+        
+        // Debounce saves to avoid too many API calls
+        setTimeout(() => {
+          saveMutation.mutate(newValue)
+        }, 500)
+        
+        return newValue
+      })
+    },
+    [saveMutation]
+  )
 
-    const currentStates = (settingsResponse.settings.widgetStates as WidgetStates) || {}
-    if (currentStates[widgetId] === debouncedIsOpen) return // No change
-
-    const newStates = {
-      ...currentStates,
-      [widgetId]: debouncedIsOpen,
-    }
-
-    saveMutation.mutate(newStates)
-  }, [debouncedIsOpen, widgetId, settingsResponse, saveMutation])
-
-  // Setter function
-  const setIsOpen = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
-    setIsOpenState(value)
-  }, [])
-
-  return [isOpen, setIsOpen] as const
+  return [state, setState]
 }
 

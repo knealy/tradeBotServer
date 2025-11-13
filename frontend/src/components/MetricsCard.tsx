@@ -7,7 +7,7 @@ interface MetricsCardProps {
 }
 
 export default function MetricsCard({ metrics }: MetricsCardProps) {
-  const [isOpen, setIsOpen] = useWidgetState('metricsCard', true)
+  const [isOpen, setIsOpen] = useWidgetState('performanceMetrics', true)
 
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">

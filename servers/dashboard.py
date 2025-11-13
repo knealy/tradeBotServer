@@ -403,22 +403,8 @@ class DashboardAPI:
             return history
 
     async def _get_cached_positions(self, account: Optional[str]) -> List[Dict[str, Any]]:
-        """Get cached positions with Redis support (Redis -> Memory -> API)."""
+        """Return cached open positions for a short TTL to smooth API latency."""
         cache_key = str(account) if account is not None else 'default'
-        
-        # Try Redis cache first (if available)
-        try:
-            if hasattr(self.trading_bot, 'redis_cache') and self.trading_bot.redis_cache and self.trading_bot.redis_cache.is_enabled():
-                redis_key = f"positions:{cache_key}"
-                cached = self.trading_bot.redis_cache.get(redis_key)
-                if cached is not None:
-                    logger.debug(f"✅ Redis cache HIT for positions: {cache_key}")
-                    await self._update_position_prices(cached)
-                    return cached
-        except Exception as e:
-            logger.debug(f"Redis positions cache error: {e}")
-        
-        # Fallback to memory cache
         lock = self._get_lock(self._positions_locks, cache_key)
         now = time.monotonic()
 
@@ -433,16 +419,6 @@ class DashboardAPI:
             positions = await self.trading_bot.get_open_positions(account_id=account)
             # Update current prices from live market data for real-time P&L
             await self._update_position_prices(positions)
-            
-            # Save to Redis cache (if available)
-            try:
-                if hasattr(self.trading_bot, 'redis_cache') and self.trading_bot.redis_cache and self.trading_bot.redis_cache.is_enabled():
-                    redis_key = f"positions:{cache_key}"
-                    self.trading_bot.redis_cache.set(redis_key, positions, ttl=2)  # 2 second TTL for positions
-            except Exception as e:
-                logger.debug(f"Redis positions cache save error: {e}")
-            
-            # Save to memory cache
             self._positions_cache[cache_key] = {
                 'data': positions,
                 'expires': now + self._positions_ttl,
@@ -697,23 +673,9 @@ class DashboardAPI:
             return []
     
     async def get_orders(self) -> List[Dict[str, Any]]:
-        """Get open orders with Redis caching"""
-        account = self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
-        cache_key = str(account) if account is not None else 'default'
-        
-        # Try Redis cache first (if available)
+        """Get open orders"""
         try:
-            if hasattr(self.trading_bot, 'redis_cache') and self.trading_bot.redis_cache and self.trading_bot.redis_cache.is_enabled():
-                redis_key = f"orders:{cache_key}"
-                cached = self.trading_bot.redis_cache.get(redis_key)
-                if cached is not None:
-                    logger.debug(f"✅ Redis cache HIT for orders: {cache_key}")
-                    return cached
-        except Exception as e:
-            logger.debug(f"Redis orders cache error: {e}")
-        
-        try:
-            orders = await self.trading_bot.get_open_orders(account_id=account)
+            orders = await self.trading_bot.get_open_orders()
             formatted_orders = []
             
             for order in orders:
