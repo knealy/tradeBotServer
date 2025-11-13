@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
 import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
+import { useWidgetState } from '../hooks/useWidgetState'
 import AccountSelector from '../components/AccountSelector'
 import OrderTicket from '../components/OrderTicket'
 import TradingChart from '../components/TradingChart'
@@ -51,6 +52,9 @@ export default function PositionsPage() {
   const [trailingStopInputs, setTrailingStopInputs] = useState<Record<string, string>>({})
   const [trailingStopEnabled, setTrailingStopEnabled] = useState<Record<string, boolean>>({})
   const [breakevenEnabled, setBreakevenEnabled] = useState<Record<string, boolean>>({})
+  const [automationToolsOpen, setAutomationToolsOpen] = useWidgetState('automationTools', true)
+  const [positionsOpen, setPositionsOpen] = useWidgetState('positionsPagePositions', true)
+  const [ordersOpen, setOrdersOpen] = useWidgetState('positionsPageOrders', true)
 
   const pushFeedback = (type: 'success' | 'error', message: string) => {
     setFeedback({ type, message })
@@ -407,44 +411,76 @@ export default function PositionsPage() {
       <OrderTicket />
 
       {/* Automation Tools */}
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-          <Zap className="w-5 h-5" />
-          Automation Tools
-        </h2>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => testBreakoutMutation.mutate({ symbol: 'MNQ', quantity: 1, accountName: 'PRAC' })}
-              className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2"
-              disabled={testBreakoutMutation.isLoading || !accountId}
-            >
-              <Play className="w-4 h-4" />
-              {testBreakoutMutation.isLoading ? 'Testing...' : 'Test Overnight Breakout'}
-            </button>
-            <p className="text-sm text-slate-400">
-              Simulates overnight breakout trades on practice account (MNQ, 1 contract)
-            </p>
+      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+        <button
+          type="button"
+          onClick={() => setAutomationToolsOpen((prev) => !prev)}
+          className="w-full flex items-center justify-between px-4 py-3"
+        >
+          <div className="flex items-center gap-3 text-left">
+            <Zap className="w-5 h-5 text-yellow-400" />
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Automation Tools</p>
+              <p className="text-xs text-slate-400">Overnight breakout testing</p>
+            </div>
           </div>
-        </div>
+          {automationToolsOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </button>
+
+        {automationToolsOpen && (
+          <div className="px-4 pb-4">
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => testBreakoutMutation.mutate({ symbol: 'MNQ', quantity: 1, accountName: 'PRAC' })}
+                  className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2"
+                  disabled={testBreakoutMutation.isLoading || !accountId}
+                >
+                  <Play className="w-4 h-4" />
+                  {testBreakoutMutation.isLoading ? 'Testing...' : 'Test Overnight Breakout'}
+                </button>
+                <p className="text-sm text-slate-400">
+                  Simulates overnight breakout trades on practice account (MNQ, 1 contract)
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Open Positions */}
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 className="text-xl font-semibold mb-4">Open Positions ({positions.length})</h2>
-        {isLoading ? (
-          <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
-            <p className="text-slate-400 mt-2">Loading positions...</p>
+      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+        <button
+          type="button"
+          onClick={() => setPositionsOpen((prev) => !prev)}
+          className="w-full flex items-center justify-between px-4 py-3"
+        >
+          <div className="flex items-center gap-3 text-left">
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Open Positions</p>
+              <p className="text-xs text-slate-400">
+                {positions.length > 0 ? `${positions.length} position${positions.length !== 1 ? 's' : ''}` : 'No positions'}
+              </p>
+            </div>
           </div>
-        ) : positions.length === 0 ? (
-          <div className="text-center py-8 text-slate-400">
-            <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
-            <p>No open positions</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {positions.map((position) => {
+          {positionsOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </button>
+
+        {positionsOpen && (
+          <div className="px-4 pb-4">
+            {isLoading ? (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
+                <p className="text-slate-400 mt-2">Loading positions...</p>
+              </div>
+            ) : positions.length === 0 ? (
+              <div className="text-center py-8 text-slate-400">
+                <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p>No open positions</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {positions.map((position) => {
               const isLong = position.side === 'LONG'
               const unrealized = Number(position.unrealized_pnl ?? 0)
               const realized = Number(position.realized_pnl ?? 0)
@@ -702,26 +738,45 @@ export default function PositionsPage() {
                   )}
                 </div>
               )
-            })}
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* Open Orders */}
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 className="text-xl font-semibold mb-4">Open Orders ({orders.length})</h2>
-        {isLoading ? (
-          <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
-            <p className="text-slate-400 mt-2">Loading orders...</p>
+      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+        <button
+          type="button"
+          onClick={() => setOrdersOpen((prev) => !prev)}
+          className="w-full flex items-center justify-between px-4 py-3"
+        >
+          <div className="flex items-center gap-3 text-left">
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Open Orders</p>
+              <p className="text-xs text-slate-400">
+                {orders.length > 0 ? `${orders.length} order${orders.length !== 1 ? 's' : ''}` : 'No orders'}
+              </p>
+            </div>
           </div>
-        ) : orders.length === 0 ? (
-          <div className="text-center py-8 text-slate-400">
-            <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
-            <p>No open orders</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
+          {ordersOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </button>
+
+        {ordersOpen && (
+          <div className="px-4 pb-4">
+            {isLoading ? (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
+                <p className="text-slate-400 mt-2">Loading orders...</p>
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="text-center py-8 text-slate-400">
+                <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p>No open orders</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
             {orders.map((order) => {
               const isBuy = order.side === 'BUY'
               const orderType = order.type || 'UNKNOWN'
@@ -847,7 +902,9 @@ export default function PositionsPage() {
                   </div>
                 </div>
               )
-            })}
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>

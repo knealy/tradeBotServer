@@ -381,20 +381,15 @@ export default function TradingChart({
   const relevantPositions = useMemo(() => {
     const filtered = positions.filter((pos) => {
       const matchesSymbol = pos.symbol === symbol
-      // Position might have timestamp or opened_at field
-      const hasTime = pos.timestamp || pos.opened_at || pos.created_at
-      console.log('[TradingChart] Position filter check', { 
-        symbol: pos.symbol, 
-        matchesSymbol, 
-        hasTime,
-        position: pos 
-      })
-      return matchesSymbol && hasTime
+      // For chart display, we can use current time if no timestamp exists
+      // This allows showing positions even without historical timestamp
+      return matchesSymbol
     })
     console.log('[TradingChart] Filtered positions', { 
       total: positions.length, 
       filtered: filtered.length,
-      symbol 
+      symbol,
+      positions: filtered.map(p => ({ symbol: p.symbol, timestamp: p.timestamp }))
     })
     return filtered
   }, [positions, symbol])
@@ -405,11 +400,15 @@ export default function TradingChart({
 
     return relevantPositions.map((pos) => {
       const isLong = pos.side === 'LONG'
-      // Try multiple timestamp fields
-      const timestamp = pos.timestamp || pos.opened_at || pos.created_at || ''
+      // Try multiple timestamp fields, fallback to current time for display
+      let timestamp = pos.timestamp || pos.opened_at || pos.created_at
       if (!timestamp) {
-        console.warn('[TradingChart] Position missing timestamp', pos)
-        return null
+        // If no timestamp, use current time (position is active now)
+        timestamp = new Date().toISOString()
+        console.log('[TradingChart] Position missing timestamp, using current time', { 
+          symbol: pos.symbol, 
+          side: pos.side 
+        })
       }
       const time = toUnixTimestamp(timestamp)
 

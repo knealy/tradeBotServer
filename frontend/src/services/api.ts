@@ -330,6 +330,48 @@ export const settingsApi = {
   },
 }
 
+// Auth API
+export const authApi = {
+  login: async (username: string, password: string): Promise<{ token: string; user: any }> => {
+    const response = await api.post('/api/auth/login', { username, password })
+    // Store token in localStorage
+    if (response.data.token) {
+      localStorage.setItem('auth_token', response.data.token)
+      api.defaults.headers.common['Authorization'] = `Bearer ${response.data.token}`
+    }
+    return response.data
+  },
+
+  logout: async (): Promise<void> => {
+    localStorage.removeItem('auth_token')
+    delete api.defaults.headers.common['Authorization']
+    await api.post('/api/auth/logout')
+  },
+
+  getCurrentUser: async (): Promise<any> => {
+    const response = await api.get('/api/auth/me')
+    return response.data.user
+  },
+}
+
+// Admin API
+export const adminApi = {
+  listUsers: async (): Promise<{ users: any[] }> => {
+    const response = await api.get('/api/admin/users')
+    return response.data
+  },
+
+  createUser: async (userData: { username: string; password: string; email?: string; role?: string }): Promise<{ user: any }> => {
+    const response = await api.post('/api/admin/users', userData)
+    return response.data
+  },
+
+  getStats: async (): Promise<any> => {
+    const response = await api.get('/api/admin/stats')
+    return response.data
+  },
+}
+
 // Notifications API
 export const notificationsApi = {
   getNotifications: async (accountId?: string): Promise<NotificationsResponse> => {

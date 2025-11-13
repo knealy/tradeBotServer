@@ -1,13 +1,13 @@
-import { useState } from 'react'
 import { PerformanceMetrics } from '../types'
 import { Activity, Zap, Database, ChevronDown, ChevronUp } from 'lucide-react'
+import { useWidgetState } from '../hooks/useWidgetState'
 
 interface MetricsCardProps {
   metrics: PerformanceMetrics
 }
 
 export default function MetricsCard({ metrics }: MetricsCardProps) {
-  const [isOpen, setIsOpen] = useState(true)
+  const [isOpen, setIsOpen] = useWidgetState('metricsCard', true)
 
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQuery, useQueryClient } from 'react-query'
 import { ShieldAlert, ShieldCheck, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { useAccount } from '../contexts/AccountContext'
 import { riskApi } from '../services/api'
 import { wsService } from '../services/websocket'
+import { useWidgetState } from '../hooks/useWidgetState'
 import type { RiskSnapshot, RiskEvent } from '../types'
 
 const currencyFormatter = new Intl.NumberFormat(undefined, {
@@ -54,7 +55,7 @@ export default function RiskDrawer() {
   const { selectedAccount } = useAccount()
   const accountId = selectedAccount?.id
   const queryClient = useQueryClient()
-  const [isOpen, setIsOpen] = useState(true)
+  const [isOpen, setIsOpen] = useWidgetState('riskDrawer', true)
 
   const { data, isLoading, error, refetch, isFetching } = useQuery<RiskSnapshot>(
     ['risk', accountId],

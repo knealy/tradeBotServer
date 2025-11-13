@@ -2,6 +2,7 @@ import { useState, FormEvent } from 'react'
 import { useMutation, useQueryClient } from 'react-query'
 import { orderApi, positionApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
+import { useWidgetState } from '../hooks/useWidgetState'
 import type { PlaceOrderPayload } from '../types'
 import { Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 
@@ -183,7 +184,7 @@ export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
 
   const isSubmitting = placeOrderMutation.isLoading
   const disableActions = !accountId
-  const [isOpen, setIsOpen] = useState(true)
+  const [isOpen, setIsOpen] = useWidgetState('orderTicket', true)
 
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
