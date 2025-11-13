@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from 'react-query'
 import { orderApi, positionApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { PlaceOrderPayload } from '../types'
-import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface OrderTicketProps {
   onOrderPlaced?: () => void
@@ -183,17 +183,27 @@ export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
 
   const isSubmitting = placeOrderMutation.isLoading
   const disableActions = !accountId
+  const [isOpen, setIsOpen] = useState(true)
 
   return (
-    <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-xl font-semibold">Quick Order Ticket</h2>
-          <p className="text-slate-400 text-sm">Place discretionary trades directly from the dashboard</p>
+    <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="w-full flex items-center justify-between px-4 py-3"
+      >
+        <div className="flex items-center gap-3 text-left">
+          <div>
+            <p className="text-sm font-semibold text-slate-200">Quick Order Ticket</p>
+            <p className="text-xs text-slate-400">Place discretionary trades directly from the dashboard</p>
+          </div>
         </div>
-      </div>
+        {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
 
-      {formError && (
+      {isOpen && (
+        <div className="px-4 pb-4">
+          {formError && (
         <div className="mb-4 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           <AlertCircle className="h-4 w-4" />
           <span>{formError}</span>
@@ -437,6 +447,8 @@ export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
           Tip: Brackets on market/limit orders use tick offsets. Stop entries require explicit pricing for the attached OCO legs.
         </p>
       </form>
+        </div>
+      )}
     </div>
   )
 }

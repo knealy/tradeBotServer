@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { useQuery } from 'react-query'
+import { useQuery, useQueryClient } from 'react-query'
+import { RefreshCw } from 'lucide-react'
 import {
   CandlestickSeries,
   HistogramSeries,
@@ -52,6 +53,7 @@ export default function TradingChart({
   const [showPositions, setShowPositions] = useState(propShowPositions)
   const [showOrders, setShowOrders] = useState(propShowOrders)
   const [chartInitialized, setChartInitialized] = useState(false)
+  const queryClient = useQueryClient()
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -64,7 +66,7 @@ export default function TradingChart({
   const chartTheme = useChartTheme({ theme: 'dark', height })
 
   // Fetch historical data
-  const { data, isLoading } = useQuery<HistoricalDataResponse>(
+  const { data, isLoading, refetch, isRefetching } = useQuery<HistoricalDataResponse>(
     ['tradingChartData', symbol, timeframe, barLimit],
     () =>
       analyticsApi.getHistoricalData({
@@ -76,9 +78,14 @@ export default function TradingChart({
     {
       enabled: Boolean(symbol),
       staleTime: 30_000,
-      refetchInterval: 30_000, // Refresh every 30s
+      refetchInterval: false, // Disable auto-refresh, use manual button
     }
   )
+
+  const handleRefresh = () => {
+    queryClient.invalidateQueries(['tradingChartData', symbol, timeframe, barLimit])
+    refetch()
+  }
 
   // Initialize chart
   useEffect(() => {
@@ -123,7 +130,7 @@ export default function TradingChart({
 
       const initialWidth = getWidth()
 
-      // Helper function to format time in ET
+      // Helper function to format time in ET (will be updated when timeframe changes)
       const formatTimeET = (time: Time): string => {
         const date = new Date((time as number) * 1000)
         const formatterOptions: Intl.DateTimeFormatOptions = {
@@ -276,7 +283,7 @@ export default function TradingChart({
       }
       setChartInitialized(false)
     }
-  }, [height, chartTheme, timeframe]) // Chart initialization - data is handled by separate effect
+  }, [height, chartTheme]) // Chart initialization - timeframe changes handled separately
 
   // Memoize chart data to prevent unnecessary recalculations
   const chartData = useMemo(() => {
@@ -334,9 +341,62 @@ export default function TradingChart({
     }
   }, [chartData, chartInitialized])
 
+  // Update timeScale formatter when timeframe changes (without recreating chart)
+  useEffect(() => {
+    if (!chartRef.current || !chartInitialized) return
+
+    const formatTimeET = (time: Time): string => {
+      const date = new Date((time as number) * 1000)
+      const formatterOptions: Intl.DateTimeFormatOptions = {
+        timeZone: 'America/New_York',
+      }
+      
+      if (timeframe === '1d') {
+        formatterOptions.month = 'short'
+        formatterOptions.day = 'numeric'
+        return date.toLocaleDateString('en-US', formatterOptions)
+      } else {
+        formatterOptions.hour = '2-digit'
+        formatterOptions.minute = '2-digit'
+        formatterOptions.hour12 = false
+        return date.toLocaleTimeString('en-US', formatterOptions)
+      }
+    }
+
+    // Update timeScale formatter
+    const timeScale = chartRef.current.timeScale()
+    timeScale.applyOptions({
+      tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => formatTimeET(time),
+    } as any)
+
+    // Update localization formatter
+    chartRef.current.applyOptions({
+      localization: {
+        timeFormatter: (time: Time) => formatTimeET(time),
+      },
+    } as any)
+  }, [timeframe, chartInitialized])
+
   // Memoize relevant positions to prevent unnecessary recalculations
   const relevantPositions = useMemo(() => {
-    return positions.filter((pos) => pos.symbol === symbol && pos.timestamp)
+    const filtered = positions.filter((pos) => {
+      const matchesSymbol = pos.symbol === symbol
+      // Position might have timestamp or opened_at field
+      const hasTime = pos.timestamp || pos.opened_at || pos.created_at
+      console.log('[TradingChart] Position filter check', { 
+        symbol: pos.symbol, 
+        matchesSymbol, 
+        hasTime,
+        position: pos 
+      })
+      return matchesSymbol && hasTime
+    })
+    console.log('[TradingChart] Filtered positions', { 
+      total: positions.length, 
+      filtered: filtered.length,
+      symbol 
+    })
+    return filtered
   }, [positions, symbol])
 
   // Memoize position markers
@@ -345,7 +405,13 @@ export default function TradingChart({
 
     return relevantPositions.map((pos) => {
       const isLong = pos.side === 'LONG'
-      const time = toUnixTimestamp(pos.timestamp!)
+      // Try multiple timestamp fields
+      const timestamp = pos.timestamp || pos.opened_at || pos.created_at || ''
+      if (!timestamp) {
+        console.warn('[TradingChart] Position missing timestamp', pos)
+        return null
+      }
+      const time = toUnixTimestamp(timestamp)
 
       return {
         time,
@@ -355,7 +421,7 @@ export default function TradingChart({
         text: `${pos.side} ${pos.quantity}@${pos.entry_price.toFixed(2)}`,
         size: 1,
       } as SeriesMarker<Time>
-    })
+    }).filter((m): m is SeriesMarker<Time> => m !== null)
   }, [relevantPositions, showPositions])
 
   // Add position markers
@@ -495,6 +561,15 @@ export default function TradingChart({
             {symbol} Price Chart
           </h2>
           <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={handleRefresh}
+              disabled={isRefetching}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-2"
+              title="Refresh chart data"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
             <input
               value={symbol}
               onChange={(event) => setSymbol(event.target.value.toUpperCase())}

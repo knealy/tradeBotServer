@@ -1,16 +1,34 @@
+import { useState } from 'react'
 import { PerformanceMetrics } from '../types'
-import { Activity, Zap, Database } from 'lucide-react'
+import { Activity, Zap, Database, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface MetricsCardProps {
   metrics: PerformanceMetrics
 }
 
 export default function MetricsCard({ metrics }: MetricsCardProps) {
-  return (
-    <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-      <h2 className="text-xl font-semibold mb-4">Performance Metrics</h2>
+  const [isOpen, setIsOpen] = useState(true)
 
-      <div className="space-y-4">
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="w-full flex items-center justify-between px-4 py-3"
+      >
+        <div className="flex items-center gap-3 text-left">
+          <Activity className="w-5 h-5 text-blue-400" />
+          <div>
+            <p className="text-sm font-semibold text-slate-200">Performance Metrics</p>
+            <p className="text-xs text-slate-400">System, API & Cache stats</p>
+          </div>
+        </div>
+        {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
+
+      {isOpen && (
+        <div className="px-4 pb-4">
+          <div className="space-y-4">
         {/* System Metrics */}
         <div className="space-y-2">
           <h3 className="text-sm font-medium text-slate-400 flex items-center gap-2">
@@ -88,7 +106,9 @@ export default function MetricsCard({ metrics }: MetricsCardProps) {
             </div>
           </div>
         )}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

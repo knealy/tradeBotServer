@@ -12,7 +12,6 @@ import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
 import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
-import TradingChart from './TradingChart'
 import TradesTable from './TradesTable'
 import RiskDrawer from './RiskDrawer'
 import NotificationsFeed from './NotificationsFeed'
@@ -52,36 +51,6 @@ export default function Dashboard() {
   // Extract metrics from response
   const metrics = (metricsData as any)?.performance || metricsData
 
-  // Fetch positions for chart markers
-  const { data: positionsData } = useQuery(
-    ['positions', accountId],
-    async () => {
-      if (!accountId) return { positions: [] }
-      const response = await fetch(`/api/positions?account_id=${accountId}`)
-      return response.json()
-    },
-    {
-      enabled: !!accountId,
-      staleTime: 30_000,
-    }
-  )
-
-  // Fetch orders for chart lines
-  const { data: ordersData } = useQuery(
-    ['orders', accountId],
-    async () => {
-      if (!accountId) return { orders: [] }
-      const response = await fetch(`/api/orders?account_id=${accountId}`)
-      return response.json()
-    },
-    {
-      enabled: !!accountId,
-      staleTime: 30_000,
-    }
-  )
-
-  const positions = positionsData?.positions || []
-  const orders = ordersData?.orders || []
 
   // WebSocket connection for real-time updates
   useEffect(() => {
@@ -250,14 +219,6 @@ export default function Dashboard() {
             <AccountCard account={accountInfo} isSelected={true} />
           )}
           <PerformanceChart />
-          <TradingChart 
-            symbol="MNQ"
-            positions={positions}
-            orders={orders}
-            height={500}
-            showPositions={true}
-            showOrders={true}
-          />
           <PositionsOverview />
         </div>
 

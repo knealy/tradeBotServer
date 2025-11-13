@@ -4,6 +4,7 @@ import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import AccountSelector from '../components/AccountSelector'
 import OrderTicket from '../components/OrderTicket'
+import TradingChart from '../components/TradingChart'
 import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info, Zap, Target, Play } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
@@ -391,6 +392,16 @@ export default function PositionsPage() {
           onAccountChange={setSelectedAccount}
         />
       </div>
+
+      {/* Price Chart */}
+      <TradingChart 
+        symbol="MNQ"
+        positions={positions}
+        orders={orders}
+        height={500}
+        showPositions={true}
+        showOrders={true}
+      />
       
       {/* Order Ticket */}
       <OrderTicket />

@@ -3,7 +3,7 @@ import { useQuery } from 'react-query'
 import { tradeApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { TradesResponse, Trade } from '../types'
-import { Download } from 'lucide-react'
+import { Download, ChevronDown, ChevronUp } from 'lucide-react'
 
 const formatterCurrency = new Intl.NumberFormat(undefined, {
   style: 'currency',
@@ -23,6 +23,7 @@ const formatterDate = new Intl.DateTimeFormat(undefined, {
 export default function TradesTable() {
   const { selectedAccount } = useAccount()
   const [limit, setLimit] = useState(20)
+  const [isOpen, setIsOpen] = useState(true)
 
   const { data, isLoading } = useQuery<TradesResponse>(
     ['trades', selectedAccount?.id, limit],
@@ -55,18 +56,37 @@ export default function TradesTable() {
   }
 
   return (
-    <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-semibold">Recent Trades</h2>
-        <button
-          onClick={handleExportCSV}
-          className="px-3 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2 text-sm"
-          disabled={!selectedAccount || trades.length === 0}
-        >
-          <Download className="w-4 h-4" />
-          Export CSV
-        </button>
-        <div className="flex items-center gap-4">
+    <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="w-full flex items-center justify-between px-4 py-3"
+      >
+        <div className="flex items-center gap-3 text-left">
+          <div>
+            <p className="text-sm font-semibold text-slate-200">Recent Trades</p>
+            <p className="text-xs text-slate-400">
+              {trades.length > 0 ? `${trades.length} trades` : 'No trades'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </div>
+      </button>
+
+      {isOpen && (
+        <div className="px-4 pb-4">
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={handleExportCSV}
+              className="px-3 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2 text-sm"
+              disabled={!selectedAccount || trades.length === 0}
+            >
+              <Download className="w-4 h-4" />
+              Export CSV
+            </button>
+            <div className="flex items-center gap-4">
           <label className="text-xs text-slate-400 flex items-center gap-2">
             Rows
             <select
@@ -97,16 +117,16 @@ export default function TradesTable() {
               )}
             </div>
           )}
+          </div>
         </div>
-      </div>
 
-      {isLoading ? (
+        {isLoading ? (
         <div className="py-10 text-center text-slate-400 text-sm">Loading trades...</div>
       ) : trades.length === 0 ? (
         <div className="py-10 text-center text-slate-500 text-sm">No trades in this period.</div>
       ) : (
-        <div className="overflow-x-auto">
-          <div className="max-h-[32rem] overflow-y-auto pr-1">
+          <div className="overflow-x-auto">
+            <div className="max-h-[48rem] overflow-y-auto pr-1">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-slate-800">
                 <tr className="text-slate-400 text-xs uppercase tracking-wide">
@@ -141,7 +161,9 @@ export default function TradesTable() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
+        )}
         </div>
       )}
     </div>
