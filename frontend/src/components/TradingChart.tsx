@@ -103,6 +103,25 @@ export default function TradingChart({
 
       const initialWidth = getWidth()
 
+      // Helper function to format time in ET
+      const formatTimeET = (time: Time): string => {
+        const date = new Date((time as number) * 1000)
+        const formatterOptions: Intl.DateTimeFormatOptions = {
+          timeZone: 'America/New_York', // Automatically handles EST/EDT
+        }
+        
+        if (timeframe === '1d') {
+          formatterOptions.month = 'short'
+          formatterOptions.day = 'numeric'
+          return date.toLocaleDateString('en-US', formatterOptions)
+        } else {
+          formatterOptions.hour = '2-digit'
+          formatterOptions.minute = '2-digit'
+          formatterOptions.hour12 = false
+          return date.toLocaleTimeString('en-US', formatterOptions)
+        }
+      }
+
       chart = createChart(container, {
         ...chartTheme,
         width: initialWidth,
@@ -111,24 +130,25 @@ export default function TradingChart({
           ...chartTheme.timeScale,
           // Custom formatter to display times in ET (UTC-5 or UTC-4)
           tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => {
-            const date = new Date((time as number) * 1000)
-            
-            // Format based on current timeframe using ET timezone
-            const currentTimeframe = timeframe
-            const formatterOptions: Intl.DateTimeFormatOptions = {
-              timeZone: 'America/New_York', // Automatically handles EST/EDT
-            }
-            
-            if (currentTimeframe === '1d') {
-              formatterOptions.month = 'short'
-              formatterOptions.day = 'numeric'
-              return date.toLocaleDateString('en-US', formatterOptions)
-            } else {
-              formatterOptions.hour = '2-digit'
-              formatterOptions.minute = '2-digit'
-              formatterOptions.hour12 = false
-              return date.toLocaleTimeString('en-US', formatterOptions)
-            }
+            return formatTimeET(time)
+          },
+        },
+        crosshair: {
+          ...chartTheme.crosshair,
+          // Format crosshair time in ET timezone
+          vertLine: {
+            ...chartTheme.crosshair?.vertLine,
+            labelVisible: true,
+          },
+          horzLine: {
+            ...chartTheme.crosshair?.horzLine,
+            labelVisible: true,
+          },
+        },
+        // Use localization to format crosshair time in ET
+        localization: {
+          timeFormatter: (time: Time) => {
+            return formatTimeET(time)
           },
         },
       })
@@ -159,6 +179,37 @@ export default function TradingChart({
       candlestickSeriesRef.current = candlestickSeries
       volumeSeriesRef.current = volumeSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
+
+      // If data is already available, set it immediately
+      // This prevents the chart from waiting for the data update effect
+      if (data?.bars && data.bars.length > 0) {
+        try {
+          const candlestickData: CandlestickData<Time>[] = data.bars
+            .map((bar: HistoricalBar) => ({
+              time: toUnixTimestamp(bar.timestamp),
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+            }))
+            .sort((a, b) => (a.time as number) - (b.time as number))
+
+          const volumeColors = getVolumeColors('dark')
+          const volumeData = data.bars
+            .map((bar: HistoricalBar) => ({
+              time: toUnixTimestamp(bar.timestamp),
+              value: bar.volume,
+              color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
+            }))
+            .sort((a, b) => (a.time as number) - (b.time as number))
+
+          candlestickSeries.setData(candlestickData)
+          volumeSeries.setData(volumeData)
+          chart.timeScale().fitContent()
+        } catch (error) {
+          console.error('Error setting initial chart data:', error)
+        }
+      }
 
       resizeObserver = new ResizeObserver((entries) => {
         if (!entries.length || !chartRef.current) return
@@ -197,7 +248,7 @@ export default function TradingChart({
         chart.remove()
       }
     }
-  }, [height, chartTheme, timeframe])
+  }, [height, chartTheme, timeframe]) // Chart initialization - data is handled by separate effect
 
   // Update chart data
   useEffect(() => {
