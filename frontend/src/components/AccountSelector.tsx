@@ -29,9 +29,16 @@ export default function AccountSelector({
     {
       onSuccess: (data) => {
         if (data.success && data.account) {
+          // Find the original account from the list to preserve its name
+          const accountId = data.account.id || data.account.accountId || data.account.account_id
+          const originalAccount = accounts.find(
+            (acc) => getAccountIdentifier(acc) === accountId
+          )
+
           const normalized: Account = {
             id: data.account.id || data.account.accountId || data.account.account_id || getAccountIdentifier(data.account),
-            name: data.account.name || data.account.accountId || getAccountIdentifier(data.account),
+            // Preserve name from original account if available, otherwise use fallback
+            name: originalAccount?.name || data.account.name || data.account.accountId || data.account.account_id || getAccountIdentifier(data.account),
             status: data.account.status || 'active',
             balance: Number(data.account.balance ?? 0),
             currency: data.account.currency || 'USD',
@@ -42,6 +49,12 @@ export default function AccountSelector({
             dailyPnL: data.account.dailyPnL ?? data.account.daily_pnl ?? 0,
             daily_pnl: data.account.dailyPnL ?? data.account.daily_pnl ?? 0,
           }
+
+          console.log('[AccountSelector] Account switched', { 
+            normalized, 
+            originalAccount: originalAccount?.name,
+            accountId 
+          })
 
           onAccountChange(normalized)
 

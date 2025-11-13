@@ -43,12 +43,15 @@ export default function TradingChart({
   positions = [],
   orders = [],
   height = 500,
-  showPositions = true,
-  showOrders = true,
+  showPositions: propShowPositions = true,
+  showOrders: propShowOrders = true,
 }: TradingChartProps) {
   const [symbol, setSymbol] = useState(propSymbol || 'MNQ')
   const [timeframe, setTimeframe] = useState('5m')
   const [barLimit, setBarLimit] = useState(300)
+  const [showPositions, setShowPositions] = useState(propShowPositions)
+  const [showOrders, setShowOrders] = useState(propShowOrders)
+  const [chartInitialized, setChartInitialized] = useState(false)
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -79,7 +82,10 @@ export default function TradingChart({
 
   // Initialize chart
   useEffect(() => {
-    if (!chartContainerRef.current) return
+    if (!chartContainerRef.current) {
+      console.log('[TradingChart] No container ref')
+      return
+    }
     const container = chartContainerRef.current
 
     // Ensure container has explicit dimensions
@@ -91,9 +97,23 @@ export default function TradingChart({
     let resizeObserver: ResizeObserver | null = null
     let handleWindowResize: (() => void) | null = null
 
-    // Wait for next frame to ensure container is rendered
+    // Wait for next frame to ensure container is rendered and visible
     const initChart = () => {
-      if (!container) return
+      if (!container) {
+        console.log('[TradingChart] Container is null in initChart')
+        return
+      }
+
+      // Check if container is visible
+      const rect = container.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) {
+        console.log('[TradingChart] Container has zero dimensions, retrying...', { width: rect.width, height: rect.height })
+        // Retry after a short delay
+        setTimeout(initChart, 100)
+        return
+      }
+
+      console.log('[TradingChart] Initializing chart', { width: rect.width, height: rect.height })
 
       // Get initial width, with fallback and minimum
       const getWidth = () => {
@@ -179,10 +199,13 @@ export default function TradingChart({
       candlestickSeriesRef.current = candlestickSeries
       volumeSeriesRef.current = volumeSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
+      setChartInitialized(true)
+      console.log('[TradingChart] Chart initialized successfully')
 
       // If data is already available, set it immediately
       // This prevents the chart from waiting for the data update effect
       if (data?.bars && data.bars.length > 0) {
+        console.log('[TradingChart] Setting initial data', { barCount: data.bars.length })
         try {
           const candlestickData: CandlestickData<Time>[] = data.bars
             .map((bar: HistoricalBar) => ({
@@ -206,9 +229,12 @@ export default function TradingChart({
           candlestickSeries.setData(candlestickData)
           volumeSeries.setData(volumeData)
           chart.timeScale().fitContent()
+          console.log('[TradingChart] Initial data set successfully')
         } catch (error) {
-          console.error('Error setting initial chart data:', error)
+          console.error('[TradingChart] Error setting initial chart data:', error)
         }
+      } else {
+        console.log('[TradingChart] No initial data available')
       }
 
       resizeObserver = new ResizeObserver((entries) => {
@@ -237,6 +263,7 @@ export default function TradingChart({
     })
 
     return () => {
+      console.log('[TradingChart] Cleaning up chart')
       cancelAnimationFrame(rafId)
       if (handleWindowResize) {
         window.removeEventListener('resize', handleWindowResize)
@@ -247,12 +274,31 @@ export default function TradingChart({
       if (chart) {
         chart.remove()
       }
+      setChartInitialized(false)
     }
   }, [height, chartTheme, timeframe]) // Chart initialization - data is handled by separate effect
 
-  // Update chart data
+  // Update chart data when data changes (including timeframe/barLimit changes)
   useEffect(() => {
-    if (!data?.bars || !candlestickSeriesRef.current || !volumeSeriesRef.current) return
+    if (!chartInitialized) {
+      console.log('[TradingChart] Chart not initialized yet, skipping data update')
+      return
+    }
+    if (!data?.bars || !candlestickSeriesRef.current || !volumeSeriesRef.current) {
+      console.log('[TradingChart] Missing data or series refs', { 
+        hasData: !!data?.bars, 
+        hasCandlestick: !!candlestickSeriesRef.current, 
+        hasVolume: !!volumeSeriesRef.current 
+      })
+      return
+    }
+
+    console.log('[TradingChart] Updating chart data', { 
+      barCount: data.bars.length, 
+      symbol, 
+      timeframe, 
+      barLimit 
+    })
 
     try {
       const candlestickData: CandlestickData<Time>[] = data.bars
@@ -281,22 +327,29 @@ export default function TradingChart({
       if (chartRef.current) {
         chartRef.current.timeScale().fitContent()
       }
+      console.log('[TradingChart] Chart data updated successfully')
     } catch (error) {
-      console.error('Error updating chart data:', error)
+      console.error('[TradingChart] Error updating chart data:', error)
     }
-  }, [data])
+  }, [data, chartInitialized, symbol, timeframe, barLimit])
 
   // Add position markers
   useEffect(() => {
-    if (!candlestickSeriesRef.current || !markersPluginRef.current) return
+    if (!chartInitialized || !candlestickSeriesRef.current || !markersPluginRef.current) return
 
     if (!showPositions) {
       markersPluginRef.current.setMarkers([])
       return
     }
 
-    const markers: SeriesMarker<Time>[] = positions
-      .filter((pos) => pos.symbol === symbol && pos.timestamp)
+    const relevantPositions = positions.filter((pos) => pos.symbol === symbol && pos.timestamp)
+    console.log('[TradingChart] Updating position markers', { 
+      totalPositions: positions.length, 
+      relevantPositions: relevantPositions.length,
+      symbol 
+    })
+
+    const markers: SeriesMarker<Time>[] = relevantPositions
       .map((pos) => {
         const isLong = pos.side === 'LONG'
         const time = toUnixTimestamp(pos.timestamp!)
@@ -312,18 +365,18 @@ export default function TradingChart({
       })
 
     markersPluginRef.current.setMarkers(markers)
-  }, [positions, symbol, showPositions])
+  }, [positions, symbol, showPositions, chartInitialized])
 
   // Add order price lines
   useEffect(() => {
-    if (!candlestickSeriesRef.current) return
+    if (!chartInitialized || !candlestickSeriesRef.current) return
 
     // Remove existing price lines
     priceLinesRef.current.forEach((line) => {
       try {
         candlestickSeriesRef.current?.removePriceLine(line)
       } catch (error) {
-        console.warn('Failed to remove price line', error)
+        console.warn('[TradingChart] Failed to remove price line', error)
       }
     })
     priceLinesRef.current = []
@@ -332,42 +385,64 @@ export default function TradingChart({
       return
     }
 
-    orders
-      .filter((order) => order.symbol === symbol && order.status === 'PENDING' && order.price)
-      .forEach((order) => {
-        if (!candlestickSeriesRef.current) return
+    const relevantOrders = orders.filter(
+      (order) => order.symbol === symbol && order.status === 'PENDING' && order.price
+    )
+    console.log('[TradingChart] Updating order price lines', { 
+      totalOrders: orders.length, 
+      relevantOrders: relevantOrders.length,
+      symbol 
+    })
 
-        const isLongOrder = order.side === 'BUY'
+    relevantOrders.forEach((order) => {
+      if (!candlestickSeriesRef.current) return
 
-        try {
-          const line = candlestickSeriesRef.current.createPriceLine({
-            price: order.price!,
-            color: isLongOrder ? '#10B981' : '#F59E0B',
-            lineWidth: 2,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: `${order.side} ${order.quantity}`,
-          })
-          priceLinesRef.current.push(line)
-        } catch (error) {
-          console.error('Error creating price line:', error)
-        }
-      })
-  }, [orders, symbol, showOrders])
+      const isLongOrder = order.side === 'BUY'
+
+      try {
+        const line = candlestickSeriesRef.current.createPriceLine({
+          price: order.price!,
+          color: isLongOrder ? '#10B981' : '#F59E0B',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `${order.side} ${order.quantity}`,
+        })
+        priceLinesRef.current.push(line)
+      } catch (error) {
+        console.error('[TradingChart] Error creating price line:', error)
+      }
+    })
+  }, [orders, symbol, showOrders, chartInitialized])
 
   // WebSocket integration for live updates
   useEffect(() => {
-    if (!symbol) return
+    if (!chartInitialized || !symbol) {
+      console.log('[TradingChart] Skipping WebSocket setup', { chartInitialized, symbol })
+      return
+    }
+
+    console.log('[TradingChart] Setting up WebSocket listener for', symbol)
 
     const handleMarketUpdate = (data: any) => {
-      if (data.symbol !== symbol) return
-      if (!candlestickSeriesRef.current || !volumeSeriesRef.current) return
+      if (data.symbol !== symbol) {
+        console.log('[TradingChart] Market update for different symbol', { 
+          updateSymbol: data.symbol, 
+          chartSymbol: symbol 
+        })
+        return
+      }
+      if (!candlestickSeriesRef.current || !volumeSeriesRef.current) {
+        console.log('[TradingChart] Missing series refs for market update')
+        return
+      }
 
       try {
         // Update the last candle with new data
         const time = toUnixTimestamp(data.timestamp)
 
         if (data.bar) {
+          console.log('[TradingChart] Updating candle from WebSocket', { time, close: data.bar.close })
           candlestickSeriesRef.current.update({
             time,
             open: data.bar.open,
@@ -386,16 +461,17 @@ export default function TradingChart({
           }
         }
       } catch (error) {
-        console.error('Error updating live chart data:', error)
+        console.error('[TradingChart] Error updating live chart data:', error)
       }
     }
 
     wsService.on('market_update', handleMarketUpdate)
 
     return () => {
+      console.log('[TradingChart] Removing WebSocket listener')
       wsService.off('market_update', handleMarketUpdate)
     }
-  }, [symbol])
+  }, [symbol, chartInitialized])
 
   const BAR_LIMITS = [
     { value: 100, label: '100' },
@@ -463,7 +539,7 @@ export default function TradingChart({
               <input
                 type="checkbox"
                 checked={showPositions}
-                onChange={() => setSymbol(symbol)} // Force re-render
+                onChange={(e) => setShowPositions(e.target.checked)}
                 className="rounded"
               />
               Show Positions
@@ -472,7 +548,7 @@ export default function TradingChart({
               <input
                 type="checkbox"
                 checked={showOrders}
-                onChange={() => setSymbol(symbol)} // Force re-render
+                onChange={(e) => setShowOrders(e.target.checked)}
                 className="rounded"
               />
               Show Orders
