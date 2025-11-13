@@ -87,6 +87,15 @@ class AsyncWebhookServer:
         websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
         self.websocket_server = WebSocketServer(trading_bot, self, host=host, port=websocket_port)
         
+        # Initialize scheduled task manager (for strategy restarts)
+        try:
+            from servers.scheduled_tasks import ScheduledTaskManager
+            self.scheduled_tasks = ScheduledTaskManager(trading_bot)
+            logger.info("📅 Scheduled task manager initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize scheduled task manager: {e}")
+            self.scheduled_tasks = None
+        
         # Setup CORS for React frontend (before routes)
         self.cors = cors_setup(self.app, defaults={
             "*": ResourceOptions(
@@ -188,6 +197,7 @@ class AsyncWebhookServer:
         self.app.router.add_post('/api/orders/place', self.handle_place_order)
         self.app.router.add_get('/api/settings', self.handle_get_settings)
         self.app.router.add_post('/api/settings', self.handle_save_settings)
+        self.app.router.add_get('/api/scheduled-tasks', self.handle_get_scheduled_tasks)
         self.app.router.add_get('/api/risk', self.handle_get_risk)
         self.app.router.add_get('/api/notifications', self.handle_get_notifications)
         
@@ -1446,6 +1456,28 @@ class AsyncWebhookServer:
             logger.error(f"Error saving dashboard settings: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
+    async def handle_get_scheduled_tasks(self, request: web.Request) -> web.Response:
+        """Get scheduled task information."""
+        try:
+            if not hasattr(self, 'scheduled_tasks') or not self.scheduled_tasks:
+                return web.json_response({
+                    "enabled": False,
+                    "message": "Scheduled task manager not available"
+                })
+            
+            next_restart = self.scheduled_tasks.get_next_restart_time()
+            
+            return web.json_response({
+                "enabled": True,
+                "restart_time": self.scheduled_tasks.restart_time.strftime('%H:%M'),
+                "timezone": str(self.scheduled_tasks.timezone),
+                "next_restart": next_restart.isoformat() if next_restart else None,
+                "last_restart_date": self.scheduled_tasks._last_restart_date,
+            })
+        except Exception as e:
+            logger.error(f"Error getting scheduled tasks info: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
     def _ensure_database(self):
         """Ensure we have an active database connection, attempting lazy re-init if necessary."""
         db = getattr(self.trading_bot, 'db', None)
@@ -2060,6 +2092,13 @@ class AsyncWebhookServer:
             # Start background tasks
             await self.start_background_tasks()
             
+            # Start scheduled task manager (for strategy restarts)
+            if self.scheduled_tasks:
+                await self.scheduled_tasks.start()
+                next_restart = self.scheduled_tasks.get_next_restart_time()
+                if next_restart:
+                    logger.info(f"📅 Next strategy restart scheduled: {next_restart.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
             # Start WebSocket server
             logger.info(f"🚀 Starting WebSocket server on {self.websocket_server.host}:{self.websocket_server.port}")
             asyncio.create_task(self.websocket_server.start())
@@ -2091,6 +2130,11 @@ class AsyncWebhookServer:
         finally:
             # Cleanup
             logger.info("🧹 Cleaning up...")
+            
+            # Stop scheduled task manager
+            if hasattr(self, 'scheduled_tasks') and self.scheduled_tasks:
+                await self.scheduled_tasks.stop()
+            
             await self.stop_background_tasks()
             if hasattr(self, 'websocket_server') and self.websocket_server:
                 await self.websocket_server.stop()

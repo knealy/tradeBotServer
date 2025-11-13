@@ -30,7 +30,9 @@ The overnight range strategy is designed to:
 This is **correct behavior** - the strategy should not backfill trades after the 09:30 ET window has passed.
 
 ## Solution
-**Ensure the strategy is running BEFORE 9:30 AM ET** to catch market open.
+**✅ FIXED**: Automatic strategy restart at 8:00 AM ET every weekday has been implemented.
+
+The bot now automatically restarts the strategy at 8:00 AM ET on weekdays, ensuring it's ready for market open at 9:30 AM ET. No manual intervention needed!
 
 ### Options:
 1. **Keep bot running 24/7** (recommended)
