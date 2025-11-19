@@ -15,8 +15,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Any
 from uuid import uuid4
 from aiohttp import web
-from aiohttp_cors import setup as cors_setup, ResourceOptions
 import aiohttp
+
+# CORS support - make import optional
+try:
+    from aiohttp_cors import setup as cors_setup, ResourceOptions
+    CORS_AVAILABLE = True
+except ImportError:
+    CORS_AVAILABLE = False
+    # Create a dummy ResourceOptions class if not available
+    class ResourceOptions:
+        pass
+    cors_setup = None
 
 # Add project root to Python path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -87,8 +97,12 @@ class AsyncWebhookServer:
         if hasattr(trading_bot, 'bar_aggregator') and trading_bot.bar_aggregator:
             # Set broadcast callback to forward bar updates to WebSocket clients
             trading_bot.bar_aggregator.broadcast_callback = self._broadcast_bar_update
-            # Start the aggregator
-            asyncio.create_task(trading_bot.bar_aggregator.start())
+            # Start the aggregator (will be awaited in run())
+            self._bar_aggregator_started = False
+            logger.info("📊 Bar aggregator configured for real-time chart updates")
+        else:
+            self._bar_aggregator_started = False
+            logger.warning("⚠️  Bar aggregator not available - real-time chart updates disabled")
         
         # Initialize WebSocket server (port 8081) - kept for backward compatibility
         websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
@@ -104,14 +118,26 @@ class AsyncWebhookServer:
             self.scheduled_tasks = None
         
         # Setup CORS for React frontend (before routes)
-        self.cors = cors_setup(self.app, defaults={
-            "*": ResourceOptions(
-                allow_credentials=True,
-                expose_headers="*",
-                allow_headers="*",
-                allow_methods="*"
-            )
-        })
+        if CORS_AVAILABLE:
+            self.cors = cors_setup(self.app, defaults={
+                "*": ResourceOptions(
+                    allow_credentials=True,
+                    expose_headers="*",
+                    allow_headers="*",
+                    allow_methods="*"
+                )
+            })
+        else:
+            self.cors = None
+            # Add manual CORS headers via middleware
+            @web.middleware
+            async def cors_middleware(request: web.Request, handler):
+                response = await handler(request)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+                return response
+            self.app.middlewares.append(cors_middleware)
         
         # Setup routes
         self._setup_routes()
@@ -120,8 +146,9 @@ class AsyncWebhookServer:
         self._setup_static_routes()
         
         # Apply CORS to all routes
-        for route in list(self.app.router.routes()):
-            self.cors.add(route)
+        if self.cors:
+            for route in list(self.app.router.routes()):
+                self.cors.add(route)
         
         # Server state
         self.server_start_time = None
@@ -471,9 +498,11 @@ class AsyncWebhookServer:
                 return web.json_response(result, status=400)
             
             if hasattr(self.trading_bot, 'strategy_manager'):
+                logger.info(f"💾 Loading persisted strategy states for account {account_id}...")
                 await self.trading_bot.strategy_manager.apply_persisted_states()
-                # Auto-start strategies enabled via environment variables
+                logger.info("🚀 Auto-starting enabled strategies...")
                 await self.trading_bot.strategy_manager.auto_start_enabled_strategies()
+                logger.info(f"✅ Strategy initialization complete for account {account_id}")
 
             await self._broadcast_risk_snapshot(account_id)
             
@@ -1022,6 +1051,9 @@ class AsyncWebhookServer:
                 except (TypeError, ValueError):
                     return web.json_response({"error": "max_positions must be a number"}, status=400)
 
+            # Log the update request
+            logger.info(f"📝 Updating strategy config for {strategy_name}: symbols={symbols}, position_size={position_size}, max_positions={max_positions}, strategy_params={strategy_params}")
+            
             # Update the configuration
             success, message = await self.trading_bot.strategy_manager.update_strategy_config(
                 strategy_name,
@@ -1033,7 +1065,10 @@ class AsyncWebhookServer:
             )
 
             if not success:
+                logger.error(f"❌ Failed to update strategy config for {strategy_name}: {message}")
                 return web.json_response({"error": message}, status=400)
+            
+            logger.info(f"✅ Successfully updated strategy config for {strategy_name}: {message}")
 
             # Get updated strategy info
             strategy = self.trading_bot.strategy_manager.strategies.get(strategy_name)
@@ -2186,6 +2221,12 @@ class AsyncWebhookServer:
             self.server_start_time = datetime.now()
             logger.info(f"🚀 Starting async webhook server on {self.host}:{self.port}")
             
+            # Start bar aggregator if available
+            if hasattr(self.trading_bot, 'bar_aggregator') and self.trading_bot.bar_aggregator and not self._bar_aggregator_started:
+                await self.trading_bot.bar_aggregator.start()
+                self._bar_aggregator_started = True
+                logger.info("✅ Bar aggregator started - real-time chart updates enabled")
+            
             # Start background tasks
             await self.start_background_tasks()
             
@@ -2298,9 +2339,11 @@ async def main():
     
     # Apply persisted strategy state (if available)
     if hasattr(trading_bot, 'strategy_manager'):
+        logger.info("💾 Loading persisted strategy states on server startup...")
         await trading_bot.strategy_manager.apply_persisted_states()
-        # Auto-start strategies enabled via environment variables
+        logger.info("🚀 Auto-starting enabled strategies on server startup...")
         await trading_bot.strategy_manager.auto_start_enabled_strategies()
+        logger.info("✅ Strategy initialization complete on server startup")
 
     # Start webhook server
     server = AsyncWebhookServer(trading_bot, host=host, port=port)

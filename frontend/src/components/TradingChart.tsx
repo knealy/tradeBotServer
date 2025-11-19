@@ -88,10 +88,15 @@ export default function TradingChart({
       return
     }
     
-    // Note: The bar aggregator on the backend automatically subscribes to all active symbols
-    // The WebSocket will broadcast bar updates for any symbol/timeframe that's being tracked
-    // The chart will receive these updates via the market_update event handler below
-    console.log(`[TradingChart] Chart ready for ${symbol} ${timeframe} - will receive real-time bar updates`)
+    // Subscribe to bar updates for this symbol/timeframe
+    // The backend bar aggregator needs to know which timeframes to track
+    // For now, we rely on SignalR quotes being fed to the aggregator automatically
+    // The aggregator will build bars for any symbol that receives quotes
+    console.log(`[TradingChart] Chart ready for ${symbol} ${timeframe} - listening for real-time bar updates`)
+    
+    // Ensure SignalR is subscribed to this symbol (happens automatically when quotes are requested)
+    // The bar aggregator will receive quotes and build bars for all timeframes
+    // We just need to make sure quotes are flowing for this symbol
   }, [chartInitialized, symbol, timeframe])
 
   const handleRefresh = () => {

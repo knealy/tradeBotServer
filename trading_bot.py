@@ -425,7 +425,7 @@ class TopStepXTradingBot:
                                 timestamp=datetime.now(datetime.UTC)
                             )
                         except Exception as e:
-                            logger.debug(f"Error adding quote to bar aggregator: {e}")
+                            logger.debug(f"Error adding quote to bar aggregator for {symbol}: {e}")
             except Exception as e:
                 logger.debug(f"Failed processing quote message: {e}")
 

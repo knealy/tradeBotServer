@@ -145,6 +145,11 @@ class BarAggregator:
             for symbol, timeframes in self.bar_builders.items():
                 for timeframe, builder in timeframes.items():
                     if builder.last_update and builder.close is not None:
+                        # Only broadcast if bar was updated recently (within last 2 seconds)
+                        time_since_update = (datetime.now(timezone.utc) - builder.last_update).total_seconds()
+                        if time_since_update > 2.0:
+                            continue  # Skip stale bars
+                        
                         # Create partial bar update
                         bar_data = {
                             "symbol": symbol,
@@ -169,7 +174,7 @@ class BarAggregator:
                                     "timestamp": datetime.now(timezone.utc).isoformat()
                                 })
                             except Exception as e:
-                                logger.error(f"Error broadcasting bar update: {e}")
+                                logger.debug(f"Error broadcasting bar update: {e}")
     
     def add_quote(self, symbol: str, price: float, volume: int = 0, timestamp: Optional[datetime] = None):
         """
@@ -184,8 +189,19 @@ class BarAggregator:
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
         
-        # Update bars for all active timeframes
+        # Auto-subscribe to common timeframes if not already subscribed
+        # This ensures bars are built even if frontend hasn't explicitly subscribed
         symbol_key = symbol.upper()
+        common_timeframes = ['1m', '5m', '15m', '1h']
+        
+        if symbol_key not in self.bar_builders:
+            # Auto-subscribe to common timeframes for this symbol
+            for tf in common_timeframes:
+                bar_start = self._get_bar_start_time(timestamp, tf)
+                self.bar_builders[symbol_key][tf] = BarBuilder(symbol_key, tf, bar_start)
+            logger.debug(f"Auto-subscribed {symbol_key} to timeframes: {', '.join(common_timeframes)}")
+        
+        # Update bars for all active timeframes
         if symbol_key in self.bar_builders:
             for timeframe, builder in self.bar_builders[symbol_key].items():
                 # Check if we need to start a new bar
