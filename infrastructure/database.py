@@ -61,12 +61,31 @@ class DatabaseManager:
             os.getenv('PORT') is not None  # Railway always sets PORT
         )
         
+        # Debug logging for Railway detection
+        logger.debug(f"Railway detection: RAILWAY_ENV={os.getenv('RAILWAY_ENVIRONMENT')}, RAILWAY={os.getenv('RAILWAY')}, PORT={os.getenv('PORT')}, is_railway={is_railway}")
+        
         # Get database URLs
         database_url = os.getenv('DATABASE_URL')
         public_database_url = os.getenv('PUBLIC_DATABASE_URL')
         
-        # Choose the correct URL
+        # Debug logging for DATABASE_URL (masked for security)
         if database_url:
+            masked_url = database_url[:20] + "..." + database_url[-10:] if len(database_url) > 30 else "***"
+            logger.debug(f"DATABASE_URL present: {masked_url} (length: {len(database_url)})")
+        else:
+            logger.warning("⚠️  DATABASE_URL not found in environment variables")
+        
+        # Check if DATABASE_URL is a Railway variable reference that wasn't resolved
+        if database_url and database_url.startswith('${{') and database_url.endswith('}}'):
+            logger.error(f"❌ DATABASE_URL appears to be unresolved Railway variable reference: {database_url}")
+            logger.error("   Railway should resolve ${{Postgres.DATABASE_URL}} automatically.")
+            logger.error("   FIX: In Railway Variables tab, remove the manual DATABASE_URL variable.")
+            logger.error("   Railway automatically provides DATABASE_URL when Postgres service is added.")
+            logger.error("   If you must set it manually, use the actual connection string, not the variable reference.")
+            # Fall through to use individual params as fallback
+        
+        # Choose the correct URL
+        if database_url and not database_url.startswith('${{'):
             # If on Railway, always use internal DATABASE_URL
             if is_railway:
                 logger.info(f"Using DATABASE_URL (Railway detected: RAILWAY_ENV={os.getenv('RAILWAY_ENVIRONMENT')}, PORT={os.getenv('PORT')})")

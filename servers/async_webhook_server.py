@@ -2066,9 +2066,9 @@ class AsyncWebhookServer:
             if symbol and hasattr(self.trading_bot, '_ensure_quote_subscription'):
                 try:
                     await self.trading_bot._ensure_quote_subscription(symbol)
-                    logger.debug(f"📡 Ensured SignalR quote subscription for {symbol} (triggered by chart load)")
+                    logger.info(f"📡 Ensured SignalR quote subscription for {symbol} (triggered by chart load)")
                 except Exception as e:
-                    logger.debug(f"Could not ensure quote subscription for {symbol}: {e}")
+                    logger.warning(f"⚠️  Could not ensure quote subscription for {symbol}: {e}")
             
             data = await self.dashboard_api.get_historical_data(
                 symbol=symbol,
