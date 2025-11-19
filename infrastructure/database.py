@@ -54,8 +54,12 @@ class DatabaseManager:
         Returns:
             Dict: Connection parameters
         """
-        # Check if running on Railway
-        is_railway = os.getenv('RAILWAY_ENVIRONMENT') is not None
+        # Check if running on Railway (multiple ways to detect)
+        is_railway = (
+            os.getenv('RAILWAY_ENVIRONMENT') is not None or
+            os.getenv('RAILWAY') is not None or
+            os.getenv('PORT') is not None  # Railway always sets PORT
+        )
         
         # Get database URLs
         database_url = os.getenv('DATABASE_URL')
@@ -65,7 +69,7 @@ class DatabaseManager:
         if database_url:
             # If on Railway, always use internal DATABASE_URL
             if is_railway:
-                logger.info("Using DATABASE_URL (Railway internal)")
+                logger.info(f"Using DATABASE_URL (Railway detected: RAILWAY_ENV={os.getenv('RAILWAY_ENVIRONMENT')}, PORT={os.getenv('PORT')})")
                 return {'dsn': database_url}
             
             # If local, check if DATABASE_URL is internal-only

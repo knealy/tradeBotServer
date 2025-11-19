@@ -234,6 +234,11 @@ export const strategyApi = {
     return response.data
   },
 
+  verifyStrategy: async (name: string): Promise<any> => {
+    const response = await api.get(`/api/strategies/${name}/verify`)
+    return response.data
+  },
+
   testStrategy: async (name: string, accountId?: string): Promise<any> => {
     const payload: { account_id?: string } = {}
     if (accountId) payload.account_id = accountId

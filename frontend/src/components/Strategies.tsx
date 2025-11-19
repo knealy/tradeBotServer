@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { strategyApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { Strategy } from '../types'
-import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2, Settings, Plus, Trash2, Save } from 'lucide-react'
+import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2, Settings, Plus, Trash2, Save, CheckCircle2 } from 'lucide-react'
 
 // Available symbols for trading
 const AVAILABLE_SYMBOLS = ['MNQ', 'MES', 'MYM', 'M2K', 'MGC', 'GC']
@@ -26,6 +26,7 @@ export default function Strategies() {
   const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null)
   const [selectedStrategyForStats, setSelectedStrategyForStats] = useState<string | null>(null)
   const [selectedStrategyForLogs, setSelectedStrategyForLogs] = useState<string | null>(null)
+  const [selectedStrategyForVerify, setSelectedStrategyForVerify] = useState<string | null>(null)
   const [editingConfig, setEditingConfig] = useState<string | null>(null)
   const [configEdits, setConfigEdits] = useState<{
     symbols: string[]
@@ -142,6 +143,16 @@ export default function Strategies() {
       enabled: !!selectedStrategyForLogs,
       staleTime: 10_000,
       refetchInterval: 30_000, // Refresh logs every 30 seconds
+    }
+  )
+
+  const { data: verificationData, isLoading: verifyLoading, refetch: refetchVerify } = useQuery(
+    ['strategy-verify', selectedStrategyForVerify],
+    () => strategyApi.verifyStrategy(selectedStrategyForVerify!),
+    {
+      enabled: !!selectedStrategyForVerify,
+      staleTime: 30_000,
+      refetchInterval: 60_000, // Refetch every minute to update next execution time
     }
   )
 
@@ -422,6 +433,7 @@ export default function Strategies() {
                           setSelectedStrategyForLogs(strategy.name)
                           if (selectedStrategyForLogs !== strategy.name) {
                             setSelectedStrategyForStats(null)
+                            setSelectedStrategyForVerify(null)
                           }
                         }}
                         className={`px-3 py-2 rounded text-sm font-medium transition-colors flex items-center gap-2 ${
@@ -432,6 +444,24 @@ export default function Strategies() {
                       >
                         <FileText className="w-4 h-4" />
                         Logs
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedStrategyForVerify(strategy.name)
+                          if (selectedStrategyForVerify !== strategy.name) {
+                            setSelectedStrategyForStats(null)
+                            setSelectedStrategyForLogs(null)
+                          }
+                          refetchVerify()
+                        }}
+                        className={`px-3 py-2 rounded text-sm font-medium transition-colors flex items-center gap-2 ${
+                          selectedStrategyForVerify === strategy.name
+                            ? 'bg-green-500/20 text-green-300 border border-green-500/30'
+                            : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        Verify
                       </button>
                       <button
                         onClick={() => testStrategyMutation.mutate({ name: strategy.name })}
@@ -818,6 +848,91 @@ export default function Strategies() {
                         ) : (
                           <div className="text-center py-4 text-slate-400">
                             {strategyStats?.error || 'No stats available'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Verification Display */}
+                    {selectedStrategyForVerify === strategy.name && (
+                      <div className="bg-slate-900/50 rounded-lg p-4">
+                        <h4 className="text-sm font-semibold text-slate-300 mb-4">Strategy Verification</h4>
+                        {verifyLoading ? (
+                          <div className="text-center py-4">
+                            <Loader2 className="w-6 h-6 animate-spin mx-auto text-slate-400" />
+                            <p className="text-sm text-slate-400 mt-2">Verifying strategy...</p>
+                          </div>
+                        ) : verificationData ? (
+                          <div className="space-y-4">
+                            <div className={`p-3 rounded-lg border-2 ${
+                              verificationData.will_trade 
+                                ? 'bg-green-500/10 border-green-500/30' 
+                                : 'bg-red-500/10 border-red-500/30'
+                            }`}>
+                              <div className="flex items-center gap-2 mb-2">
+                                {verificationData.will_trade ? (
+                                  <CheckCircle2 className="w-5 h-5 text-green-400" />
+                                ) : (
+                                  <AlertCircle className="w-5 h-5 text-red-400" />
+                                )}
+                                <span className={`font-semibold ${
+                                  verificationData.will_trade ? 'text-green-400' : 'text-red-400'
+                                }`}>
+                                  {verificationData.will_trade ? '✅ Will Trade' : '❌ Will NOT Trade'}
+                                </span>
+                              </div>
+                              <div className="space-y-1 text-sm">
+                                {verificationData.reasons?.map((reason: string, idx: number) => (
+                                  <p key={idx} className="text-slate-300">• {reason}</p>
+                                ))}
+                              </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <p className="text-slate-500 mb-1">Status</p>
+                                <p className="text-slate-200 font-medium">{verificationData.status}</p>
+                              </div>
+                              <div>
+                                <p className="text-slate-500 mb-1">Enabled</p>
+                                <p className={`font-medium ${verificationData.enabled ? 'text-green-400' : 'text-red-400'}`}>
+                                  {verificationData.enabled ? 'Yes' : 'No'}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-slate-500 mb-1">Symbols</p>
+                                <p className="text-slate-200 font-medium">
+                                  {verificationData.symbols?.join(', ') || 'None'}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-slate-500 mb-1">Position Size</p>
+                                <p className="text-slate-200 font-medium">{verificationData.position_size || 'N/A'}</p>
+                              </div>
+                            </div>
+                            
+                            {verificationData.next_execution && (
+                              <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                                <p className="text-xs text-slate-400 mb-1">Next Execution</p>
+                                <p className="text-lg font-semibold text-blue-300">
+                                  {verificationData.next_execution_human || verificationData.next_execution}
+                                </p>
+                                {verificationData.hours_until_execution && (
+                                  <p className="text-sm text-slate-400 mt-1">
+                                    In {verificationData.hours_until_execution.toFixed(1)} hours
+                                  </p>
+                                )}
+                                {verificationData.market_open_time && (
+                                  <p className="text-xs text-slate-500 mt-1">
+                                    Market Open: {verificationData.market_open_time} {verificationData.timezone || 'US/Eastern'}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-center py-4 text-slate-400">
+                            No verification data available
                           </div>
                         )}
                       </div>

@@ -37,6 +37,7 @@ from servers.websocket_server import WebSocketServer
 from infrastructure.task_queue import get_task_queue, TaskPriority
 from infrastructure.performance_metrics import get_metrics_tracker
 from infrastructure.database import get_database
+from strategies.strategy_base import StrategyStatus
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,7 @@ class AsyncWebhookServer:
         self.app.router.add_post('/api/strategies/{name}/stop', self.handle_stop_strategy)
         self.app.router.add_get('/api/strategies/{name}/stats', self.handle_get_strategy_stats)
         self.app.router.add_get('/api/strategies/{name}/logs', self.handle_get_strategy_logs)
+        self.app.router.add_get('/api/strategies/{name}/verify', self.handle_verify_strategy)
         self.app.router.add_post('/api/strategies/{name}/test', self.handle_test_strategy)
         self.app.router.add_put('/api/strategies/{name}/config', self.handle_update_strategy_config)
 
@@ -946,6 +948,72 @@ class AsyncWebhookServer:
             return web.json_response({"logs": logs, "strategy_name": strategy_name, "count": len(logs)})
         except Exception as e:
             logger.error(f"Error getting strategy logs: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_verify_strategy(self, request: web.Request) -> web.Response:
+        """Verify that a strategy is configured correctly and will execute trades."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+            
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+            
+            strategy = self.trading_bot.strategy_manager.strategies.get(strategy_name)
+            if not strategy:
+                return web.json_response({"error": f"Strategy {strategy_name} not found"}, status=404)
+            
+            verification = {
+                "strategy_name": strategy_name,
+                "status": strategy.status.value if hasattr(strategy.status, 'value') else str(strategy.status),
+                "enabled": strategy.config.enabled,
+                "symbols": strategy.config.symbols,
+                "position_size": strategy.config.position_size,
+                "max_positions": strategy.config.max_positions,
+                "will_trade": False,
+                "reasons": [],
+                "next_execution": None,
+            }
+            
+            # Check if strategy will trade
+            if not strategy.config.enabled:
+                verification["reasons"].append("Strategy is disabled")
+            elif not strategy.config.symbols:
+                verification["reasons"].append("No symbols configured")
+            elif strategy.status != StrategyStatus.ACTIVE:
+                verification["reasons"].append(f"Strategy status is {verification['status']} (needs to be ACTIVE)")
+            else:
+                verification["will_trade"] = True
+                verification["reasons"].append("✅ Strategy is properly configured and active")
+            
+            # For overnight_range strategy, check next execution time
+            if strategy_name == 'overnight_range' and hasattr(strategy, 'market_open_time'):
+                try:
+                    import pytz
+                    tz = strategy.timezone if hasattr(strategy, 'timezone') else pytz.timezone('US/Eastern')
+                    if hasattr(tz, 'zone'):
+                        tz = pytz.timezone(tz.zone)
+                    now = datetime.now(tz)
+                    open_hour, open_min = map(int, strategy.market_open_time.split(':'))
+                    market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+                    
+                    if now >= market_open_today:
+                        market_open_today += timedelta(days=1)
+                    
+                    verification["next_execution"] = market_open_today.isoformat()
+                    verification["next_execution_human"] = market_open_today.strftime('%Y-%m-%d %H:%M:%S %Z')
+                    verification["hours_until_execution"] = round((market_open_today - now).total_seconds() / 3600, 2)
+                    verification["market_open_time"] = strategy.market_open_time
+                    verification["timezone"] = str(tz)
+                except Exception as e:
+                    logger.debug(f"Could not calculate next execution time: {e}")
+                    verification["next_execution_error"] = str(e)
+            
+            return web.json_response(verification)
+        except Exception as e:
+            logger.error(f"Error verifying strategy: {e}")
+            logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_test_strategy(self, request: web.Request) -> web.Response:
