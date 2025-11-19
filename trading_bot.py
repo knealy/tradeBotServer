@@ -2844,7 +2844,26 @@ class TopStepXTradingBot:
         session_end_utc = session_end_est.astimezone(pytz.UTC)
         
         return (session_start_utc, session_end_utc)
-    
+
+    @staticmethod
+    def _get_point_value(symbol: str) -> float:
+        """Get point value for a symbol ($ per point movement)"""
+        symbol = symbol.upper()
+        if 'MNQ' in symbol or 'NQ' in symbol:
+            return 2.0  # Micro NQ: $2 per point
+        elif 'MES' in symbol or 'ES' in symbol:
+            return 5.0  # Micro ES: $5 per point
+        elif 'MYM' in symbol or 'YM' in symbol:
+            return 0.5  # Micro YM: $0.50 per point
+        elif 'M2K' in symbol or 'RTY' in symbol:
+            return 5.0  # Micro Russell: $5 per point
+        elif 'MGC' in symbol:
+            return 10.0  # Micro Gold: $10 per point
+        elif 'GC' in symbol:
+            return 100.0  # Gold: $100 per point
+        else:
+            return 1.0  # Default
+
     def _consolidate_orders_into_trades(self, orders: List[Dict]) -> List[Dict]:
         """
         Consolidate individual filled orders into completed trades using FIFO methodology.
