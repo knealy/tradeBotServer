@@ -248,6 +248,7 @@ export const strategyApi = {
       position_size?: number
       max_positions?: number
       enabled?: boolean
+      strategy_params?: Record<string, any> // Strategy-specific parameters
     }
   ): Promise<any> => {
     const response = await api.put(`/api/strategies/${name}/config`, config)

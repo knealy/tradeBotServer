@@ -83,6 +83,13 @@ class AsyncWebhookServer:
         # WebSocket clients (integrated into main server)
         self.websocket_clients = set()
         
+        # Initialize bar aggregator if trading bot has one
+        if hasattr(trading_bot, 'bar_aggregator') and trading_bot.bar_aggregator:
+            # Set broadcast callback to forward bar updates to WebSocket clients
+            trading_bot.bar_aggregator.broadcast_callback = self._broadcast_bar_update
+            # Start the aggregator
+            asyncio.create_task(trading_bot.bar_aggregator.start())
+        
         # Initialize WebSocket server (port 8081) - kept for backward compatibility
         websocket_port = int(os.getenv('WEBSOCKET_PORT', '8081'))
         self.websocket_server = WebSocketServer(trading_bot, self, host=host, port=websocket_port)
@@ -312,6 +319,11 @@ class AsyncWebhookServer:
             logger.info(f"🔌 WebSocket disconnected from {client_ip}. Total clients: {len(self.websocket_clients)}")
         
         return ws
+    
+    def _broadcast_bar_update(self, message: dict):
+        """Callback for bar aggregator to broadcast bar updates."""
+        # Schedule async broadcast
+        asyncio.create_task(self.broadcast_to_websockets(message))
     
     async def broadcast_to_websockets(self, message: dict):
         """Broadcast a message to all connected WebSocket clients."""
@@ -983,6 +995,7 @@ class AsyncWebhookServer:
             position_size = data.get('position_size')
             max_positions = data.get('max_positions')
             enabled = data.get('enabled')
+            strategy_params = data.get('strategy_params', {})  # Strategy-specific parameters
 
             # Validate symbols if provided
             if symbols is not None:
@@ -1015,7 +1028,8 @@ class AsyncWebhookServer:
                 symbols=symbols,
                 position_size=position_size,
                 max_positions=max_positions,
-                enabled=enabled
+                enabled=enabled,
+                strategy_params=strategy_params
             )
 
             if not success:

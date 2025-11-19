@@ -31,7 +31,13 @@ export default function Strategies() {
     symbols: string[]
     position_size: number
     max_positions: number
-  }>({ symbols: [], position_size: 1, max_positions: 2 })
+    strategy_params: Record<string, any> // Strategy-specific parameters
+  }>({ 
+    symbols: [], 
+    position_size: 1, 
+    max_positions: 2,
+    strategy_params: {}
+  })
 
   const startMutation = useMutation(
     ({ name, symbols }: { name: string; symbols?: string[] }) =>
@@ -178,10 +184,30 @@ export default function Strategies() {
   // Start editing config for a strategy
   const startEditingConfig = (strategy: Strategy) => {
     setEditingConfig(strategy.name)
+    
+    // Extract strategy-specific parameters from settings
+    const strategyParams: Record<string, any> = {}
+    if (strategy.settings) {
+      // Overnight range strategy parameters
+      if (strategy.name === 'overnight_range' || strategy.name.toLowerCase().includes('overnight')) {
+        strategyParams.overnight_start_time = strategy.settings.overnight_start_time || '18:00'
+        strategyParams.overnight_end_time = strategy.settings.overnight_end_time || '09:30'
+        strategyParams.market_open_time = strategy.settings.market_open_time || '09:30'
+        strategyParams.atr_period = strategy.settings.atr_period || 14
+        strategyParams.atr_timeframe = strategy.settings.atr_timeframe || '5m'
+        strategyParams.stop_atr_multiplier = strategy.settings.stop_atr_multiplier || 1.25
+        strategyParams.tp_atr_multiplier = strategy.settings.tp_atr_multiplier || 2.0
+        strategyParams.breakeven_enabled = strategy.settings.breakeven_enabled !== undefined ? strategy.settings.breakeven_enabled : true
+        strategyParams.breakeven_profit_points = strategy.settings.breakeven_profit_points || 15.0
+        strategyParams.range_break_offset = strategy.settings.range_break_offset || 0.25
+      }
+    }
+    
     setConfigEdits({
       symbols: strategy.symbols || [],
       position_size: strategy.settings?.position_size || 1,
       max_positions: strategy.settings?.max_positions || 2,
+      strategy_params: strategyParams,
     })
   }
 
@@ -193,6 +219,7 @@ export default function Strategies() {
         symbols: configEdits.symbols,
         position_size: configEdits.position_size,
         max_positions: configEdits.max_positions,
+        strategy_params: configEdits.strategy_params,
       },
     })
   }
@@ -504,6 +531,223 @@ export default function Strategies() {
                             className="w-24 px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
+
+                        {/* Strategy-Specific Parameters */}
+                        {(strategy.name === 'overnight_range' || strategy.name.toLowerCase().includes('overnight')) && (
+                          <div className="border-t border-slate-700 pt-4 space-y-3">
+                            <h5 className="text-xs font-semibold text-slate-300 mb-2">Overnight Range Strategy Parameters</h5>
+                            
+                            {/* Overnight Time Range */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">Overnight Start Time</label>
+                                <input
+                                  type="text"
+                                  placeholder="18:00"
+                                  value={configEdits.strategy_params?.overnight_start_time || '18:00'}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        overnight_start_time: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">Overnight End Time</label>
+                                <input
+                                  type="text"
+                                  placeholder="09:30"
+                                  value={configEdits.strategy_params?.overnight_end_time || '09:30'}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        overnight_end_time: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-xs text-slate-400 mb-1">Market Open Time</label>
+                              <input
+                                type="text"
+                                placeholder="09:30"
+                                value={configEdits.strategy_params?.market_open_time || '09:30'}
+                                onChange={(e) =>
+                                  setConfigEdits({
+                                    ...configEdits,
+                                    strategy_params: {
+                                      ...configEdits.strategy_params,
+                                      market_open_time: e.target.value,
+                                    },
+                                  })
+                                }
+                                className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                              />
+                            </div>
+
+                            {/* ATR Settings */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">ATR Period</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="100"
+                                  value={configEdits.strategy_params?.atr_period || 14}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        atr_period: parseInt(e.target.value) || 14,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">ATR Timeframe</label>
+                                <select
+                                  value={configEdits.strategy_params?.atr_timeframe || '5m'}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        atr_timeframe: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                >
+                                  <option value="1m">1m</option>
+                                  <option value="5m">5m</option>
+                                  <option value="15m">15m</option>
+                                  <option value="1h">1h</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            {/* ATR Multipliers */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">Stop ATR Multiplier</label>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0.5"
+                                  max="5"
+                                  value={configEdits.strategy_params?.stop_atr_multiplier || 1.25}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        stop_atr_multiplier: parseFloat(e.target.value) || 1.25,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">TP ATR Multiplier</label>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0.5"
+                                  max="10"
+                                  value={configEdits.strategy_params?.tp_atr_multiplier || 2.0}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        tp_atr_multiplier: parseFloat(e.target.value) || 2.0,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Breakeven Settings */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">Breakeven Profit Points</label>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  max="100"
+                                  value={configEdits.strategy_params?.breakeven_profit_points || 15.0}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        breakeven_profit_points: parseFloat(e.target.value) || 15.0,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-slate-400 mb-1">Range Break Offset</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  max="10"
+                                  value={configEdits.strategy_params?.range_break_offset || 0.25}
+                                  onChange={(e) =>
+                                    setConfigEdits({
+                                      ...configEdits,
+                                      strategy_params: {
+                                        ...configEdits.strategy_params,
+                                        range_break_offset: parseFloat(e.target.value) || 0.25,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Breakeven Toggle */}
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={configEdits.strategy_params?.breakeven_enabled !== false}
+                                onChange={(e) =>
+                                  setConfigEdits({
+                                    ...configEdits,
+                                    strategy_params: {
+                                      ...configEdits.strategy_params,
+                                      breakeven_enabled: e.target.checked,
+                                    },
+                                  })
+                                }
+                                className="w-4 h-4 rounded bg-slate-800 border-slate-600 text-blue-500 focus:ring-blue-500"
+                              />
+                              <label className="text-xs text-slate-400">Enable Breakeven Stop Management</label>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Save Button */}
                         <div className="flex gap-2 pt-2">

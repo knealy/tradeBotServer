@@ -94,30 +94,67 @@ class StrategyManager:
 
     async def auto_start_enabled_strategies(self):
         """
-        Auto-start strategies that are enabled via environment variables.
-        Called after apply_persisted_states() to ensure env-configured strategies start.
+        Auto-start strategies that are enabled via persisted state (per account) or environment variables.
+        Called after apply_persisted_states() to ensure enabled strategies start.
+        Prioritizes persisted state over environment variables for per-account configuration.
         """
-        logger.info("🚀 Auto-starting strategies from environment configuration...")
+        logger.info("🚀 Auto-starting enabled strategies...")
+
+        db = getattr(self.trading_bot, 'db', None)
+        account_id = self._get_account_id()
+        
+        # Get persisted states for this account
+        persisted_states = {}
+        if db and account_id:
+            persisted_states = db.get_strategy_states(account_id)
+            logger.info(f"📋 Loaded {len(persisted_states)} persisted strategy states for account {account_id}")
 
         for name, strategy_class in self.strategy_classes.items():
             try:
-                # Load config from env
-                config = StrategyConfig.from_env(name)
+                # Check persisted state first (per-account configuration)
+                persisted_state = persisted_states.get(name)
+                should_start = False
+                symbols = None
+                config_source = "persisted"
+                
+                if persisted_state:
+                    # Use persisted state if available
+                    should_start = bool(persisted_state.get('enabled', False))
+                    symbols = persisted_state.get('symbols') or []
+                    logger.debug(f"📝 Strategy {name}: using persisted state (enabled={should_start}, symbols={symbols})")
+                else:
+                    # Fallback to environment variables if no persisted state
+                    config = StrategyConfig.from_env(name)
+                    should_start = config.enabled
+                    symbols = config.symbols
+                    config_source = "environment"
+                    logger.debug(f"🌍 Strategy {name}: using environment config (enabled={should_start}, symbols={symbols})")
 
-                if config.enabled and name not in self.active_strategies:
+                if should_start and name not in self.active_strategies:
                     # Strategy should be running but isn't
-                    logger.info(f"▶️  Auto-starting enabled strategy from env: {name} (symbols: {', '.join(config.symbols)})")
+                    logger.info(f"▶️  Auto-starting {name} from {config_source} (symbols: {', '.join(symbols) if symbols else 'default'})")
 
                     # Ensure strategy instance exists
                     if name not in self.strategies:
-                        strategy = strategy_class(self.trading_bot, config)
+                        base_config = StrategyConfig.from_env(name)
+                        strategy = strategy_class(self.trading_bot, base_config)
                         self.strategies[name] = strategy
+                        
+                        # Apply persisted settings if available
+                        if persisted_state and persisted_state.get('settings'):
+                            self._apply_config_settings(strategy, persisted_state['settings'])
+                            # Apply strategy-specific parameters
+                            self._apply_strategy_specific_settings(strategy, persisted_state['settings'])
                     else:
-                        # Update existing strategy config from env
-                        self.strategies[name].config = config
+                        strategy = self.strategies[name]
+                        # Update from persisted state if available
+                        if persisted_state and persisted_state.get('settings'):
+                            self._apply_config_settings(strategy, persisted_state['settings'])
+                            self._apply_strategy_specific_settings(strategy, persisted_state['settings'])
 
-                    # Start the strategy
-                    success, message = await self.start_strategy(name, symbols=config.symbols, persist=True)
+                    # Start the strategy with persisted symbols or config symbols
+                    start_symbols = symbols if symbols else (strategy.config.symbols if strategy else [])
+                    success, message = await self.start_strategy(name, symbols=start_symbols, persist=True)
                     if success:
                         logger.info(f"✅ Auto-started: {message}")
                     else:
@@ -125,12 +162,14 @@ class StrategyManager:
 
             except Exception as e:
                 logger.error(f"❌ Error auto-starting strategy {name}: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
 
         logger.info(f"📊 Active strategies after auto-start: {len(self.active_strategies)}")
 
     async def update_strategy_config(self, name: str, symbols: List[str] = None,
                                      position_size: int = None, max_positions: int = None,
-                                     enabled: bool = None) -> tuple:
+                                     enabled: bool = None, strategy_params: Dict[str, Any] = None) -> tuple:
         """
         Update strategy configuration.
 
@@ -140,6 +179,7 @@ class StrategyManager:
             position_size: Contracts per trade
             max_positions: Max concurrent positions
             enabled: Whether strategy is enabled
+            strategy_params: Strategy-specific parameters (e.g., overnight_start_time, atr_period)
 
         Returns:
             tuple: (success: bool, message: str)
@@ -166,12 +206,21 @@ class StrategyManager:
         if enabled is not None:
             strategy.config.enabled = enabled
 
-        # Persist the updated state
+        # Update strategy-specific parameters
+        if strategy_params:
+            self._apply_strategy_specific_settings(strategy, strategy_params)
+
+        # Persist the updated state (including strategy-specific params)
+        strategy_specific_settings = {}
+        if strategy_params:
+            strategy_specific_settings = strategy_params.copy()
+        
         self._save_strategy_state(
             name,
             strategy.config.enabled,
             strategy.config.symbols,
-            persist=True
+            persist=True,
+            strategy_specific_settings=strategy_specific_settings
         )
 
         logger.info(f"📝 Updated config for {name}: symbols={strategy.config.symbols}, "
@@ -190,9 +239,9 @@ class StrategyManager:
             or account.get('accountId')
         )
     
-    def _serialize_config(self, config: StrategyConfig) -> Dict[str, Any]:
-        """Serialize strategy config for persistence."""
-        return {
+    def _serialize_config(self, config: StrategyConfig, strategy: Optional[BaseStrategy] = None) -> Dict[str, Any]:
+        """Serialize strategy config and strategy-specific settings for persistence."""
+        serialized = {
             "max_positions": config.max_positions,
             "position_size": config.position_size,
             "risk_per_trade_percent": config.risk_per_trade_percent,
@@ -207,6 +256,36 @@ class StrategyManager:
             "respect_mll": config.respect_mll,
             "max_dll_usage_percent": config.max_dll_usage_percent,
         }
+        
+        # Add strategy-specific parameters
+        if strategy:
+            strategy_name = strategy.__class__.__name__.lower()
+            if 'overnightrange' in strategy_name or strategy_name == 'overnight_range':
+                # Serialize overnight range specific settings
+                if hasattr(strategy, 'overnight_start'):
+                    serialized['overnight_start_time'] = strategy.overnight_start
+                if hasattr(strategy, 'overnight_end'):
+                    serialized['overnight_end_time'] = strategy.overnight_end
+                if hasattr(strategy, 'market_open_time'):
+                    serialized['market_open_time'] = strategy.market_open_time
+                if hasattr(strategy, 'timezone'):
+                    serialized['strategy_timezone'] = str(strategy.timezone)
+                if hasattr(strategy, 'atr_period'):
+                    serialized['atr_period'] = strategy.atr_period
+                if hasattr(strategy, 'atr_timeframe'):
+                    serialized['atr_timeframe'] = strategy.atr_timeframe
+                if hasattr(strategy, 'stop_atr_multiplier'):
+                    serialized['stop_atr_multiplier'] = strategy.stop_atr_multiplier
+                if hasattr(strategy, 'tp_atr_multiplier'):
+                    serialized['tp_atr_multiplier'] = strategy.tp_atr_multiplier
+                if hasattr(strategy, 'breakeven_enabled'):
+                    serialized['breakeven_enabled'] = strategy.breakeven_enabled
+                if hasattr(strategy, 'breakeven_profit_points'):
+                    serialized['breakeven_profit_points'] = strategy.breakeven_profit_points
+                if hasattr(strategy, 'range_break_offset'):
+                    serialized['range_break_offset'] = strategy.range_break_offset
+        
+        return serialized
     
     def _apply_config_settings(self, strategy: BaseStrategy, settings: Dict[str, Any]) -> None:
         """Apply persisted settings onto a strategy config."""
@@ -247,16 +326,56 @@ class StrategyManager:
         if 'max_dll_usage_percent' in settings:
             config.max_dll_usage_percent = float(settings['max_dll_usage_percent'])
     
+    def _apply_strategy_specific_settings(self, strategy: BaseStrategy, settings: Dict[str, Any]) -> None:
+        """Apply strategy-specific parameters (e.g., overnight time range, ATR settings)."""
+        if not settings:
+            return
+        
+        strategy_name = strategy.__class__.__name__.lower()
+        
+        # Overnight Range Strategy specific settings
+        if 'overnightrange' in strategy_name or strategy_name == 'overnight_range':
+            import pytz
+            if 'overnight_start_time' in settings:
+                strategy.overnight_start = str(settings['overnight_start_time'])
+            if 'overnight_end_time' in settings:
+                strategy.overnight_end = str(settings['overnight_end_time'])
+            if 'market_open_time' in settings:
+                strategy.market_open_time = str(settings['market_open_time'])
+            if 'strategy_timezone' in settings:
+                strategy.timezone = pytz.timezone(str(settings['strategy_timezone']))
+            if 'atr_period' in settings:
+                strategy.atr_period = int(settings['atr_period'])
+            if 'atr_timeframe' in settings:
+                strategy.atr_timeframe = str(settings['atr_timeframe'])
+            if 'stop_atr_multiplier' in settings:
+                strategy.stop_atr_multiplier = float(settings['stop_atr_multiplier'])
+            if 'tp_atr_multiplier' in settings:
+                strategy.tp_atr_multiplier = float(settings['tp_atr_multiplier'])
+            if 'breakeven_enabled' in settings:
+                strategy.breakeven_enabled = bool(settings['breakeven_enabled'])
+            if 'breakeven_profit_points' in settings:
+                strategy.breakeven_profit_points = float(settings['breakeven_profit_points'])
+            if 'range_break_offset' in settings:
+                strategy.range_break_offset = float(settings['range_break_offset'])
+            logger.debug(f"Applied overnight_range specific settings to {strategy_name}")
+    
     def _save_strategy_state(
         self,
         strategy_name: str,
         enabled: bool,
         symbols: Optional[List[str]] = None,
         persist: bool = True,
+        strategy_specific_settings: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist state to database if available."""
         strategy = self.strategies.get(strategy_name)
-        config_settings = self._serialize_config(strategy.config) if strategy else {}
+        config_settings = self._serialize_config(strategy.config, strategy) if strategy else {}
+        
+        # Merge in any additional strategy-specific settings
+        if strategy_specific_settings:
+            config_settings.update(strategy_specific_settings)
+        
         metadata = {
             "manager_saved_at": datetime.now(timezone.utc).isoformat()
         }
@@ -338,6 +457,8 @@ class StrategyManager:
                     strategy.config.symbols = state['symbols']
                 if state.get('settings'):
                     self._apply_config_settings(strategy, state['settings'])
+                    # Apply strategy-specific settings
+                    self._apply_strategy_specific_settings(strategy, state['settings'])
                 strategy.config.enabled = bool(state.get('enabled', strategy.config.enabled))
             else:
                 # Persist initial state for new strategies

@@ -78,9 +78,21 @@ export default function TradingChart({
     {
       enabled: Boolean(symbol),
       staleTime: 30_000,
-      refetchInterval: false, // Disable auto-refresh, use manual button
+      refetchInterval: false, // Disable auto-refresh, use real-time updates instead
     }
   )
+  
+  // Subscribe to bar updates for this symbol/timeframe when chart is ready
+  useEffect(() => {
+    if (!chartInitialized || !symbol || !timeframe) {
+      return
+    }
+    
+    // Note: The bar aggregator on the backend automatically subscribes to all active symbols
+    // The WebSocket will broadcast bar updates for any symbol/timeframe that's being tracked
+    // The chart will receive these updates via the market_update event handler below
+    console.log(`[TradingChart] Chart ready for ${symbol} ${timeframe} - will receive real-time bar updates`)
+  }, [chartInitialized, symbol, timeframe])
 
   const handleRefresh = () => {
     queryClient.invalidateQueries(['tradingChartData', symbol, timeframe, barLimit])
@@ -496,40 +508,49 @@ export default function TradingChart({
     console.log('[TradingChart] Setting up WebSocket listener for', symbol)
 
     const handleMarketUpdate = (data: any) => {
-      if (data.symbol !== symbol) {
-        console.log('[TradingChart] Market update for different symbol', { 
-          updateSymbol: data.symbol, 
-          chartSymbol: symbol 
-        })
-        return
+      // Handle both direct data and nested data.data structure
+      const updateData = data.data || data
+      
+      if (updateData.symbol !== symbol) {
+        return // Different symbol, ignore
       }
+      
+      // Check if timeframe matches (if provided)
+      if (updateData.timeframe && updateData.timeframe !== timeframe) {
+        return // Different timeframe, ignore
+      }
+      
       if (!candlestickSeriesRef.current || !volumeSeriesRef.current) {
-        console.log('[TradingChart] Missing series refs for market update')
         return
       }
 
       try {
         // Update the last candle with new data
-        const time = toUnixTimestamp(data.timestamp)
+        const barData = updateData.bar
+        if (!barData) {
+          return
+        }
+        
+        const timestamp = updateData.timestamp || data.timestamp
+        const time = toUnixTimestamp(timestamp)
 
-        if (data.bar) {
-          console.log('[TradingChart] Updating candle from WebSocket', { time, close: data.bar.close })
-          candlestickSeriesRef.current.update({
+        // Update candlestick
+        candlestickSeriesRef.current.update({
+          time,
+          open: barData.open,
+          high: barData.high,
+          low: barData.low,
+          close: barData.close,
+        })
+
+        // Update volume if available
+        if (barData.volume !== undefined) {
+          const volumeColors = getVolumeColors('dark')
+          volumeSeriesRef.current.update({
             time,
-            open: data.bar.open,
-            high: data.bar.high,
-            low: data.bar.low,
-            close: data.bar.close,
+            value: barData.volume,
+            color: barData.close >= barData.open ? volumeColors.upColor : volumeColors.downColor,
           })
-
-          if (data.bar.volume) {
-            const volumeColors = getVolumeColors('dark')
-            volumeSeriesRef.current.update({
-              time,
-              value: data.bar.volume,
-              color: data.bar.close >= data.bar.open ? volumeColors.upColor : volumeColors.downColor,
-            })
-          }
         }
       } catch (error) {
         console.error('[TradingChart] Error updating live chart data:', error)

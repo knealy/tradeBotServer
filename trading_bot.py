@@ -222,6 +222,11 @@ class TopStepXTradingBot:
         self.strategy_manager = StrategyManager(trading_bot=self)
         logger.debug("Strategy manager initialized")
         
+        # Initialize bar aggregator for real-time chart updates
+        from core.bar_aggregator import BarAggregator
+        self.bar_aggregator = BarAggregator(broadcast_callback=None)  # Will be set by webhook server
+        logger.debug("Bar aggregator initialized")
+        
         # Register all available strategies
         self.strategy_manager.register_strategy("overnight_range", OvernightRangeStrategy)
         self.strategy_manager.register_strategy("mean_reversion", MeanReversionStrategy)
@@ -406,6 +411,21 @@ class TopStepXTradingBot:
                     if "volume" in data:
                         entry["volume"] = data.get("volume")
                     entry["ts"] = datetime.now(datetime.UTC).isoformat()
+                
+                # Feed quote to bar aggregator for real-time bar updates
+                if hasattr(self, 'bar_aggregator') and self.bar_aggregator:
+                    last_price = data.get("lastPrice")
+                    volume = data.get("volume", 0)
+                    if last_price is not None:
+                        try:
+                            self.bar_aggregator.add_quote(
+                                symbol=symbol,
+                                price=float(last_price),
+                                volume=int(volume) if volume else 0,
+                                timestamp=datetime.now(datetime.UTC)
+                            )
+                        except Exception as e:
+                            logger.debug(f"Error adding quote to bar aggregator: {e}")
             except Exception as e:
                 logger.debug(f"Failed processing quote message: {e}")
 
