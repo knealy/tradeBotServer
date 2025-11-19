@@ -3,7 +3,10 @@ import { useState } from 'react'
 import { strategyApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { Strategy } from '../types'
-import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2 } from 'lucide-react'
+import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2, Settings, Plus, Trash2, Save } from 'lucide-react'
+
+// Available symbols for trading
+const AVAILABLE_SYMBOLS = ['MNQ', 'MES', 'MYM', 'M2K', 'MGC', 'GC']
 
 // Strategy Insights UI - v2.0 with stats, logs, and test buttons
 export default function Strategies() {
@@ -23,6 +26,12 @@ export default function Strategies() {
   const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null)
   const [selectedStrategyForStats, setSelectedStrategyForStats] = useState<string | null>(null)
   const [selectedStrategyForLogs, setSelectedStrategyForLogs] = useState<string | null>(null)
+  const [editingConfig, setEditingConfig] = useState<string | null>(null)
+  const [configEdits, setConfigEdits] = useState<{
+    symbols: string[]
+    position_size: number
+    max_positions: number
+  }>({ symbols: [], position_size: 1, max_positions: 2 })
 
   const startMutation = useMutation(
     ({ name, symbols }: { name: string; symbols?: string[] }) =>
@@ -140,6 +149,66 @@ export default function Strategies() {
     }
   )
 
+  // Update config mutation
+  const updateConfigMutation = useMutation(
+    ({ name, config }: { name: string; config: { symbols?: string[]; position_size?: number; max_positions?: number } }) =>
+      strategyApi.updateStrategyConfig(name, config),
+    {
+      onSuccess: (data, { name }) => {
+        queryClient.invalidateQueries(['strategies'])
+        setEditingConfig(null)
+        setErrorMessage(null)
+        if (data.success) {
+          console.log(`✅ Updated config for: ${name}`)
+        }
+      },
+      onError: (error: any) => {
+        console.error('❌ Config update error:', error)
+        let errorMsg = 'Unknown error'
+        if (error?.response?.data) {
+          errorMsg = error.response.data.error || error.response.data.message || JSON.stringify(error.response.data)
+        } else if (error?.message) {
+          errorMsg = error.message
+        }
+        setErrorMessage(`Failed to update config: ${errorMsg}`)
+      },
+    }
+  )
+
+  // Start editing config for a strategy
+  const startEditingConfig = (strategy: Strategy) => {
+    setEditingConfig(strategy.name)
+    setConfigEdits({
+      symbols: strategy.symbols || [],
+      position_size: strategy.settings?.position_size || 1,
+      max_positions: strategy.settings?.max_positions || 2,
+    })
+  }
+
+  // Save config changes
+  const saveConfigChanges = (strategyName: string) => {
+    updateConfigMutation.mutate({
+      name: strategyName,
+      config: {
+        symbols: configEdits.symbols,
+        position_size: configEdits.position_size,
+        max_positions: configEdits.max_positions,
+      },
+    })
+  }
+
+  // Add symbol to config
+  const addSymbol = (symbol: string) => {
+    if (!configEdits.symbols.includes(symbol)) {
+      setConfigEdits({ ...configEdits, symbols: [...configEdits.symbols, symbol] })
+    }
+  }
+
+  // Remove symbol from config
+  const removeSymbol = (symbol: string) => {
+    setConfigEdits({ ...configEdits, symbols: configEdits.symbols.filter((s) => s !== symbol) })
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -213,6 +282,10 @@ export default function Strategies() {
                       {strategy.symbols && strategy.symbols.length > 0
                         ? strategy.symbols.join(', ')
                         : 'N/A'}
+                    </p>
+                    <p>
+                      <span className="font-medium">Position Size:</span>{' '}
+                      {strategy.settings?.position_size || 1} contracts
                     </p>
                     {strategy.description && (
                       <p className="mt-2">{strategy.description}</p>
@@ -345,7 +418,116 @@ export default function Strategies() {
                         )}
                         Test
                       </button>
+                      <button
+                        onClick={() => {
+                          if (editingConfig === strategy.name) {
+                            setEditingConfig(null)
+                          } else {
+                            startEditingConfig(strategy)
+                          }
+                        }}
+                        className={`px-3 py-2 rounded text-sm font-medium transition-colors flex items-center gap-2 ${
+                          editingConfig === strategy.name
+                            ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30'
+                            : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                        }`}
+                      >
+                        <Settings className="w-4 h-4" />
+                        Configure
+                      </button>
                     </div>
+
+                    {/* Configuration Editor */}
+                    {editingConfig === strategy.name && (
+                      <div className="bg-slate-900/50 rounded-lg p-4 space-y-4">
+                        <h4 className="text-sm font-semibold text-slate-300">Strategy Configuration</h4>
+
+                        {/* Symbols */}
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-2">Trading Symbols</label>
+                          <div className="flex flex-wrap gap-2 mb-2">
+                            {configEdits.symbols.map((symbol) => (
+                              <span
+                                key={symbol}
+                                className="px-2 py-1 bg-blue-500/20 text-blue-300 rounded text-sm flex items-center gap-1"
+                              >
+                                {symbol}
+                                <button
+                                  onClick={() => removeSymbol(symbol)}
+                                  className="hover:text-red-400 transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {AVAILABLE_SYMBOLS.filter((s) => !configEdits.symbols.includes(s)).map((symbol) => (
+                              <button
+                                key={symbol}
+                                onClick={() => addSymbol(symbol)}
+                                className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs flex items-center gap-1 transition-colors"
+                              >
+                                <Plus className="w-3 h-3" />
+                                {symbol}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Position Size */}
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-2">Position Size (contracts)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={configEdits.position_size}
+                            onChange={(e) =>
+                              setConfigEdits({ ...configEdits, position_size: Math.max(1, parseInt(e.target.value) || 1) })
+                            }
+                            className="w-24 px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+
+                        {/* Max Positions */}
+                        <div>
+                          <label className="block text-xs text-slate-400 mb-2">Max Concurrent Positions</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            value={configEdits.max_positions}
+                            onChange={(e) =>
+                              setConfigEdits({ ...configEdits, max_positions: Math.max(1, parseInt(e.target.value) || 1) })
+                            }
+                            className="w-24 px-3 py-2 bg-slate-800 border border-slate-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+
+                        {/* Save Button */}
+                        <div className="flex gap-2 pt-2">
+                          <button
+                            onClick={() => saveConfigChanges(strategy.name)}
+                            disabled={updateConfigMutation.isLoading || configEdits.symbols.length === 0}
+                            className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded text-sm font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          >
+                            {updateConfigMutation.isLoading ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Save className="w-4 h-4" />
+                            )}
+                            Save Changes
+                          </button>
+                          <button
+                            onClick={() => setEditingConfig(null)}
+                            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-sm font-medium transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Stats Display */}
                     {selectedStrategyForStats === strategy.name && (

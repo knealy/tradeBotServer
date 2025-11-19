@@ -84,6 +84,11 @@ export interface Strategy {
   is_running?: boolean
   config?: Record<string, any>
   description?: string
+  settings?: {
+    position_size?: number
+    max_positions?: number
+    [key: string]: any
+  }
   stats?: {
     total_trades?: number
     winning_trades?: number

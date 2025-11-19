@@ -92,6 +92,93 @@ class StrategyManager:
         """Alias for load_strategies() for backward compatibility."""
         return self.load_strategies()
 
+    async def auto_start_enabled_strategies(self):
+        """
+        Auto-start strategies that are enabled via environment variables.
+        Called after apply_persisted_states() to ensure env-configured strategies start.
+        """
+        logger.info("🚀 Auto-starting strategies from environment configuration...")
+
+        for name, strategy_class in self.strategy_classes.items():
+            try:
+                # Load config from env
+                config = StrategyConfig.from_env(name)
+
+                if config.enabled and name not in self.active_strategies:
+                    # Strategy should be running but isn't
+                    logger.info(f"▶️  Auto-starting enabled strategy from env: {name} (symbols: {', '.join(config.symbols)})")
+
+                    # Ensure strategy instance exists
+                    if name not in self.strategies:
+                        strategy = strategy_class(self.trading_bot, config)
+                        self.strategies[name] = strategy
+                    else:
+                        # Update existing strategy config from env
+                        self.strategies[name].config = config
+
+                    # Start the strategy
+                    success, message = await self.start_strategy(name, symbols=config.symbols, persist=True)
+                    if success:
+                        logger.info(f"✅ Auto-started: {message}")
+                    else:
+                        logger.error(f"❌ Failed to auto-start {name}: {message}")
+
+            except Exception as e:
+                logger.error(f"❌ Error auto-starting strategy {name}: {e}")
+
+        logger.info(f"📊 Active strategies after auto-start: {len(self.active_strategies)}")
+
+    async def update_strategy_config(self, name: str, symbols: List[str] = None,
+                                     position_size: int = None, max_positions: int = None,
+                                     enabled: bool = None) -> tuple:
+        """
+        Update strategy configuration.
+
+        Args:
+            name: Strategy name
+            symbols: List of trading symbols
+            position_size: Contracts per trade
+            max_positions: Max concurrent positions
+            enabled: Whether strategy is enabled
+
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        if name not in self.available_strategies:
+            return False, f"Unknown strategy: {name}"
+
+        # Get or create strategy instance
+        if name not in self.strategies:
+            strategy_class = self.available_strategies[name]
+            config = StrategyConfig.from_env(name)
+            strategy = strategy_class(self.trading_bot, config)
+            self.strategies[name] = strategy
+
+        strategy = self.strategies[name]
+
+        # Update config fields
+        if symbols is not None:
+            strategy.config.symbols = symbols
+        if position_size is not None:
+            strategy.config.position_size = position_size
+        if max_positions is not None:
+            strategy.config.max_positions = max_positions
+        if enabled is not None:
+            strategy.config.enabled = enabled
+
+        # Persist the updated state
+        self._save_strategy_state(
+            name,
+            strategy.config.enabled,
+            strategy.config.symbols,
+            persist=True
+        )
+
+        logger.info(f"📝 Updated config for {name}: symbols={strategy.config.symbols}, "
+                   f"position_size={strategy.config.position_size}, max_positions={strategy.config.max_positions}")
+
+        return True, f"Configuration updated for {name}"
+
     def _get_account_id(self) -> Optional[str]:
         """Resolve the currently selected account id from the trading bot."""
         account = getattr(self.trading_bot, 'selected_account', None)
@@ -298,7 +385,22 @@ class StrategyManager:
             
             is_running = name in self.active_strategies
             status = 'running' if is_running else ('enabled' if enabled else 'disabled')
-            
+
+            # Get settings from persisted state or strategy config
+            settings = state.get('settings') or {}
+            if not settings and strategy:
+                # Use strategy config values if no persisted settings
+                settings = {
+                    "position_size": strategy.config.position_size,
+                    "max_positions": strategy.config.max_positions,
+                }
+            elif strategy:
+                # Ensure position_size and max_positions are always present
+                if 'position_size' not in settings:
+                    settings['position_size'] = strategy.config.position_size
+                if 'max_positions' not in settings:
+                    settings['max_positions'] = strategy.config.max_positions
+
             summaries.append({
                 "name": name,
                 "description": getattr(strategy_class, '__doc__', '') or '',
@@ -306,7 +408,7 @@ class StrategyManager:
                 "enabled": enabled,
                 "is_running": is_running,
                 "symbols": symbols,
-                "settings": state.get('settings') or {},
+                "settings": settings,
                 "last_started": state.get('last_started'),
                 "last_stopped": state.get('last_stopped'),
             })

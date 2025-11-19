@@ -208,7 +208,8 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/strategies/{name}/stats', self.handle_get_strategy_stats)
         self.app.router.add_get('/api/strategies/{name}/logs', self.handle_get_strategy_logs)
         self.app.router.add_post('/api/strategies/{name}/test', self.handle_test_strategy)
-        
+        self.app.router.add_put('/api/strategies/{name}/config', self.handle_update_strategy_config)
+
         self.app.router.add_get('/api/trades', self.handle_get_trades)
         self.app.router.add_get('/api/trades/export', self.handle_export_trades_csv)
         self.app.router.add_get('/api/performance', self.handle_get_performance)
@@ -459,7 +460,9 @@ class AsyncWebhookServer:
             
             if hasattr(self.trading_bot, 'strategy_manager'):
                 await self.trading_bot.strategy_manager.apply_persisted_states()
-            
+                # Auto-start strategies enabled via environment variables
+                await self.trading_bot.strategy_manager.auto_start_enabled_strategies()
+
             await self._broadcast_risk_snapshot(account_id)
             
             return web.json_response(result)
@@ -962,7 +965,87 @@ class AsyncWebhookServer:
             logger.error(f"Error testing strategy: {e}")
             logger.exception(e)
             return web.json_response({"error": str(e)}, status=500)
-    
+
+    async def handle_update_strategy_config(self, request: web.Request) -> web.Response:
+        """Update strategy configuration (symbols, position_size, etc.)."""
+        try:
+            strategy_name = request.match_info.get('name')
+            if not strategy_name:
+                return web.json_response({"error": "strategy name required"}, status=400)
+
+            data = await request.json() if request.content_length else {}
+
+            if not hasattr(self.trading_bot, 'strategy_manager'):
+                return web.json_response({"error": "Strategy manager not available"}, status=503)
+
+            # Extract config updates
+            symbols = data.get('symbols')
+            position_size = data.get('position_size')
+            max_positions = data.get('max_positions')
+            enabled = data.get('enabled')
+
+            # Validate symbols if provided
+            if symbols is not None:
+                if not isinstance(symbols, list) or not all(isinstance(s, str) for s in symbols):
+                    return web.json_response({"error": "symbols must be a list of strings"}, status=400)
+                if len(symbols) == 0:
+                    return web.json_response({"error": "at least one symbol required"}, status=400)
+
+            # Validate position_size if provided
+            if position_size is not None:
+                try:
+                    position_size = int(position_size)
+                    if position_size < 1:
+                        return web.json_response({"error": "position_size must be at least 1"}, status=400)
+                except (TypeError, ValueError):
+                    return web.json_response({"error": "position_size must be a number"}, status=400)
+
+            # Validate max_positions if provided
+            if max_positions is not None:
+                try:
+                    max_positions = int(max_positions)
+                    if max_positions < 1:
+                        return web.json_response({"error": "max_positions must be at least 1"}, status=400)
+                except (TypeError, ValueError):
+                    return web.json_response({"error": "max_positions must be a number"}, status=400)
+
+            # Update the configuration
+            success, message = await self.trading_bot.strategy_manager.update_strategy_config(
+                strategy_name,
+                symbols=symbols,
+                position_size=position_size,
+                max_positions=max_positions,
+                enabled=enabled
+            )
+
+            if not success:
+                return web.json_response({"error": message}, status=400)
+
+            # Get updated strategy info
+            strategy = self.trading_bot.strategy_manager.strategies.get(strategy_name)
+            if strategy:
+                return web.json_response({
+                    "success": True,
+                    "message": message,
+                    "config": {
+                        "name": strategy_name,
+                        "symbols": strategy.config.symbols,
+                        "position_size": strategy.config.position_size,
+                        "max_positions": strategy.config.max_positions,
+                        "enabled": strategy.config.enabled,
+                    }
+                })
+            else:
+                return web.json_response({
+                    "success": True,
+                    "message": message
+                })
+
+        except Exception as e:
+            logger.error(f"Error updating strategy config: {e}")
+            logger.exception(e)
+            return web.json_response({"error": str(e)}, status=500)
+
     async def handle_cancel_all_orders(self, request: web.Request) -> web.Response:
         """Cancel all open orders."""
         try:
@@ -2202,7 +2285,9 @@ async def main():
     # Apply persisted strategy state (if available)
     if hasattr(trading_bot, 'strategy_manager'):
         await trading_bot.strategy_manager.apply_persisted_states()
-    
+        # Auto-start strategies enabled via environment variables
+        await trading_bot.strategy_manager.auto_start_enabled_strategies()
+
     # Start webhook server
     server = AsyncWebhookServer(trading_bot, host=host, port=port)
     await server.run()

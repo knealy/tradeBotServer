@@ -240,6 +240,19 @@ export const strategyApi = {
     const response = await api.post(`/api/strategies/${name}/test`, payload)
     return response.data
   },
+
+  updateStrategyConfig: async (
+    name: string,
+    config: {
+      symbols?: string[]
+      position_size?: number
+      max_positions?: number
+      enabled?: boolean
+    }
+  ): Promise<any> => {
+    const response = await api.put(`/api/strategies/${name}/config`, config)
+    return response.data
+  },
 }
 
 // Metrics API
