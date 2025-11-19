@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { strategyApi } from '../services/api'
 import { useAccount } from '../contexts/AccountContext'
 import type { Strategy } from '../types'
-import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2, Settings, Plus, Trash2, Save, CheckCircle2 } from 'lucide-react'
+import { AlertCircle, X, ChevronDown, ChevronUp, BarChart3, FileText, Play, Loader2, Settings, Plus, Save, CheckCircle2 } from 'lucide-react'
 
 // Available symbols for trading
 const AVAILABLE_SYMBOLS = ['MNQ', 'MES', 'MYM', 'M2K', 'MGC', 'GC']
@@ -168,7 +168,7 @@ export default function Strategies() {
 
   // Update config mutation
   const updateConfigMutation = useMutation(
-    ({ name, config }: { name: string; config: { symbols?: string[]; position_size?: number; max_positions?: number } }) =>
+    ({ name, config }: { name: string; config: { symbols?: string[]; position_size?: number; max_positions?: number; strategy_params?: Record<string, any> } }) =>
       strategyApi.updateStrategyConfig(name, config),
     {
       onSuccess: (data, { name }) => {
@@ -402,6 +402,50 @@ export default function Strategies() {
                             </>
                           )}
                         </button>
+                      <button
+                        onClick={() => {
+                          if (expandedStrategy !== strategy.name) {
+                            setExpandedStrategy(strategy.name)
+                          }
+                          setSelectedStrategyForVerify(strategy.name)
+                          setSelectedStrategyForLogs(null)
+                          setSelectedStrategyForStats(null)
+                          refetchVerify()
+                        }}
+                        className="px-4 py-2 rounded-lg font-semibold text-sm transition-colors bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center gap-2"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        Verify
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (expandedStrategy !== strategy.name) {
+                            setExpandedStrategy(strategy.name)
+                          }
+                          startEditingConfig(strategy)
+                        }}
+                        className="px-4 py-2 rounded-lg font-semibold text-sm transition-colors bg-orange-500 hover:bg-orange-400 text-white flex items-center justify-center gap-2"
+                      >
+                        <Settings className="w-4 h-4" />
+                        Configure
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (expandedStrategy !== strategy.name) {
+                            setExpandedStrategy(strategy.name)
+                          }
+                          testStrategyMutation.mutate({ name: strategy.name })
+                        }}
+                        disabled={testStrategyMutation.isLoading || !selectedAccount}
+                        className="px-4 py-2 rounded-lg font-semibold text-sm transition-colors bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {testStrategyMutation.isLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                        Test
+                      </button>
                       </>
                     )
                   })()}

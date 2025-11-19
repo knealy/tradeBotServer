@@ -101,6 +101,7 @@ class BarAggregator:
         self.broadcast_callback = broadcast_callback
         self.bar_builders: Dict[str, Dict[str, BarBuilder]] = defaultdict(dict)  # {symbol: {timeframe: BarBuilder}}
         self.completed_bars: Dict[str, Dict[str, Bar]] = defaultdict(dict)  # {symbol: {timeframe: Bar}}
+        self._broadcast_log_counts: Dict[str, int] = defaultdict(int)
         self.lock = asyncio.Lock()
         self.update_interval = 0.2  # 5 updates per second (200ms)
         self._update_task: Optional[asyncio.Task] = None
@@ -173,6 +174,16 @@ class BarAggregator:
                                     "data": bar_data,
                                     "timestamp": datetime.now(timezone.utc).isoformat()
                                 })
+                                key = f"{symbol}:{timeframe}"
+                                count = self._broadcast_log_counts[key]
+                                if count < 5:
+                                    logger.info(
+                                        f"📡 Broadcasted {timeframe} bar update for {symbol}: "
+                                        f"O:{bar_data['bar']['open']} H:{bar_data['bar']['high']} "
+                                        f"L:{bar_data['bar']['low']} C:{bar_data['bar']['close']} "
+                                        f"(tick_count={builder.tick_count})"
+                                    )
+                                    self._broadcast_log_counts[key] = count + 1
                             except Exception as e:
                                 logger.debug(f"Error broadcasting bar update: {e}")
     

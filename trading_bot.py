@@ -191,11 +191,15 @@ class TopStepXTradingBot:
         self._market_hub_connected = False
         self._market_hub_url = os.getenv("PROJECT_X_MARKET_HUB_URL", "https://rtc.topstepx.com/hubs/market")
         # Allow overriding hub method names via env to adapt without code change
-        self._market_hub_quote_event = os.getenv("PROJECT_X_QUOTE_EVENT", "GatewayQuote")
-        self._market_hub_subscribe_method = os.getenv("PROJECT_X_SUBSCRIBE_METHOD", "SubscribeContractQuotes")
-        self._market_hub_unsubscribe_method = os.getenv("PROJECT_X_UNSUBSCRIBE_METHOD", "UnsubscribeContractQuotes")
+        # Default to the naming used by the REST quote command (`/api/MarketData/quote`)
+        # while still allowing overrides via env vars.
+        self._market_hub_quote_event = os.getenv("PROJECT_X_QUOTE_EVENT", "Quote")
+        self._market_hub_subscribe_method = os.getenv("PROJECT_X_SUBSCRIBE_METHOD", "SubscribeQuote")
+        self._market_hub_unsubscribe_method = os.getenv("PROJECT_X_UNSUBSCRIBE_METHOD", "UnsubscribeQuote")
         self._subscribed_symbols = set()
         self._pending_symbols = set()
+        self._raw_quote_log_count = 0
+        self._missing_symbol_log_count = 0
         
         # WebSocket connection pool: {url: hub_connection}
         # Reuses connections for multiple symbols to reduce overhead
@@ -369,6 +373,9 @@ class TopStepXTradingBot:
 
         def on_quote(*args):
             try:
+                if self._raw_quote_log_count < 5:
+                    logger.info(f"📶 Raw quote event #{self._raw_quote_log_count + 1}: args={args}")
+                    self._raw_quote_log_count += 1
                 # Normalize payload across different SignalR client shapes
                 cid = ""
                 data = {}
@@ -390,7 +397,6 @@ class TopStepXTradingBot:
                     parts = cid.split(".")
                     symbol = parts[-2].upper() if len(parts) >= 2 else cid
                 if not symbol:
-                    # Fallback to symbolId in payload
                     sym_id = (data.get("symbol") or data.get("symbolId") or "").upper()
                     if sym_id and "." in sym_id:
                         parts = sym_id.split(".")
@@ -398,6 +404,9 @@ class TopStepXTradingBot:
                     elif sym_id:
                         symbol = sym_id
                 if not symbol:
+                    if self._missing_symbol_log_count < 5:
+                        logger.warning(f"⚠️  Received quote payload without resolvable symbol. cid={cid}, data_keys={list(data.keys())}")
+                        self._missing_symbol_log_count += 1
                     return
                 with self._quote_cache_lock:
                     entry = self._quote_cache.setdefault(symbol, {})
@@ -488,15 +497,24 @@ class TopStepXTradingBot:
         hub.on_close(on_close)
         hub.on_error(on_error)
         # Register multiple likely quote event names; env var takes precedence
-        event_names = [self._market_hub_quote_event, "GatewayQuote"]
+        event_names = [
+            self._market_hub_quote_event,
+            "GatewayQuote",
+            "GatewayQuoteWithConflation",
+            "ContractQuote",
+            "Quote",
+            "RealtimeQuote",
+            "ConflatedQuote",
+        ]
         seen = set()
         for ev in event_names:
             if ev and ev not in seen:
                 try:
                     hub.on(ev, on_quote)
                     seen.add(ev)
-                except Exception:
-                    pass
+                    logger.debug(f"Registered SignalR quote handler for event '{ev}'")
+                except Exception as register_err:
+                    logger.debug(f"Failed to register quote handler for '{ev}': {register_err}")
         
         # Register depth event handlers
         depth_event_names = ["Depth", "OrderBook", "Level2", "MarketDepth", "GatewayDepth"]
@@ -525,11 +543,44 @@ class TopStepXTradingBot:
             logger.debug(f"Queued subscription for {sym} until hub connects")
             return
         try:
-            # Per docs, subscribe by contract ID
             cid = self._get_contract_id(sym)
-            self._market_hub.send(self._market_hub_subscribe_method, [cid])
-            self._subscribed_symbols.add(sym)
-            logger.info(f"Subscribed to live quotes for {sym} via {cid}")
+            subscribe_methods = [
+                self._market_hub_subscribe_method,
+                "SubscribeQuote",
+                "SubscribeQuotes",
+                "SubscribeContractQuotes",
+                "Quote",
+                "QuoteCommand",
+                "Subscribe",
+                "SubscribeInstrument",
+            ]
+            payload_variants = [
+                [cid],
+                [{"contractId": cid}],
+                [{"contractIds": [cid]}],
+                [{"contracts": [cid]}],
+            ]
+            sent_method = None
+            for method in [m for m in subscribe_methods if m]:
+                for payload in payload_variants:
+                    try:
+                        self._market_hub.send(method, payload)
+                        sent_method = method
+                        logger.debug(
+                            f"Sent SignalR subscribe request via {method} for {sym} ({cid}) "
+                            f"with payload keys: {list(payload[0].keys()) if isinstance(payload[0], dict) else 'string'}"
+                        )
+                        break
+                    except Exception as method_err:
+                        logger.debug(f"Subscribe method {method} failed for {sym} with payload {payload}: {method_err}")
+                        continue
+                if sent_method:
+                    break
+            if sent_method:
+                self._subscribed_symbols.add(sym)
+                logger.info(f"Subscribed to live quotes for {sym} via {cid} (method: {sent_method})")
+            else:
+                logger.warning(f"Unable to confirm quote subscription for {sym}; all subscribe method attempts failed")
         except Exception as e:
             logger.warning(f"Failed to subscribe to quotes for {sym}: {e}")
     
