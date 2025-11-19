@@ -424,6 +424,13 @@ class TopStepXTradingBot:
                                 volume=int(volume) if volume else 0,
                                 timestamp=datetime.now(datetime.UTC)
                             )
+                            # Log first few quotes per symbol to verify flow
+                            if not hasattr(self, '_quote_log_count'):
+                                self._quote_log_count = {}
+                            count = self._quote_log_count.get(symbol, 0)
+                            if count < 3:
+                                logger.info(f"📈 Quote received for {symbol}: ${last_price} (vol: {volume}) → bar aggregator")
+                                self._quote_log_count[symbol] = count + 1
                         except Exception as e:
                             logger.debug(f"Error adding quote to bar aggregator for {symbol}: {e}")
             except Exception as e:

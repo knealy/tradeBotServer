@@ -1993,6 +1993,15 @@ class AsyncWebhookServer:
             timeframe = params.get('timeframe', '5m')
             limit = int(params.get('limit', '300'))
             end_time = params.get('end') or params.get('end_time')
+            
+            # Ensure SignalR is subscribed to this symbol for real-time updates
+            if symbol and hasattr(self.trading_bot, '_ensure_quote_subscription'):
+                try:
+                    await self.trading_bot._ensure_quote_subscription(symbol)
+                    logger.debug(f"📡 Ensured SignalR quote subscription for {symbol} (triggered by chart load)")
+                except Exception as e:
+                    logger.debug(f"Could not ensure quote subscription for {symbol}: {e}")
+            
             data = await self.dashboard_api.get_historical_data(
                 symbol=symbol,
                 timeframe=timeframe,

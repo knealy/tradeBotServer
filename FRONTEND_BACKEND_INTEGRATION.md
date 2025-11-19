@@ -131,8 +131,26 @@
 ## 🚀 Next Steps
 
 1. **Restart the server** to apply all changes
-2. **Check logs** for initialization messages
+2. **Check logs** for initialization messages:
+   - `📊 Bar aggregator started - real-time chart updates enabled`
+   - `📡 Ensured SignalR quote subscription for MNQ (triggered by chart load)`
+   - `📈 Quote received for MNQ: $15000.0 (vol: 100) → bar aggregator`
+   - `📊 Auto-subscribed MNQ to timeframes: 1m, 5m, 15m, 1h`
+   - `📊 Broadcasted bar update: MNQ 5m @ 15000.0`
 3. **Test strategy configuration** - edit and save, then restart
-4. **Open chart** and verify real-time updates are flowing
+4. **Open chart** and verify:
+   - Chart loads → triggers `/api/history` → ensures SignalR subscription
+   - Quotes flow → bar aggregator → WebSocket → chart updates
 5. **Monitor logs** for any errors or warnings
+
+## 🔧 SignalR Quote Flow
+
+The system now automatically:
+1. **Chart loads** → calls `/api/history` → ensures SignalR subscription for symbol
+2. **SignalR quotes arrive** → `on_quote` handler → feeds to `bar_aggregator.add_quote()`
+3. **Bar aggregator** → auto-subscribes to 1m, 5m, 15m, 1h timeframes on first quote
+4. **Bar updates** → broadcast every 200ms (5 updates/second) via WebSocket
+5. **Frontend chart** → receives `market_update` events → updates current bar in real-time
+
+**Key Point**: SignalR is already set up - the chart now automatically triggers quote subscriptions when it loads!
 

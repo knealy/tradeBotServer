@@ -199,7 +199,7 @@ class BarAggregator:
             for tf in common_timeframes:
                 bar_start = self._get_bar_start_time(timestamp, tf)
                 self.bar_builders[symbol_key][tf] = BarBuilder(symbol_key, tf, bar_start)
-            logger.debug(f"Auto-subscribed {symbol_key} to timeframes: {', '.join(common_timeframes)}")
+            logger.info(f"📊 Auto-subscribed {symbol_key} to timeframes: {', '.join(common_timeframes)}")
         
         # Update bars for all active timeframes
         if symbol_key in self.bar_builders:
