@@ -119,20 +119,30 @@ class StrategyManager:
                 
                 if persisted_state:
                     # Use persisted state if available
-                    should_start = bool(persisted_state.get('enabled', False))
+                    enabled_value = persisted_state.get('enabled', False)
+                    # Handle both string "true"/"false" and boolean True/False
+                    if isinstance(enabled_value, str):
+                        should_start = enabled_value.lower() in ('true', '1', 'yes', 'on')
+                    else:
+                        should_start = bool(enabled_value)
                     symbols = persisted_state.get('symbols') or []
-                    logger.debug(f"📝 Strategy {name}: using persisted state (enabled={should_start}, symbols={symbols})")
+                    logger.info(f"📝 Strategy {name}: using persisted state (enabled={should_start}, symbols={symbols}, raw_value={enabled_value})")
                 else:
                     # Fallback to environment variables if no persisted state
                     config = StrategyConfig.from_env(name)
                     should_start = config.enabled
                     symbols = config.symbols
                     config_source = "environment"
-                    logger.debug(f"🌍 Strategy {name}: using environment config (enabled={should_start}, symbols={symbols})")
+                    logger.info(f"🌍 Strategy {name}: using environment config (enabled={should_start}, symbols={symbols})")
 
-                if should_start and name not in self.active_strategies:
-                    # Strategy should be running but isn't
-                    logger.info(f"▶️  Auto-starting {name} from {config_source} (symbols: {', '.join(symbols) if symbols else 'default'})")
+                if should_start:
+                    if name in self.active_strategies:
+                        logger.info(f"⏭️  Strategy {name} already active, skipping auto-start")
+                    else:
+                        # Strategy should be running but isn't
+                        logger.info(f"▶️  Auto-starting {name} from {config_source} (symbols: {', '.join(symbols) if symbols else 'default'})")
+                else:
+                    logger.info(f"⏸️  Strategy {name} is disabled (should_start=False), skipping auto-start")
 
                     # Ensure strategy instance exists
                     if name not in self.strategies:

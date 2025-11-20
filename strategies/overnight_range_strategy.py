@@ -130,6 +130,14 @@ class OvernightRangeStrategy(BaseStrategy):
         # Order placement
         self.range_break_offset = float(os.getenv('RANGE_BREAK_OFFSET', '0.25'))  # Offset from range extremes
         self.default_quantity = int(os.getenv('STRATEGY_QUANTITY', '1'))  # Position size
+        self.breakout_monitor_enabled = os.getenv('BREAKOUT_MONITOR_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
+        self.breakout_proximity_percent = float(os.getenv('BREAKOUT_PROXIMITY_PERCENT', '10.0'))
+        self.breakout_min_proximity_points = float(os.getenv('BREAKOUT_MIN_PROXIMITY_POINTS', '5.0'))
+        self.breakout_monitor_interval = float(os.getenv('BREAKOUT_MONITOR_INTERVAL_SECONDS', '15'))
+        self.breakout_order_tolerance_points = float(os.getenv('BREAKOUT_ORDER_TOLERANCE_POINTS', '1.0'))
+        self.breakout_levels: Dict[str, Dict[str, RangeBreakOrder]] = {}
+        self.breakout_active_orders: Dict[str, Dict[str, str]] = {}
+        self._breakout_monitor_task: Optional[asyncio.Task] = None
         
         # Market condition filters (OPTIONAL - defaulted to OFF)
         self.filter_range_size_enabled = os.getenv('OVERNIGHT_FILTER_RANGE_SIZE', 'false').lower() == 'true'
@@ -590,38 +598,38 @@ class OvernightRangeStrategy(BaseStrategy):
             OvernightRange object with high/low/open/close, or None if error
         """
         try:
+            symbol = symbol.upper()
             # Get current time in strategy timezone
             now = datetime.now(self.timezone)
             
-            # Parse overnight session times
+            # Parse configured session times
             start_hour, start_min = map(int, self.overnight_start.split(':'))
             end_hour, end_min = map(int, self.overnight_end.split(':'))
+            start_clock = time(start_hour, start_min)
+            end_clock = time(end_hour, end_min)
             
-            # Calculate the SPECIFIC overnight session times
-            # If it's before market open today, use yesterday 6pm to today 9:30am
-            # If it's after market open today, use today 6pm to tomorrow 9:30am (for next day)
-            
-            market_open_today = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
-            
-            if now.time() < time(end_hour, end_min):
-                # Before market open - use yesterday's overnight session
-                # Start: Yesterday at overnight_start (e.g., yesterday 18:00)
-                # End: Today at overnight_end (e.g., today 09:30)
-                start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
-                end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
-            else:
-                # After market open - use today's overnight session for tomorrow
-                # Start: Today at overnight_start (e.g., today 18:00)
-                # End: Tomorrow at overnight_end (e.g., tomorrow 09:30)
-                if now.time() < time(start_hour, start_min):
-                    # Before overnight start - use yesterday's session
-                    start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
-                    end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+            # Determine the most recent completed session end
+            if end_clock <= start_clock:
+                # Session crosses midnight (e.g., 18:00 -> 09:30)
+                if now.time() >= end_clock:
+                    end_date = now.date()
                 else:
-                    # After overnight start - session is in progress or future
-                    # For testing purposes, use the most recent completed session
-                    start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
-                    end_time = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+                    end_date = (now - timedelta(days=1)).date()
+                start_date = end_date - timedelta(days=1)
+            else:
+                # Session contained within same calendar day (e.g., 20:00 -> 22:15)
+                if now.time() >= end_clock:
+                    end_date = now.date()
+                else:
+                    end_date = (now - timedelta(days=1)).date()
+                start_date = end_date
+            
+            end_time = self.timezone.localize(datetime.combine(end_date, end_clock))
+            start_time = self.timezone.localize(datetime.combine(start_date, start_clock))
+            
+            # Safety: if start_time is equal to end_time (zero duration), skip
+            if start_time >= end_time:
+                start_time -= timedelta(days=1)
             
             # Calculate how many 1-minute bars we need
             session_duration = end_time - start_time
@@ -631,11 +639,17 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.info(f"  Session: {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')}")
             logger.info(f"  Duration: {session_minutes} minutes")
             
-            # Fetch bars for the overnight session
+            # Convert to UTC for API request
+            start_time_utc = start_time.astimezone(pytz.UTC)
+            end_time_utc = end_time.astimezone(pytz.UTC)
+            
+            # Fetch bars for the overnight session using explicit date range to avoid cache mismatch
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
                 timeframe='1m',
-                limit=session_minutes + 60  # Add buffer to ensure we get the full range
+                start_time=start_time_utc,
+                end_time=end_time_utc,
+                limit=session_minutes + 10  # still provide limit for DB helpers
             )
             
             if not bars or len(bars) < 10:
@@ -726,6 +740,7 @@ class OvernightRangeStrategy(BaseStrategy):
             Tuple of (long_order, short_order) or (None, None) if error
         """
         try:
+            symbol = symbol.upper()
             # Get overnight range
             range_data = self.active_ranges.get(symbol)
             if not range_data:
@@ -795,9 +810,10 @@ class OvernightRangeStrategy(BaseStrategy):
                 logger.info(f"  Lower ATR zone inside overnight range - using ATR*2 for TP")
                 short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
             else:
-                # ATR zone is outside range - TARGET THE ZONE ITSELF (upper bound of lower zone)
-                logger.info(f"  Lower ATR zone outside overnight range - targeting zone at {atr_data.day_bear_price:.2f}")
-                short_tp_raw = atr_data.day_bear_price  # Target the upper bound of lower zone
+                # ATR zone is outside range - TARGET THE LOWER BOUND of the zone (day_bear_price1)
+                # For SHORT orders, TP must be BELOW entry, so we use the lower bound of the lower zone
+                logger.info(f"  Lower ATR zone outside overnight range - targeting lower bound at {atr_data.day_bear_price1:.2f}")
+                short_tp_raw = atr_data.day_bear_price1  # Target the lower bound of lower zone (below entry)
             
             # Round to valid tick sizes
             short_entry = self.round_to_tick(short_entry_raw, tick_size)
@@ -859,12 +875,28 @@ class OvernightRangeStrategy(BaseStrategy):
             Dict with order placement results
         """
         try:
+            symbol = symbol.upper()
             logger.info(f"🚀 Placing range break orders for {symbol}...")
             
             # Calculate orders
             long_order, short_order = await self.calculate_range_break_orders(symbol)
             if not long_order or not short_order:
                 return {"success": False, "error": "Failed to calculate orders"}
+
+            # Remember breakout templates for proactive monitoring
+            self.breakout_levels[symbol] = {
+                "BUY": long_order,
+                "SELL": short_order,
+            }
+            self.breakout_active_orders.setdefault(symbol, {})
+            
+            # Extract account ID (handle both dict and string formats)
+            account_id = None
+            if self.trading_bot.selected_account:
+                if isinstance(self.trading_bot.selected_account, dict):
+                    account_id = self.trading_bot.selected_account.get('id')
+                else:
+                    account_id = self.trading_bot.selected_account
             
             results = {"symbol": symbol, "orders": []}
             
@@ -876,13 +908,15 @@ class OvernightRangeStrategy(BaseStrategy):
                 entry_price=long_order.entry_price,
                 stop_loss_price=long_order.stop_loss,
                 take_profit_price=long_order.take_profit,
-                account_id=self.trading_bot.selected_account
+                account_id=account_id
             )
             
-            if long_result and 'order' in long_result:
-                order_id = long_result['order'].get('orderId')
+            # Check for successful order placement (response has orderId or success=True)
+            if long_result and long_result.get('orderId'):
+                order_id = long_result.get('orderId')
                 results["orders"].append({"side": "LONG", "order_id": order_id, "result": long_result})
                 logger.info(f"✅ Long breakout order placed: {order_id}")
+                self.breakout_active_orders.setdefault(symbol, {})["BUY"] = str(order_id)
                 
                 # Add to active orders
                 if symbol not in self.active_orders:
@@ -900,6 +934,13 @@ class OvernightRangeStrategy(BaseStrategy):
                         "position_filled": False  # Track if entry order has filled
                     }
                     logger.debug(f"Breakeven monitoring setup for order {order_id}")
+            elif long_result and (long_result.get('error') or long_result.get('errorMessage')):
+                error_msg = long_result.get('error') or long_result.get('errorMessage', 'Unknown error')
+                logger.warning(f"⚠️  Long order failed: {error_msg}")
+                results["errors"] = results.get("errors", [])
+                results["errors"].append({"side": "LONG", "error": error_msg})
+                if symbol in self.breakout_active_orders:
+                    self.breakout_active_orders[symbol].pop("BUY", None)
             
             # Place short breakout order
             short_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
@@ -909,13 +950,15 @@ class OvernightRangeStrategy(BaseStrategy):
                 entry_price=short_order.entry_price,
                 stop_loss_price=short_order.stop_loss,
                 take_profit_price=short_order.take_profit,
-                account_id=self.trading_bot.selected_account
+                account_id=account_id
             )
             
-            if short_result and 'order' in short_result:
-                order_id = short_result['order'].get('orderId')
+            # Check for successful order placement (response has orderId)
+            if short_result and short_result.get('orderId'):
+                order_id = short_result.get('orderId')
                 results["orders"].append({"side": "SHORT", "order_id": order_id, "result": short_result})
                 logger.info(f"✅ Short breakout order placed: {order_id}")
+                self.breakout_active_orders.setdefault(symbol, {})["SELL"] = str(order_id)
                 
                 # Add to active orders
                 if symbol not in self.active_orders:
@@ -933,6 +976,13 @@ class OvernightRangeStrategy(BaseStrategy):
                         "position_filled": False  # Track if entry order has filled
                     }
                     logger.debug(f"Breakeven monitoring setup for order {order_id}")
+            elif short_result and (short_result.get('error') or short_result.get('errorMessage')):
+                error_msg = short_result.get('error') or short_result.get('errorMessage', 'Unknown error')
+                logger.warning(f"⚠️  Short order failed: {error_msg}")
+                results["errors"] = results.get("errors", [])
+                results["errors"].append({"side": "SHORT", "error": error_msg})
+                if symbol in self.breakout_active_orders:
+                    self.breakout_active_orders[symbol].pop("SELL", None)
             
             results["success"] = len(results["orders"]) > 0
             return results
@@ -940,6 +990,174 @@ class OvernightRangeStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"Error placing range break orders for {symbol}: {e}")
             return {"success": False, "error": str(e)}
+
+    def _extract_quote_price(self, quote: Dict) -> Optional[float]:
+        """Return best available price from quote payload."""
+        if not quote or quote.get("error"):
+            return None
+        for key in ("last", "bid", "ask", "price"):
+            value = quote.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _group_orders_by_symbol(self, orders: Optional[List[Dict]]) -> Dict[str, List[Dict]]:
+        """Group open orders by symbol for quick lookup."""
+        grouped: Dict[str, List[Dict]] = {}
+        if not orders or isinstance(orders, dict) and orders.get("error"):
+            return grouped
+        for order in orders:
+            symbol = order.get("symbol")
+            if not symbol:
+                contract_id = order.get("contractId")
+                if contract_id:
+                    symbol = self.trading_bot._get_symbol_from_contract_id(contract_id)
+            if not symbol:
+                continue
+            grouped.setdefault(str(symbol).upper(), []).append(order)
+        return grouped
+
+    def _order_matches_breakout(self, order: Dict, side: str, target_price: float, tolerance: float) -> bool:
+        """Check if an existing order already covers a breakout level."""
+        try:
+            order_type = order.get("type")
+            if order_type not in (4, "4", "Stop", "stop"):
+                return False
+            raw_side = order.get("side", -1)
+            order_side = "BUY" if raw_side in (0, "0", "buy", "BUY") else "SELL"
+            if order_side != side:
+                return False
+            order_price = order.get("stopPrice") or order.get("price") or order.get("limitPrice")
+            if order_price is None:
+                return False
+            order_price = float(order_price)
+            return abs(order_price - target_price) <= tolerance
+        except Exception:
+            return False
+
+    async def _place_single_breakout_order(self, order_template: RangeBreakOrder) -> Optional[str]:
+        """Place a single breakout stop order (used by proactive monitor)."""
+        symbol = order_template.symbol.upper()
+        logger.info(f"📌 Placing {order_template.side} breakout order for {symbol} at {order_template.entry_price:.2f}")
+        account_id = None
+        if self.trading_bot.selected_account:
+            if isinstance(self.trading_bot.selected_account, dict):
+                account_id = self.trading_bot.selected_account.get('id')
+            else:
+                account_id = self.trading_bot.selected_account
+
+        result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+            symbol=symbol,
+            side=order_template.side,
+            quantity=order_template.quantity,
+            entry_price=order_template.entry_price,
+            stop_loss_price=order_template.stop_loss,
+            take_profit_price=order_template.take_profit,
+            account_id=account_id
+        )
+
+        if not result or not result.get("orderId"):
+            logger.warning(f"⚠️  Unable to place {order_template.side} breakout order for {symbol}: {result.get('error') if result else 'unknown error'}")
+            return None
+
+        order_id = str(result["orderId"])
+        self.active_orders.setdefault(symbol, []).append(order_id)
+        self.breakout_active_orders.setdefault(symbol, {})[order_template.side] = order_id
+
+        if self.breakeven_enabled:
+            self.breakeven_monitoring[order_id] = {
+                "symbol": symbol,
+                "side": "LONG" if order_template.side == "BUY" else "SHORT",
+                "entry_price": order_template.entry_price,
+                "original_stop": order_template.stop_loss,
+                "breakeven_triggered": False,
+                "position_filled": False
+            }
+
+        logger.info(f"✅ {order_template.side} breakout order submitted: {order_id}")
+        return order_id
+
+    async def _ensure_breakout_order(self, symbol: str, side: str, order_template: RangeBreakOrder,
+                                     existing_orders: List[Dict], tick_size: float) -> None:
+        """Ensure there is an active breakout stop order near the target level."""
+        symbol = symbol.upper()
+        tolerance = max(self.breakout_order_tolerance_points, tick_size)
+        # Check existing orders from API
+        for order in existing_orders:
+            if self._order_matches_breakout(order, side, order_template.entry_price, tolerance):
+                order_id = str(order.get("id"))
+                self.breakout_active_orders.setdefault(symbol, {})[side] = order_id
+                logger.debug(f"🔁 Existing {side} breakout order already working for {symbol} (ID {order_id})")
+                return
+
+        # Remove stale cached order id if it exists but no matching order
+        if symbol in self.breakout_active_orders:
+            self.breakout_active_orders[symbol].pop(side, None)
+
+        await self._place_single_breakout_order(order_template)
+
+    async def monitor_breakout_levels(self):
+        """Continuously monitor price and keep breakout stop orders staged near range extremes."""
+        if not self.breakout_monitor_enabled:
+            logger.info("⚙️  Breakout monitoring disabled via BREAKOUT_MONITOR_ENABLED")
+            return
+
+        logger.info(
+            f"⚙️  Breakout monitoring ENABLED (threshold={self.breakout_proximity_percent}% "
+            f"min={self.breakout_min_proximity_points} pts, interval={self.breakout_monitor_interval}s)"
+        )
+
+        while self.is_trading:
+            try:
+                if not self.breakout_levels:
+                    await asyncio.sleep(self.breakout_monitor_interval)
+                    continue
+
+                open_orders = await self.trading_bot.get_open_orders()
+                orders_list = open_orders if isinstance(open_orders, list) else []
+                orders_by_symbol = self._group_orders_by_symbol(orders_list)
+
+                for symbol, templates in self.breakout_levels.items():
+                    range_data = self.active_ranges.get(symbol)
+                    if not range_data:
+                        continue
+
+                    quote = await self.trading_bot.get_market_quote(symbol)
+                    current_price = self._extract_quote_price(quote)
+                    if current_price is None:
+                        continue
+
+                    threshold_points = max(
+                        range_data.range_size * (self.breakout_proximity_percent / 100.0),
+                        self.breakout_min_proximity_points
+                    )
+                    tick_size = await self.get_tick_size(symbol)
+                    symbol_orders = orders_by_symbol.get(symbol, [])
+
+                    long_template = templates.get("BUY")
+                    if long_template:
+                        distance = long_template.entry_price - current_price
+                        if 0 <= distance <= threshold_points:
+                            await self._ensure_breakout_order(symbol, "BUY", long_template, symbol_orders, tick_size)
+
+                    short_template = templates.get("SELL")
+                    if short_template:
+                        distance = current_price - short_template.entry_price
+                        if 0 <= distance <= threshold_points:
+                            await self._ensure_breakout_order(symbol, "SELL", short_template, symbol_orders, tick_size)
+
+                await asyncio.sleep(self.breakout_monitor_interval)
+
+            except asyncio.CancelledError:
+                logger.info("Breakout monitoring task cancelled")
+                break
+            except Exception as exc:
+                logger.error(f"Error in breakout monitoring: {exc}")
+                await asyncio.sleep(max(self.breakout_monitor_interval, 5))
     
     async def monitor_breakeven_stops(self):
         """
@@ -1046,47 +1264,130 @@ class OvernightRangeStrategy(BaseStrategy):
         """
         Background task that aligns strategy execution with the configured market open.
         Handles catch-up execution when the bot starts after the market open.
+        Checks frequently (every 10 seconds) when close to market open time to catch it precisely.
         """
-        logger.info(f"📅 Market open scanner started - targeting {self.market_open_time} {self.timezone}")
-        
-        while self.is_trading:
-            try:
-                now = datetime.now(self.timezone)
-                open_hour, open_min = map(int, self.market_open_time.split(':'))
-                market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
-                trading_end_hour, trading_end_min = map(int, self.config.trading_end_time.split(':'))
-                trading_end_today = now.replace(hour=trading_end_hour, minute=trading_end_min, second=0, microsecond=0)
-                
-                ran_today = self._last_market_open_run == market_open_today.date()
-                
-                if now >= market_open_today:
-                    if not ran_today:
-                        grace_minutes = float(os.getenv('MARKET_OPEN_GRACE_MINUTES', '5'))
-                        grace_deadline = market_open_today + timedelta(minutes=grace_minutes)
-                        if now <= grace_deadline:
-                            logger.info("🔔 Market open reached—executing scheduled sequence.")
-                            await self._execute_market_open_sequence()
-                        else:
-                            logger.info("⏭️  Market open already passed; skipping catch-up and waiting for next session.")
-                        self._last_market_open_run = market_open_today.date()
-                    
-                    next_open = market_open_today + timedelta(days=1)
-                else:
-                    next_open = market_open_today
-                
-                sleep_seconds = max((next_open - now).total_seconds(), 5.0)
-                logger.info(
-                    f"⏰ Next market open execution scheduled for {next_open.strftime('%Y-%m-%d %H:%M:%S %Z')} "
-                    f"(in {sleep_seconds/3600:.2f} hours)"
-                )
-                await asyncio.sleep(sleep_seconds)
+        try:
+            logger.info(f"📅 Market open scanner started - targeting {self.market_open_time} {self.timezone}")
             
-            except asyncio.CancelledError:
-                logger.info("Market open scanner cancelled.")
-                break
-            except Exception as e:
-                logger.error(f"Error in market open scanner: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes on error
+            while self.is_trading:
+                try:
+                    now = datetime.now(self.timezone)
+                    open_hour, open_min = map(int, self.market_open_time.split(':'))
+                    market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+                    trading_end_hour, trading_end_min = map(int, self.config.trading_end_time.split(':'))
+                    trading_end_today = now.replace(hour=trading_end_hour, minute=trading_end_min, second=0, microsecond=0)
+                    
+                    ran_today = self._last_market_open_run == market_open_today.date()
+                    
+                    # Check if we're at or past market open time
+                    if now >= market_open_today:
+                        if not ran_today:
+                            grace_minutes = float(os.getenv('MARKET_OPEN_GRACE_MINUTES', '5'))
+                            grace_deadline = market_open_today + timedelta(minutes=grace_minutes)
+                            if now <= grace_deadline:
+                                time_since_open = (now - market_open_today).total_seconds()
+                                logger.info(f"🔔 Market open reached (at {now.strftime('%H:%M:%S')}, {time_since_open:.0f}s after {self.market_open_time})—executing scheduled sequence.")
+                                await self._execute_market_open_sequence()
+                                self._last_market_open_run = market_open_today.date()
+                            else:
+                                time_since_open = (now - market_open_today).total_seconds() / 60
+                                logger.info(f"⏭️  Market open already passed ({time_since_open:.1f} minutes ago); skipping catch-up and waiting for next session.")
+                                self._last_market_open_run = market_open_today.date()
+                        
+                        # After execution, schedule for next day
+                        next_open = market_open_today + timedelta(days=1)
+                        sleep_seconds = max((next_open - now).total_seconds(), 60.0)  # Check at least once per minute
+                    else:
+                        # Before market open - calculate time until market open
+                        time_until_open = (market_open_today - now).total_seconds()
+                        
+                        # If we're within 2 minutes of market open, check every 10 seconds for precision
+                        if time_until_open <= 120:  # 2 minutes
+                            sleep_seconds = 10  # Check every 10 seconds when close
+                            logger.debug(f"⏰ Close to market open ({time_until_open:.0f}s away) - checking every 10s")
+                        elif time_until_open <= 600:  # 10 minutes
+                            sleep_seconds = 30  # Check every 30 seconds when within 10 minutes
+                            logger.debug(f"⏰ Approaching market open ({time_until_open/60:.1f}m away) - checking every 30s")
+                        else:
+                            # Far from market open - check every minute
+                            sleep_seconds = 60
+                        
+                        next_open = market_open_today
+                    
+                    if sleep_seconds > 60:
+                        logger.info(
+                            f"⏰ Next market open execution scheduled for {next_open.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                            f"(in {sleep_seconds/3600:.2f} hours)"
+                        )
+                    await asyncio.sleep(sleep_seconds)
+                
+                except asyncio.CancelledError:
+                    logger.info("Market open scanner cancelled.")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in market open scanner: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    await asyncio.sleep(300)  # Wait 5 minutes on error
+        except Exception as e:
+            logger.error(f"Fatal error in market open scanner: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _reload_config_from_env(self):
+        """Reload configuration from environment variables (allows runtime updates)."""
+        # Reload .env file to pick up any changes
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)  # override=True forces reload of existing vars
+        except ImportError:
+            # dotenv not available, use existing env vars
+            pass
+        
+        def _get_env_value(names, default):
+            """Return first non-empty environment variable value from provided names."""
+            if isinstance(names, str):
+                names_iter = [names]
+            else:
+                names_iter = names
+            for name in names_iter:
+                value = os.getenv(name)
+                if value and str(value).strip():
+                    return str(value).strip()
+            return default
+        
+        self.overnight_start = _get_env_value(
+            ['OVERNIGHT_START_TIME', 'OVERNIGHT_RANGE_START_TIME', 'OVERNIGHT_SESSION_START'],
+            '18:00'
+        )
+        self.overnight_end = _get_env_value(
+            ['OVERNIGHT_END_TIME', 'OVERNIGHT_RANGE_END_TIME', 'OVERNIGHT_SESSION_END'],
+            '09:30'
+        )
+        self.market_open_time = _get_env_value(
+            ['MARKET_OPEN_TIME', 'OVERNIGHT_MARKET_OPEN_TIME', 'OVERNIGHT_RANGE_MARKET_OPEN_TIME'],
+            '09:30'
+        )
+        self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+        self.atr_period = int(os.getenv('ATR_PERIOD', '14'))
+        self.atr_timeframe = os.getenv('ATR_TIMEFRAME', '5m')
+        self.stop_atr_multiplier = float(os.getenv('STOP_ATR_MULTIPLIER', '1.25'))
+        self.tp_atr_multiplier = float(os.getenv('TP_ATR_MULTIPLIER', '2.0'))
+        self.breakeven_enabled = os.getenv('BREAKEVEN_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
+        self.breakeven_profit_points = float(os.getenv('BREAKEVEN_PROFIT_POINTS', '15.0'))
+        self.range_break_offset = float(os.getenv('RANGE_BREAK_OFFSET', '0.25'))
+        monitor_enabled_default = 'true' if self.breakout_monitor_enabled else 'false'
+        self.breakout_monitor_enabled = os.getenv('BREAKOUT_MONITOR_ENABLED', monitor_enabled_default).lower() in ('true', '1', 'yes', 'on')
+        self.breakout_proximity_percent = float(os.getenv('BREAKOUT_PROXIMITY_PERCENT', str(self.breakout_proximity_percent)))
+        self.breakout_min_proximity_points = float(os.getenv('BREAKOUT_MIN_PROXIMITY_POINTS', str(self.breakout_min_proximity_points)))
+        self.breakout_monitor_interval = float(os.getenv('BREAKOUT_MONITOR_INTERVAL_SECONDS', str(self.breakout_monitor_interval)))
+        self.breakout_order_tolerance_points = float(os.getenv('BREAKOUT_ORDER_TOLERANCE_POINTS', str(self.breakout_order_tolerance_points)))
+        
+        # Keep StrategyConfig in sync so persistence/UI reflect these values
+        if hasattr(self, 'config'):
+            self.config.trading_start_time = self.overnight_start
+            self.config.trading_end_time = self.overnight_end
+        logger.info(f"🔄 Reloaded config from environment: Overnight={self.overnight_start}-{self.overnight_end}, Market Open={self.market_open_time}")
     
     async def start(self, symbols: List[str] = None):
         """
@@ -1099,6 +1400,9 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.warning("Strategy is already running")
             return
         
+        # Reload config from env vars to pick up any changes
+        self._reload_config_from_env()
+        
         if symbols:
             self.config.symbols = symbols
         self._last_market_open_run = None
@@ -1107,9 +1411,12 @@ class OvernightRangeStrategy(BaseStrategy):
         # Start background tasks
         self._tracking_task = asyncio.create_task(self.market_open_scanner())
         self._breakeven_task = asyncio.create_task(self.monitor_breakeven_stops())
+        if self.breakout_monitor_enabled:
+            self._breakout_monitor_task = asyncio.create_task(self.monitor_breakout_levels())
         
         logger.info("🚀 Overnight Range Strategy started!")
         logger.info(f"   Symbols: {symbols or os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES')}")
+        logger.info(f"   Overnight: {self.overnight_start} - {self.overnight_end} {self.timezone}")
         logger.info(f"   Market Open: {self.market_open_time} {self.timezone}")
     
     async def stop(self):
@@ -1126,12 +1433,22 @@ class OvernightRangeStrategy(BaseStrategy):
             self._tracking_task.cancel()
         if self._breakeven_task:
             self._breakeven_task.cancel()
+        if self._breakout_monitor_task:
+            self._breakout_monitor_task.cancel()
+            self._breakout_monitor_task = None
+        
+        self.breakout_levels.clear()
+        self.breakout_active_orders.clear()
         
         logger.info("🛑 Overnight Range Strategy stopped!")
     
     def get_status(self) -> Dict:
         """Get current strategy status."""
-        return {
+        # Get base status from parent class
+        base_status = super().get_status()
+        
+        # Add overnight-specific status
+        base_status.update({
             "is_trading": self.is_trading,
             "active_ranges": {symbol: {
                 "high": r.high,
@@ -1158,5 +1475,6 @@ class OvernightRangeStrategy(BaseStrategy):
                 "breakeven_enabled": self.breakeven_enabled,
                 "breakeven_points": self.breakeven_profit_points
             }
-        }
+        })
+        return base_status
 

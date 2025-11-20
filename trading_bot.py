@@ -21,9 +21,10 @@ import readline
 import pickle
 import hashlib
 import csv
+import jwt
 from pathlib import Path
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from collections import deque, OrderedDict
 import time
@@ -170,8 +171,29 @@ class TopStepXTradingBot:
         self.api_key = api_key or os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
         self.username = username or os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
         self.base_url = base_url
-        self.session_token = None
-        self.token_expiry = None  # Track JWT token expiration time
+        
+        # Try to load JWT token from environment (useful for Railway deployment)
+        env_jwt = os.getenv('JWT_TOKEN')
+        if env_jwt:
+            self.session_token = env_jwt
+            # Parse JWT to extract expiration time
+            try:
+                import jwt
+                decoded = jwt.decode(env_jwt, options={"verify_signature": False})
+                exp_timestamp = decoded.get('exp')
+                if exp_timestamp:
+                    self.token_expiry = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+                    logger.info(f"Loaded JWT from environment (expires: {self.token_expiry})")
+                else:
+                    self.token_expiry = None
+                    logger.warning("JWT loaded from environment but has no expiration claim")
+            except Exception as parse_err:
+                logger.warning(f"Failed to parse JWT from environment: {parse_err}")
+                self.token_expiry = None
+        else:
+            self.session_token = None
+            self.token_expiry = None
+        
         self.selected_account = None
         # In-memory caches for quick shutdown without searching
         # Structure: { accountId: { symbol: set([orderId, ...]) } }
@@ -356,11 +378,8 @@ class TopStepXTradingBot:
             # Flush any pending subscriptions
             try:
                 for sym in list(self._pending_symbols):
-                    cid = self._get_contract_id(sym)
-                    self._market_hub.send(self._market_hub_subscribe_method, [cid])
-                    self._subscribed_symbols.add(sym)
+                    asyncio.create_task(self._ensure_quote_subscription(sym))
                     self._pending_symbols.discard(sym)
-                    logger.info(f"Subscribed (flush) to {sym} via {cid}")
             except Exception as e:
                 logger.debug(f"Flush subscribe failed: {e}")
 
@@ -369,7 +388,21 @@ class TopStepXTradingBot:
             self._market_hub_connected = False
 
         def on_error(err):
-            logger.error(f"SignalR Market Hub error: {err}")
+            try:
+                error_text = ""
+                result_text = ""
+                if hasattr(err, "error"):
+                    error_text = getattr(err, "error")
+                if hasattr(err, "result"):
+                    result_text = getattr(err, "result")
+                if isinstance(err, dict):
+                    error_text = err.get("error") or err.get("ExceptionMessage") or error_text
+                    result_text = err.get("result") or result_text
+                if not error_text:
+                    error_text = str(err)
+                logger.error(f"SignalR Market Hub error: {error_text} | result={result_text}")
+            except Exception:
+                logger.error(f"SignalR Market Hub error: {err}")
 
         def on_quote(*args):
             try:
@@ -535,6 +568,12 @@ class TopStepXTradingBot:
             time.sleep(0.05)
 
     async def _ensure_quote_subscription(self, symbol: str) -> None:
+        """
+        Subscribe to real-time quotes using ProjectX Gateway Market Hub API.
+        Per docs: https://gateway.docs.projectx.com/docs/realtime/
+        Method: SubscribeContractQuotes([contractId])
+        Event: GatewayQuote
+        """
         sym = symbol.upper()
         if sym in self._subscribed_symbols:
             return
@@ -543,46 +582,23 @@ class TopStepXTradingBot:
             logger.debug(f"Queued subscription for {sym} until hub connects")
             return
         try:
-            cid = self._get_contract_id(sym)
-            subscribe_methods = [
-                self._market_hub_subscribe_method,
-                "SubscribeQuote",
-                "SubscribeQuotes",
-                "SubscribeContractQuotes",
-                "Quote",
-                "QuoteCommand",
-                "Subscribe",
-                "SubscribeInstrument",
-            ]
-            payload_variants = [
-                [cid],
-                [{"contractId": cid}],
-                [{"contractIds": [cid]}],
-                [{"contracts": [cid]}],
-            ]
-            sent_method = None
-            for method in [m for m in subscribe_methods if m]:
-                for payload in payload_variants:
-                    try:
-                        self._market_hub.send(method, payload)
-                        sent_method = method
-                        logger.debug(
-                            f"Sent SignalR subscribe request via {method} for {sym} ({cid}) "
-                            f"with payload keys: {list(payload[0].keys()) if isinstance(payload[0], dict) else 'string'}"
-                        )
-                        break
-                    except Exception as method_err:
-                        logger.debug(f"Subscribe method {method} failed for {sym} with payload {payload}: {method_err}")
-                        continue
-                if sent_method:
-                    break
-            if sent_method:
-                self._subscribed_symbols.add(sym)
-                logger.info(f"Subscribed to live quotes for {sym} via {cid} (method: {sent_method})")
-            else:
-                logger.warning(f"Unable to confirm quote subscription for {sym}; all subscribe method attempts failed")
+            # Get contract ID (e.g., CON.F.US.MNQ.Z25)
+            contract_id = self._get_contract_id(sym)
+            if not contract_id:
+                logger.warning(f"No contract ID found for {sym}, cannot subscribe to quotes")
+                return
+            
+            # Per ProjectX docs: invoke SubscribeContractQuotes with contract ID string
+            logger.info(f"📡 Subscribing to live quotes for {sym} (contract: {contract_id})")
+            self._market_hub.send("SubscribeContractQuotes", [contract_id])
+            
+            self._subscribed_symbols.add(sym)
+            logger.info(f"✅ Subscribed to GatewayQuote events for {sym} via {contract_id}")
+            
         except Exception as e:
-            logger.warning(f"Failed to subscribe to quotes for {sym}: {e}")
+            logger.error(f"❌ Failed to subscribe to quotes for {sym}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     async def _ensure_depth_subscription(self, symbol: str) -> None:
         """Subscribe to market depth data via SignalR."""
@@ -1235,6 +1251,50 @@ class TopStepXTradingBot:
         }
         
         return contract_map.get(contract_id, contract_id)
+    
+    def _derive_symbol_id_from_contract(self, contract_id: Optional[str]) -> Optional[str]:
+        """
+        Convert contract identifiers like CON.F.US.MNQ.Z25 into signal/REST-friendly symbol ids (F.US.MNQ).
+        """
+        if not contract_id:
+            return None
+        if contract_id.startswith("CON."):
+            parts = contract_id.split(".")
+            if len(parts) >= 4:
+                return ".".join(parts[1:-1])
+        return None
+    
+    def _symbol_variants_for_subscription(self, symbol: str) -> List[str]:
+        """
+        Build ordered list of identifier variants (contract id, symbol id, @root, etc.)
+        to maximize compatibility with different market data endpoints.
+        """
+        sym = (symbol or "").upper()
+        variants: List[str] = []
+        contract_id = self._get_contract_id(sym)
+        if contract_id:
+            variants.append(contract_id)
+            derived = self._derive_symbol_id_from_contract(contract_id)
+            if derived:
+                variants.append(derived)
+            parts = contract_id.split(".")
+            if len(parts) >= 4:
+                root = parts[-2]
+                month = parts[-1]
+                if root and month:
+                    variants.append(f"{root}{month}")
+                if root:
+                    variants.append(f"@{root}")
+                    variants.append(root)
+        if sym:
+            variants.append(sym)
+        seen = set()
+        ordered: List[str] = []
+        for v in variants:
+            if v and v not in seen:
+                ordered.append(v)
+                seen.add(v)
+        return ordered
     
     async def check_order_fills(self, account_id: str = None) -> Dict:
         """Check for filled orders and send Discord notifications"""
@@ -4866,7 +4926,8 @@ class TopStepXTradingBot:
                     'account_name': account_name
                 }
                 
-                await self.discord_notifier.send_order_notification(notification_data)
+                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                self.discord_notifier.send_order_notification(notification_data, account_name)
                 logger.info(f"Discord notification sent for stop bracket {side} {quantity} {symbol}")
             except Exception as notify_err:
                 logger.warning(f"Failed to send Discord notification: {notify_err}")
@@ -5289,10 +5350,28 @@ class TopStepXTradingBot:
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.session_token}"
                 }
-                contract_id = self._get_contract_id(symbol_up)
-                quote_resp = self._make_curl_request("GET", f"/api/MarketData/quote/{contract_id}", headers=headers)
+                quote_paths = [
+                    f"/api/MarketData/quote/{identifier}"
+                    for identifier in self._symbol_variants_for_subscription(symbol_up)
+                ]
+                
+                quote_resp = None
+                for path in quote_paths:
+                    resp = self._make_curl_request("GET", path, headers=headers, suppress_errors=True)
+                    if resp and "error" not in resp:
+                        quote_resp = resp
+                        break
+                    if not resp:
+                        continue
+                    error_text = str(resp.get("error", "")).lower()
+                    if "404" in error_text or "not found" in error_text:
+                        logger.debug(f"Quote endpoint {path} returned 404, trying alternative identifier")
+                        continue
+                    # Other errors: use resp and break to surface issue
+                    quote_resp = resp
+                    break
+                
                 if quote_resp and "error" not in quote_resp:
-                    # Normalize keys possibly: bid, ask, last, volume
                     bid = quote_resp.get("bid") or quote_resp.get("bestBid")
                     ask = quote_resp.get("ask") or quote_resp.get("bestAsk")
                     last = quote_resp.get("last") or quote_resp.get("lastPrice") or quote_resp.get("price")
@@ -5305,6 +5384,8 @@ class TopStepXTradingBot:
                             "volume": volume,
                             "source": "rest_quote"
                         }
+                elif quote_resp and quote_resp.get("error"):
+                    logger.debug(f"REST quote attempts failed: {quote_resp.get('error')}")
             except Exception as e:
                 logger.debug(f"REST quote endpoint not available: {e}")
 
@@ -6602,7 +6683,15 @@ class TopStepXTradingBot:
             asyncio.create_task(self._eod_scheduler())
             logger.info("EOD scheduler background task started")
             
-            # Step 9: Trading interface
+            # Step 9: Auto-start enabled strategies (if strategy manager available)
+            if hasattr(self, 'strategy_manager'):
+                logger.info("💾 Loading persisted strategy states for CLI session...")
+                await self.strategy_manager.apply_persisted_states()
+                logger.info("🚀 Auto-starting enabled strategies for CLI session...")
+                await self.strategy_manager.auto_start_enabled_strategies()
+                logger.info("✅ Strategy initialization complete for CLI session")
+            
+            # Step 10: Trading interface
             print(f"\n🎯 Ready to trade on account: {selected_account['name']}")
             try:
                 await self.trading_interface()
@@ -6685,6 +6774,10 @@ class TopStepXTradingBot:
         
         import atexit
         atexit.register(save_history)
+
+    async def _async_input(self, prompt: str = "") -> str:
+        """Non-blocking input helper so background tasks remain active."""
+        return await asyncio.to_thread(input, prompt)
     
     async def trading_interface(self):
         """
@@ -6737,6 +6830,7 @@ class TopStepXTradingBot:
         print("  strategy_stop - Stop the overnight strategy")
         print("  strategy_status - Show overnight strategy status and configuration")
         print("  strategy_test <symbol> - Test strategy components (ATR, ranges, orders)")
+        print("  strategy_execute [symbols] - Manually trigger market open sequence (for testing)")
         print("  ")
         print("  📦 Modular Strategy System:")
         print("  strategies list - List all available strategies")
@@ -6756,7 +6850,7 @@ class TopStepXTradingBot:
         
         while True:
             try:
-                command = input("\nEnter command: ").strip()
+                command = (await self._async_input("\nEnter command: ")).strip()
                 
                 # Convert to lowercase for processing but keep original for history
                 command_lower = command.lower()
@@ -7479,6 +7573,31 @@ class TopStepXTradingBot:
                         print(f"   ❌ Order calculation failed")
                     
                     print(f"\n✅ Strategy test complete!")
+                
+                elif command_lower == "strategy_execute" or command_lower.startswith("strategy_execute "):
+                    # Manually trigger market open sequence (for testing)
+                    if not self.overnight_strategy.is_trading:
+                        print("❌ Strategy is not running. Start it first with 'strategy_start'")
+                        continue
+                    
+                    parts = command.split()
+                    symbols = parts[1:] if len(parts) > 1 else None
+                    
+                    print(f"\n🚀 Manually executing market open sequence...")
+                    print(f"   Symbols: {symbols or 'default from config'}")
+                    confirm = input("   Execute now? (y/N): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Execution cancelled")
+                        continue
+                    
+                    try:
+                        await self.overnight_strategy._execute_market_open_sequence(symbols)
+                        print("✅ Market open sequence executed!")
+                    except Exception as e:
+                        print(f"❌ Error executing sequence: {e}")
+                        logger.error(f"Error in manual strategy execution: {e}")
+                        import traceback
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                 
                 # Modular Strategy System Commands
                 elif command_lower == "strategies list" or command_lower == "strategies":
