@@ -40,6 +40,8 @@ from infrastructure.database import get_database
 from strategies.strategy_base import StrategyStatus
 
 logger = logging.getLogger(__name__)
+if os.getenv("ACCESS_LOG_VERBOSE", "false").lower() not in ("1", "true", "yes", "on"):
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 
 # Middleware to add no-cache headers to prevent stale data
@@ -100,6 +102,8 @@ class AsyncWebhookServer:
             trading_bot.bar_aggregator.broadcast_callback = self._broadcast_bar_update
             # Start the aggregator (will be awaited in run())
             self._bar_aggregator_started = False
+            self._bar_update_buffer = []
+            self._bar_update_task = None
             logger.info("📊 Bar aggregator configured for real-time chart updates")
         else:
             self._bar_aggregator_started = False
@@ -351,8 +355,31 @@ class AsyncWebhookServer:
     
     def _broadcast_bar_update(self, message: dict):
         """Callback for bar aggregator to broadcast bar updates."""
-        # Schedule async broadcast
-        asyncio.create_task(self.broadcast_to_websockets(message))
+        # Buffer updates within current event loop turn to reduce message spam
+        if not hasattr(self, '_bar_update_buffer'):
+            asyncio.create_task(self.broadcast_to_websockets(message))
+            return
+        self._bar_update_buffer.append(message)
+        if self._bar_update_task is None:
+            self._bar_update_task = asyncio.create_task(self._flush_bar_updates())
+    
+    async def _flush_bar_updates(self):
+        """Flush buffered bar updates as a single WebSocket broadcast."""
+        await asyncio.sleep(0)
+        buffer = self._bar_update_buffer
+        self._bar_update_buffer = []
+        self._bar_update_task = None
+        if not buffer:
+            return
+        if len(buffer) == 1:
+            await self.broadcast_to_websockets(buffer[0])
+            return
+        batch_payload = {
+            "type": "market_update_batch",
+            "data": [msg.get("data", msg) for msg in buffer],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        await self.broadcast_to_websockets(batch_payload)
     
     async def broadcast_to_websockets(self, message: dict):
         """Broadcast a message to all connected WebSocket clients."""
@@ -2062,13 +2089,19 @@ class AsyncWebhookServer:
             limit = int(params.get('limit', '300'))
             end_time = params.get('end') or params.get('end_time')
             
-            # Ensure SignalR is subscribed to this symbol for real-time updates
-            if symbol and hasattr(self.trading_bot, '_ensure_quote_subscription'):
-                try:
-                    await self.trading_bot._ensure_quote_subscription(symbol)
-                    logger.info(f"📡 Ensured SignalR quote subscription for {symbol} (triggered by chart load)")
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not ensure quote subscription for {symbol}: {e}")
+            # Ensure SignalR and bar aggregator are aware of the requested symbol/timeframe
+            if symbol:
+                if hasattr(self.trading_bot, '_ensure_quote_subscription'):
+                    try:
+                        await self.trading_bot._ensure_quote_subscription(symbol)
+                        logger.info(f"📡 Ensured SignalR quote subscription for {symbol} (triggered by chart load)")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Could not ensure quote subscription for {symbol}: {e}")
+                if hasattr(self.trading_bot, 'bar_aggregator') and self.trading_bot.bar_aggregator:
+                    try:
+                        self.trading_bot.bar_aggregator.register_timeframes(symbol, [timeframe])
+                    except Exception as agg_err:
+                        logger.warning(f"⚠️  Could not register timeframe {timeframe} for {symbol}: {agg_err}")
             
             data = await self.dashboard_api.get_historical_data(
                 symbol=symbol,

@@ -496,7 +496,6 @@ export default function Strategies() {
                             setSelectedStrategyForStats(null)
                             setSelectedStrategyForLogs(null)
                           }
-                          refetchVerify()
                         }}
                         className={`px-3 py-2 rounded text-sm font-medium transition-colors flex items-center gap-2 ${
                           selectedStrategyForVerify === strategy.name

@@ -26,6 +26,8 @@ from infrastructure.performance_metrics import get_metrics_tracker
 from infrastructure.database import get_database
 
 logger = logging.getLogger(__name__)
+if os.getenv("ACCESS_LOG_VERBOSE", "false").lower() not in ("1", "true", "yes", "on"):
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 
 # Middleware to add no-cache headers to prevent stale data

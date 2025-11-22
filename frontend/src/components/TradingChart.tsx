@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from 'react-query'
 import { RefreshCw } from 'lucide-react'
 import {
@@ -29,6 +29,15 @@ const toUnixTimestamp = (timestamp: string): UTCTimestamp =>
 
 
 const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d']
+
+type StoredBar = {
+  time: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume?: number
+}
 
 interface TradingChartProps {
   symbol?: string
@@ -61,6 +70,7 @@ export default function TradingChart({
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
+  const barStoreRef = useRef<Record<string, StoredBar[]>>({})
   
   // Chart theme configuration
   const chartTheme = useChartTheme({ theme: 'dark', height })
@@ -105,14 +115,12 @@ export default function TradingChart({
   }
 
   // Initialize chart
-  useEffect(() => {
-    if (!chartContainerRef.current) {
-      console.log('[TradingChart] No container ref')
+  useLayoutEffect(() => {
+    const container = chartContainerRef.current
+    if (!container) {
       return
     }
-    const container = chartContainerRef.current
 
-    // Ensure container has explicit dimensions
     container.style.position = 'relative'
     container.style.height = `${height}px`
     container.style.width = '100%'
@@ -120,40 +128,31 @@ export default function TradingChart({
     let chart: IChartApi | null = null
     let resizeObserver: ResizeObserver | null = null
     let handleWindowResize: (() => void) | null = null
+    let destroyed = false
 
-    // Wait for next frame to ensure container is rendered and visible
     const initChart = () => {
-      if (!container) {
-        console.log('[TradingChart] Container is null in initChart')
+      if (destroyed || !container) {
         return
       }
 
-      // Check if container is visible
       const rect = container.getBoundingClientRect()
       if (rect.width === 0 || rect.height === 0) {
-        console.log('[TradingChart] Container has zero dimensions, retrying...', { width: rect.width, height: rect.height })
-        // Retry after a short delay
-        setTimeout(initChart, 100)
+        requestAnimationFrame(initChart)
         return
       }
 
-      console.log('[TradingChart] Initializing chart', { width: rect.width, height: rect.height })
-
-      // Get initial width, with fallback and minimum
       const getWidth = () => {
         const width = container.clientWidth || container.offsetWidth || container.parentElement?.clientWidth || 600
-        return Math.max(width, 400) // Minimum 400px
+        return Math.max(width, 400)
       }
 
       const initialWidth = getWidth()
 
-      // Helper function to format time in ET (will be updated when timeframe changes)
       const formatTimeET = (time: Time): string => {
         const date = new Date((time as number) * 1000)
         const formatterOptions: Intl.DateTimeFormatOptions = {
-          timeZone: 'America/New_York', // Automatically handles EST/EDT
+          timeZone: 'America/New_York',
         }
-        
         if (timeframe === '1d') {
           formatterOptions.month = 'short'
           formatterOptions.day = 'numeric'
@@ -172,14 +171,10 @@ export default function TradingChart({
         height,
         timeScale: {
           ...chartTheme.timeScale,
-          // Custom formatter to display times in ET (UTC-5 or UTC-4)
-          tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => {
-            return formatTimeET(time)
-          },
+          tickMarkFormatter: (time: Time) => formatTimeET(time),
         },
         crosshair: {
           ...chartTheme.crosshair,
-          // Format crosshair time in ET timezone
           vertLine: {
             ...chartTheme.crosshair?.vertLine,
             labelVisible: true,
@@ -189,21 +184,16 @@ export default function TradingChart({
             labelVisible: true,
           },
         },
-        // Use localization to format crosshair time in ET
         localization: {
-          timeFormatter: (time: Time) => {
-            return formatTimeET(time)
-          },
+          timeFormatter: (time: Time) => formatTimeET(time),
         },
       })
 
-      // Add candlestick series
       const candlestickSeries = chart.addSeries(
         CandlestickSeries,
         getCandlestickColors('dark')
       )
 
-      // Add volume series
       const volumeSeries = chart.addSeries(HistogramSeries, {
         color: '#26A69A',
         priceFormat: {
@@ -224,52 +214,15 @@ export default function TradingChart({
       volumeSeriesRef.current = volumeSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
       setChartInitialized(true)
-      console.log('[TradingChart] Chart initialized successfully')
-
-      // If data is already available, set it immediately
-      // This prevents the chart from waiting for the data update effect
-      if (data?.bars && data.bars.length > 0) {
-        console.log('[TradingChart] Setting initial data', { barCount: data.bars.length })
-        try {
-          const candlestickData: CandlestickData<Time>[] = data.bars
-            .map((bar: HistoricalBar) => ({
-              time: toUnixTimestamp(bar.timestamp),
-              open: bar.open,
-              high: bar.high,
-              low: bar.low,
-              close: bar.close,
-            }))
-            .sort((a, b) => (a.time as number) - (b.time as number))
-
-          const volumeColors = getVolumeColors('dark')
-          const volumeData = data.bars
-            .map((bar: HistoricalBar) => ({
-              time: toUnixTimestamp(bar.timestamp),
-              value: bar.volume,
-              color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
-            }))
-            .sort((a, b) => (a.time as number) - (b.time as number))
-
-          candlestickSeries.setData(candlestickData)
-          volumeSeries.setData(volumeData)
-          chart.timeScale().fitContent()
-          console.log('[TradingChart] Initial data set successfully')
-        } catch (error) {
-          console.error('[TradingChart] Error setting initial chart data:', error)
-        }
-      } else {
-        console.log('[TradingChart] No initial data available')
-      }
 
       resizeObserver = new ResizeObserver((entries) => {
         if (!entries.length || !chartRef.current) return
         const { width } = entries[0].contentRect
-        const newWidth = Math.max(width, 400) // Minimum 400px
+        const newWidth = Math.max(width, 400)
         chartRef.current.applyOptions({ width: newWidth })
       })
       resizeObserver.observe(container)
 
-      // Also handle window resize as fallback
       handleWindowResize = () => {
         if (chartRef.current && container) {
           const newWidth = Math.max(container.clientWidth || 600, 400)
@@ -279,15 +232,10 @@ export default function TradingChart({
       window.addEventListener('resize', handleWindowResize)
     }
 
-    // Use requestAnimationFrame to ensure DOM is ready
-    const rafId = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        initChart()
-      })
-    })
+    const rafId = requestAnimationFrame(initChart)
 
     return () => {
-      console.log('[TradingChart] Cleaning up chart')
+      destroyed = true
       cancelAnimationFrame(rafId)
       if (handleWindowResize) {
         window.removeEventListener('resize', handleWindowResize)
@@ -306,24 +254,53 @@ export default function TradingChart({
   const chartData = useMemo(() => {
     if (!data?.bars || data.bars.length === 0) return null
 
-    const candlestickData: CandlestickData<Time>[] = data.bars
+    const volumeColors = getVolumeColors('dark')
+    const sorted = [...data.bars]
       .map((bar: HistoricalBar) => ({
         time: toUnixTimestamp(bar.timestamp),
         open: bar.open,
         high: bar.high,
         low: bar.low,
         close: bar.close,
+        volume: bar.volume,
       }))
       .sort((a, b) => (a.time as number) - (b.time as number))
 
-    const volumeColors = getVolumeColors('dark')
-    const volumeData = data.bars
-      .map((bar: HistoricalBar) => ({
-        time: toUnixTimestamp(bar.timestamp),
+    let lastTime: number | null = null
+    const candlestickData: CandlestickData<Time>[] = []
+    const volumeData: { time: Time; value: number; color: string }[] = []
+
+    for (const bar of sorted) {
+      const t = bar.time as number
+      if (lastTime !== null && t === lastTime) {
+        candlestickData[candlestickData.length - 1] = {
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        }
+        volumeData[volumeData.length - 1] = {
+          time: bar.time,
+          value: bar.volume,
+          color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
+        }
+        continue
+      }
+      candlestickData.push({
+        time: bar.time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      })
+      volumeData.push({
+        time: bar.time,
         value: bar.volume,
         color: bar.close >= bar.open ? volumeColors.upColor : volumeColors.downColor,
-      }))
-      .sort((a, b) => (a.time as number) - (b.time as number))
+      })
+      lastTime = t
+    }
 
     return { candlestickData, volumeData }
   }, [data])
@@ -348,7 +325,16 @@ export default function TradingChart({
       candlestickSeriesRef.current.setData(chartData.candlestickData)
       volumeSeriesRef.current.setData(chartData.volumeData)
 
-      // Fit content
+      const storeKey = `${symbol.toUpperCase()}:${timeframe.toLowerCase()}`
+      barStoreRef.current[storeKey] = chartData.candlestickData.map((bar, idx) => ({
+        time: Number(bar.time),
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: chartData.volumeData[idx]?.value ?? 0,
+      }))
+
       if (chartRef.current) {
         chartRef.current.timeScale().fitContent()
       }
@@ -356,7 +342,7 @@ export default function TradingChart({
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
-  }, [chartData, chartInitialized])
+  }, [chartData, chartInitialized, symbol, timeframe, barLimit])
 
   // Update timeScale formatter when timeframe changes (without recreating chart)
   useEffect(() => {
@@ -506,69 +492,96 @@ export default function TradingChart({
   // WebSocket integration for live updates
   useEffect(() => {
     if (!chartInitialized || !symbol) {
-      console.log('[TradingChart] Skipping WebSocket setup', { chartInitialized, symbol })
       return
     }
 
-    console.log('[TradingChart] Setting up WebSocket listener for', symbol)
+    const normalizedSymbol = symbol.toUpperCase()
 
-    const handleMarketUpdate = (data: any) => {
-      // Handle both direct data and nested data.data structure
-      const updateData = data.data || data
-      
-      if (updateData.symbol !== symbol) {
-        return // Different symbol, ignore
-      }
-      
-      // Check if timeframe matches (if provided)
-      if (updateData.timeframe && updateData.timeframe !== timeframe) {
-        return // Different timeframe, ignore
-      }
-      
-      if (!candlestickSeriesRef.current || !volumeSeriesRef.current) {
+    const applyUpdate = (rawUpdate: any) => {
+      if (!rawUpdate || !candlestickSeriesRef.current || !volumeSeriesRef.current) {
         return
       }
+      const updateSymbol = (rawUpdate.symbol || '').toUpperCase()
+      if (updateSymbol !== normalizedSymbol) {
+        return
+      }
+      const updateTimeframe = (rawUpdate.timeframe || timeframe).toLowerCase()
+      if (updateTimeframe !== timeframe) {
+        return
+      }
+      const barData = rawUpdate.bar
+      if (!barData) return
 
-      try {
-        // Update the last candle with new data
-        const barData = updateData.bar
-        if (!barData) {
-          return
+      const timestamp = rawUpdate.timestamp || rawUpdate.bar?.timestamp || new Date().toISOString()
+      const time = Number(toUnixTimestamp(timestamp))
+      const storeKey = `${normalizedSymbol}:${updateTimeframe}`
+      const store = barStoreRef.current[storeKey] ? [...barStoreRef.current[storeKey]] : []
+      const newEntry: StoredBar = {
+        time,
+        open: barData.open,
+        high: barData.high,
+        low: barData.low,
+        close: barData.close,
+        volume: barData.volume,
+      }
+      const last = store[store.length - 1]
+      if (!last || time >= last.time) {
+        if (last && time === last.time) {
+          store[store.length - 1] = newEntry
+        } else {
+          store.push(newEntry)
         }
-        
-        const timestamp = updateData.timestamp || data.timestamp
-        const time = toUnixTimestamp(timestamp)
+      } else {
+        // Out-of-order update: replace matching bar if found
+        const idx = store.findIndex((item) => item.time === time)
+        if (idx >= 0) {
+          store[idx] = newEntry
+        } else {
+          store.push(newEntry)
+          store.sort((a, b) => a.time - b.time)
+        }
+      }
+      // Enforce max size to avoid unbounded memory
+      const maxBars = Math.max(barLimit, 100)
+      if (store.length > maxBars + 20) {
+        store.splice(0, store.length - (maxBars + 20))
+      }
+      barStoreRef.current[storeKey] = store
 
-        // Update candlestick
-        candlestickSeriesRef.current.update({
-          time,
-          open: barData.open,
-          high: barData.high,
-          low: barData.low,
-          close: barData.close,
+      const updateTime = time as UTCTimestamp
+      candlestickSeriesRef.current.update({
+        time: updateTime,
+        open: barData.open,
+        high: barData.high,
+        low: barData.low,
+        close: barData.close,
+      })
+
+      if (barData.volume !== undefined) {
+        const volumeColors = getVolumeColors('dark')
+        volumeSeriesRef.current.update({
+          time: updateTime,
+          value: barData.volume,
+          color: barData.close >= barData.open ? volumeColors.upColor : volumeColors.downColor,
         })
-
-        // Update volume if available
-        if (barData.volume !== undefined) {
-          const volumeColors = getVolumeColors('dark')
-          volumeSeriesRef.current.update({
-            time,
-            value: barData.volume,
-            color: barData.close >= barData.open ? volumeColors.upColor : volumeColors.downColor,
-          })
-        }
-      } catch (error) {
-        console.error('[TradingChart] Error updating live chart data:', error)
       }
     }
 
-    wsService.on('market_update', handleMarketUpdate)
+    const handleMessage = (payload: any) => {
+      if (!payload) return
+      const raw = payload.data ?? payload
+      const updates = Array.isArray(raw) ? raw : [raw]
+      updates.forEach(applyUpdate)
+    }
+
+    wsService.on('market_update', handleMessage)
+    wsService.on('market_update_batch', handleMessage)
 
     return () => {
-      console.log('[TradingChart] Removing WebSocket listener')
-      wsService.off('market_update', handleMarketUpdate)
+      wsService.off('market_update', handleMessage)
+      wsService.off('market_update_batch', handleMessage)
     }
-  }, [symbol, chartInitialized])
+  }, [symbol, timeframe, chartInitialized, barLimit])
 
   const BAR_LIMITS = [
     { value: 100, label: '100' },
@@ -664,26 +677,22 @@ export default function TradingChart({
       </div>
 
       {/* Chart Container */}
-      {isLoading ? (
-        <div
-          className="flex items-center justify-center text-slate-400 text-sm bg-slate-900/50 rounded"
-          style={{ height }}
-        >
-          <div className="flex flex-col items-center gap-2">
-            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-            <span>Loading chart data...</span>
-          </div>
-        </div>
-      ) : !data || data.bars.length === 0 ? (
-        <div
-          className="flex items-center justify-center text-slate-500 text-sm bg-slate-900/50 rounded"
-          style={{ height }}
-        >
-          No data available for {symbol}
-        </div>
-      ) : (
+      <div className="relative rounded overflow-hidden" style={{ minHeight: height }}>
         <div ref={chartContainerRef} className="rounded overflow-hidden" style={{ minHeight: height }} />
-      )}
+        {(!data || data.bars.length === 0) && !isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm bg-slate-900/70">
+            No data available for {symbol}
+          </div>
+        )}
+        {(isLoading || !chartInitialized) && (
+          <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm bg-slate-900/70">
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+              <span>Loading chart data...</span>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Chart Legend/Info */}
       {data && data.bars.length > 0 && (

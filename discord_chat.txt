@@ -1,0 +1,196 @@
+blindsipher 7:56 AM
+@Ape Chef is that the dom/ order book stuff
+@Edwin Marty Ir S CHRT How does your chart look like that
+Ape Chef 8:17AM
+Its custom built showing the true order flow behind price action / candlesticks
+10 @blindsipher @Ape Chef is that the dom/ order book stuff
+Ape Chef 8:19 AM
+It's a combination of different tools all built on order book, pairing volume with price action to create Footprint candles, Volume dots, Volume clusters, and spot absorption, exhaustion, icebergs, as well as paper trading, automatic trading, recording a session, replaying a session. (edited)
+blindsipher 8:20 AM
+Outside data source or all derived from top step
+Ape Chef \ 8:21AM
+Its all via the Platform API, but I've been experimenting with other data feeds
+blindsipher 8:22AM
+Any advice on integrating the dom? No reliable info on the discord that I could find
+Ape Chef 8:24 AM
+the most important documnetation is this: https:// gateway.docs.projectx.com/docs/realtime/
+
+
+
+best ai
+• @Gingie & TPS Yes I am
+RainWaters 42 Yesterday at 2:22 PM
+I actually do have a full trading platform and an algorithmic strategy that integrates with the Topstep
+API, > 50 strategies that can operate as a low frequency system (~ 20 trades a day 50% WR PF 2:1) or manage a grading system that dynamically adjusts position size and direction for a medium frequency system (500-800 trades a day >80% WR PF 1.5:1) but I'm not looking to do a direct profit-sharing arrangement since that's against their rules and not scalable.
+What I'm more interested in is building or partnering within a legitimate quant structure - something that can grow safely and be valued as a company rather than just a revenue split. No one with an extremly good system would waste their time and value selling it when they could scale it themselves, so for something truly high-grade, a firm structure is the only way that makes sense to me. My issue has been I suck at leaving the bots alone because of life's stresses, but I'll try to let an account be 100% algo trades and provide updates in here. If you become interested lmk.
+Gingie
+@RainyWaters42 I actually do have a full trading platform and an algorithmic strategy that integrates with..
+Gingie & TPS Yesterday at 2:23 PM
+Well I'd be down for partnership. I can make an entire website perfectly for it.
+V
+@Gingie & TPS Well I'd be down for partnership.
+
+platform and an algorithmic strategy that integrates with... 
+blindsipher Yesterday at 3:13 PM
+Yeah same here I'm not interested in sketchy profit-sharing either. I'm thinking in terms of an actual firm / product too, not just selling signals.
+Genuinely curious though: when you say you've got a
+"Full trading platform," what does that look like for
+you?
+Stuff I'm wondering about:
+* ﻿﻿Do you have proper backtesting, or is it mostly live / forward testing right now?
+* ﻿﻿Can you edit indicators / params / risk and re-wire strategies to different timeframes + markets from the frontend, or do you still have to touch code for that?
+* ﻿﻿What are you using for charting? Can you see fills, brackets, performance, etc. directly on the chart?
+* ﻿﻿Do you have detailed strategy + account analytics(PF, WR, DD, MAE/MFE, streaks, etc.), or is that still WIP?
+* ﻿﻿Is there a broker / prop firm translation layer under the hood, or is it hard-wired to Topstep at the moment?
+* ﻿﻿Any ML models or hyperparameter optimization in the loop yet, or are you keeping it fully rule-based for now?
+Not trying to nitpick you at all - l'm legit curious what you personally count as "platform" vs "just a bunch of strategies," because l'm building my own stack to like comparing mental models.
+
+@blindsipher Yean same here im not interested in sketchy profit-sharing either. I'm thinking in terms of an Rainy Waters42 Yesterday at 9:55 PM
+I should clarify - my platform isn't a consumer-facing
+"all traders welcome" type platform. It's purpose-built around my own workflow and the needs of my strategies, so it's lean, fast, and very direct. Your platform is 10x nicer looking and more finished than mine, but my trading system is extremely robust designed to handle any market state
+Backtesting:
+I did all of my backtesting in NinjaTrader. My execution engine runs live only right now, but my indicator and strategy manager was designed to behave almost identically to NT, so the logic transfers over 1:1.
+Frontend configurability:
+Strategies are uploaded DLL's. Most strategy parameters and risk settings are editable from the GUI, but for deeper indicator formula changes I currently would need to edit a file. My goal was to avoid a giant abstraction layer and keep it tight to how I actually trade.
+Charting:
+Using ScottPlot for charts - not fancy-looking, but fast. Event bus passes along signal updates.
+Analytics:
+Most analytics I still rely on NT for. My platform tracks fills, positions, and general PL but not a full analytics suite vet
+
+
+
+
+Amazing work. Can you tell me if the foot print is actual bid and ask side volume? It has been long I...
+Ape Chef 11/12/25, 4:20 PM
+Great question! The answer depends on the data source:
+Platform X (TopStepX): yes Platform X provides OHLCV candles. But you can still get proper buy/sell volume classification through the trade stream + depth events:
+Each trade has an aggressor type (0=sell aggressor, 1=buy aggressor)
+This gives you bid/ask-side volume without needing raw tick-level bid/ask separation
+The footprint/CVD is calculated from this bid/ask aggressor classification
+(Other Sources: I have an alternative source thru a custom BookMap plugin, there you get the ACTUAL bid/ask depth volume, which is more accurate.)
+Platform X doesn't give you raw level 2 depths in candles, but it does give you trade aggressor type (bid vs ask side), which is enough to build CVD.
+
+
+
+Agedvagabond 10:09PM
+Old. when i was first building charting. charting is much better now but i just moved my backend onto a server so now I am downloading all of dataebento history.
+https://youtu.be/jIBo-58CkBw?si=3q×CZHIwBO3VrrUa
+When i first started integrating claude
+https://youtu.be/GpNgH4tg00
+vid of docs i was getting claude to clean up for me
+Ittps://youtu.be/Lty9vsP1_-o
+Latest. multi window gui. (I am downloading data right now so i cant open charts until i have built the new database from data bentos data)
+for discretionary trading
+* ﻿﻿Strategies can generate insights to be validated by Ai or human
+* ﻿﻿Ai can read its own special charts and generate insights
+* ﻿﻿Custom lists can be color linked to charts etc, multiple list windows + multiple chart windows
+For automated
+* ﻿﻿Can run in process dylibs
+* ﻿﻿Out of process binaries
+* ﻿﻿All connect via SHM + UDS to the tt-server (running on same machine) faster than standard in process communication but also allows sharing data feeds.
+* ﻿﻿Ai is able to interact with the engine or strategies in any customisable way, including aiding development or viewing running strategies in real time.
+Strategy windows have full logging debugging, charting
+
+
+@AgedVagaBond Old. when i was first building charting. charting is much better now but i just moved my backend...
+blindsipher 12:43 AM
+Looks awesome. I love the UI and clean proffesional look, and top notch on the translation layer. It being on a server is also impressive in itself, these are very good ideas.
+i wouldn't say there's nothing like it though, there are a few of us in the discord building very similar things translation layer, integrated ai models, different data feeds, and execution.
+will give you credit though the chart is by far the most impressive chart l've seen in the chat, it almost makes me feel bad about using trading views charts and the general UI looks like a real quant firm built it.
+out of curiosity what frontend frameworks are vou using?
+10 @blindsipher Looks awesome. I love the Ul and clean proffesional look, and top notch on the translation layer. I.
+AgedVagaBond 1:06 AM
+I am using egui and egui plot for charting. Egui plot itself is actually really good, it allows me to do a lot of different chart types with minimal effort. I was going to go web based and use tradingview, but once i tested doing it native i decided it was better to go multi window.
+I wasnt sure how egui would handle a trading platf but in multi window its actual very performant, it. V charts updating at 120fos. no problems.
+
+itself is actually really good, it allows me to do a lot of different chart types with minimal effort. I was going to go web based and use tradingview, but once i tested doing it native i decided it was better to go multi window.
+I wasnt sure how egui would handle a trading platform but in multi window its actual very performant, i had charts updating at 120fps, no problems.
+The reason i said there is nothing like it, is because of the way i have done automated strategies, backtesting etc.
+I have interchangable realism models, interchangable universe selection models, you can do custom queries on a live updating database and choose tickers based on any conceivable criteria.
+Actually the backend of the strategy engine is insane, i went really overboard.
+You can backtest mbo data etc, i think at this point ive built more helper functionality for strategy building than anyone else, mostly i was able to do this because i made a private database
+The power of efficient universe selection will be more related to equities, but for futures trading, picture being able to analyse the top × number of tickers by market cap on nasdaq to validate signals on MNQ.
+I could do something like check ema cross overs on 20k symbols in a few seconds or less
+
+
+I have interchangable realism models, interchangable universe selection models, you can do custom queries on a live updating database and choose tickers based on an conceivable criteria.
+Actually the backend of the strategy engine is insane, i went really overboard
+You can backtest mbo data etc, i think at this point ive built more helper functionality for strategy building than anvone else, mostly i was able to do this because i made a private database.
+The power of efficient universe selection will be more related to equities, but for futures trading, picture being able to analyse the top x number of tickers by market cap on nasdaq to validate signals on MNQ.
+I could do something like check ema cross overs on 20k symbols in a few seconds or less
+Or correlate options activity to signals on correlated futures products.
+The best part is i can do pretty much everything faster with less resources because its all low level code, and because of the architectures its arguably simpler to build startegies in rust in my engine than it is to do it in python. (edited)
+I did have python strategy support for ML heavy strategies, but i am not sure if i will maintain it, its probably easier to just make wrappers for ml purposes and offload the work.
+The other thino is insiohts ihavent seen an tradino
+
+
+related to equities, but for tutures trading, picture being able to analyse the top x number of tickers by market cap on nasdaq to validate signals on MNO.
+I could do something like check ema cross overs on 20k symbols in a few seconds or less
+Or correlate options activity to signals on correlated futures products
+The best part is i can do pretty much everything faster with less resources because its all low level code, and because of the architectures its arguably simpler to build startegies in rust in my engine than it is to do it in python. (edited)
+I did have python strategy support for ML heavy strategies, but i am not sure if i will maintain it, its probably easier to just make wrappers for ml purposes and offload the work.
+The other thing is insights, i havent seen any trading platform actually do anything with insights or tying multiple strategies and models together.
+The open source engines do it, but not with a front end to tie everything together, combining a front end + ai + insights and autonated trading + discretion, i think can be really powerful i am excited to put it to work. (edited)
+AgedVagaBond 1:17AM
+But yeah the server is really the crux, having things live 24/7 and deattaching the front end is super powerful, keeps costs low. Ofcourse it adds a level of initial complexity to setup, but for technical users its fairly easy. Most configuring happens from the Ui, only ip DB and websocket is technics.
+
+
+
+I havent done hyperparameters but first thing ill do when i have database setup is create a universial strategy window. I am not sure how customisable i can make it, but i was going to work on allowing strategies to plot onto charts in the window and also make it so that you get a chart linked list of all symbols/ resolutions the strategy subscribes too. The ema cross thing is just an example. For universe selection the engine calls a function on a schedule decided by the strategy. Then the strategy runs its logic and updates its universe.
+The database is always accesible to the strategy or it can use preconfigured helpers.
+The engine can add or remove symbols and subscriptions at run time in both backtesting or live trading.
+Doing something like the ema cross would just mean making a simple b query and running it at intervals.
+1 chose clickhouse for b because its made for performant big data analysis (this honesty isnt my expertise) i tested a few basic things and once i felt the architecture was good enough to build more complex systems later i moved on to my next tasks.
+1 am trying to allow a lot of room to grow and customise without getting bogged down in my side. (edited)
+I also made market replay mode to run the whole thing in sim, all strategies etc together, but in replay like ninjatrader. Its temp broken though because you would need to run a sim server for it and i am not sure if i
+
+
+run the whole thing in sim, all strategies etc together, but...
+blindsipher 5:21AM
+A Jarvis back bone for running your program would be cool, what if you could just train a model on the actual program all your features and then do multi goal optimization that your Jarvis in the background would optimize for highest return least draw down and best sharpe or frequency of trades. Idk you have so many features some layer Itsm+tnn+ llm or ML for understanding your program and utilizing all the features with measurable statistical methods Also for your backtesting do you do k folds ? Statistical tests ? Walk forward or sequential ? N+1 execution or is it live tick as you said? I'm curious about your backtesting methods too
+Very interesting stuff everyone could take a page out of
+this guys book
+AgedVagaBond 6:04AM
+Omg i wrote the biggest response and it got blocked.
+1 did consider local model, but its cheap to run the highest tier gpt plan via cli, almost unlimited usage.
+It did suport desktop versions of claude and gpt but i will have to make that a gui only feature and server side will have to use cli or api versions.
+For backtesting i prefer forward walk, the problem backtesting the same data over and over, is we remember things and its always biased by strategy 100.
+I am extremely interested in generating insights that arent alpha on their own but can be ingested by larger
+systems or an ai/execution engine.
+1 also like the idea of backtesting for insights to
+manerate anhalthir iNnrd ant lart rannanen reincta~)
+
+backtesting methods too
+Very interesting stuff everyone could take a page out of this guys book
+AgedVagaBond 6:04AM
+Omg i wrote the biggest response and it got blocked.
+I did consider local model, but its cheap to run the highest tier gpt plan via cli, almost unlimited usage.
+It did suport desktop versions of claude and gpt but i will have to make that a gui only feature and server side will have to use cli or api versions.
+For backtesting i prefer forward walk, the problem backtesting the same data over and over, is we remember things and its always biased by strategy 100.
+1 am extremely interested in generating insights that arent aloha on their own but can be ingested by larger systems or an ai/execution engine.
+I also like the idea of backtesting for insights to generate alpha(this word got last response rejected).
+1am interested in insights to aid discretion and for automated trading.
+Havining the engine throw out useful stats while trading could be helpful
+BucksTRDR #ALGO 8:36 AM
+Im really glad to see some real conversations happening in here again it has been really quiet and more like a helpline after all our goal here is to get money from the markets not each other the more collaboration and dialog here the better in my opinion
+
+BucksTRDR #ALGO Yesterday at 3:08 PM
+One piece of advice id give you is build it with the future in mind so will you always use topstep api possibly not so build with a translation layer, also think about what you may want to add later on and build with enablers in place so think like vps which we cant use yet but could in future. Build it so you can use it elswhere with minimal effort "ONE BOT TO RULE THEM ALL
+@cayman what do you use for UI? I've been working on all Rust system as well. Have a solid library crate already. ...
+AgedVagaBond Yesterday at 6:00 PM
+I was considering gpui, because i love zed. I tried slint, tauri and iced, but i went egui because of how easy it is to build in intermediate mode. I was worried about performance but in multiwindow there are no issues and i can always swap out the gui later if i need too.
+
+
+blindsipher Yesterday at 3:11 AM
+It's the gbt I sent you @Scalpface
+166.50
+73.75
+55.00
+-32.50
+20 50
+I finally hit mvp with @BucksTRDR these were my results for the last day I'm switching over to full contracts tonight hopefully everything goes well
+For anyone who's having trouble building a frontend.
+There's tons of online platforms to help vour templates or you can use Claude specialized agents and have it do a style sheet will save you a lot of headache and standardize consistency) I recfomend tailwind react typescript
+There's ai fronted builders if you need a basic framework
+But do your own research and go through the trenches
+I've been working on my platform since July and it just started trading autonomously and l'm only 50% done

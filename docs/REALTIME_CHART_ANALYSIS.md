@@ -2,6 +2,17 @@
 
 ## 🎉 Summary: YES, This Should Fix Your Chart Issues!
 
+## ✅ Status Update — 2025-11-22
+
+- **Backend parity with architecture docs (`CURRENT_ARCHITECTURE.md`)**  
+  Bar aggregator now understands `1h/4h/1d` buckets, registers timeframes requested by the dashboard, and batches WebSocket broadcasts (`market_update_batch`). This keeps live bars aligned with the pipeline described in the current architecture doc.
+- **Frontend improvements vs. `REALTIME_CHART_ANALYSIS.md` expectations**  
+  The TradingView wrapper (`TradingChart.tsx`) always mounts its canvas, deduplicates historical bars, and keeps a local bar store fed by the new batch WebSocket payloads. Sub-hour timeframes now update immediately without tab juggling.
+- **Noise reduction**  
+  `aiohttp.access` logging defaults to WARNING unless `ACCESS_LOG_VERBOSE=true`, so Railway logs match the “clean output” goal in the roadmap.
+- **Dashboard wiring**  
+  Strategy “Verify” actions no longer fire with a `null` slug, eliminating the `/api/strategies/null/verify` errors seen in `browser.log`; this keeps the UI state machines consistent with the modular strategy section of the roadmap.
+
 Your SignalR JWT fix has established the **critical missing link** in your real-time chart pipeline. Here's why:
 
 ---

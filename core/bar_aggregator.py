@@ -7,9 +7,10 @@ to WebSocket clients for real-time chart updates.
 
 import asyncio
 import logging
+import os
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Dict, Optional, Callable, Any
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Optional, Callable, Any, Iterable, Set, List
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,8 @@ class BarAggregator:
     - WebSocket broadcasting
     """
     
-    def __init__(self, broadcast_callback: Optional[Callable[[Dict[str, Any]], None]] = None):
+    def __init__(self, broadcast_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+                 default_timeframes: Optional[Iterable[str]] = None):
         """
         Initialize bar aggregator.
         
@@ -106,6 +108,21 @@ class BarAggregator:
         self.update_interval = 0.2  # 5 updates per second (200ms)
         self._update_task: Optional[asyncio.Task] = None
         self._running = False
+        # Determine default timeframes (support env override)
+        env_frames = os.getenv('BAR_DEFAULT_TIMEFRAMES')
+        frames: Iterable[str]
+        if default_timeframes is not None:
+            frames = default_timeframes
+        elif env_frames:
+            frames = env_frames.split(',')
+        else:
+            frames = ['1m', '5m', '15m', '1h']
+        self.default_timeframes: List[str] = [
+            self._normalize_timeframe(tf) for tf in frames if tf and tf.strip()
+        ]
+        if not self.default_timeframes:
+            self.default_timeframes = ['1m', '5m', '15m', '1h']
+        self.symbol_timeframes: Dict[str, Set[str]] = defaultdict(set)
         
     async def start(self):
         """Start the bar aggregator update loop."""
@@ -200,36 +217,28 @@ class BarAggregator:
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
         
-        # Auto-subscribe to common timeframes if not already subscribed
-        # This ensures bars are built even if frontend hasn't explicitly subscribed
         symbol_key = symbol.upper()
-        common_timeframes = ['1m', '5m', '15m', '1h']
-        
         if symbol_key not in self.bar_builders:
-            # Auto-subscribe to common timeframes for this symbol
-            for tf in common_timeframes:
-                bar_start = self._get_bar_start_time(timestamp, tf)
-                self.bar_builders[symbol_key][tf] = BarBuilder(symbol_key, tf, bar_start)
-            logger.info(f"📊 Auto-subscribed {symbol_key} to timeframes: {', '.join(common_timeframes)}")
+            self._initialize_symbol(symbol_key, timestamp)
         
+        active_frames = self.bar_builders.get(symbol_key, {})
         # Update bars for all active timeframes
-        if symbol_key in self.bar_builders:
-            for timeframe, builder in self.bar_builders[symbol_key].items():
-                # Check if we need to start a new bar
-                if self._should_start_new_bar(builder, timeframe, timestamp):
-                    # Complete the old bar
-                    if builder.open is not None:
-                        completed_bar = builder.to_bar()
-                        self.completed_bars[symbol_key][timeframe] = completed_bar
-                        logger.debug(f"Completed bar for {symbol_key} {timeframe}: {completed_bar.close}")
-                    
-                    # Start new bar
-                    bar_start = self._get_bar_start_time(timestamp, timeframe)
-                    builder = BarBuilder(symbol_key, timeframe, bar_start)
-                    self.bar_builders[symbol_key][timeframe] = builder
+        for timeframe, builder in active_frames.items():
+            # Check if we need to start a new bar
+            if self._should_start_new_bar(builder, timeframe, timestamp):
+                # Complete the old bar
+                if builder.open is not None:
+                    completed_bar = builder.to_bar()
+                    self.completed_bars[symbol_key][timeframe] = completed_bar
+                    logger.debug(f"Completed bar for {symbol_key} {timeframe}: {completed_bar.close}")
                 
-                # Add tick to current bar
-                builder.add_tick(price, volume, timestamp)
+                # Start new bar
+                bar_start = self._get_bar_start_time(timestamp, timeframe)
+                builder = BarBuilder(symbol_key, timeframe, bar_start)
+                self.bar_builders[symbol_key][timeframe] = builder
+            
+            # Add tick to current bar
+            builder.add_tick(price, volume, timestamp)
     
     def subscribe_timeframe(self, symbol: str, timeframe: str):
         """
@@ -240,16 +249,28 @@ class BarAggregator:
             timeframe: Bar timeframe (e.g., '1m', '5m', '15m')
         """
         symbol_key = symbol.upper()
-        if symbol_key not in self.bar_builders:
-            self.bar_builders[symbol_key] = {}
-        
-        if timeframe not in self.bar_builders[symbol_key]:
-            # Start a new bar for this timeframe
+        normalized_tf = self._normalize_timeframe(timeframe)
+        self.symbol_timeframes[symbol_key].add(normalized_tf)
+        if normalized_tf not in self.bar_builders[symbol_key]:
             now = datetime.now(timezone.utc)
-            bar_start = self._get_bar_start_time(now, timeframe)
-            builder = BarBuilder(symbol_key, timeframe, bar_start)
-            self.bar_builders[symbol_key][timeframe] = builder
-            logger.debug(f"Subscribed to {symbol_key} {timeframe} bars")
+            bar_start = self._get_bar_start_time(now, normalized_tf)
+            builder = BarBuilder(symbol_key, normalized_tf, bar_start)
+            self.bar_builders[symbol_key][normalized_tf] = builder
+            logger.debug(f"Subscribed to {symbol_key} {normalized_tf} bars")
+    
+    def register_timeframes(self, symbol: str, timeframes: Iterable[str]):
+        """Register one or more timeframes for a symbol (ensures builders exist)."""
+        symbol_key = symbol.upper()
+        now = datetime.now(timezone.utc)
+        for tf in timeframes:
+            normalized = self._normalize_timeframe(tf)
+            if not normalized:
+                continue
+            self.symbol_timeframes[symbol_key].add(normalized)
+            if normalized not in self.bar_builders[symbol_key]:
+                bar_start = self._get_bar_start_time(now, normalized)
+                self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
+                logger.debug(f"Registered timeframe {normalized} for {symbol_key}")
     
     def unsubscribe_timeframe(self, symbol: str, timeframe: str):
         """Unsubscribe from bar updates for a symbol/timeframe."""
@@ -258,6 +279,8 @@ class BarAggregator:
             self.bar_builders[symbol_key].pop(timeframe, None)
             if not self.bar_builders[symbol_key]:
                 del self.bar_builders[symbol_key]
+        if symbol_key in self.symbol_timeframes:
+            self.symbol_timeframes[symbol_key].discard(self._normalize_timeframe(timeframe))
     
     def _should_start_new_bar(self, builder: BarBuilder, timeframe: str, current_time: datetime) -> bool:
         """Check if we should start a new bar based on timeframe."""
@@ -272,33 +295,37 @@ class BarAggregator:
         # Parse timeframe (e.g., '5m' -> 5 minutes)
         if timeframe.endswith('m'):
             minutes = int(timeframe[:-1])
-            # Round down to the nearest bar start
-            total_seconds = timestamp.timestamp()
             bar_seconds = minutes * 60
-            bar_start_seconds = (int(total_seconds) // bar_seconds) * bar_seconds
-            return datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
         elif timeframe.endswith('s'):
-            seconds = int(timeframe[:-1])
-            total_seconds = timestamp.timestamp()
-            bar_start_seconds = (int(total_seconds) // seconds) * seconds
-            return datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
+            bar_seconds = int(timeframe[:-1])
+        elif timeframe.endswith('h'):
+            hours = int(timeframe[:-1])
+            bar_seconds = hours * 3600
+        elif timeframe.endswith('d'):
+            days = int(timeframe[:-1])
+            bar_seconds = days * 86400
         else:
-            # Default to current time
-            return timestamp
+            # Default to 1 minute if unknown timeframe
+            bar_seconds = 60
+        total_seconds = timestamp.timestamp()
+        bar_start_seconds = (int(total_seconds) // bar_seconds) * bar_seconds
+        return datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
     
     def _get_bar_end_time(self, bar_start: datetime, timeframe: str) -> datetime:
         """Get the end time for a bar."""
         if timeframe.endswith('m'):
             minutes = int(timeframe[:-1])
-            from datetime import timedelta
             return bar_start + timedelta(minutes=minutes)
         elif timeframe.endswith('s'):
             seconds = int(timeframe[:-1])
-            from datetime import timedelta
             return bar_start + timedelta(seconds=seconds)
+        elif timeframe.endswith('h'):
+            hours = int(timeframe[:-1])
+            return bar_start + timedelta(hours=hours)
+        elif timeframe.endswith('d'):
+            days = int(timeframe[:-1])
+            return bar_start + timedelta(days=days)
         else:
-            # Default to 1 minute
-            from datetime import timedelta
             return bar_start + timedelta(minutes=1)
     
     def get_current_bar(self, symbol: str, timeframe: str) -> Optional[Bar]:
@@ -316,4 +343,22 @@ class BarAggregator:
         if symbol_key in self.completed_bars:
             return self.completed_bars[symbol_key].get(timeframe)
         return None
+
+    def _normalize_timeframe(self, timeframe: str) -> str:
+        """Normalize timeframe strings (strip spaces, lower-case)."""
+        return timeframe.strip().lower()
+    
+    def _initialize_symbol(self, symbol_key: str, timestamp: datetime):
+        """Initialize builders for a symbol using registered or default timeframes."""
+        frames = self.symbol_timeframes.get(symbol_key)
+        if not frames:
+            frames = set(self.default_timeframes)
+            self.symbol_timeframes[symbol_key] = set(frames)
+        for tf in frames:
+            normalized = self._normalize_timeframe(tf)
+            if normalized in self.bar_builders[symbol_key]:
+                continue
+            bar_start = self._get_bar_start_time(timestamp, normalized)
+            self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
+        logger.info(f"📊 Subscribed {symbol_key} to timeframes: {', '.join(sorted(frames))}")
 
