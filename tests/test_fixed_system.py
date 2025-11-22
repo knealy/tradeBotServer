@@ -50,7 +50,7 @@ class FixedSystemTester:
                 trading_bot=self.trading_bot,
                 host="localhost",
                 port=8080,
-                account_id=os.getenv('TOPSETPX_ACCOUNT_ID', '11481693'),
+                account_id=os.getenv('TOPSTEPX_ACCOUNT_ID', '11481693'),
                 position_size=int(os.getenv('POSITION_SIZE', '6')),
                 close_entire_position_at_tp1=False  # Use staged exits
             )
@@ -181,7 +181,7 @@ class FixedSystemTester:
         required_vars = [
             'TOPSETPX_USERNAME',
             'TOPSETPX_PASSWORD', 
-            'TOPSETPX_ACCOUNT_ID'
+            'TOPSTEPX_ACCOUNT_ID'
         ]
         
         optional_vars = [

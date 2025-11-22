@@ -39,7 +39,7 @@ railway variables set PROJECT_X_USERNAME="your_topstepx_username"
 
 Optional:
 ```bash
-railway variables set TOPSETPX_ACCOUNT_ID="your_account_id"
+railway variables set TOPSTEPX_ACCOUNT_ID="your_account_id"
 ```
 
 ---

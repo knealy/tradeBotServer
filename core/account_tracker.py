@@ -91,17 +91,19 @@ class AccountTracker:
     1. Tracking all filled orders to compute realised PnL
     2. Monitoring open positions with live quotes for unrealised PnL
     3. Computing compliance with daily/maximum loss limits
-    4. Persisting state to disk for continuity across restarts
+    4. Persisting state to database (or JSON file as fallback)
     """
     
-    def __init__(self, state_file: str = ".account_state.json"):
+    def __init__(self, state_file: str = ".account_state.json", db=None):
         """
         Initialize account tracker.
         
         Args:
-            state_file: Path to file for persisting account state
+            state_file: Path to file for persisting account state (fallback)
+            db: Database manager instance (preferred)
         """
         self.state_file = Path(state_file)
+        self.db = db
         self.accounts: Dict[str, AccountState] = {}
         self.lock = Lock()
         self.current_account_id: Optional[str] = None  # Track current active account
@@ -556,8 +558,42 @@ class AccountTracker:
             self.update_EOD(str(target_id))
     
     def _save_state(self) -> None:
-        """Persist account state to disk."""
+        """Persist account state to database (or disk as fallback)."""
         try:
+            # Try database first
+            if self.db:
+                for account_id, state in self.accounts.items():
+                    state_dict = {
+                        'account_id': state.account_id,
+                        'account_name': state.account_name,
+                        'balance': state.current_balance,
+                        'starting_balance': state.starting_balance,
+                        'daily_pnl': state.net_PnL,
+                        'dll_remaining': state.remaining_daily_loss,
+                        'mll_remaining': state.remaining_total_loss,
+                        'total_trades_today': state.total_trades,
+                        'winning_trades_today': state.winning_trades,
+                        'losing_trades_today': state.losing_trades,
+                        # Store full state in metadata
+                        'account_type': state.account_type,
+                        'highest_EOD_balance': state.highest_EOD_balance,
+                        'realised_PnL': state.realised_PnL,
+                        'unrealised_PnL': state.unrealised_PnL,
+                        'commissions': state.commissions,
+                        'fees': state.fees,
+                        'daily_loss_limit': state.daily_loss_limit,
+                        'maximum_loss_limit': state.maximum_loss_limit,
+                        'drawdown_threshold': state.drawdown_threshold,
+                        'is_compliant': state.is_compliant,
+                        'violation_reason': state.violation_reason,
+                        'last_update': state.last_update,
+                        'last_EOD_update': state.last_EOD_update
+                    }
+                    self.db.save_account_state(account_id, state_dict)
+                logger.debug(f"Saved {len(self.accounts)} account states to database")
+                return
+            
+            # Fallback to JSON file
             state_dict = {
                 account_id: state.to_dict()
                 for account_id, state in self.accounts.items()
@@ -571,12 +607,55 @@ class AccountTracker:
             logger.error(f"Failed to save account state: {e}")
     
     def _load_state(self) -> None:
-        """Load persisted account state from disk."""
-        if not self.state_file.exists():
-            logger.info("No persisted account state found")
-            return
-        
+        """Load persisted account state from database (or disk as fallback)."""
         try:
+            # Try database first
+            if self.db:
+                # Get all account states from database
+                try:
+                    with self.db.get_connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT account_id FROM account_state")
+                            account_ids = [row[0] for row in cur.fetchall()]
+                    
+                    for account_id in account_ids:
+                        state_dict = self.db.get_account_state(account_id)
+                        if state_dict:
+                            # Reconstruct AccountState from database fields
+                            self.accounts[account_id] = AccountState(
+                                account_id=state_dict['account_id'],
+                                account_name=state_dict.get('account_name', f"Account-{account_id}"),
+                                account_type=state_dict.get('account_type', 'unknown'),
+                                starting_balance=state_dict.get('starting_balance', 0.0),
+                                current_balance=state_dict.get('balance', 0.0),
+                                highest_EOD_balance=state_dict.get('highest_EOD_balance', 0.0),
+                                realised_PnL=state_dict.get('realised_PnL', 0.0),
+                                unrealised_PnL=state_dict.get('unrealised_PnL', 0.0),
+                                commissions=state_dict.get('commissions', 0.0),
+                                fees=state_dict.get('fees', 0.0),
+                                daily_loss_limit=state_dict.get('daily_loss_limit', 1000.0),
+                                maximum_loss_limit=state_dict.get('maximum_loss_limit', 2500.0),
+                                drawdown_threshold=state_dict.get('drawdown_threshold', 0.0),
+                                is_compliant=state_dict.get('is_compliant', True),
+                                violation_reason=state_dict.get('violation_reason'),
+                                last_update=state_dict.get('last_update', datetime.now(timezone.utc).isoformat()),
+                                last_EOD_update=state_dict.get('last_EOD_update', datetime.now(timezone.utc).isoformat()),
+                                total_trades=state_dict.get('total_trades_today', 0),
+                                winning_trades=state_dict.get('winning_trades_today', 0),
+                                losing_trades=state_dict.get('losing_trades_today', 0)
+                            )
+                    
+                    if self.accounts:
+                        logger.info(f"✅ Loaded state for {len(self.accounts)} accounts from database")
+                        return
+                except Exception as db_err:
+                    logger.warning(f"Failed to load from database: {db_err}, trying JSON fallback")
+            
+            # Fallback to JSON file
+            if not self.state_file.exists():
+                logger.info("No persisted account state found")
+                return
+            
             with open(self.state_file, 'r') as f:
                 state_dict = json.load(f)
             

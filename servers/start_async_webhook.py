@@ -12,7 +12,7 @@ Environment Variables:
     WEBHOOK_PORT - Server port (default: 8080)
     PROJECT_X_API_KEY - TopStepX API key
     PROJECT_X_USERNAME - TopStepX username
-    TOPSETPX_ACCOUNT_ID - Account ID to trade on (optional, auto-selects first if not set)
+    TOPSTEPX_ACCOUNT_ID - Account ID to trade on (optional, auto-selects first if not set)
 """
 
 import asyncio
@@ -81,7 +81,7 @@ def main():
     # Show configuration
     host = os.getenv('WEBHOOK_HOST', '0.0.0.0')
     port = int(os.getenv('WEBHOOK_PORT', '8080'))
-    account_id = os.getenv('TOPSETPX_ACCOUNT_ID', 'auto-select')
+    account_id = os.getenv('TOPSTEPX_ACCOUNT_ID', 'auto-select')
     
     logger.info(f"📝 Configuration:")
     logger.info(f"   Host: {host}")

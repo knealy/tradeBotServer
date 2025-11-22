@@ -232,10 +232,6 @@ class TopStepXTradingBot:
         # Initialize Discord notifier
         self.discord_notifier = DiscordNotifier()
         
-        # Initialize real-time account state tracker
-        self.account_tracker = AccountTracker()
-        logger.debug("Account tracker initialized")
-        
         # Initialize PostgreSQL database (for persistent caching and state)
         try:
             self.db = get_database()
@@ -243,6 +239,10 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.warning(f"⚠️  PostgreSQL unavailable (will use memory cache only): {e}")
             self.db = None
+        
+        # Initialize real-time account state tracker (with database support)
+        self.account_tracker = AccountTracker(db=self.db)
+        logger.debug("Account tracker initialized with database support")
         
         # Initialize Strategy Manager (modular strategy system)
         self.strategy_manager = StrategyManager(trading_bot=self)

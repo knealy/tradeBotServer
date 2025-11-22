@@ -52,7 +52,7 @@ class DeploymentValidator:
                 trading_bot=self.trading_bot,
                 host="localhost",
                 port=8080,
-                account_id=os.getenv('TOPSETPX_ACCOUNT_ID', '11481693'),
+                account_id=os.getenv('TOPSTEPX_ACCOUNT_ID', '11481693'),
                 position_size=int(os.getenv('POSITION_SIZE', '6')),
                 close_entire_position_at_tp1=False  # Use staged exits
             )
@@ -71,7 +71,7 @@ class DeploymentValidator:
         required_vars = {
             'TOPSETPX_USERNAME': 'TopStepX username',
             'TOPSETPX_PASSWORD': 'TopStepX password',
-            'TOPSETPX_ACCOUNT_ID': 'TopStepX account ID'
+            'TOPSTEPX_ACCOUNT_ID': 'TopStepX account ID'
         }
         
         fixed_vars = {

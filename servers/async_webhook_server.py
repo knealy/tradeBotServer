@@ -2389,7 +2389,7 @@ async def main():
         sys.exit(1)
     
     # Determine preferred account order: env override > persisted default > first account
-    env_account_id = os.getenv('TOPSETPX_ACCOUNT_ID')
+    env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID')
     persisted_account_id = None
     if getattr(trading_bot, 'db', None):
         try:

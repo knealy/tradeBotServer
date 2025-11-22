@@ -500,11 +500,36 @@ async def main():
         logger.error("Failed to authenticate")
         return
     
-    # Select first account if available
+    # Select account (env override > persisted default > first account)
     accounts = await bot.list_accounts()
-    if accounts:
+    if not accounts:
+        logger.error("❌ No accounts found")
+        return
+    
+    env_account_id = os.getenv('TOPSTEPX_ACCOUNT_ID')
+    persisted_account_id = None
+    if getattr(bot, 'db', None):
+        try:
+            settings = bot.db.get_dashboard_settings()
+            persisted_account_id = settings.get('defaultAccount') or settings.get('default_account')
+            if persisted_account_id:
+                logger.info(f"📝 Persisted default account from settings: {persisted_account_id}")
+        except Exception as settings_err:
+            logger.warning(f"⚠️  Failed to load persisted settings: {settings_err}")
+    
+    account_choice = env_account_id or persisted_account_id
+    if account_choice:
+        selected_account = next((acc for acc in accounts if str(acc['id']) == str(account_choice)), None)
+        if selected_account:
+            bot.selected_account = selected_account
+            logger.info(f"✅ Selected account: {selected_account['name']} (source={'env' if env_account_id else 'settings'})")
+        else:
+            logger.error(f"❌ Preferred account ID {account_choice} not found among available accounts")
+            bot.selected_account = accounts[0]
+            logger.info(f"✅ Fallback to first account: {accounts[0]['name']}")
+    else:
         bot.selected_account = accounts[0]
-        logger.info(f"✅ Selected account: {accounts[0].get('name')}")
+        logger.info(f"✅ Auto-selected first account: {accounts[0]['name']}")
     
     # Start API server
     server = DashboardAPIServer(bot, host='0.0.0.0', port=8080)

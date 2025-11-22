@@ -57,7 +57,7 @@ cp .env.example .env
 # Edit .env and add:
 PROJECT_X_API_KEY=your_api_key
 PROJECT_X_USERNAME=your_username
-TOPSETPX_ACCOUNT_ID=your_account_id
+TOPSTEPX_ACCOUNT_ID=your_account_id
 
 # Optional: PostgreSQL database (Railway auto-configures)
 DATABASE_URL=postgresql://user:pass@host:5432/db
@@ -290,7 +290,7 @@ See **[docs/ENV_CONFIGURATION.md](docs/ENV_CONFIGURATION.md)** for complete docu
 **Core**:
 - `PROJECT_X_API_KEY` - Your TopStepX API key
 - `PROJECT_X_USERNAME` - Your TopStepX username  
-- `TOPSETPX_ACCOUNT_ID` - Account ID to trade on
+- `TOPSTEPX_ACCOUNT_ID` - Account ID to trade on
 
 **Database**:
 - `DATABASE_URL` - PostgreSQL connection string (auto-configured on Railway)

@@ -131,7 +131,7 @@ Set these in Railway:
 |----------|----------|-------------|
 | `PROJECT_X_API_KEY` | ✅ Yes | Your TopStepX API key |
 | `PROJECT_X_USERNAME` | ✅ Yes | Your TopStepX username |
-| `TOPSETPX_ACCOUNT_ID` | ⚠️ Optional | Account ID (auto-selects if not set) |
+| `TOPSTEPX_ACCOUNT_ID` | ⚠️ Optional | Account ID (auto-selects if not set) |
 
 Railway provides these automatically:
 - `PORT` - Server port

@@ -16,7 +16,7 @@ Complete guide to deploy your trading bot with frontend to Railway.
 3. **Environment Variables Ready** - Have your credentials ready:
    - `PROJECT_X_API_KEY` or `TOPSETPX_API_KEY`
    - `PROJECT_X_USERNAME` or `TOPSETPX_USERNAME`
-   - `TOPSETPX_ACCOUNT_ID` (optional - will auto-select if not provided)
+   - `TOPSTEPX_ACCOUNT_ID` (optional - will auto-select if not provided)
    - Database URL (Railway provides this automatically)
 
 ---
@@ -49,7 +49,7 @@ Complete guide to deploy your trading bot with frontend to Railway.
    ```bash
    railway variables set PROJECT_X_API_KEY="your_api_key_here"
    railway variables set PROJECT_X_USERNAME="your_username_here"
-   railway variables set TOPSETPX_ACCOUNT_ID="your_account_id"
+   railway variables set TOPSTEPX_ACCOUNT_ID="your_account_id"
    
    # Optional: Set specific port (Railway provides PORT automatically)
    railway variables set WEBHOOK_PORT="8080"
@@ -98,7 +98,7 @@ Complete guide to deploy your trading bot with frontend to Railway.
    - Add:
      - `PROJECT_X_API_KEY`
      - `PROJECT_X_USERNAME`
-     - `TOPSETPX_ACCOUNT_ID`
+     - `TOPSTEPX_ACCOUNT_ID`
 
 5. **Generate Domain**
    - Go to "Settings" tab
@@ -191,7 +191,7 @@ Railway provides PostgreSQL automatically. The app will:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `TOPSETPX_ACCOUNT_ID` | Specific account ID | Auto-selects first account |
+| `TOPSTEPX_ACCOUNT_ID` | Specific account ID | Auto-selects first account |
 | `WEBHOOK_HOST` | Server host | `0.0.0.0` |
 | `WEBHOOK_PORT` | Server port | Railway provides `PORT` |
 | `WEBSOCKET_PORT` | WebSocket port | `8081` (same as main port on Railway) |

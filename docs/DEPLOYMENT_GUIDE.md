@@ -37,7 +37,7 @@ This guide covers deploying the **FIXED** trading bot system that prevents overs
 # TopStepX Credentials
 TOPSETPX_USERNAME=your_username
 TOPSETPX_PASSWORD=your_password
-TOPSETPX_ACCOUNT_ID=11481693
+TOPSTEPX_ACCOUNT_ID=11481693
 ```
 
 ### **Fixed System Variables**
@@ -78,7 +78,7 @@ git push origin main
    ```
    TOPSETPX_USERNAME=your_username
    TOPSETPX_PASSWORD=your_password
-   TOPSETPX_ACCOUNT_ID=11481693
+   TOPSTEPX_ACCOUNT_ID=11481693
    POSITION_SIZE=3
    MAX_POSITION_SIZE=6
    IGNORE_NON_ENTRY_SIGNALS=true
@@ -104,7 +104,7 @@ git push origin main
 cat > .env << 'EOF'
 TOPSETPX_USERNAME=your_username
 TOPSETPX_PASSWORD=your_password
-TOPSETPX_ACCOUNT_ID=11481693
+TOPSTEPX_ACCOUNT_ID=11481693
 POSITION_SIZE=3
 MAX_POSITION_SIZE=6
 IGNORE_NON_ENTRY_SIGNALS=true
