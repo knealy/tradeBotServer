@@ -613,10 +613,10 @@ class OvernightRangeStrategy(BaseStrategy):
                 # Session crosses midnight (e.g., 18:00 -> 09:30)
                 if now.time() >= end_clock:
                     end_date = now.date()
-            else:
+                else:
                     end_date = (now - timedelta(days=1)).date()
                 start_date = end_date - timedelta(days=1)
-                else:
+            else:
                 # Session contained within same calendar day (e.g., 20:00 -> 22:15)
                 if now.time() >= end_clock:
                     end_date = now.date()
