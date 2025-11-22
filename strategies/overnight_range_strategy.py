@@ -613,10 +613,10 @@ class OvernightRangeStrategy(BaseStrategy):
                 # Session crosses midnight (e.g., 18:00 -> 09:30)
                 if now.time() >= end_clock:
                     end_date = now.date()
-                else:
+            else:
                     end_date = (now - timedelta(days=1)).date()
                 start_date = end_date - timedelta(days=1)
-            else:
+                else:
                 # Session contained within same calendar day (e.g., 20:00 -> 22:15)
                 if now.time() >= end_clock:
                     end_date = now.date()
@@ -1267,37 +1267,37 @@ class OvernightRangeStrategy(BaseStrategy):
         Checks frequently (every 10 seconds) when close to market open time to catch it precisely.
         """
         try:
-            logger.info(f"📅 Market open scanner started - targeting {self.market_open_time} {self.timezone}")
-            
-            while self.is_trading:
-                try:
-                    now = datetime.now(self.timezone)
-                    open_hour, open_min = map(int, self.market_open_time.split(':'))
-                    market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
-                    trading_end_hour, trading_end_min = map(int, self.config.trading_end_time.split(':'))
-                    trading_end_today = now.replace(hour=trading_end_hour, minute=trading_end_min, second=0, microsecond=0)
-                    
-                    ran_today = self._last_market_open_run == market_open_today.date()
-                    
+        logger.info(f"📅 Market open scanner started - targeting {self.market_open_time} {self.timezone}")
+        
+        while self.is_trading:
+            try:
+                now = datetime.now(self.timezone)
+                open_hour, open_min = map(int, self.market_open_time.split(':'))
+                market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+                trading_end_hour, trading_end_min = map(int, self.config.trading_end_time.split(':'))
+                trading_end_today = now.replace(hour=trading_end_hour, minute=trading_end_min, second=0, microsecond=0)
+                
+                ran_today = self._last_market_open_run == market_open_today.date()
+                
                     # Check if we're at or past market open time
-                    if now >= market_open_today:
-                        if not ran_today:
-                            grace_minutes = float(os.getenv('MARKET_OPEN_GRACE_MINUTES', '5'))
-                            grace_deadline = market_open_today + timedelta(minutes=grace_minutes)
-                            if now <= grace_deadline:
+                if now >= market_open_today:
+                    if not ran_today:
+                        grace_minutes = float(os.getenv('MARKET_OPEN_GRACE_MINUTES', '5'))
+                        grace_deadline = market_open_today + timedelta(minutes=grace_minutes)
+                        if now <= grace_deadline:
                                 time_since_open = (now - market_open_today).total_seconds()
                                 logger.info(f"🔔 Market open reached (at {now.strftime('%H:%M:%S')}, {time_since_open:.0f}s after {self.market_open_time})—executing scheduled sequence.")
-                                await self._execute_market_open_sequence()
+                            await self._execute_market_open_sequence()
                                 self._last_market_open_run = market_open_today.date()
-                            else:
+                        else:
                                 time_since_open = (now - market_open_today).total_seconds() / 60
                                 logger.info(f"⏭️  Market open already passed ({time_since_open:.1f} minutes ago); skipping catch-up and waiting for next session.")
-                                self._last_market_open_run = market_open_today.date()
-                        
+                        self._last_market_open_run = market_open_today.date()
+                    
                         # After execution, schedule for next day
-                        next_open = market_open_today + timedelta(days=1)
+                    next_open = market_open_today + timedelta(days=1)
                         sleep_seconds = max((next_open - now).total_seconds(), 60.0)  # Check at least once per minute
-                    else:
+                else:
                         # Before market open - calculate time until market open
                         time_until_open = (market_open_today - now).total_seconds()
                         
@@ -1312,23 +1312,23 @@ class OvernightRangeStrategy(BaseStrategy):
                             # Far from market open - check every minute
                             sleep_seconds = 60
                         
-                        next_open = market_open_today
-                    
-                    if sleep_seconds > 60:
-                        logger.info(
-                            f"⏰ Next market open execution scheduled for {next_open.strftime('%Y-%m-%d %H:%M:%S %Z')} "
-                            f"(in {sleep_seconds/3600:.2f} hours)"
-                        )
-                    await asyncio.sleep(sleep_seconds)
+                    next_open = market_open_today
                 
-                except asyncio.CancelledError:
-                    logger.info("Market open scanner cancelled.")
-                    break
-                except Exception as e:
-                    logger.error(f"Error in market open scanner: {e}")
+                    if sleep_seconds > 60:
+                logger.info(
+                    f"⏰ Next market open execution scheduled for {next_open.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                    f"(in {sleep_seconds/3600:.2f} hours)"
+                )
+                await asyncio.sleep(sleep_seconds)
+            
+            except asyncio.CancelledError:
+                logger.info("Market open scanner cancelled.")
+                break
+            except Exception as e:
+                logger.error(f"Error in market open scanner: {e}")
                     import traceback
                     logger.error(f"Traceback: {traceback.format_exc()}")
-                    await asyncio.sleep(300)  # Wait 5 minutes on error
+                await asyncio.sleep(300)  # Wait 5 minutes on error
         except Exception as e:
             logger.error(f"Fatal error in market open scanner: {e}")
             import traceback
