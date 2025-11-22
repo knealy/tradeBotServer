@@ -139,8 +139,8 @@ class StrategyManager:
                     if name in self.active_strategies:
                         logger.info(f"⏭️  Strategy {name} already active, skipping auto-start")
                     else:
-                    # Strategy should be running but isn't
-                    logger.info(f"▶️  Auto-starting {name} from {config_source} (symbols: {', '.join(symbols) if symbols else 'default'})")
+                        # Strategy should be running but isn't
+                        logger.info(f"▶️  Auto-starting {name} from {config_source} (symbols: {', '.join(symbols) if symbols else 'default'})")
                 else:
                     logger.info(f"⏸️  Strategy {name} is disabled (should_start=False), skipping auto-start")
 
