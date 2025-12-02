@@ -14,12 +14,39 @@ The bot now:
 - Reads `JWT_TOKEN` from environment on startup
 - Parses the JWT to extract expiration time
 - Uses this token for all API calls if available
+- **Automatically refreshes expired tokens** using `_ensure_valid_token()`
 - Falls back to authentication via username/API key if not present
 
 **Benefits:**
 - No need to authenticate on every restart (useful for Railway)
 - Faster startup time
+- **Auto-refresh**: Expired tokens are automatically refreshed on startup
 - Token recycling mechanism still works when token approaches expiration
+
+### ⚠️ Important: Auto-Refresh Implementation
+
+**Critical Quirk**: The server startup code uses `_ensure_valid_token()` instead of `authenticate()` directly.
+
+**Why?**
+- `_ensure_valid_token()` checks if the token is expired first
+- If expired, it automatically calls `authenticate()` to get a fresh token
+- If valid, it uses the existing token (no API call needed)
+
+**File**: `servers/async_webhook_server.py` (line 2470)
+```python
+# ✅ CORRECT - Uses auto-refresh
+if await trading_bot._ensure_valid_token():
+    auth_success = True
+
+# ❌ WRONG - Bypasses expiration check
+if await trading_bot.authenticate():
+    auth_success = True
+```
+
+**What This Means:**
+- If `JWT_TOKEN` in environment is expired, the server will automatically get a new token
+- No manual intervention needed - just ensure `PROJECT_X_USERNAME` and `PROJECT_X_API_KEY` are set
+- Server will start successfully even with expired JWT tokens
 
 ### 2. Simplified SignalR Subscription Method
 **File:** `trading_bot.py` - `_ensure_quote_subscription()`
@@ -120,6 +147,17 @@ The `on_error` handler now logs the exact error from the ProjectX server's `Comp
 1. Token expiration: `exp` claim in JWT
 2. Token format: Should start with `eyJ...`
 3. User permissions: Token must have market data entitlements
+4. **Auto-refresh**: Ensure `PROJECT_X_USERNAME` and `PROJECT_X_API_KEY` are set for auto-refresh
+
+### Issue: "Authentication failed - cannot start server"
+**Solution:** This happens when:
+1. JWT token is expired AND
+2. `PROJECT_X_USERNAME` or `PROJECT_X_API_KEY` are missing/invalid
+
+**Fix:**
+- Ensure `PROJECT_X_USERNAME` and `PROJECT_X_API_KEY` are set in Railway
+- Or generate a new JWT token and add it to `JWT_TOKEN` environment variable
+- The server will auto-refresh expired tokens if credentials are valid
 
 ### Issue: "HTTP error 404: Not Found for url: .../quote/CON.F.US.MNQ.Z25"
 **Solution:** This is expected! The REST endpoint fallback tries multiple identifier formats. If SignalR is working, this error is harmless.
@@ -136,12 +174,159 @@ The `on_error` handler now logs the exact error from the ProjectX server's `Comp
 Required for SignalR real-time quotes:
 ```bash
 # Option 1: Use JWT directly (faster, recommended for Railway)
+# Note: If expired, will auto-refresh using Option 2 credentials
 JWT_TOKEN="eyJhbGci..."
 
-# Option 2: Authenticate on startup (traditional)
+# Option 2: Authenticate on startup (required for auto-refresh)
+# These are REQUIRED if JWT_TOKEN is expired or missing
 PROJECT_X_USERNAME="your_username"
 PROJECT_X_API_KEY="your_api_key"
 ```
+
+### Recommended Setup (Auto-Refresh Enabled)
+
+For Railway deployment, set **both** JWT token and credentials:
+```bash
+# JWT token (optional, but speeds up startup if valid)
+JWT_TOKEN="eyJhbGci..."
+
+# Credentials (REQUIRED for auto-refresh when JWT expires)
+PROJECT_X_USERNAME="your_username"
+PROJECT_X_API_KEY="your_api_key"
+```
+
+**Why both?**
+- If `JWT_TOKEN` is valid → Fast startup (no API call)
+- If `JWT_TOKEN` is expired → Auto-refreshes using credentials
+- If `JWT_TOKEN` is missing → Authenticates using credentials
+
+## Generating a New JWT Token
+
+If you want to generate a fresh JWT token to add to your environment variables:
+
+### Method 1: Using the Trading Bot (Recommended)
+
+The bot can generate a new token automatically. Simply ensure credentials are set:
+
+```bash
+# Set credentials in environment
+export PROJECT_X_USERNAME="your_username"
+export PROJECT_X_API_KEY="your_api_key"
+
+# Start the bot - it will authenticate and get a new token
+python3 trading_bot.py
+```
+
+Look for this log message:
+```
+INFO - Token expires at: 2025-12-02 18:00:00+00:00
+```
+
+The token is stored in `self.session_token`. To extract it:
+
+```python
+# In Python shell or script
+from trading_bot import TopStepXTradingBot
+import asyncio
+
+async def get_token():
+    bot = TopStepXTradingBot()
+    if await bot.authenticate():
+        print(f"JWT_TOKEN={bot.session_token}")
+        print(f"Expires: {bot.token_expiry}")
+
+asyncio.run(get_token())
+```
+
+### Method 2: Using cURL (Direct API Call)
+
+```bash
+curl -X POST https://api.topstepx.com/api/Auth/loginKey \
+  -H "Content-Type: application/json" \
+  -H "accept: text/plain" \
+  -d '{
+    "userName": "your_username",
+    "apiKey": "your_api_key"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresIn": 1440
+}
+```
+
+Copy the `token` value and add it to your environment:
+```bash
+JWT_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Method 3: Using Python Script
+
+Create a script `generate_jwt.py`:
+```python
+#!/usr/bin/env python3
+import os
+import requests
+import json
+
+username = os.getenv('PROJECT_X_USERNAME')
+api_key = os.getenv('PROJECT_X_API_KEY')
+
+if not username or not api_key:
+    print("Error: Set PROJECT_X_USERNAME and PROJECT_X_API_KEY environment variables")
+    exit(1)
+
+response = requests.post(
+    'https://api.topstepx.com/api/Auth/loginKey',
+    headers={
+        'Content-Type': 'application/json',
+        'accept': 'text/plain'
+    },
+    json={
+        'userName': username,
+        'apiKey': api_key
+    }
+)
+
+if response.status_code == 200:
+    data = response.json()
+    if data.get('success') and data.get('token'):
+        print(f"JWT_TOKEN={data['token']}")
+        print(f"\nAdd this to your .env file or Railway environment variables:")
+        print(f"JWT_TOKEN=\"{data['token']}\"")
+    else:
+        print(f"Error: {data}")
+else:
+    print(f"Error: HTTP {response.status_code}")
+    print(response.text)
+```
+
+Run it:
+```bash
+export PROJECT_X_USERNAME="your_username"
+export PROJECT_X_API_KEY="your_api_key"
+python3 generate_jwt.py
+```
+
+### Adding Token to Railway
+
+1. **Copy the token** from any method above
+2. **Go to Railway Dashboard** → Your Service → Variables
+3. **Add or Update**:
+   - Variable: `JWT_TOKEN`
+   - Value: `eyJhbGci...` (the full token)
+4. **Redeploy** or the server will auto-refresh on next restart
+
+### Token Expiration
+
+JWT tokens typically expire after **24 hours** (1440 minutes). The bot:
+- Checks expiration on startup
+- Auto-refreshes if expired (requires `PROJECT_X_USERNAME` and `PROJECT_X_API_KEY`)
+- Proactively refreshes if less than 5 minutes remaining
 
 Optional SignalR configuration:
 ```bash

@@ -2461,12 +2461,13 @@ async def main():
     logger.info("🤖 Initializing trading bot...")
     trading_bot = TopStepXTradingBot(api_key=api_key, username=username)
     
-    # Authenticate with retry logic
-    logger.info("🔐 Authenticating...")
+    # Ensure valid token (auto-refreshes if expired)
+    logger.info("🔐 Ensuring valid authentication token...")
     max_auth_retries = 3
     auth_success = False
     for attempt in range(1, max_auth_retries + 1):
-        if await trading_bot.authenticate():
+        # Use _ensure_valid_token() which checks expiration and auto-refreshes
+        if await trading_bot._ensure_valid_token():
             auth_success = True
             break
         else:
