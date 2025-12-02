@@ -1297,15 +1297,15 @@ export default function TradingChart({
           </h2>
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2">
-              <button
-                onClick={handleRefresh}
-                disabled={isRefetching}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-2"
-                title="Refresh chart data"
-              >
-                <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
-                Refresh
-              </button>
+            <button
+              onClick={handleRefresh}
+              disabled={isRefetching}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-2"
+              title="Refresh chart data"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
               <div className="flex items-center gap-1">
                 <span className="text-xs text-slate-400">Auto:</span>
                 <select

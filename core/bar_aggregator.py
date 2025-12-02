@@ -365,8 +365,8 @@ class BarAggregator:
                 continue
             self.symbol_timeframes[symbol_key].add(normalized)
             if normalized not in self.bar_builders[symbol_key]:
-                bar_start = self._get_bar_start_time(timestamp, normalized)
-                self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
+            bar_start = self._get_bar_start_time(timestamp, normalized)
+            self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
                 logger.debug(f"Initialized {normalized} bar builder for {symbol_key}")
         
         logger.info(f"📊 Initialized {symbol_key} with {len(self.symbol_timeframes[symbol_key])} timeframes: {', '.join(sorted(self.symbol_timeframes[symbol_key]))}")
