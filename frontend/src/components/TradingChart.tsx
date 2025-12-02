@@ -128,7 +128,7 @@ export default function TradingChart({
   // Chart theme configuration
   const chartTheme = useChartTheme({ theme: 'dark', height })
 
-  // Fetch historical data
+  // Fetch historical data - refresh periodically to get latest bars
   const { data, isLoading, refetch, isRefetching } = useQuery<HistoricalDataResponse>(
     ['tradingChartData', symbol, timeframe, barLimit],
     () =>
@@ -136,12 +136,14 @@ export default function TradingChart({
         symbol,
         timeframe,
         limit: barLimit,
-        end: new Date().toISOString(),
+        end: new Date().toISOString(), // Always use current time for latest data
       }),
     {
       enabled: Boolean(symbol),
       staleTime: 30_000,
-      refetchInterval: false, // Disable auto-refresh, use real-time updates instead
+      refetchInterval: 60_000, // Refresh every 60 seconds to get latest historical bars
+      // Real-time updates via WebSocket handle live bar updates, but we still need
+      // periodic refresh to catch any missed bars or new completed bars
     }
   )
   
@@ -205,13 +207,27 @@ export default function TradingChart({
 
       const initialWidth = getWidth()
 
+      // Format for crosshair label (bottom) - always show date + time for clarity
       const formatTimeET = (time: Time): string => {
+        const date = new Date((time as number) * 1000)
+        const formatterOptions: Intl.DateTimeFormatOptions = {
+          timeZone: 'America/New_York',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }
+        return date.toLocaleString('en-US', formatterOptions)
+      }
+      
+      // Format for time axis (top) - show date only for longer timeframes to avoid clutter
+      const formatTimeScaleET = (time: Time): string => {
         const date = new Date((time as number) * 1000)
         const formatterOptions: Intl.DateTimeFormatOptions = {
           timeZone: 'America/New_York',
         }
         
-        // For longer timeframes, show date + time
         const showDate = ['1h', '4h', '1d'].includes(timeframe) || 
                         (timeframe.includes('m') && parseInt(timeframe) >= 30)
         
@@ -236,7 +252,7 @@ export default function TradingChart({
         height,
         timeScale: {
           ...chartTheme.timeScale,
-          tickMarkFormatter: (time: Time) => formatTimeET(time),
+          tickMarkFormatter: (time: Time) => formatTimeScaleET(time),
         },
         crosshair: {
           ...chartTheme.crosshair,
@@ -250,7 +266,7 @@ export default function TradingChart({
           },
         },
         localization: {
-          timeFormatter: (time: Time) => formatTimeET(time),
+          timeFormatter: (time: Time) => formatTimeET(time), // Crosshair label always shows date
         },
       })
 
@@ -465,13 +481,27 @@ export default function TradingChart({
   useEffect(() => {
     if (!chartRef.current || !chartInitialized) return
 
+    // Format for crosshair label (bottom) - always show date + time
     const formatTimeET = (time: Time): string => {
+      const date = new Date((time as number) * 1000)
+      const formatterOptions: Intl.DateTimeFormatOptions = {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }
+      return date.toLocaleString('en-US', formatterOptions)
+    }
+    
+    // Format for time axis (top) - show date only for longer timeframes
+    const formatTimeScaleET = (time: Time): string => {
       const date = new Date((time as number) * 1000)
       const formatterOptions: Intl.DateTimeFormatOptions = {
         timeZone: 'America/New_York',
       }
       
-      // For longer timeframes, show date + time
       const showDate = ['1h', '4h', '1d'].includes(timeframe) || 
                       (timeframe.includes('m') && parseInt(timeframe) >= 30)
       
@@ -490,13 +520,13 @@ export default function TradingChart({
       }
     }
 
-    // Update timeScale formatter
+    // Update timeScale formatter (top axis)
     const timeScale = chartRef.current.timeScale()
     timeScale.applyOptions({
-      tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => formatTimeET(time),
+      tickMarkFormatter: (time: Time, _tickMarkType: any, _locale: string) => formatTimeScaleET(time),
     } as any)
 
-    // Update localization formatter
+    // Update localization formatter (crosshair label at bottom - always show date)
     chartRef.current.applyOptions({
       localization: {
         timeFormatter: (time: Time) => formatTimeET(time),
