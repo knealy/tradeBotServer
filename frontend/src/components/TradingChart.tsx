@@ -131,7 +131,7 @@ export default function TradingChart({
   const [showOrders, setShowOrders] = useState(propShowOrders)
   const [chartInitialized, setChartInitialized] = useState(false)
   const [hoveredBar, setHoveredBar] = useState<HistoricalBar | null>(null)
-  const [nextBarTime, setNextBarTime] = useState<number | null>(null)
+  const [currentTime, setCurrentTime] = useState(Date.now()) // Force re-render every second for countdown
   const [userScrollPosition, setUserScrollPosition] = useState<{ left: number; right: number } | null>(null)
   const queryClient = useQueryClient()
   
@@ -169,7 +169,17 @@ export default function TradingChart({
       enabled: Boolean(symbol),
       staleTime: 0, // Always consider data stale to force fresh fetches
       cacheTime: 1, // Minimal cache time (1ms) - React Query v3 requires > 0
-      refetchInterval: 60_000, // Refresh every 60 seconds to get latest historical bars
+      // For sub-1-minute timeframes, refresh more frequently to get current data
+      refetchInterval: (() => {
+        const tf = timeframe.toLowerCase().trim()
+        if (tf.endsWith('s')) {
+          const seconds = parseInt(tf.slice(0, -1))
+          // Refresh every 2-3x the timeframe interval for sub-1-minute
+          if (seconds <= 30) return seconds * 2000 // 2x for very short timeframes
+          return seconds * 1000 // 1x for longer sub-minute
+        }
+        return 60_000 // Default: 60 seconds for 1m and above
+      })(),
       // Real-time updates via WebSocket handle live bar updates, but we still need
       // periodic refresh to catch any missed bars or new completed bars
       onError: (err) => {
@@ -260,10 +270,11 @@ export default function TradingChart({
   }, [])
 
   // Format stopclock time - starts at full timeframe duration and counts down
+  // Uses currentTime state to force updates every second
   const formatStopclock = useMemo(() => {
-    if (!nextBarTime || !timeframe) return null
+    if (!timeframe) return null
     
-    const now = Date.now()
+    const now = currentTime // Use state that updates every second
     
     // Parse timeframe to get full duration in milliseconds
     const tf = timeframe.toLowerCase().trim()
@@ -292,7 +303,7 @@ export default function TradingChart({
     const secs = remainingSeconds % 60
     
     return `${minutes}:${secs.toString().padStart(2, '0')}`
-  }, [nextBarTime, timeframe])
+  }, [timeframe, currentTime]) // Recalculate when currentTime updates (every second)
 
   // Initialize chart
   useLayoutEffect(() => {
@@ -639,41 +650,16 @@ export default function TradingChart({
     return () => clearTimeout(timeoutId)
   }, [chartData, chartInitialized, symbol, timeframe, barLimit, showMAs, maData, userScrollPosition])
 
-  // Calculate next bar time for stopclock
+  // Update current time every second to trigger countdown updates
   useEffect(() => {
-    if (!data?.bars || data.bars.length === 0 || !timeframe) {
-      setNextBarTime(null)
-      return
-    }
-
-    const calculateNextBarTime = () => {
-      const now = Date.now()
-      
-      // Parse timeframe to get interval in milliseconds
-      const tf = timeframe.toLowerCase().trim()
-      let intervalMs = 0
-      
-      if (tf.endsWith('s')) {
-        intervalMs = parseInt(tf.slice(0, -1)) * 1000
-      } else if (tf.endsWith('m')) {
-        intervalMs = parseInt(tf.slice(0, -1)) * 60 * 1000
-      } else if (tf.endsWith('h')) {
-        intervalMs = parseInt(tf.slice(0, -1)) * 60 * 60 * 1000
-      }
-      
-      if (intervalMs > 0) {
-        // Calculate the start of the current bar period based on current time
-        const currentBarStart = Math.floor(now / intervalMs) * intervalMs
-        // Next bar starts at the next interval
-        const nextBar = currentBarStart + intervalMs
-        setNextBarTime(nextBar)
-      }
-    }
-
-    calculateNextBarTime()
-    const interval = setInterval(calculateNextBarTime, 1000) // Update every second
+    const interval = setInterval(() => {
+      setCurrentTime(Date.now())
+    }, 1000)
     return () => clearInterval(interval)
-  }, [data, timeframe])
+  }, [])
+
+  // Note: Countdown calculation is now done directly in formatStopclock useMemo
+  // No need for separate nextBarTime state
 
   // Track user scroll position using polling (lightweight-charts doesn't have direct subscription)
   useEffect(() => {
