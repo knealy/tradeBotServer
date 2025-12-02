@@ -3,11 +3,11 @@ import { Link, useLocation } from 'react-router-dom'
 import { Activity, TrendingUp, Settings, BarChart3 } from 'lucide-react'
 import { useAccount } from '../contexts/AccountContext'
 import { useWebSocket } from '../contexts/WebSocketContext'
-import { useQuery } from 'react-query'
-import { metricsApi } from '../services/api'
+// import { useQuery } from 'react-query'
+// import { metricsApi } from '../services/api'
 import AccountSelector from './AccountSelector'
 import NotificationsFeed from './NotificationsFeed'
-import MetricsCard from './MetricsCard'
+// import MetricsCard from './MetricsCard' // Commented out for future use
 
 interface LayoutProps {
   children: ReactNode
@@ -18,17 +18,17 @@ export default function Layout({ children }: LayoutProps) {
   const { accounts, selectedAccount, setSelectedAccount } = useAccount()
   const { status: socketStatus, reconnectAttempts, lastError: socketError, reconnect: reconnectSocket } = useWebSocket()
 
-  // Fetch metrics for MetricsCard
-  const { data: metricsData } = useQuery(
-    ['metrics'],
-    metricsApi.getMetrics,
-    {
-      refetchInterval: socketStatus === 'connected' ? false : 60_000,
-      staleTime: 30_000,
-      refetchOnWindowFocus: false,
-    }
-  )
-  const metrics = (metricsData as any)?.performance || metricsData
+  // Fetch metrics for MetricsCard - Commented out for future use
+  // const { data: metricsData } = useQuery(
+  //   ['metrics'],
+  //   metricsApi.getMetrics,
+  //   {
+  //     refetchInterval: socketStatus === 'connected' ? false : 60_000,
+  //     staleTime: 30_000,
+  //     refetchOnWindowFocus: false,
+  //   }
+  // )
+  // const metrics = (metricsData as any)?.performance || metricsData
 
   const connectionBadge = useMemo(() => {
     switch (socketStatus) {
@@ -119,7 +119,7 @@ export default function Layout({ children }: LayoutProps) {
             </div>
           </div>
 
-          {/* Account Selector and Metrics Card Row */}
+          {/* Account Selector and Notifications Row */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
             <div className="w-full sm:w-auto sm:max-w-md">
               <AccountSelector
@@ -128,14 +128,16 @@ export default function Layout({ children }: LayoutProps) {
                 onAccountChange={setSelectedAccount}
               />
             </div>
+            <div className="w-full sm:w-auto sm:flex-1">
+              <NotificationsFeed />
+            </div>
+            {/* MetricsCard - Commented out for future use
             {metrics && (
               <div className="w-full sm:w-auto sm:flex-1 sm:max-w-md">
                 <MetricsCard metrics={metrics} />
               </div>
             )}
-            <div className="w-full sm:w-auto sm:ml-auto">
-              <NotificationsFeed />
-            </div>
+            */}
           </div>
         </div>
 

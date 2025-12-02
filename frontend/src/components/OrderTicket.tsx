@@ -8,6 +8,7 @@ import { useWidgetState } from '../hooks/useWidgetState'
 
 interface OrderTicketProps {
   onOrderPlaced?: () => void
+  noWrapper?: boolean
 }
 
 type OrderSide = 'BUY' | 'SELL'
@@ -15,7 +16,7 @@ type OrderTypeOption = 'market' | 'limit' | 'stop'
 
 const defaultSymbol = 'MNQ'
 
-export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
+export default function OrderTicket({ onOrderPlaced, noWrapper = false }: OrderTicketProps) {
   const queryClient = useQueryClient()
   const { selectedAccount } = useAccount()
   const [symbol, setSymbol] = useState(defaultSymbol)
@@ -186,25 +187,9 @@ export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
   const disableActions = !accountId
   const [isOpen, setIsOpen] = useWidgetState('orderTicket', true)
 
-  return (
-    <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
-      <button
-        type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        className="w-full flex items-center justify-between px-4 py-3"
-      >
-        <div className="flex items-center gap-3 text-left">
-          <div>
-            <p className="text-sm font-semibold text-slate-200">Quick Order Ticket</p>
-            <p className="text-xs text-slate-400">Place discretionary trades directly from the dashboard</p>
-          </div>
-        </div>
-        {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-      </button>
-
-      {isOpen && (
-        <div className="px-4 pb-4">
-          {formError && (
+  const formContent = (
+    <>
+      {formError && (
         <div className="mb-4 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           <AlertCircle className="h-4 w-4" />
           <span>{formError}</span>
@@ -448,6 +433,32 @@ export default function OrderTicket({ onOrderPlaced }: OrderTicketProps) {
           Tip: Brackets on market/limit orders use tick offsets. Stop entries require explicit pricing for the attached OCO legs.
         </p>
       </form>
+    </>
+  )
+
+  if (noWrapper) {
+    return formContent
+  }
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="w-full flex items-center justify-between px-4 py-3"
+      >
+        <div className="flex items-center gap-3 text-left">
+          <div>
+            <p className="text-sm font-semibold text-slate-200">Quick Order Ticket</p>
+            <p className="text-xs text-slate-400">Place discretionary trades directly from the dashboard</p>
+          </div>
+        </div>
+        {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
+
+      {isOpen && (
+        <div className="px-4 pb-4">
+          {formContent}
         </div>
       )}
     </div>
