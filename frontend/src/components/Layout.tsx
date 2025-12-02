@@ -1,6 +1,9 @@
 import { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { Activity, TrendingUp, Settings, BarChart3 } from 'lucide-react'
+import { useAccount } from '../contexts/AccountContext'
+import AccountSelector from './AccountSelector'
+import NotificationsFeed from './NotificationsFeed'
 
 interface LayoutProps {
   children: ReactNode
@@ -8,6 +11,7 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation()
+  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
 
   const navItems = [
     { path: '/', icon: BarChart3, label: 'Dashboard' },
@@ -18,10 +22,11 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white">
-      {/* Top Navigation Tabs */}
-      <nav className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-center gap-1 py-2">
+      {/* Main Content Container */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Top Navigation Tabs */}
+        <nav className="mb-6">
+          <div className="flex items-center justify-center gap-1">
             {navItems.map((item) => {
               const Icon = item.icon
               const isActive = location.pathname === item.path
@@ -41,11 +46,23 @@ export default function Layout({ children }: LayoutProps) {
               )
             })}
           </div>
-        </div>
-      </nav>
+        </nav>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Persistent Header: Notifications and Account Selector */}
+        <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="w-full sm:w-auto sm:max-w-md">
+            <AccountSelector
+              accounts={accounts}
+              selectedAccount={selectedAccount}
+              onAccountChange={setSelectedAccount}
+            />
+          </div>
+          <div className="w-full sm:w-auto">
+            <NotificationsFeed />
+          </div>
+        </div>
+
+        {/* Page Content */}
         {children}
       </main>
     </div>

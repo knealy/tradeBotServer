@@ -2,7 +2,6 @@ import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
 import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
-import AccountSelector from '../components/AccountSelector'
 import OrderTicket from '../components/OrderTicket'
 import TradingChart from '../components/TradingChart'
 import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info, Zap, Target, Play } from 'lucide-react'
@@ -11,7 +10,7 @@ import type { Position, Order } from '../types'
 import { useWidgetState } from '../hooks/useWidgetState'
 
 export default function PositionsPage() {
-  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+  const { selectedAccount } = useAccount()
   const accountId = selectedAccount?.id
   const queryClient = useQueryClient()
   
@@ -380,15 +379,6 @@ export default function PositionsPage() {
           {feedback.message}
         </div>
       )}
-
-      {/* Account Selection */}
-      <div className="max-w-md">
-        <AccountSelector
-          accounts={accounts}
-          selectedAccount={selectedAccount}
-          onAccountChange={setSelectedAccount}
-        />
-      </div>
 
       {/* Price Chart */}
       <TradingChart 

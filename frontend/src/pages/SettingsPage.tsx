@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
-import AccountSelector from '../components/AccountSelector'
 import { settingsApi } from '../services/api'
-import type { Account } from '../types'
 
 export default function SettingsPage() {
-  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+  const { accounts } = useAccount()
   const queryClient = useQueryClient()
   const [defaultAccount, setDefaultAccount] = useState<string>('auto')
   const [riskManagementEnabled, setRiskManagementEnabled] = useState(true)
@@ -75,13 +73,6 @@ export default function SettingsPage() {
     setDiscordNotificationsEnabled(!discordNotificationsEnabled)
   }
 
-  const handleAccountChange = (account: Account | null) => {
-    setSelectedAccount(account)
-    if (account) {
-      setDefaultAccount(String(account.id))
-    }
-  }
-
   if (settingsLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -97,15 +88,6 @@ export default function SettingsPage() {
           <p className="text-green-400 text-sm">{saveStatus}</p>
         </div>
       )}
-
-      {/* Account Selection */}
-      <div className="max-w-md">
-        <AccountSelector
-          accounts={accounts}
-          selectedAccount={selectedAccount}
-          onAccountChange={handleAccountChange}
-        />
-      </div>
 
       <div className="grid gap-5">
         {/* Account Settings */}

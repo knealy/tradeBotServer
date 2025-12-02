@@ -7,17 +7,15 @@ import { useWebSocket } from '../contexts/WebSocketContext'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import type { Account } from '../types'
 import AccountCard from './AccountCard'
-import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
 import PositionsOverview from './PositionsOverview'
 import PerformanceChart from './PerformanceChart'
 import TradesTable from './TradesTable'
 import RiskDrawer from './RiskDrawer'
-import NotificationsFeed from './NotificationsFeed'
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
-  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+  const { selectedAccount } = useAccount()
   const { status: socketStatus, reconnectAttempts, lastError: socketError, reconnect: reconnectSocket } = useWebSocket()
   
   // Enable live market updates for positions/orders
@@ -149,9 +147,6 @@ export default function Dashboard() {
 
   return (
     <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm">
-      {/* Notifications Feed */}
-      <NotificationsFeed />
-      
       {/* Connection Status */}
       <div className="flex items-center justify-end mb-6">
         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs ${connectionBadge.container}`}>
@@ -171,15 +166,6 @@ export default function Dashboard() {
             </button>
           )}
         </div>
-      </div>
-
-      {/* Account Selection */}
-      <div className="mb-6 max-w-md">
-        <AccountSelector
-          accounts={accounts}
-          selectedAccount={selectedAccount}
-          onAccountChange={setSelectedAccount}
-        />
       </div>
 
       {/* Main Dashboard Grid */}

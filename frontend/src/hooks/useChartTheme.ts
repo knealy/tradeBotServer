@@ -16,17 +16,17 @@ export function useChartTheme({ theme = 'dark', height = 500 }: UseChartThemeOpt
       layout: {
         background: { 
           type: ColorType.Solid, 
-          color: isDark ? '#1E293B' : '#FFFFFF' 
+          color: isDark ? '#0F172A' : '#FFFFFF' 
         },
         textColor: isDark ? '#94A3B8' : '#64748B',
       },
       grid: {
         vertLines: { 
-          color: isDark ? '#334155' : '#E2E8F0', 
+          color: 'transparent',
           style: LineStyle.Solid 
         },
         horzLines: { 
-          color: isDark ? '#334155' : '#E2E8F0', 
+          color: 'transparent',
           style: LineStyle.Solid 
         },
       },
