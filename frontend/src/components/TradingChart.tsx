@@ -145,7 +145,7 @@ export default function TradingChart({
   const priceLinesRef = useRef<IPriceLine[]>([])
   const priceLineOrderMapRef = useRef<Map<IPriceLine, Order>>(new Map()) // Map price lines to orders
   const barStoreRef = useRef<Record<string, StoredBar[]>>({})
-  const [draggingOrder, setDraggingOrder] = useState<{ order: Order; startPrice: number; startY: number } | null>(null)
+  const draggingOrderRef = useRef<{ order: Order; startPrice: number; startY: number } | null>(null)
   
   // Moving Average toggle
   const [showMAs, setShowMAs] = useState(true)
@@ -642,18 +642,25 @@ export default function TradingChart({
       }))
 
       // NEVER call fitContent after initial load - preserve user's scroll position
-      // Only restore scroll position if user has manually scrolled
-      // IMPORTANT: Don't restore if userScrollPosition is null (user hasn't scrolled yet)
+      // IMPORTANT: Only restore if user has explicitly scrolled AND we're not in the middle of a user drag
       // This prevents the chart from snapping to the right after data updates
-      if (chartRef.current && userScrollPosition) {
+      if (chartRef.current && userScrollPosition && !draggingOrderRef.current) {
         // Restore user's scroll position - don't snap back
         const timeScale = chartRef.current.timeScale()
         try {
-          // Always restore the user's saved position - they explicitly scrolled there
-          timeScale.setVisibleRange({
-            from: userScrollPosition.left as Time,
-            to: userScrollPosition.right as Time,
-          })
+          // Get current range to check if it's different
+          const currentRange = timeScale.getVisibleRange()
+          if (currentRange) {
+            const currentLeft = currentRange.from as number
+            const storedLeft = userScrollPosition.left as number
+            // Only restore if significantly different (more than 1 second) to avoid fighting with user
+            if (Math.abs(currentLeft - storedLeft) > 1) {
+              timeScale.setVisibleRange({
+                from: userScrollPosition.left as Time,
+                to: userScrollPosition.right as Time,
+              })
+            }
+          }
         } catch (error) {
           // If range is invalid, just skip (don't fitContent, don't reset)
           console.debug('[TradingChart] Could not restore scroll position:', error)
@@ -715,6 +722,7 @@ export default function TradingChart({
         }
         
         // Detect if user has manually scrolled (range changed from initial)
+        // Only mark as user-scrolled if the change is significant (more than 1 second)
         if (lastRange && (
             Math.abs(lastRange.left - currentRange.left) > 1 || 
             Math.abs(lastRange.right - currentRange.right) > 1)) {
@@ -722,6 +730,7 @@ export default function TradingChart({
         }
         
         // Only save scroll position if user has manually scrolled
+        // Always update the stored position when user scrolls to prevent snap-back
         if (hasUserScrolled) {
           setUserScrollPosition(currentRange)
         }
@@ -991,7 +1000,7 @@ export default function TradingChart({
     }
 
     const handleMouseDown = (e: MouseEvent) => {
-      if (!chart || !container || draggingOrder) return // Don't start new drag if already dragging
+      if (!chart || !container || draggingOrderRef.current) return // Don't start new drag if already dragging
 
       const rect = container.getBoundingClientRect()
       const y = e.clientY - rect.top
@@ -1010,22 +1019,24 @@ export default function TradingChart({
           },
         })
         
-        setDraggingOrder({
+        const dragState = {
           order: priceLineInfo.order,
           startPrice: priceLineInfo.price,
           startY: y,
-        })
+        }
+        draggingOrderRef.current = dragState
         container.style.cursor = 'grabbing'
         e.preventDefault()
         e.stopPropagation() // Prevent chart from handling the event
+        e.stopImmediatePropagation() // Prevent other handlers
       }
     }
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!chart || !container) return
       
-      // Use ref to get current dragging state without dependency
-      const currentDrag = draggingOrder
+      // Use ref to get current dragging state (always up-to-date)
+      const currentDrag = draggingOrderRef.current
       if (!currentDrag) {
         // Check if hovering over a price line for cursor change
         const rect = container.getBoundingClientRect()
@@ -1038,6 +1049,7 @@ export default function TradingChart({
       // Prevent chart from handling the event during order drag
       e.preventDefault()
       e.stopPropagation()
+      e.stopImmediatePropagation()
 
       const rect = container.getBoundingClientRect()
       const y = e.clientY - rect.top
@@ -1085,7 +1097,7 @@ export default function TradingChart({
     const handleMouseUp = async (e: MouseEvent) => {
       if (!container) return
 
-      const currentDrag = draggingOrder
+      const currentDrag = draggingOrderRef.current
       if (!currentDrag) return
 
       // Re-enable chart scrolling/panning
@@ -1105,7 +1117,7 @@ export default function TradingChart({
       container.style.cursor = 'default'
 
       if (!chart || !candlestickSeriesRef.current) {
-        setDraggingOrder(null)
+        draggingOrderRef.current = null
         return
       }
 
@@ -1159,24 +1171,25 @@ export default function TradingChart({
         }
       }
 
-      setDraggingOrder(null)
+      draggingOrderRef.current = null
       e.preventDefault()
       e.stopPropagation()
+      e.stopImmediatePropagation()
     }
 
-    // Add all event listeners
-    container.addEventListener('mousedown', handleMouseDown)
-    container.addEventListener('mousemove', handleMouseMove)
-    container.addEventListener('mouseup', handleMouseUp)
-    container.addEventListener('mouseleave', handleMouseUp) // Cancel drag if mouse leaves
+    // Add all event listeners - use capture phase to intercept before chart handles them
+    container.addEventListener('mousedown', handleMouseDown, true) // Capture phase
+    document.addEventListener('mousemove', handleMouseMove, true) // Capture phase - on document to catch all moves
+    document.addEventListener('mouseup', handleMouseUp, true) // Capture phase - on document to catch all releases
+    container.addEventListener('mouseleave', handleMouseUp, true) // Cancel drag if mouse leaves
 
     return () => {
-      container.removeEventListener('mousedown', handleMouseDown)
-      container.removeEventListener('mousemove', handleMouseMove)
-      container.removeEventListener('mouseup', handleMouseUp)
-      container.removeEventListener('mouseleave', handleMouseUp)
+      container.removeEventListener('mousedown', handleMouseDown, true)
+      document.removeEventListener('mousemove', handleMouseMove, true)
+      document.removeEventListener('mouseup', handleMouseUp, true)
+      container.removeEventListener('mouseleave', handleMouseUp, true)
     }
-  }, [chartInitialized, showOrders, draggingOrder])
+  }, [chartInitialized, showOrders]) // Remove draggingOrder from deps - we use ref now
 
   // WebSocket integration for live updates
   useEffect(() => {
