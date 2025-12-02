@@ -2093,19 +2093,27 @@ class AsyncWebhookServer:
             # This ensures we get data up to the current moment
             from datetime import datetime, timezone
             if not end_time:
-                end_time = datetime.now(timezone.utc)
-                logger.debug(f"Using current time as end_time for {symbol} {timeframe}: {end_time}")
+                end_time_dt = datetime.now(timezone.utc)
+                logger.debug(f"Using current time as end_time for {symbol} {timeframe}: {end_time_dt}")
             else:
-                # Parse provided end_time string
+                # Parse provided end_time string (ISO 8601 format)
                 try:
                     if isinstance(end_time, str):
-                        from dateutil import parser
-                        end_time = parser.parse(end_time)
-                        if end_time.tzinfo is None:
-                            end_time = end_time.replace(tzinfo=timezone.utc)
+                        # Try parsing ISO format: 2025-12-02T03:17:22.228Z or 2025-12-02T03:17:22.228+00:00
+                        # Remove 'Z' suffix and replace with +00:00 if present
+                        time_str = end_time.replace('Z', '+00:00')
+                        # Parse ISO format
+                        end_time_dt = datetime.fromisoformat(time_str)
+                        if end_time_dt.tzinfo is None:
+                            end_time_dt = end_time_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        end_time_dt = datetime.now(timezone.utc)
                 except Exception as e:
                     logger.warning(f"Could not parse end_time '{end_time}', using current time: {e}")
-                    end_time = datetime.now(timezone.utc)
+                    end_time_dt = datetime.now(timezone.utc)
+            
+            # Convert to string for dashboard API (it expects string or None)
+            end_time_str = end_time_dt.isoformat() if end_time else None
             
             # Ensure SignalR and bar aggregator are aware of the requested symbol/timeframe
             if symbol:
@@ -2126,7 +2134,7 @@ class AsyncWebhookServer:
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=limit,
-                end_time=end_time,
+                end_time=end_time_str,
             )
             status = 200 if 'error' not in data else 400
             return web.json_response(data, status=status)

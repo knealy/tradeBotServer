@@ -1602,12 +1602,12 @@ class DashboardAPI:
         if not symbol:
             return {"error": "Symbol is required"}
         try:
+            from datetime import datetime, timezone
             limit = max(1, min(limit, 1500))
             # Parse end_time if provided, otherwise use current time for real-time charts
             if end_time:
                 end_dt = self._parse_iso_datetime(end_time)
             else:
-                from datetime import datetime, timezone
                 end_dt = datetime.now(timezone.utc)
                 logger.debug(f"Using current time as end_time for {symbol} {timeframe}")
             
