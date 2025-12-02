@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { useQuery, useQueryClient } from 'react-query'
 import { RefreshCw } from 'lucide-react'
 import {
@@ -68,7 +68,25 @@ const calculateEMA = (prices: number[], period: number): number[] => {
 
 
 // Match TopStepX timeframes: 5s, 15s, 30s, 2m, 5m, 15m, 30m, 1h
-const TIMEFRAME_OPTIONS = ['5s', '15s', '30s', '2m', '5m', '15m', '30m', '1h']
+const TIMEFRAME_OPTIONS = ['5s', '15s', '30s', '1m', '2m', '5m', '15m', '30m', '1h']
+
+// Validate timeframe string (supports seconds, minutes, hours)
+const isValidTimeframe = (tf: string): boolean => {
+  const trimmed = tf.trim().toLowerCase()
+  if (trimmed.endsWith('s')) {
+    const seconds = parseInt(trimmed.slice(0, -1))
+    return !isNaN(seconds) && seconds > 0 && seconds <= 60
+  }
+  if (trimmed.endsWith('m')) {
+    const minutes = parseInt(trimmed.slice(0, -1))
+    return !isNaN(minutes) && minutes > 0 && minutes <= 60
+  }
+  if (trimmed.endsWith('h')) {
+    const hours = parseInt(trimmed.slice(0, -1))
+    return !isNaN(hours) && hours > 0 && hours <= 24
+  }
+  return false
+}
 
 // Moving Average Configuration (TopStepX style: 4 MAs)
 const MA_CONFIGS = [
@@ -106,11 +124,15 @@ export default function TradingChart({
 }: TradingChartProps) {
   const [symbol, setSymbol] = useState(propSymbol || 'MNQ')
   const [timeframe, setTimeframe] = useState('5m')
+  const [customTimeframe, setCustomTimeframe] = useState('')
   const [barLimit, setBarLimit] = useState(300)
+  const [customBarLimit, setCustomBarLimit] = useState('')
   const [showPositions, setShowPositions] = useState(propShowPositions)
   const [showOrders, setShowOrders] = useState(propShowOrders)
   const [chartInitialized, setChartInitialized] = useState(false)
   const [hoveredBar, setHoveredBar] = useState<HistoricalBar | null>(null)
+  const [nextBarTime, setNextBarTime] = useState<number | null>(null)
+  const [userScrollPosition, setUserScrollPosition] = useState<{ left: number; right: number } | null>(null)
   const queryClient = useQueryClient()
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -193,10 +215,60 @@ export default function TradingChart({
     // when quotes arrive. This subscription just ensures the specific timeframe is tracked.
   }, [chartInitialized, symbol, timeframe])
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
+    // Preserve scroll position before refresh
+    if (chartRef.current) {
+      const visibleRange = chartRef.current.timeScale().getVisibleRange()
+      if (visibleRange) {
+        setUserScrollPosition({
+          left: visibleRange.from as number,
+          right: visibleRange.to as number,
+        })
+      }
+    }
     queryClient.invalidateQueries(['tradingChartData', symbol, timeframe, barLimit])
     refetch()
-  }
+  }, [symbol, timeframe, barLimit, queryClient, refetch])
+
+  const handleTimeframeChange = useCallback((newTimeframe: string) => {
+    setTimeframe(newTimeframe)
+    setCustomTimeframe('')
+    setUserScrollPosition(null) // Reset scroll on timeframe change
+  }, [])
+
+  const handleCustomTimeframe = useCallback((value: string) => {
+    setCustomTimeframe(value)
+    if (isValidTimeframe(value)) {
+      setTimeframe(value.trim().toLowerCase())
+      setUserScrollPosition(null) // Reset scroll on timeframe change
+    }
+  }, [])
+
+  const handleBarLimitChange = useCallback((newLimit: number) => {
+    setBarLimit(newLimit)
+    setCustomBarLimit('')
+    setUserScrollPosition(null) // Reset scroll on bar limit change
+  }, [])
+
+  const handleCustomBarLimit = useCallback((value: string) => {
+    setCustomBarLimit(value)
+    const num = parseInt(value)
+    if (!isNaN(num) && num >= 100 && num <= 3000) {
+      setBarLimit(num)
+      setUserScrollPosition(null) // Reset scroll on bar limit change
+    }
+  }, [])
+
+  // Format stopclock time
+  const formatStopclock = useMemo(() => {
+    if (!nextBarTime) return null
+    const now = Date.now()
+    const diff = Math.max(0, nextBarTime - now)
+    const seconds = Math.floor(diff / 1000)
+    const minutes = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${minutes}:${secs.toString().padStart(2, '0')}`
+  }, [nextBarTime])
 
   // Initialize chart
   useLayoutEffect(() => {
@@ -293,6 +365,15 @@ export default function TradingChart({
         localization: {
           timeFormatter: (time: Time) => formatTimeET(time), // Crosshair label always shows date
         },
+        // Enable price axis zooming with mouse wheel
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+        },
+        handleScale: {
+          axisPressedMouseMove: true,
+          axisDoubleClickReset: true,
+        },
       })
 
       chart = newChart
@@ -324,9 +405,9 @@ export default function TradingChart({
         const maLine = newChart.addSeries(LineSeries, {
           color: config.color,
           lineWidth: 1,
-          title: config.label,
           priceLineVisible: false,
           lastValueVisible: false, // Hide MA values from price scale
+          // Remove title to hide labels on right side
         })
         maSeries.push(maLine)
       })
@@ -337,14 +418,6 @@ export default function TradingChart({
       maSeriesRefs.current = maSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
       setChartInitialized(true)
-      console.log('[TradingChart] Chart initialized successfully', {
-        width: initialWidth,
-        height,
-        symbol,
-        timeframe,
-        hasCandlestickSeries: !!candlestickSeriesRef.current,
-        hasVolumeSeries: !!volumeSeriesRef.current,
-      })
 
       resizeObserver = new ResizeObserver((entries) => {
         if (!entries.length || !chartRef.current) return
@@ -383,30 +456,9 @@ export default function TradingChart({
 
   // Memoize chart data to prevent unnecessary recalculations
   const chartData = useMemo(() => {
-    console.log('[TradingChart] chartData useMemo triggered:', {
-      hasData: !!data,
-      dataType: typeof data,
-      hasBars: !!data?.bars,
-      barCount: data?.bars?.length || 0,
-      dataKeys: data ? Object.keys(data) : [],
-      isLoading,
-      error: error?.message,
-    })
-    
     if (!data?.bars || data.bars.length === 0) {
-      console.log('[TradingChart] No data or empty bars array:', { 
-        hasData: !!data, 
-        barCount: data?.bars?.length || 0,
-        dataStructure: data ? JSON.stringify(data).substring(0, 200) : 'null'
-      })
       return null
     }
-
-    console.log('[TradingChart] Processing chart data:', { 
-      barCount: data.bars.length,
-      firstBar: data.bars[0],
-      lastBar: data.bars[data.bars.length - 1]
-    })
 
     const volumeColors = getVolumeColors('dark')
     const sorted = [...data.bars]
@@ -422,12 +474,6 @@ export default function TradingChart({
         }
       })
       .sort((a, b) => (a.time as number) - (b.time as number))
-    
-    console.log('[TradingChart] Sorted chart data:', {
-      count: sorted.length,
-      firstTime: sorted[0]?.time,
-      lastTime: sorted[sorted.length - 1]?.time,
-    })
 
     let lastTime: number | null = null
     const candlestickData: CandlestickData<Time>[] = []
@@ -465,14 +511,7 @@ export default function TradingChart({
       lastTime = t
     }
 
-    const result = { candlestickData, volumeData }
-    console.log('[TradingChart] Chart data processed:', {
-      candlestickCount: candlestickData.length,
-      volumeCount: volumeData.length,
-      firstCandle: candlestickData[0],
-      lastCandle: candlestickData[candlestickData.length - 1],
-    })
-    return result
+    return { candlestickData, volumeData }
   }, [data])
 
   // Calculate Moving Averages from chart data
@@ -511,36 +550,20 @@ export default function TradingChart({
   }, [data, chartInitialized, hoveredBar])
 
   // Update chart data when data changes (including timeframe/barLimit changes)
+  // Use debouncing for smoother updates
   useEffect(() => {
-    console.log('[TradingChart] Chart update effect triggered:', {
-      chartInitialized,
-      hasChartData: !!chartData,
-      chartDataLength: chartData?.candlestickData?.length || 0,
-      hasCandlestickSeries: !!candlestickSeriesRef.current,
-      hasVolumeSeries: !!volumeSeriesRef.current,
-      symbol,
-      timeframe,
-    })
-    
     if (!chartInitialized) {
-      console.log('[TradingChart] Chart not initialized yet, skipping update')
       return
     }
     if (!chartData || !candlestickSeriesRef.current || !volumeSeriesRef.current) {
-      console.log('[TradingChart] Missing requirements for chart update:', {
-        hasChartData: !!chartData,
-        hasCandlestickSeries: !!candlestickSeriesRef.current,
-        hasVolumeSeries: !!volumeSeriesRef.current,
-      })
       return
     }
 
-    console.log('[TradingChart] Updating chart data', { 
-      barCount: chartData.candlestickData.length, 
-      symbol, 
-      timeframe, 
-      barLimit 
-    })
+    // Debounce chart updates for smoother performance
+    const timeoutId = setTimeout(() => {
+      if (!candlestickSeriesRef.current || !volumeSeriesRef.current) {
+        return
+      }
 
     try {
       candlestickSeriesRef.current.setData(chartData.candlestickData)
@@ -570,14 +593,94 @@ export default function TradingChart({
         volume: chartData.volumeData[idx]?.value ?? 0,
       }))
 
+      // Only fit content on initial load, preserve user scroll position on refresh
       if (chartRef.current) {
-        chartRef.current.timeScale().fitContent()
+        if (userScrollPosition) {
+          // Restore user's scroll position
+          const timeScale = chartRef.current.timeScale()
+          timeScale.setVisibleRange({
+            from: userScrollPosition.left as Time,
+            to: userScrollPosition.right as Time,
+          })
+        } else {
+          // Initial load - fit content
+          chartRef.current.timeScale().fitContent()
+        }
       }
-      console.log('[TradingChart] Chart data updated successfully')
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
-  }, [chartData, chartInitialized, symbol, timeframe, barLimit, showMAs, maData])
+    }, 50) // 50ms debounce for smoother updates
+
+    return () => clearTimeout(timeoutId)
+  }, [chartData, chartInitialized, symbol, timeframe, barLimit, showMAs, maData, userScrollPosition])
+
+  // Calculate next bar time for stopclock
+  useEffect(() => {
+    if (!data?.bars || data.bars.length === 0 || !timeframe) {
+      setNextBarTime(null)
+      return
+    }
+
+    const calculateNextBarTime = () => {
+      const lastBar = data.bars[data.bars.length - 1]
+      const lastBarTime = new Date(lastBar.timestamp).getTime()
+      
+      // Parse timeframe to get interval in milliseconds
+      const tf = timeframe.toLowerCase().trim()
+      let intervalMs = 0
+      
+      if (tf.endsWith('s')) {
+        intervalMs = parseInt(tf.slice(0, -1)) * 1000
+      } else if (tf.endsWith('m')) {
+        intervalMs = parseInt(tf.slice(0, -1)) * 60 * 1000
+      } else if (tf.endsWith('h')) {
+        intervalMs = parseInt(tf.slice(0, -1)) * 60 * 60 * 1000
+      }
+      
+      if (intervalMs > 0) {
+        // Calculate the start of the current bar period
+        const barStart = Math.floor(lastBarTime / intervalMs) * intervalMs
+        // Next bar starts at the next interval
+        const nextBar = barStart + intervalMs
+        setNextBarTime(nextBar)
+      }
+    }
+
+    calculateNextBarTime()
+    const interval = setInterval(calculateNextBarTime, 1000) // Update every second
+    return () => clearInterval(interval)
+  }, [data, timeframe])
+
+  // Track user scroll position using polling (lightweight-charts doesn't have direct subscription)
+  useEffect(() => {
+    if (!chartRef.current || !chartInitialized) return
+
+    const chart = chartRef.current
+    const timeScale = chart.timeScale()
+    let lastRange: { left: number; right: number } | null = null
+
+    const pollVisibleRange = () => {
+      const visibleRange = timeScale.getVisibleRange()
+      if (visibleRange) {
+        const currentRange = {
+          left: visibleRange.from as number,
+          right: visibleRange.to as number,
+        }
+        // Only update if range actually changed
+        if (!lastRange || 
+            lastRange.left !== currentRange.left || 
+            lastRange.right !== currentRange.right) {
+          setUserScrollPosition(currentRange)
+          lastRange = currentRange
+        }
+      }
+    }
+
+    // Poll every 500ms to track scroll position
+    const interval = setInterval(pollVisibleRange, 500)
+    return () => clearInterval(interval)
+  }, [chartInitialized])
 
   // Update timeScale formatter when timeframe changes (without recreating chart)
   useEffect(() => {
@@ -691,12 +794,6 @@ export default function TradingChart({
       // This allows showing positions even without historical timestamp
       return matchesSymbol
     })
-    console.log('[TradingChart] Filtered positions', { 
-      total: positions.length, 
-      filtered: filtered.length,
-      symbol,
-      positions: filtered.map(p => ({ symbol: p.symbol, timestamp: p.timestamp }))
-    })
     return filtered
   }, [positions, symbol])
 
@@ -711,10 +808,6 @@ export default function TradingChart({
       if (!timestamp) {
         // If no timestamp, use current time (position is active now)
         timestamp = new Date().toISOString()
-        console.log('[TradingChart] Position missing timestamp, using current time', { 
-          symbol: pos.symbol, 
-          side: pos.side 
-        })
       }
       const time = toUnixTimestamp(timestamp)
 
@@ -733,10 +826,6 @@ export default function TradingChart({
   useEffect(() => {
     if (!chartInitialized || !markersPluginRef.current) return
 
-    console.log('[TradingChart] Updating position markers', { 
-      markerCount: positionMarkers.length,
-      symbol 
-    })
 
     markersPluginRef.current.setMarkers(positionMarkers)
   }, [positionMarkers, chartInitialized, symbol])
@@ -897,6 +986,8 @@ export default function TradingChart({
     { value: 300, label: '300' },
     { value: 500, label: '500' },
     { value: 1000, label: '1000' },
+    { value: 2000, label: '2000' },
+    { value: 3000, label: '3000' },
   ]
 
   return (
@@ -924,13 +1015,13 @@ export default function TradingChart({
               placeholder="Symbol"
               maxLength={10}
             />
-            <div className="flex gap-1">
+            <div className="flex gap-1 items-center">
               {TIMEFRAME_OPTIONS.map((option) => (
                 <button
                   key={option}
-                  onClick={() => setTimeframe(option)}
+                  onClick={() => handleTimeframeChange(option)}
                   className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
-                    timeframe === option
+                    timeframe === option && !customTimeframe
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                   }`}
@@ -938,6 +1029,20 @@ export default function TradingChart({
                   {option.toUpperCase()}
                 </button>
               ))}
+              <input
+                type="text"
+                value={customTimeframe}
+                onChange={(e) => handleCustomTimeframe(e.target.value)}
+                placeholder="Custom (e.g., 10s, 3m)"
+                className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors w-24 ${
+                  customTimeframe && isValidTimeframe(customTimeframe)
+                    ? 'bg-blue-600 text-white border-2 border-blue-400'
+                    : customTimeframe
+                    ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
+                }`}
+                title="Enter custom timeframe (e.g., 10s, 3m, 2h)"
+              />
             </div>
           </div>
         </div>
@@ -945,13 +1050,13 @@ export default function TradingChart({
         {/* Bar limit controls */}
         <div className="flex items-center gap-3 text-sm flex-wrap">
           <span className="text-slate-400">Bars:</span>
-          <div className="flex gap-1">
+          <div className="flex gap-1 items-center">
             {BAR_LIMITS.map((limit) => (
               <button
                 key={limit.value}
-                onClick={() => setBarLimit(limit.value)}
+                onClick={() => handleBarLimitChange(limit.value)}
                 className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
-                  barLimit === limit.value
+                  barLimit === limit.value && !customBarLimit
                     ? 'bg-green-600 text-white'
                     : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                 }`}
@@ -959,6 +1064,22 @@ export default function TradingChart({
                 {limit.label}
               </button>
             ))}
+            <input
+              type="number"
+              value={customBarLimit}
+              onChange={(e) => handleCustomBarLimit(e.target.value)}
+              placeholder="100-3000"
+              min={100}
+              max={3000}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors w-20 ${
+                customBarLimit && parseInt(customBarLimit) >= 100 && parseInt(customBarLimit) <= 3000
+                  ? 'bg-green-600 text-white border-2 border-green-400'
+                  : customBarLimit
+                  ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
+              }`}
+              title="Enter custom bar count (100-3000)"
+            />
           </div>
 
           {/* Toggle switches */}
@@ -1032,6 +1153,16 @@ export default function TradingChart({
           <div className="absolute top-2 right-2 z-10 flex items-center gap-2 bg-slate-900/90 backdrop-blur-sm rounded px-2 py-1 border border-slate-700">
             <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" title="Live data" />
             <span className="text-xs text-slate-400">LIVE</span>
+          </div>
+        )}
+
+        {/* Next Bar Stopclock - Bottom Right */}
+        {formatStopclock && chartInitialized && (
+          <div className="absolute bottom-2 right-2 z-10 bg-slate-900/90 backdrop-blur-sm rounded px-3 py-2 border border-slate-700">
+            <div className="flex flex-col items-end">
+              <span className="text-xs text-slate-500">Next Bar</span>
+              <span className="text-lg font-mono font-bold text-blue-400">{formatStopclock}</span>
+            </div>
           </div>
         )}
 
