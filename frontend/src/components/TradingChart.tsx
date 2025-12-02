@@ -129,18 +129,21 @@ export default function TradingChart({
   const chartTheme = useChartTheme({ theme: 'dark', height })
 
   // Fetch historical data - refresh periodically to get latest bars
+  // Include timestamp in query key to prevent stale cache usage
+  const currentTime = new Date().toISOString()
   const { data, isLoading, refetch, isRefetching } = useQuery<HistoricalDataResponse>(
-    ['tradingChartData', symbol, timeframe, barLimit],
+    ['tradingChartData', symbol, timeframe, barLimit, currentTime],
     () =>
       analyticsApi.getHistoricalData({
         symbol,
         timeframe,
         limit: barLimit,
-        end: new Date().toISOString(), // Always use current time for latest data
+        end: currentTime, // Always use current time for latest data
       }),
     {
       enabled: Boolean(symbol),
-      staleTime: 30_000,
+      staleTime: 0, // Always consider data stale to force fresh fetches
+      cacheTime: 0, // Don't cache in React Query - always fetch fresh
       refetchInterval: 60_000, // Refresh every 60 seconds to get latest historical bars
       // Real-time updates via WebSocket handle live bar updates, but we still need
       // periodic refresh to catch any missed bars or new completed bars

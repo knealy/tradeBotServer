@@ -6151,6 +6151,16 @@ class TopStepXTradingBot:
                 use_fresh_data = True
                 logger.info("Date range mode detected - bypassing cache")
             
+            # If end_time is provided and is recent (within last 24 hours), bypass cache to get fresh data
+            # This ensures charts always show up-to-date data when requesting current time
+            if end_time is not None:
+                from datetime import timedelta
+                time_since_end = (datetime.now(timezone.utc) - end_time).total_seconds()
+                # If end_time is within last 24 hours, bypass cache to ensure fresh data
+                if time_since_end < 86400:  # 24 hours in seconds
+                    use_fresh_data = True
+                    logger.info(f"Recent end_time requested (within 24h) - bypassing cache to get fresh data")
+            
             # PHASE 1: Check PostgreSQL database cache first (persistent, fast)
             if not use_fresh_data and self.db:
                 try:
@@ -6167,11 +6177,47 @@ class TopStepXTradingBot:
                                                              limit=limit * 2)  # Get extra for filtering
                         
                         if cached_bars and len(cached_bars) >= limit:
-                            logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
-                            # Record cache hit in metrics
-                            metrics_tracker = get_metrics_tracker(db=self.db)
-                            metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                            return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                            # Verify cached bars actually cover the requested end_time
+                            # If end_time is provided, check if newest cached bar is close enough
+                            if end_time is not None and cached_bars:
+                                newest_bar = cached_bars[-1]
+                                newest_timestamp_str = newest_bar.get('timestamp') or newest_bar.get('time')
+                                
+                                try:
+                                    if isinstance(newest_timestamp_str, str):
+                                        # Parse ISO format timestamp
+                                        ts_str = newest_timestamp_str.replace('Z', '+00:00')
+                                        newest_dt = datetime.fromisoformat(ts_str)
+                                    elif isinstance(newest_timestamp_str, datetime):
+                                        newest_dt = newest_timestamp_str
+                                    else:
+                                        raise ValueError(f"Invalid timestamp type: {type(newest_timestamp_str)}")
+                                    
+                                    if newest_dt.tzinfo is None:
+                                        newest_dt = newest_dt.replace(tzinfo=timezone.utc)
+                                    
+                                    # Check if cached data is too old compared to requested end_time
+                                    time_gap = (end_time - newest_dt).total_seconds()
+                                    if time_gap > 3600:  # More than 1 hour gap
+                                        logger.warning(f"⚠️  Cached data too old: newest={newest_dt}, requested={end_time}, gap={time_gap/3600:.1f}h - bypassing cache")
+                                        use_fresh_data = True
+                                    else:
+                                        logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe} (newest: {newest_dt})")
+                                        metrics_tracker = get_metrics_tracker(db=self.db)
+                                        metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                        return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                                except Exception as parse_err:
+                                    logger.debug(f"Could not parse cached bar timestamp, using cache anyway: {parse_err}")
+                                    logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
+                                    metrics_tracker = get_metrics_tracker(db=self.db)
+                                    metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                    return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                            else:
+                                # No end_time specified or no cached bars, use cache
+                                logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
+                                metrics_tracker = get_metrics_tracker(db=self.db)
+                                metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
                         else:
                             logger.debug(f"📉 DB Cache PARTIAL: Only {len(cached_bars) if cached_bars else 0} bars "
                                        f"(need {limit}), will fetch from API")
