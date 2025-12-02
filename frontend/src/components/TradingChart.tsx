@@ -155,6 +155,8 @@ export default function TradingChart({
           symbol,
           timeframe,
           barCount: response?.bars?.length || 0,
+          firstBar: response?.bars?.[0],
+          lastBar: response?.bars?.[response?.bars?.length - 1],
         })
         // Check if response has error property (API might return error in response)
         if (response && typeof response === 'object' && 'error' in response) {
@@ -332,6 +334,14 @@ export default function TradingChart({
       maSeriesRefs.current = maSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
       setChartInitialized(true)
+      console.log('[TradingChart] Chart initialized successfully', {
+        width: initialWidth,
+        height,
+        symbol,
+        timeframe,
+        hasCandlestickSeries: !!candlestickSeriesRef.current,
+        hasVolumeSeries: !!volumeSeriesRef.current,
+      })
 
       resizeObserver = new ResizeObserver((entries) => {
         if (!entries.length || !chartRef.current) return
@@ -370,19 +380,37 @@ export default function TradingChart({
 
   // Memoize chart data to prevent unnecessary recalculations
   const chartData = useMemo(() => {
-    if (!data?.bars || data.bars.length === 0) return null
+    if (!data?.bars || data.bars.length === 0) {
+      console.log('[TradingChart] No data or empty bars array:', { hasData: !!data, barCount: data?.bars?.length || 0 })
+      return null
+    }
+
+    console.log('[TradingChart] Processing chart data:', { 
+      barCount: data.bars.length,
+      firstBar: data.bars[0],
+      lastBar: data.bars[data.bars.length - 1]
+    })
 
     const volumeColors = getVolumeColors('dark')
     const sorted = [...data.bars]
-      .map((bar: HistoricalBar) => ({
-        time: toUnixTimestamp(bar.timestamp),
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        volume: bar.volume,
-      }))
+      .map((bar: HistoricalBar) => {
+        const timestamp = toUnixTimestamp(bar.timestamp)
+        return {
+          time: timestamp,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        }
+      })
       .sort((a, b) => (a.time as number) - (b.time as number))
+    
+    console.log('[TradingChart] Sorted chart data:', {
+      count: sorted.length,
+      firstTime: sorted[0]?.time,
+      lastTime: sorted[sorted.length - 1]?.time,
+    })
 
     let lastTime: number | null = null
     const candlestickData: CandlestickData<Time>[] = []
@@ -420,7 +448,14 @@ export default function TradingChart({
       lastTime = t
     }
 
-    return { candlestickData, volumeData }
+    const result = { candlestickData, volumeData }
+    console.log('[TradingChart] Chart data processed:', {
+      candlestickCount: candlestickData.length,
+      volumeCount: volumeData.length,
+      firstCandle: candlestickData[0],
+      lastCandle: candlestickData[candlestickData.length - 1],
+    })
+    return result
   }, [data])
 
   // Calculate Moving Averages from chart data
@@ -460,10 +495,26 @@ export default function TradingChart({
 
   // Update chart data when data changes (including timeframe/barLimit changes)
   useEffect(() => {
+    console.log('[TradingChart] Chart update effect triggered:', {
+      chartInitialized,
+      hasChartData: !!chartData,
+      chartDataLength: chartData?.candlestickData?.length || 0,
+      hasCandlestickSeries: !!candlestickSeriesRef.current,
+      hasVolumeSeries: !!volumeSeriesRef.current,
+      symbol,
+      timeframe,
+    })
+    
     if (!chartInitialized) {
+      console.log('[TradingChart] Chart not initialized yet, skipping update')
       return
     }
     if (!chartData || !candlestickSeriesRef.current || !volumeSeriesRef.current) {
+      console.log('[TradingChart] Missing requirements for chart update:', {
+        hasChartData: !!chartData,
+        hasCandlestickSeries: !!candlestickSeriesRef.current,
+        hasVolumeSeries: !!volumeSeriesRef.current,
+      })
       return
     }
 
