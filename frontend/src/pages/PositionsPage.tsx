@@ -368,14 +368,7 @@ export default function PositionsPage() {
   const isLoading = positionsLoading || ordersLoading
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Positions & Orders</h1>
-          <p className="text-slate-400 mt-2">Monitor and manage your open positions and orders</p>
-        </div>
-      </div>
-
+    <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
       {feedback && (
         <div
           className={`rounded-lg border px-4 py-2 text-sm ${
@@ -411,7 +404,7 @@ export default function PositionsPage() {
       <OrderTicket />
 
       {/* Automation Tools */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+      <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
         <button
           type="button"
           onClick={() => setAutomationToolsOpen((prev) => !prev)}
@@ -449,7 +442,7 @@ export default function PositionsPage() {
       </div>
 
       {/* Open Positions */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+      <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
         <button
           type="button"
           onClick={() => setPositionsOpen((prev) => !prev)}
@@ -746,7 +739,7 @@ export default function PositionsPage() {
       </div>
 
       {/* Open Orders */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+      <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
         <button
           type="button"
           onClick={() => setOrdersOpen((prev) => !prev)}

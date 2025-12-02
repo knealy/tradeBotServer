@@ -641,33 +641,9 @@ export default function TradingChart({
         volume: chartData.volumeData[idx]?.value ?? 0,
       }))
 
-      // NEVER call fitContent after initial load - preserve user's scroll position
-      // IMPORTANT: Only restore if user has explicitly scrolled AND we're not in the middle of a user drag
-      // This prevents the chart from snapping to the right after data updates
-      if (chartRef.current && userScrollPosition && !draggingOrderRef.current) {
-        // Restore user's scroll position - don't snap back
-        const timeScale = chartRef.current.timeScale()
-        try {
-          // Get current range to check if it's different
-          const currentRange = timeScale.getVisibleRange()
-          if (currentRange) {
-            const currentLeft = currentRange.from as number
-            const storedLeft = userScrollPosition.left as number
-            // Only restore if significantly different (more than 1 second) to avoid fighting with user
-            if (Math.abs(currentLeft - storedLeft) > 1) {
-              timeScale.setVisibleRange({
-                from: userScrollPosition.left as Time,
-                to: userScrollPosition.right as Time,
-              })
-            }
-          }
-        } catch (error) {
-          // If range is invalid, just skip (don't fitContent, don't reset)
-          console.debug('[TradingChart] Could not restore scroll position:', error)
-        }
-      }
-      // Note: fitContent is only called once during chart initialization, never on updates
-      // If userScrollPosition is null, we don't restore anything - let the chart stay where it is
+      // NOTE: We intentionally do NOT modify the visible time range here.
+      // Lightweight-charts already stops auto-scrolling after the user scrolls left.
+      // Removing our manual setVisibleRange prevents snap-back to the right on updates.
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
@@ -964,7 +940,7 @@ export default function TradingChart({
     if (!container) return
 
     const candlestickSeries = candlestickSeriesRef.current
-    const PRICE_LINE_TOLERANCE_PX = 5 // Pixel tolerance for detecting price line hover
+    const PRICE_LINE_TOLERANCE_PX = 12 // Pixel tolerance for detecting price line hover
 
     const findPriceLineAtY = (y: number): { line: IPriceLine; order: Order; price: number } | null => {
       if (!chart) return null

@@ -1,5 +1,5 @@
 import { Account } from '../types'
-import { DollarSign, TrendingUp, TrendingDown } from 'lucide-react'
+import { TrendingUp, TrendingDown } from 'lucide-react'
 
 interface AccountCardProps {
   account: Account
@@ -14,46 +14,43 @@ export default function AccountCard({ account, isSelected, onSelect }: AccountCa
 
   return (
     <div
-      className={`p-6 rounded-lg border-2 transition-all cursor-pointer ${
+      className={`p-5 rounded-xl border transition-all cursor-pointer backdrop-blur-sm ${
         isSelected
-          ? 'bg-slate-800 border-primary-500 shadow-lg shadow-primary-500/20'
-          : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
+          ? 'bg-slate-800/60 border-slate-700/50 shadow-lg'
+          : 'bg-slate-800/40 border-slate-700/30 hover:border-slate-600/50 hover:bg-slate-800/50'
       }`}
       onClick={onSelect}
     >
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <h3 className="text-lg font-semibold">{account.name}</h3>
-          <p className="text-sm text-slate-400">{account.account_type}</p>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-base font-semibold text-slate-100 truncate">{account.name}</h3>
+          <p className="text-xs text-slate-500 mt-0.5">{account.account_type}</p>
         </div>
-        <div className={`px-2 py-1 rounded text-xs font-medium ${
+        <div className={`ml-3 px-2.5 py-1 rounded-md text-xs font-medium shrink-0 ${
           account.status === 'active' 
-            ? 'bg-green-500/20 text-green-400' 
-            : 'bg-slate-700 text-slate-400'
+            ? 'bg-green-500/15 text-green-400 border border-green-500/20' 
+            : 'bg-slate-700/50 text-slate-400 border border-slate-600/30'
         }`}>
           {account.status}
         </div>
       </div>
 
       <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <DollarSign className="w-5 h-5 text-slate-400" />
-          <div>
-            <p className="text-sm text-slate-400">Balance</p>
-            <p className="text-2xl font-bold">
-              {account.currency} {account.balance.toLocaleString('en-US', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}
-            </p>
-          </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-1">Balance</p>
+          <p className="text-2xl font-bold text-slate-100 tracking-tight">
+            {account.currency} {account.balance.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </p>
         </div>
 
         {pnl !== 0 && (
-          <div className={`flex items-center gap-2 ${pnlColor}`}>
-            <PnlIcon className="w-4 h-4" />
-            <div>
-              <p className="text-sm">P&L</p>
+          <div className={`flex items-center gap-2 pt-2 border-t border-slate-700/50 ${pnlColor}`}>
+            <PnlIcon className="w-4 h-4 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-xs text-slate-500">Daily P&L</p>
               <p className="text-lg font-semibold">
                 {pnl >= 0 ? '+' : ''}
                 {account.currency} {Math.abs(pnl).toLocaleString('en-US', {

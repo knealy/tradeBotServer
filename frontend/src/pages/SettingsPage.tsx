@@ -91,18 +91,12 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Settings</h1>
-          <p className="text-slate-400 mt-2">Configure your trading bot</p>
+    <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
+      {saveStatus && (
+        <div className="bg-green-500/20 border border-green-500/30 rounded-lg px-4 py-2">
+          <p className="text-green-400 text-sm">{saveStatus}</p>
         </div>
-        {saveStatus && (
-          <div className="bg-green-500/20 border border-green-500/30 rounded-lg px-4 py-2">
-            <p className="text-green-400 text-sm">{saveStatus}</p>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Account Selection */}
       <div className="max-w-md">
@@ -113,10 +107,9 @@ export default function SettingsPage() {
         />
       </div>
 
-      <div className="grid gap-6">
+      <div className="grid gap-5">
         {/* Account Settings */}
-        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-          <h2 className="text-xl font-semibold mb-4">Account Settings</h2>
+        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-2">
@@ -142,8 +135,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Trading Settings */}
-        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-          <h2 className="text-xl font-semibold mb-4">Trading Settings</h2>
+        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
           <div className="space-y-4">
             <div className="flex items-center justify-between py-3 border-b border-slate-700">
               <div>
@@ -181,8 +173,7 @@ export default function SettingsPage() {
         </div>
 
         {/* System Settings */}
-        <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-          <h2 className="text-xl font-semibold mb-4">System Settings</h2>
+        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-2">

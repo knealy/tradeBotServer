@@ -46,15 +46,14 @@ export default function PositionsOverview() {
 
   if (positions.length === 0) {
     return (
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 className="text-xl font-semibold mb-4">Open Positions</h2>
+      <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
         <p className="text-slate-400">No open positions</p>
       </div>
     )
   }
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-sm">
+    <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}

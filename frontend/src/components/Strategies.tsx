@@ -256,12 +256,7 @@ export default function Strategies() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold mb-2">Strategies</h1>
-        <p className="text-slate-400">Manage your trading strategies</p>
-      </div>
-
+    <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
       {errorMessage && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -290,7 +285,7 @@ export default function Strategies() {
           strategies.map((strategy) => (
             <div
               key={strategy.name}
-              className="bg-slate-800 rounded-lg p-6 border border-slate-700 hover:border-slate-600 transition-colors"
+              className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50 hover:border-slate-600/50 transition-colors"
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1">

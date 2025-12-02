@@ -6,7 +6,6 @@ import { useAccount } from '../contexts/AccountContext'
 import { useWebSocket } from '../contexts/WebSocketContext'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import type { Account } from '../types'
-import { Link } from 'react-router-dom'
 import AccountCard from './AccountCard'
 import AccountSelector from './AccountSelector'
 import MetricsCard from './MetricsCard'
@@ -15,7 +14,6 @@ import PerformanceChart from './PerformanceChart'
 import TradesTable from './TradesTable'
 import RiskDrawer from './RiskDrawer'
 import NotificationsFeed from './NotificationsFeed'
-import { Activity, ExternalLink } from 'lucide-react'
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
@@ -150,41 +148,33 @@ export default function Dashboard() {
   const showRetryButton = socketStatus === 'error' || socketStatus === 'disconnected'
 
   return (
-    <div className="space-y-6">
+    <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm">
       {/* Notifications Feed */}
       <NotificationsFeed />
       
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <p className="text-slate-400 mt-1">Real-time trading overview</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className={`flex items-center gap-3 px-4 py-2 rounded-lg ${connectionBadge.container}`}>
-            <div className={`w-2 h-2 rounded-full ${connectionBadge.dot}`} />
-            <div className="flex flex-col">
-              <span className="text-sm font-medium">{connectionBadge.label}</span>
-              {socketError && (
-                <span className="text-xs text-red-200 truncate max-w-[200px]">
-                  {socketError}
-                </span>
-              )}
-            </div>
-            {showRetryButton && (
-              <button
-                onClick={reconnectSocket}
-                className="ml-2 text-xs font-semibold text-primary-300 underline"
-              >
-                Retry
-              </button>
-            )}
-          </div>
+      {/* Connection Status */}
+      <div className="flex items-center justify-end mb-6">
+        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs ${connectionBadge.container}`}>
+          <div className={`w-1.5 h-1.5 rounded-full ${connectionBadge.dot}`} />
+          <span className="font-medium">{connectionBadge.label}</span>
+          {socketError && (
+            <span className="text-xs truncate max-w-[150px]">
+              {socketError}
+            </span>
+          )}
+          {showRetryButton && (
+            <button
+              onClick={reconnectSocket}
+              className="ml-2 text-xs font-semibold underline"
+            >
+              Retry
+            </button>
+          )}
         </div>
       </div>
 
       {/* Account Selection */}
-      <div className="max-w-md">
+      <div className="mb-6 max-w-md">
         <AccountSelector
           accounts={accounts}
           selectedAccount={selectedAccount}
@@ -192,29 +182,10 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Quick Actions */}
-      <div className="flex gap-3">
-        <Link
-          to="/strategies"
-          className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors text-sm font-medium"
-        >
-          <Activity className="w-4 h-4" />
-          Manage Strategies
-          <ExternalLink className="w-3 h-3" />
-        </Link>
-        <Link
-          to="/positions"
-          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-sm font-medium"
-        >
-          View All Positions & Orders
-          <ExternalLink className="w-3 h-3" />
-        </Link>
-      </div>
-
       {/* Main Dashboard Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Left Column - Account Info & Charts */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-5">
           {accountInfo && (
             <AccountCard account={accountInfo} isSelected={true} />
           )}
@@ -223,7 +194,7 @@ export default function Dashboard() {
         </div>
 
         {/* Right Column - Metrics and Trades */}
-        <div className="space-y-6">
+        <div className="space-y-5">
           <RiskDrawer />
           {metrics && <MetricsCard metrics={metrics} />}
           <TradesTable />
