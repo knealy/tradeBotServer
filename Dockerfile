@@ -16,7 +16,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Build frontend first
-COPY frontend/package*.json ./frontend/
+# Copy package files explicitly to ensure package-lock.json is included
+COPY frontend/package.json ./frontend/
+COPY frontend/package-lock.json ./frontend/
 WORKDIR /app/frontend
 RUN npm ci --prefer-offline --no-audit
 
