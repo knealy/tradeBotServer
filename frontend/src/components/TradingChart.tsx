@@ -643,20 +643,24 @@ export default function TradingChart({
 
       // NEVER call fitContent after initial load - preserve user's scroll position
       // Only restore scroll position if user has manually scrolled
+      // IMPORTANT: Don't restore if userScrollPosition is null (user hasn't scrolled yet)
+      // This prevents the chart from snapping to the right after data updates
       if (chartRef.current && userScrollPosition) {
         // Restore user's scroll position - don't snap back
         const timeScale = chartRef.current.timeScale()
         try {
+          // Always restore the user's saved position - they explicitly scrolled there
           timeScale.setVisibleRange({
             from: userScrollPosition.left as Time,
             to: userScrollPosition.right as Time,
           })
         } catch (error) {
-          // If range is invalid, just skip (don't fitContent)
+          // If range is invalid, just skip (don't fitContent, don't reset)
           console.debug('[TradingChart] Could not restore scroll position:', error)
         }
       }
       // Note: fitContent is only called once during chart initialization, never on updates
+      // If userScrollPosition is null, we don't restore anything - let the chart stay where it is
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
@@ -994,6 +998,18 @@ export default function TradingChart({
       
       const priceLineInfo = findPriceLineAtY(y)
       if (priceLineInfo) {
+        // Disable chart scrolling/panning while dragging order
+        chart.applyOptions({
+          handleScroll: {
+            mouseWheel: false,
+            pressedMouseMove: false,
+          },
+          handleScale: {
+            axisPressedMouseMove: false,
+            axisDoubleClickReset: false,
+          },
+        })
+        
         setDraggingOrder({
           order: priceLineInfo.order,
           startPrice: priceLineInfo.price,
@@ -1001,6 +1017,7 @@ export default function TradingChart({
         })
         container.style.cursor = 'grabbing'
         e.preventDefault()
+        e.stopPropagation() // Prevent chart from handling the event
       }
     }
 
@@ -1017,6 +1034,10 @@ export default function TradingChart({
         container.style.cursor = priceLineInfo ? 'grab' : 'default'
         return
       }
+
+      // Prevent chart from handling the event during order drag
+      e.preventDefault()
+      e.stopPropagation()
 
       const rect = container.getBoundingClientRect()
       const y = e.clientY - rect.top
@@ -1066,6 +1087,20 @@ export default function TradingChart({
 
       const currentDrag = draggingOrder
       if (!currentDrag) return
+
+      // Re-enable chart scrolling/panning
+      if (chart) {
+        chart.applyOptions({
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+          },
+          handleScale: {
+            axisPressedMouseMove: true,
+            axisDoubleClickReset: true,
+          },
+        })
+      }
 
       container.style.cursor = 'default'
 
@@ -1125,6 +1160,8 @@ export default function TradingChart({
       }
 
       setDraggingOrder(null)
+      e.preventDefault()
+      e.stopPropagation()
     }
 
     // Add all event listeners

@@ -7175,6 +7175,8 @@ class TopStepXTradingBot:
         print("  history <symbol> [timeframe] [limit] [raw] [csv] - Get historical data")
         print("    Add 'raw' for fast tab-separated output (e.g., history MNQ 5m 20 raw)")
         print("    Add 'csv' to export data to CSV file (e.g., history MNQ 5m 20 csv)")
+        print("  chart [symbol] [timeframe] [limit] - Open chart window GUI")
+        print("    Example: chart MNQ 5m 100")
         print("  monitor - Monitor position changes and adjust bracket orders")
         print("  bracket_monitor - Monitor bracket positions and manage orders")
         print("  activate_monitor - Manually activate monitoring for testing")
@@ -8696,6 +8698,25 @@ class TopStepXTradingBot:
                                     price = bid.get('price', 0)
                                     size = bid.get('size', 0)
                                     print(f"     ${price:.2f} x {size}")
+                
+                elif command_lower.startswith("chart"):
+                    # Open chart window GUI
+                    parts = command.split()
+                    symbol = parts[1] if len(parts) > 1 else "MNQ"
+                    timeframe = parts[2] if len(parts) > 2 else "5m"
+                    limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 100
+                    
+                    try:
+                        from gui.chart_window import open_chart_window
+                        print(f"📊 Opening chart window for {symbol} {timeframe} ({limit} bars)...")
+                        print("💡 Close the chart window to return to terminal")
+                        window = open_chart_window(self, symbol, timeframe, limit)
+                        window.run()
+                    except ImportError as e:
+                        print(f"❌ GUI module not available: {e}")
+                        print("   Install matplotlib: pip install matplotlib")
+                    except Exception as e:
+                        print(f"❌ Error opening chart window: {e}")
                 
                 elif command_lower.startswith("history "):
                     parts = command.split()
