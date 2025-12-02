@@ -116,12 +116,13 @@ class BarAggregator:
         elif env_frames:
             frames = env_frames.split(',')
         else:
-            frames = ['1m', '5m', '15m', '1h']
+            # Support all timeframes including seconds
+            frames = ['5s', '15s', '30s', '1m', '2m', '5m', '15m', '30m', '1h']
         self.default_timeframes: List[str] = [
             self._normalize_timeframe(tf) for tf in frames if tf and tf.strip()
         ]
         if not self.default_timeframes:
-            self.default_timeframes = ['1m', '5m', '15m', '1h']
+            self.default_timeframes = ['5s', '15s', '30s', '1m', '2m', '5m', '15m', '30m', '1h']
         self.symbol_timeframes: Dict[str, Set[str]] = defaultdict(set)
         
     async def start(self):
@@ -354,11 +355,18 @@ class BarAggregator:
         if not frames:
             frames = set(self.default_timeframes)
             self.symbol_timeframes[symbol_key] = set(frames)
-        for tf in frames:
+        
+        # Always ensure all default timeframes are registered for the symbol
+        # This ensures bars are built for all timeframes when quotes arrive
+        for tf in self.default_timeframes:
             normalized = self._normalize_timeframe(tf)
-            if normalized in self.bar_builders[symbol_key]:
+            if not normalized:
                 continue
-            bar_start = self._get_bar_start_time(timestamp, normalized)
-            self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
-        logger.info(f"📊 Subscribed {symbol_key} to timeframes: {', '.join(sorted(frames))}")
+            self.symbol_timeframes[symbol_key].add(normalized)
+            if normalized not in self.bar_builders[symbol_key]:
+                bar_start = self._get_bar_start_time(timestamp, normalized)
+                self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
+                logger.debug(f"Initialized {normalized} bar builder for {symbol_key}")
+        
+        logger.info(f"📊 Subscribed {symbol_key} to timeframes: {', '.join(sorted(self.symbol_timeframes[symbol_key]))}")
 

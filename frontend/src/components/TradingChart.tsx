@@ -110,6 +110,7 @@ export default function TradingChart({
   const [showPositions, setShowPositions] = useState(propShowPositions)
   const [showOrders, setShowOrders] = useState(propShowOrders)
   const [chartInitialized, setChartInitialized] = useState(false)
+  const [hoveredBar, setHoveredBar] = useState<HistoricalBar | null>(null)
   const queryClient = useQueryClient()
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -150,15 +151,19 @@ export default function TradingChart({
       return
     }
     
-    // Subscribe to bar updates for this symbol/timeframe
-    // The backend bar aggregator needs to know which timeframes to track
-    // For now, we rely on SignalR quotes being fed to the aggregator automatically
-    // The aggregator will build bars for any symbol that receives quotes
-    console.log(`[TradingChart] Chart ready for ${symbol} ${timeframe} - listening for real-time bar updates`)
+    // Request subscription to this specific timeframe from backend
+    // This ensures the bar aggregator is building bars for this timeframe
+    console.log(`[TradingChart] Requesting subscription to ${symbol} ${timeframe} bars`)
     
-    // Ensure SignalR is subscribed to this symbol (happens automatically when quotes are requested)
-    // The bar aggregator will receive quotes and build bars for all timeframes
-    // We just need to make sure quotes are flowing for this symbol
+    // Send subscription request via WebSocket
+    wsService.emit('subscribe', {
+      types: ['market_update'],
+      symbol: symbol.toUpperCase(),
+      timeframe: timeframe.toLowerCase(),
+    })
+    
+    // Note: The bar aggregator should automatically build bars for all default timeframes
+    // when quotes arrive. This subscription just ensures the specific timeframe is tracked.
   }, [chartInitialized, symbol, timeframe])
 
   const handleRefresh = () => {
@@ -205,10 +210,18 @@ export default function TradingChart({
         const formatterOptions: Intl.DateTimeFormatOptions = {
           timeZone: 'America/New_York',
         }
-        if (timeframe === '1d') {
+        
+        // For longer timeframes, show date + time
+        const showDate = ['1h', '4h', '1d'].includes(timeframe) || 
+                        (timeframe.includes('m') && parseInt(timeframe) >= 30)
+        
+        if (showDate) {
           formatterOptions.month = 'short'
           formatterOptions.day = 'numeric'
-          return date.toLocaleDateString('en-US', formatterOptions)
+          formatterOptions.hour = '2-digit'
+          formatterOptions.minute = '2-digit'
+          formatterOptions.hour12 = false
+          return date.toLocaleString('en-US', formatterOptions)
         } else {
           formatterOptions.hour = '2-digit'
           formatterOptions.minute = '2-digit'
@@ -272,12 +285,12 @@ export default function TradingChart({
           lineWidth: 1,
           title: config.label,
           priceLineVisible: false,
-          lastValueVisible: true,
+          lastValueVisible: false, // Hide MA values from price scale
         })
         maSeries.push(maLine)
       })
 
-      chartRef.current = chart
+      chartRef.current = newChart
       candlestickSeriesRef.current = candlestickSeries
       volumeSeriesRef.current = volumeSeries
       maSeriesRefs.current = maSeries
@@ -458,10 +471,17 @@ export default function TradingChart({
         timeZone: 'America/New_York',
       }
       
-      if (timeframe === '1d') {
+      // For longer timeframes, show date + time
+      const showDate = ['1h', '4h', '1d'].includes(timeframe) || 
+                      (timeframe.includes('m') && parseInt(timeframe) >= 30)
+      
+      if (showDate) {
         formatterOptions.month = 'short'
         formatterOptions.day = 'numeric'
-        return date.toLocaleDateString('en-US', formatterOptions)
+        formatterOptions.hour = '2-digit'
+        formatterOptions.minute = '2-digit'
+        formatterOptions.hour12 = false
+        return date.toLocaleString('en-US', formatterOptions)
       } else {
         formatterOptions.hour = '2-digit'
         formatterOptions.minute = '2-digit'
@@ -483,6 +503,53 @@ export default function TradingChart({
       },
     } as any)
   }, [timeframe, chartInitialized])
+
+  // Subscribe to crosshair move events for OHLC display (after chart and data are ready)
+  useEffect(() => {
+    if (!chartRef.current || !chartInitialized || !candlestickSeriesRef.current || !data?.bars) {
+      return
+    }
+
+    const chart = chartRef.current
+    const candlestickSeries = candlestickSeriesRef.current
+
+    const handleCrosshairMove = (param: any) => {
+      if (param.time && param.seriesData) {
+        const candlestickData = param.seriesData.get(candlestickSeries) as CandlestickData<Time> | undefined
+        if (candlestickData) {
+          // Find the corresponding bar from data
+          const barTime = Number(param.time)
+          const matchingBar = data.bars.find((bar: HistoricalBar) => {
+            const barTimestamp = Number(toUnixTimestamp(bar.timestamp))
+            return barTimestamp === barTime
+          })
+          if (matchingBar) {
+            setHoveredBar(matchingBar)
+          } else {
+            // If no exact match, use the candlestick data directly
+            setHoveredBar({
+              timestamp: new Date((barTime as number) * 1000).toISOString(),
+              open: candlestickData.open,
+              high: candlestickData.high,
+              low: candlestickData.low,
+              close: candlestickData.close,
+              volume: 0,
+            } as HistoricalBar)
+          }
+        } else {
+          setHoveredBar(null)
+        }
+      } else {
+        setHoveredBar(null)
+      }
+    }
+
+    chart.subscribeCrosshairMove(handleCrosshairMove)
+
+    return () => {
+      // Note: lightweight-charts doesn't have unsubscribe, but cleanup is handled by chart removal
+    }
+  }, [chartInitialized, data])
 
   // Memoize relevant positions to prevent unnecessary recalculations
   const relevantPositions = useMemo(() => {
@@ -609,10 +676,16 @@ export default function TradingChart({
       if (updateSymbol !== normalizedSymbol) {
         return
       }
-      const updateTimeframe = (rawUpdate.timeframe || timeframe).toLowerCase()
-      if (updateTimeframe !== timeframe) {
+      // Accept updates for the current timeframe (case-insensitive)
+      // Also accept updates without timeframe if they match the symbol
+      const updateTimeframe = (rawUpdate.timeframe || '').toLowerCase()
+      const currentTimeframe = timeframe.toLowerCase()
+      
+      // If timeframe is specified and doesn't match, skip
+      if (updateTimeframe && updateTimeframe !== currentTimeframe) {
         return
       }
+      // If no timeframe specified, accept it (might be a general update)
       const barData = rawUpdate.bar
       if (!barData) return
 
@@ -793,42 +866,42 @@ export default function TradingChart({
       <div className="relative rounded overflow-hidden" style={{ minHeight: height }}>
         <div ref={chartContainerRef} className="rounded overflow-hidden" style={{ minHeight: height }} />
         
-        {/* OHLC Display - Top Left Overlay (TopStepX Style) */}
-        {data && data.bars.length > 0 && chartInitialized && (
-          <div className="absolute top-2 left-2 z-10 bg-slate-900/90 backdrop-blur-sm rounded px-3 py-2 text-xs font-mono border border-slate-700">
-            <div className="flex items-center gap-4">
-              <span className="text-slate-400">
-                <span className="text-slate-500">O</span>{' '}
-                <span className="text-slate-300">{data.bars[data.bars.length - 1].open.toFixed(2)}</span>
-              </span>
-              <span className="text-slate-400">
-                <span className="text-slate-500">H</span>{' '}
-                <span className="text-green-400">{data.bars[data.bars.length - 1].high.toFixed(2)}</span>
-              </span>
-              <span className="text-slate-400">
-                <span className="text-slate-500">L</span>{' '}
-                <span className="text-red-400">{data.bars[data.bars.length - 1].low.toFixed(2)}</span>
-              </span>
-              <span className="text-slate-400">
-                <span className="text-slate-500">C</span>{' '}
-                <span className={data.bars[data.bars.length - 1].close >= data.bars[data.bars.length - 1].open ? 'text-green-400' : 'text-red-400'}>
-                  {data.bars[data.bars.length - 1].close.toFixed(2)}
+        {/* OHLC Display - Top Left Overlay (TopStepX Style) - Shows bar under crosshair */}
+        {data && data.bars.length > 0 && chartInitialized && (() => {
+          // Use hovered bar if crosshair is over a bar, otherwise use latest bar
+          const displayBar = hoveredBar || data.bars[data.bars.length - 1]
+          const change = displayBar.close - displayBar.open
+          const changePercentValue = (change / displayBar.open) * 100
+          const changePercent = changePercentValue.toFixed(2)
+          
+          return (
+            <div className="absolute top-2 left-2 z-10 bg-slate-900/90 backdrop-blur-sm rounded px-3 py-2 text-xs font-mono border border-slate-700">
+              <div className="flex items-center gap-4">
+                <span className="text-slate-400">
+                  <span className="text-slate-500">O</span>{' '}
+                  <span className="text-slate-300">{displayBar.open.toFixed(2)}</span>
                 </span>
-              </span>
-              {(() => {
-                const lastBar = data.bars[data.bars.length - 1]
-                const change = lastBar.close - lastBar.open
-                const changePercentValue = (change / lastBar.open) * 100
-                const changePercent = changePercentValue.toFixed(2)
-                return (
-                  <span className={`ml-2 ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePercentValue >= 0 ? '+' : ''}{changePercent}%)
+                <span className="text-slate-400">
+                  <span className="text-slate-500">H</span>{' '}
+                  <span className="text-green-400">{displayBar.high.toFixed(2)}</span>
+                </span>
+                <span className="text-slate-400">
+                  <span className="text-slate-500">L</span>{' '}
+                  <span className="text-red-400">{displayBar.low.toFixed(2)}</span>
+                </span>
+                <span className="text-slate-400">
+                  <span className="text-slate-500">C</span>{' '}
+                  <span className={change >= 0 ? 'text-green-400' : 'text-red-400'}>
+                    {displayBar.close.toFixed(2)}
                   </span>
-                )
-              })()}
+                </span>
+                <span className={`ml-2 ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePercentValue >= 0 ? '+' : ''}{changePercent}%)
+                </span>
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* Live Data Indicator - Green Circle (TopStepX Style) */}
         {chartInitialized && (
