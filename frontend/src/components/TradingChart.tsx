@@ -18,7 +18,7 @@ import {
   createChart,
   createSeriesMarkers,
 } from 'lightweight-charts'
-import { analyticsApi } from '../services/api'
+import { analyticsApi, orderApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import type { HistoricalBar, HistoricalDataResponse, Position, Order } from '../types'
 import { useChartTheme, getCandlestickColors, getVolumeColors } from '../hooks/useChartTheme'
@@ -143,7 +143,9 @@ export default function TradingChart({
   const maSeriesRefs = useRef<ISeriesApi<'Line'>[]>([])
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
+  const priceLineOrderMapRef = useRef<Map<IPriceLine, Order>>(new Map()) // Map price lines to orders
   const barStoreRef = useRef<Record<string, StoredBar[]>>({})
+  const [draggingOrder, setDraggingOrder] = useState<{ order: Order; startPrice: number; startY: number } | null>(null)
   
   // Moving Average toggle
   const [showMAs, setShowMAs] = useState(true)
@@ -436,6 +438,14 @@ export default function TradingChart({
         },
       })
 
+      // Add buffer margin to main price scale so last bar isn't glued to axis
+      newChart.priceScale('right').applyOptions({
+        scaleMargins: {
+          top: 0.1,  // 10% margin at top
+          bottom: 0.1,  // 10% margin at bottom
+        },
+      })
+
       // Initialize Moving Average line series (TopStepX style: 4 MAs)
       const maSeries: ISeriesApi<'Line'>[] = []
       
@@ -662,6 +672,15 @@ export default function TradingChart({
     }, 1000)
     return () => clearInterval(interval)
   }, [])
+
+  // Auto-refresh when countdown hits 0:00 (new bar creation)
+  useEffect(() => {
+    if (formatStopclock === '0:00') {
+      // Trigger refetch when new bar is created
+      console.log('[TradingChart] New bar created - auto-refreshing chart data')
+      refetch()
+    }
+  }, [formatStopclock, refetch])
 
   // Note: Countdown calculation is now done directly in formatStopclock useMemo
   // No need for separate nextBarTime state
@@ -914,11 +933,213 @@ export default function TradingChart({
           title: `${order.side} ${order.quantity} ${orderType}`,
         })
         priceLinesRef.current.push(line)
+        priceLineOrderMapRef.current.set(line, order) // Map line to order for drag handling
       } catch (error) {
         console.error('[TradingChart] Error creating price line:', error)
       }
     })
   }, [relevantOrders, showOrders, chartInitialized])
+
+  // Drag and drop handler for order price lines
+  useEffect(() => {
+    if (!chartInitialized || !chartRef.current || !candlestickSeriesRef.current || !showOrders) {
+      return
+    }
+
+    const chart = chartRef.current
+    const container = chartContainerRef.current
+    if (!container) return
+
+    const candlestickSeries = candlestickSeriesRef.current
+    const PRICE_LINE_TOLERANCE_PX = 5 // Pixel tolerance for detecting price line hover
+
+    const findPriceLineAtY = (y: number): { line: IPriceLine; order: Order; price: number } | null => {
+      if (!chart) return null
+      
+      // Find the closest price line by checking all price lines
+      let closestLine: IPriceLine | null = null
+      let closestOrder: Order | null = null
+      let closestPrice: number | null = null
+      let minDistance = Infinity
+
+      priceLineOrderMapRef.current.forEach((order, line) => {
+        const orderPrice = order.stop_price || order.price
+        if (!orderPrice) return
+
+        // Convert price to Y coordinate
+        const lineY = candlestickSeries.priceToCoordinate(orderPrice) as number | null
+        if (lineY === null) return
+
+        const distance = Math.abs(y - lineY)
+        if (distance < minDistance && distance < PRICE_LINE_TOLERANCE_PX) {
+          minDistance = distance
+          closestLine = line
+          closestOrder = order
+          closestPrice = orderPrice
+        }
+      })
+
+      if (closestLine && closestOrder && closestPrice !== null) {
+        return { line: closestLine, order: closestOrder, price: closestPrice }
+      }
+
+      return null
+    }
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (!chart || !container || draggingOrder) return // Don't start new drag if already dragging
+
+      const rect = container.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      
+      const priceLineInfo = findPriceLineAtY(y)
+      if (priceLineInfo) {
+        setDraggingOrder({
+          order: priceLineInfo.order,
+          startPrice: priceLineInfo.price,
+          startY: y,
+        })
+        container.style.cursor = 'grabbing'
+        e.preventDefault()
+      }
+    }
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!chart || !container) return
+      
+      // Use ref to get current dragging state without dependency
+      const currentDrag = draggingOrder
+      if (!currentDrag) {
+        // Check if hovering over a price line for cursor change
+        const rect = container.getBoundingClientRect()
+        const y = e.clientY - rect.top
+        const priceLineInfo = findPriceLineAtY(y)
+        container.style.cursor = priceLineInfo ? 'grab' : 'default'
+        return
+      }
+
+      const rect = container.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      
+      // Convert Y coordinate to price
+      const newPrice = candlestickSeries.coordinateToPrice(y) as number | null
+      if (newPrice === null || newPrice <= 0) return
+
+      // Find the price line for this order
+      let targetLine: IPriceLine | null = null
+      priceLineOrderMapRef.current.forEach((order, line) => {
+        if (order.id === currentDrag.order.id) {
+          targetLine = line
+        }
+      })
+
+      if (targetLine && candlestickSeriesRef.current) {
+        // Remove old line and create new one at new price
+        try {
+          candlestickSeriesRef.current.removePriceLine(targetLine)
+          const newLine = candlestickSeriesRef.current.createPriceLine({
+            price: newPrice,
+            color: currentDrag.order.side === 'BUY' ? '#10B981' : '#F59E0B',
+            lineWidth: 2,
+            lineStyle: (currentDrag.order.type === 'STOP' || currentDrag.order.stop_price) 
+              ? LineStyle.Dotted 
+              : LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${currentDrag.order.side} ${currentDrag.order.quantity} ${currentDrag.order.type || 'LIMIT'}`,
+          })
+          
+          // Update refs
+          const index = priceLinesRef.current.indexOf(targetLine)
+          if (index !== -1) {
+            priceLinesRef.current[index] = newLine
+          }
+          priceLineOrderMapRef.current.delete(targetLine)
+          priceLineOrderMapRef.current.set(newLine, currentDrag.order)
+        } catch (error) {
+          console.error('[TradingChart] Error updating price line during drag:', error)
+        }
+      }
+    }
+
+    const handleMouseUp = async (e: MouseEvent) => {
+      if (!container) return
+
+      const currentDrag = draggingOrder
+      if (!currentDrag) return
+
+      container.style.cursor = 'default'
+
+      if (!chart || !candlestickSeriesRef.current) {
+        setDraggingOrder(null)
+        return
+      }
+
+      const rect = container.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      const newPrice = candlestickSeriesRef.current.coordinateToPrice(y) as number | null
+
+      if (newPrice && newPrice > 0 && Math.abs(newPrice - currentDrag.startPrice) > 0.01) {
+        // Price changed significantly - update order
+        try {
+          const orderType = currentDrag.order.type || 'LIMIT'
+          const isStopOrder = orderType === 'STOP' || currentDrag.order.stop_price
+          
+          await orderApi.modifyOrder(currentDrag.order.id, {
+            price: newPrice,
+            order_type: isStopOrder ? 4 : 1, // 4 = Stop, 1 = Limit
+          })
+          
+          console.log(`[TradingChart] Order ${currentDrag.order.id} price updated from ${currentDrag.startPrice} to ${newPrice}`)
+        } catch (error) {
+          console.error('[TradingChart] Error modifying order:', error)
+          // Revert price line to original position on error
+          const targetLine = priceLinesRef.current.find((line) => {
+            const order = priceLineOrderMapRef.current.get(line)
+            return order?.id === currentDrag.order.id
+          })
+          
+          if (targetLine && candlestickSeriesRef.current) {
+            try {
+              candlestickSeriesRef.current.removePriceLine(targetLine)
+              const originalLine = candlestickSeriesRef.current.createPriceLine({
+                price: currentDrag.startPrice,
+                color: currentDrag.order.side === 'BUY' ? '#10B981' : '#F59E0B',
+                lineWidth: 2,
+                lineStyle: (currentDrag.order.type === 'STOP' || currentDrag.order.stop_price) 
+                  ? LineStyle.Dotted 
+                  : LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${currentDrag.order.side} ${currentDrag.order.quantity} ${currentDrag.order.type || 'LIMIT'}`,
+              })
+              const index = priceLinesRef.current.indexOf(targetLine)
+              if (index !== -1) {
+                priceLinesRef.current[index] = originalLine
+              }
+              priceLineOrderMapRef.current.delete(targetLine)
+              priceLineOrderMapRef.current.set(originalLine, currentDrag.order)
+            } catch (revertError) {
+              console.error('[TradingChart] Error reverting price line:', revertError)
+            }
+          }
+        }
+      }
+
+      setDraggingOrder(null)
+    }
+
+    // Add all event listeners
+    container.addEventListener('mousedown', handleMouseDown)
+    container.addEventListener('mousemove', handleMouseMove)
+    container.addEventListener('mouseup', handleMouseUp)
+    container.addEventListener('mouseleave', handleMouseUp) // Cancel drag if mouse leaves
+
+    return () => {
+      container.removeEventListener('mousedown', handleMouseDown)
+      container.removeEventListener('mousemove', handleMouseMove)
+      container.removeEventListener('mouseup', handleMouseUp)
+      container.removeEventListener('mouseleave', handleMouseUp)
+    }
+  }, [chartInitialized, showOrders, draggingOrder])
 
   // WebSocket integration for live updates
   useEffect(() => {

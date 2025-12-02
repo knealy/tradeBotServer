@@ -4,10 +4,36 @@ This document describes all available environment variables for configuring the 
 
 ## API Credentials
 
+### Required for Authentication
+
 ```bash
-PROJECTX_USERNAME=your_username_here
-PROJECTX_PASSWORD=your_password_here
+PROJECT_X_USERNAME=your_username_here
+PROJECT_X_API_KEY=your_api_key_here
 ```
+
+**Note:** The bot also accepts these alternative variable names:
+- `TOPSETPX_USERNAME` (alternative to `PROJECT_X_USERNAME`)
+- `TOPSETPX_API_KEY` (alternative to `PROJECT_X_API_KEY`)
+
+### Optional: JWT Token (Auto-Refresh Enabled)
+
+```bash
+JWT_TOKEN=eyJhbGci...  # Optional: Pre-authenticated JWT token
+```
+
+**Benefits:**
+- Faster startup (no API call if token is valid)
+- Auto-refreshes when expired (requires `PROJECT_X_USERNAME` and `PROJECT_X_API_KEY`)
+- Useful for Railway deployment
+
+**How it works:**
+1. If `JWT_TOKEN` is set and valid → Server starts immediately
+2. If `JWT_TOKEN` is expired → Server auto-refreshes using credentials
+3. If `JWT_TOKEN` is missing → Server authenticates using credentials
+
+**See also:**
+- `JWT_TOKEN_GENERATION.md` - How to generate a new JWT token
+- `JWT_AUTO_REFRESH_FIX_2025-12-02.md` - Auto-refresh functionality details
 
 ## Logging & Monitoring
 
