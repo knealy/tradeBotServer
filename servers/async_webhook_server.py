@@ -2089,6 +2089,24 @@ class AsyncWebhookServer:
             limit = int(params.get('limit', '300'))
             end_time = params.get('end') or params.get('end_time')
             
+            # For real-time charts, use current time as end_time if not specified
+            # This ensures we get data up to the current moment
+            from datetime import datetime, timezone
+            if not end_time:
+                end_time = datetime.now(timezone.utc)
+                logger.debug(f"Using current time as end_time for {symbol} {timeframe}: {end_time}")
+            else:
+                # Parse provided end_time string
+                try:
+                    if isinstance(end_time, str):
+                        from dateutil import parser
+                        end_time = parser.parse(end_time)
+                        if end_time.tzinfo is None:
+                            end_time = end_time.replace(tzinfo=timezone.utc)
+                except Exception as e:
+                    logger.warning(f"Could not parse end_time '{end_time}', using current time: {e}")
+                    end_time = datetime.now(timezone.utc)
+            
             # Ensure SignalR and bar aggregator are aware of the requested symbol/timeframe
             if symbol:
                 if hasattr(self.trading_bot, '_ensure_quote_subscription'):
@@ -2100,6 +2118,7 @@ class AsyncWebhookServer:
                 if hasattr(self.trading_bot, 'bar_aggregator') and self.trading_bot.bar_aggregator:
                     try:
                         self.trading_bot.bar_aggregator.register_timeframes(symbol, [timeframe])
+                        logger.debug(f"📊 Registered timeframe {timeframe} for {symbol} in bar aggregator")
                     except Exception as agg_err:
                         logger.warning(f"⚠️  Could not register timeframe {timeframe} for {symbol}: {agg_err}")
             

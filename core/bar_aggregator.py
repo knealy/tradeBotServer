@@ -128,10 +128,11 @@ class BarAggregator:
     async def start(self):
         """Start the bar aggregator update loop."""
         if self._running:
+            logger.warning("⚠️  Bar aggregator already running")
             return
         self._running = True
         self._update_task = asyncio.create_task(self._update_loop())
-        logger.info("📊 Bar aggregator started")
+        logger.info(f"📊 Bar aggregator started - tracking {len(self.default_timeframes)} timeframes: {', '.join(self.default_timeframes)}")
     
     async def stop(self):
         """Stop the bar aggregator."""
@@ -368,5 +369,5 @@ class BarAggregator:
                 self.bar_builders[symbol_key][normalized] = BarBuilder(symbol_key, normalized, bar_start)
                 logger.debug(f"Initialized {normalized} bar builder for {symbol_key}")
         
-        logger.info(f"📊 Subscribed {symbol_key} to timeframes: {', '.join(sorted(self.symbol_timeframes[symbol_key]))}")
+        logger.info(f"📊 Initialized {symbol_key} with {len(self.symbol_timeframes[symbol_key])} timeframes: {', '.join(sorted(self.symbol_timeframes[symbol_key]))}")
 
