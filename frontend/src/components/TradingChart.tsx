@@ -4,6 +4,7 @@ import { RefreshCw } from 'lucide-react'
 import {
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
   IChartApi,
   ISeriesApi,
   ISeriesMarkersPluginApi,
@@ -12,6 +13,7 @@ import {
   SeriesMarker,
   Time,
   CandlestickData,
+  LineData,
   UTCTimestamp,
   createChart,
   createSeriesMarkers,
@@ -27,8 +29,54 @@ import { useChartTheme, getCandlestickColors, getVolumeColors } from '../hooks/u
 const toUnixTimestamp = (timestamp: string): UTCTimestamp =>
   Math.floor(new Date(timestamp).getTime() / 1000) as UTCTimestamp
 
+// Calculate Simple Moving Average
+const calculateSMA = (prices: number[], period: number): number[] => {
+  const sma: number[] = []
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) {
+      sma.push(NaN)
+    } else {
+      const sum = prices.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0)
+      sma.push(sum / period)
+    }
+  }
+  return sma
+}
 
-const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d']
+// Calculate Exponential Moving Average
+const calculateEMA = (prices: number[], period: number): number[] => {
+  const ema: number[] = []
+  const multiplier = 2 / (period + 1)
+  
+  // Start with SMA for first value
+  if (prices.length < period) {
+    return prices.map(() => NaN)
+  }
+  
+  let emaValue = prices.slice(0, period).reduce((a, b) => a + b, 0) / period
+  ema.push(...new Array(period - 1).fill(NaN))
+  ema.push(emaValue)
+  
+  // Calculate EMA for remaining values
+  for (let i = period; i < prices.length; i++) {
+    emaValue = (prices[i] * multiplier) + (emaValue * (1 - multiplier))
+    ema.push(emaValue)
+  }
+  
+  return ema
+}
+
+
+// Match TopStepX timeframes: 5s, 15s, 30s, 2m, 5m, 15m, 30m, 1h
+const TIMEFRAME_OPTIONS = ['5s', '15s', '30s', '2m', '5m', '15m', '30m', '1h']
+
+// Moving Average Configuration (TopStepX style: 4 MAs)
+const MA_CONFIGS = [
+  { period: 8, type: 'EMA', color: '#FFD700', label: 'MA8' },      // Yellow (fastest)
+  { period: 21, type: 'EMA', color: '#EF5350', label: 'MA21' },    // Red
+  { period: 50, type: 'SMA', color: '#42A5F5', label: 'MA50' },   // Light Blue
+  { period: 100, type: 'SMA', color: '#26A69A', label: 'MA100' },  // Green
+]
 
 type StoredBar = {
   time: number
@@ -68,9 +116,13 @@ export default function TradingChart({
   const chartRef = useRef<IChartApi | null>(null)
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const maSeriesRefs = useRef<ISeriesApi<'Line'>[]>([])
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
   const barStoreRef = useRef<Record<string, StoredBar[]>>({})
+  
+  // Moving Average toggle
+  const [showMAs, setShowMAs] = useState(true)
   
   // Chart theme configuration
   const chartTheme = useChartTheme({ theme: 'dark', height })
@@ -165,7 +217,7 @@ export default function TradingChart({
         }
       }
 
-      chart = createChart(container, {
+      const newChart = createChart(container, {
         ...chartTheme,
         width: initialWidth,
         height,
@@ -189,12 +241,14 @@ export default function TradingChart({
         },
       })
 
-      const candlestickSeries = chart.addSeries(
+      chart = newChart
+
+      const candlestickSeries = newChart.addSeries(
         CandlestickSeries,
         getCandlestickColors('dark')
       )
 
-      const volumeSeries = chart.addSeries(HistogramSeries, {
+      const volumeSeries = newChart.addSeries(HistogramSeries, {
         color: '#26A69A',
         priceFormat: {
           type: 'volume',
@@ -202,16 +256,31 @@ export default function TradingChart({
         priceScaleId: 'volume',
       })
 
-      chart.priceScale('volume').applyOptions({
+      newChart.priceScale('volume').applyOptions({
         scaleMargins: {
           top: 0.8,
           bottom: 0,
         },
       })
 
+      // Initialize Moving Average line series (TopStepX style: 4 MAs)
+      const maSeries: ISeriesApi<'Line'>[] = []
+      
+      MA_CONFIGS.forEach((config) => {
+        const maLine = newChart.addSeries(LineSeries, {
+          color: config.color,
+          lineWidth: 1,
+          title: config.label,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        })
+        maSeries.push(maLine)
+      })
+
       chartRef.current = chart
       candlestickSeriesRef.current = candlestickSeries
       volumeSeriesRef.current = volumeSeries
+      maSeriesRefs.current = maSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
       setChartInitialized(true)
 
@@ -305,6 +374,27 @@ export default function TradingChart({
     return { candlestickData, volumeData }
   }, [data])
 
+  // Calculate Moving Averages from chart data
+  const maData = useMemo(() => {
+    if (!chartData || !chartData.candlestickData.length) return null
+
+    const closes = chartData.candlestickData.map(bar => bar.close)
+    const times = chartData.candlestickData.map(bar => bar.time)
+    
+    return MA_CONFIGS.map(config => {
+      const maValues = config.type === 'EMA' 
+        ? calculateEMA(closes, config.period)
+        : calculateSMA(closes, config.period)
+      
+      const maLineData: LineData<Time>[] = times.map((time, idx) => ({
+        time,
+        value: maValues[idx],
+      })).filter(point => !isNaN(point.value as number))
+
+      return { ...config, data: maLineData }
+    })
+  }, [chartData])
+
   // Update chart data when data changes (including timeframe/barLimit changes)
   useEffect(() => {
     if (!chartInitialized) {
@@ -325,6 +415,20 @@ export default function TradingChart({
       candlestickSeriesRef.current.setData(chartData.candlestickData)
       volumeSeriesRef.current.setData(chartData.volumeData)
 
+      // Update Moving Averages
+      if (showMAs && maData && maSeriesRefs.current.length === maData.length) {
+        maData.forEach((ma, idx) => {
+          if (maSeriesRefs.current[idx]) {
+            maSeriesRefs.current[idx].setData(ma.data)
+          }
+        })
+      } else if (!showMAs) {
+        // Clear MA data when hidden
+        maSeriesRefs.current.forEach(series => {
+          series.setData([])
+        })
+      }
+
       const storeKey = `${symbol.toUpperCase()}:${timeframe.toLowerCase()}`
       barStoreRef.current[storeKey] = chartData.candlestickData.map((bar, idx) => ({
         time: Number(bar.time),
@@ -342,7 +446,7 @@ export default function TradingChart({
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
-  }, [chartData, chartInitialized, symbol, timeframe, barLimit])
+  }, [chartData, chartInitialized, symbol, timeframe, barLimit, showMAs, maData])
 
   // Update timeScale formatter when timeframe changes (without recreating chart)
   useEffect(() => {
@@ -657,6 +761,15 @@ export default function TradingChart({
             <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
               <input
                 type="checkbox"
+                checked={showMAs}
+                onChange={(e) => setShowMAs(e.target.checked)}
+                className="rounded"
+              />
+              Moving Averages
+            </label>
+            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={showPositions}
                 onChange={(e) => setShowPositions(e.target.checked)}
                 className="rounded"
@@ -679,6 +792,52 @@ export default function TradingChart({
       {/* Chart Container */}
       <div className="relative rounded overflow-hidden" style={{ minHeight: height }}>
         <div ref={chartContainerRef} className="rounded overflow-hidden" style={{ minHeight: height }} />
+        
+        {/* OHLC Display - Top Left Overlay (TopStepX Style) */}
+        {data && data.bars.length > 0 && chartInitialized && (
+          <div className="absolute top-2 left-2 z-10 bg-slate-900/90 backdrop-blur-sm rounded px-3 py-2 text-xs font-mono border border-slate-700">
+            <div className="flex items-center gap-4">
+              <span className="text-slate-400">
+                <span className="text-slate-500">O</span>{' '}
+                <span className="text-slate-300">{data.bars[data.bars.length - 1].open.toFixed(2)}</span>
+              </span>
+              <span className="text-slate-400">
+                <span className="text-slate-500">H</span>{' '}
+                <span className="text-green-400">{data.bars[data.bars.length - 1].high.toFixed(2)}</span>
+              </span>
+              <span className="text-slate-400">
+                <span className="text-slate-500">L</span>{' '}
+                <span className="text-red-400">{data.bars[data.bars.length - 1].low.toFixed(2)}</span>
+              </span>
+              <span className="text-slate-400">
+                <span className="text-slate-500">C</span>{' '}
+                <span className={data.bars[data.bars.length - 1].close >= data.bars[data.bars.length - 1].open ? 'text-green-400' : 'text-red-400'}>
+                  {data.bars[data.bars.length - 1].close.toFixed(2)}
+                </span>
+              </span>
+              {(() => {
+                const lastBar = data.bars[data.bars.length - 1]
+                const change = lastBar.close - lastBar.open
+                const changePercentValue = (change / lastBar.open) * 100
+                const changePercent = changePercentValue.toFixed(2)
+                return (
+                  <span className={`ml-2 ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePercentValue >= 0 ? '+' : ''}{changePercent}%)
+                  </span>
+                )
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Live Data Indicator - Green Circle (TopStepX Style) */}
+        {chartInitialized && (
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-2 bg-slate-900/90 backdrop-blur-sm rounded px-2 py-1 border border-slate-700">
+            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" title="Live data" />
+            <span className="text-xs text-slate-400">LIVE</span>
+          </div>
+        )}
+
         {(!data || data.bars.length === 0) && !isLoading && (
           <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm bg-slate-900/70">
             No data available for {symbol}
@@ -694,31 +853,14 @@ export default function TradingChart({
         )}
       </div>
 
-      {/* Chart Legend/Info */}
+      {/* Chart Info Footer */}
       {data && data.bars.length > 0 && (
         <div className="flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 rounded px-4 py-2">
-          <div className="flex items-center gap-4">
-            <span>
-              <span className="text-slate-500">O:</span>{' '}
-              <span className="text-slate-300">{data.bars[data.bars.length - 1].open.toFixed(2)}</span>
-            </span>
-            <span>
-              <span className="text-slate-500">H:</span>{' '}
-              <span className="text-green-400">{data.bars[data.bars.length - 1].high.toFixed(2)}</span>
-            </span>
-            <span>
-              <span className="text-slate-500">L:</span>{' '}
-              <span className="text-red-400">{data.bars[data.bars.length - 1].low.toFixed(2)}</span>
-            </span>
-            <span>
-              <span className="text-slate-500">C:</span>{' '}
-              <span className={data.bars[data.bars.length - 1].close >= data.bars[data.bars.length - 1].open ? 'text-green-400' : 'text-red-400'}>
-                {data.bars[data.bars.length - 1].close.toFixed(2)}
-              </span>
-            </span>
-          </div>
           <div className="text-slate-500">
             {positions.filter(p => p.symbol === symbol).length} position(s) • {orders.filter(o => o.symbol === symbol && o.status === 'PENDING').length} order(s)
+          </div>
+          <div className="text-slate-500">
+            {data.bars.length} bars • {timeframe} timeframe
           </div>
         </div>
       )}
