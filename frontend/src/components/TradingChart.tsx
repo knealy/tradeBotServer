@@ -133,6 +133,7 @@ export default function TradingChart({
   const [hoveredBar, setHoveredBar] = useState<HistoricalBar | null>(null)
   const [currentTime, setCurrentTime] = useState(Date.now()) // Force re-render every second for countdown
   const [userScrollPosition, setUserScrollPosition] = useState<{ left: number; right: number } | null>(null)
+  const [autoRefreshRate, setAutoRefreshRate] = useState<number | null>(null) // Auto-refresh rate in seconds (null = disabled, uses default)
   const queryClient = useQueryClient()
   
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -169,17 +170,19 @@ export default function TradingChart({
       enabled: Boolean(symbol),
       staleTime: 0, // Always consider data stale to force fresh fetches
       cacheTime: 1, // Minimal cache time (1ms) - React Query v3 requires > 0
-      // For sub-1-minute timeframes, refresh more frequently to get current data
-      refetchInterval: (() => {
-        const tf = timeframe.toLowerCase().trim()
-        if (tf.endsWith('s')) {
-          const seconds = parseInt(tf.slice(0, -1))
-          // Refresh every 2-3x the timeframe interval for sub-1-minute
-          if (seconds <= 30) return seconds * 2000 // 2x for very short timeframes
-          return seconds * 1000 // 1x for longer sub-minute
-        }
-        return 60_000 // Default: 60 seconds for 1m and above
-      })(),
+      // Auto-refresh: use manual rate if set, otherwise use timeframe-based rate
+      refetchInterval: autoRefreshRate 
+        ? autoRefreshRate * 1000 // Convert seconds to milliseconds
+        : (() => {
+            const tf = timeframe.toLowerCase().trim()
+            if (tf.endsWith('s')) {
+              const seconds = parseInt(tf.slice(0, -1))
+              // Refresh every 2-3x the timeframe interval for sub-1-minute
+              if (seconds <= 30) return seconds * 2000 // 2x for very short timeframes
+              return seconds * 1000 // 1x for longer sub-minute
+            }
+            return 60_000 // Default: 60 seconds for 1m and above
+          })(),
       // Real-time updates via WebSocket handle live bar updates, but we still need
       // periodic refresh to catch any missed bars or new completed bars
       onError: (err) => {
@@ -628,20 +631,22 @@ export default function TradingChart({
         volume: chartData.volumeData[idx]?.value ?? 0,
       }))
 
-      // Only fit content on initial load, preserve user scroll position on refresh
-      if (chartRef.current) {
-        if (userScrollPosition) {
-          // Restore user's scroll position
-          const timeScale = chartRef.current.timeScale()
+      // NEVER call fitContent after initial load - preserve user's scroll position
+      // Only restore scroll position if user has manually scrolled
+      if (chartRef.current && userScrollPosition) {
+        // Restore user's scroll position - don't snap back
+        const timeScale = chartRef.current.timeScale()
+        try {
           timeScale.setVisibleRange({
             from: userScrollPosition.left as Time,
             to: userScrollPosition.right as Time,
           })
-        } else {
-          // Initial load - fit content
-          chartRef.current.timeScale().fitContent()
+        } catch (error) {
+          // If range is invalid, just skip (don't fitContent)
+          console.debug('[TradingChart] Could not restore scroll position:', error)
         }
       }
+      // Note: fitContent is only called once during chart initialization, never on updates
     } catch (error) {
       console.error('[TradingChart] Error updating chart data:', error)
     }
@@ -662,12 +667,15 @@ export default function TradingChart({
   // No need for separate nextBarTime state
 
   // Track user scroll position using polling (lightweight-charts doesn't have direct subscription)
+  // This tracks when user manually scrolls/zooms to preserve their position
   useEffect(() => {
     if (!chartRef.current || !chartInitialized) return
 
     const chart = chartRef.current
     const timeScale = chart.timeScale()
     let lastRange: { left: number; right: number } | null = null
+    let initialRange: { left: number; right: number } | null = null
+    let hasUserScrolled = false
 
     const pollVisibleRange = () => {
       const visibleRange = timeScale.getVisibleRange()
@@ -676,13 +684,26 @@ export default function TradingChart({
           left: visibleRange.from as number,
           right: visibleRange.to as number,
         }
-        // Only update if range actually changed
-        if (!lastRange || 
-            lastRange.left !== currentRange.left || 
-            lastRange.right !== currentRange.right) {
-          setUserScrollPosition(currentRange)
-          lastRange = currentRange
+        
+        // Store initial range after chart is set up
+        if (!initialRange) {
+          initialRange = currentRange
+          return // Don't set scroll position on initial load
         }
+        
+        // Detect if user has manually scrolled (range changed from initial)
+        if (lastRange && (
+            Math.abs(lastRange.left - currentRange.left) > 1 || 
+            Math.abs(lastRange.right - currentRange.right) > 1)) {
+          hasUserScrolled = true
+        }
+        
+        // Only save scroll position if user has manually scrolled
+        if (hasUserScrolled) {
+          setUserScrollPosition(currentRange)
+        }
+        
+        lastRange = currentRange
       }
     }
 
@@ -840,9 +861,12 @@ export default function TradingChart({
   }, [positionMarkers, chartInitialized, symbol])
 
   // Memoize relevant orders to prevent unnecessary recalculations
+  // Include orders with either price (limit orders) or stop_price (stop orders)
   const relevantOrders = useMemo(() => {
     return orders.filter(
-      (order) => order.symbol === symbol && order.status === 'PENDING' && order.price
+      (order) => order.symbol === symbol && 
+                 order.status === 'PENDING' && 
+                 (order.price || order.stop_price) // Include both limit and stop orders
     )
   }, [orders, symbol])
 
@@ -872,16 +896,22 @@ export default function TradingChart({
     relevantOrders.forEach((order) => {
       if (!candlestickSeriesRef.current) return
 
+      // Use stop_price for STOP orders, price for LIMIT orders
+      const orderPrice = order.stop_price || order.price
+      if (!orderPrice) return // Skip if no price available
+
       const isLongOrder = order.side === 'BUY'
+      const orderType = order.type || 'LIMIT'
+      const isStopOrder = orderType === 'STOP' || order.stop_price
 
       try {
         const line = candlestickSeriesRef.current.createPriceLine({
-          price: order.price!,
+          price: orderPrice,
           color: isLongOrder ? '#10B981' : '#F59E0B',
           lineWidth: 2,
-          lineStyle: LineStyle.Dashed,
+          lineStyle: isStopOrder ? LineStyle.Dotted : LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `${order.side} ${order.quantity}`,
+          title: `${order.side} ${order.quantity} ${orderType}`,
         })
         priceLinesRef.current.push(line)
       } catch (error) {
@@ -1008,15 +1038,33 @@ export default function TradingChart({
             {symbol} Price Chart
           </h2>
           <div className="flex items-center gap-3 flex-wrap">
-            <button
-              onClick={handleRefresh}
-              disabled={isRefetching}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-2"
-              title="Refresh chart data"
-            >
-              <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRefresh}
+                disabled={isRefetching}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-2"
+                title="Refresh chart data"
+              >
+                <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-slate-400">Auto:</span>
+                <select
+                  value={autoRefreshRate || ''}
+                  onChange={(e) => setAutoRefreshRate(e.target.value ? parseInt(e.target.value) : null)}
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  title="Auto-refresh rate (seconds, default uses timeframe-based rate)"
+                >
+                  <option value="">Default</option>
+                  <option value="1">1s</option>
+                  <option value="5">5s</option>
+                  <option value="10">10s</option>
+                  <option value="30">30s</option>
+                  <option value="60">60s</option>
+                </select>
+              </div>
+            </div>
             <input
               value={symbol}
               onChange={(event) => setSymbol(event.target.value.toUpperCase())}
