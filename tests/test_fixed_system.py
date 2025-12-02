@@ -279,8 +279,7 @@ async def main():
 
 if __name__ == "__main__":
     # Load environment variables
-    from load_env import load_env
-    load_env()
+    import load_env  # noqa: F401 (side-effect: loads .env automatically)
     
     # Run tests
     success = asyncio.run(main())

@@ -1599,6 +1599,14 @@ class DashboardAPI:
         limit: int = 300,
         end_time: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+        Get historical data for charts.
+        
+        For timeframes > 1m, this automatically uses 1m aggregation strategy:
+        - Fetches 1m data (reliable source)
+        - Aggregates to requested timeframe
+        - Ensures up-to-date data by bypassing stale cache
+        """
         if not symbol:
             return {"error": "Symbol is required"}
         try:
@@ -1611,6 +1619,8 @@ class DashboardAPI:
                 end_dt = datetime.now(timezone.utc)
                 logger.debug(f"Using current time as end_time for {symbol} {timeframe}")
             
+            # get_historical_data now automatically uses 1m aggregation for timeframes > 1m
+            # This ensures accurate, up-to-date data by using reliable 1m data as the source
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol.upper(),
                 timeframe=timeframe,

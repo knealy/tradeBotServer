@@ -143,7 +143,7 @@ export default function TradingChart({
     {
       enabled: Boolean(symbol),
       staleTime: 0, // Always consider data stale to force fresh fetches
-      cacheTime: 0, // Don't cache in React Query - always fetch fresh
+      cacheTime: 1, // Minimal cache time (1ms) - React Query v3 requires > 0
       refetchInterval: 60_000, // Refresh every 60 seconds to get latest historical bars
       // Real-time updates via WebSocket handle live bar updates, but we still need
       // periodic refresh to catch any missed bars or new completed bars

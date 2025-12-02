@@ -63,8 +63,7 @@ def main():
     
     # Load environment
     try:
-        from load_env import load_env
-        load_env()
+        import load_env  # noqa: F401 (side-effect: loads .env automatically)
         logger.info("✅ Environment loaded")
     except Exception as e:
         logger.warning(f"⚠️  Failed to load .env file: {e}")

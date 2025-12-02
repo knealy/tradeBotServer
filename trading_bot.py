@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 TopStepX Trading Bot - Real API Implementation
 A dynamic trading bot for TopStepX prop firm futures accounts.
@@ -700,6 +701,11 @@ class TopStepXTradingBot:
         success = False
         error_message = None
         
+        # Check if token is expired (synchronous check)
+        # Note: Actual refresh must be done by caller if 401/403 is returned
+        if endpoint != "/api/Auth/loginKey" and self._is_token_expired():
+            logger.warning("⚠️  Token expired or missing - request may fail. Caller should refresh token.")
+        
         # Apply rate limiting (unless skipped for critical operations)
         if not skip_rate_limit:
             self._rate_limiter.acquire()
@@ -927,6 +933,9 @@ class TopStepXTradingBot:
             List[Dict]: List of account information
         """
         try:
+            # Ensure valid token before making request
+            await self._ensure_valid_token()
+            
             logger.info("Fetching active accounts from TopStepX API...")
             
             if not self.session_token:
@@ -946,6 +955,14 @@ class TopStepXTradingBot:
             }
             
             response = self._make_curl_request("POST", "/api/Account/search", data=search_data, headers=headers)
+            
+            # If we get 401/403, try refreshing token and retry once
+            if response.get("status_code") in (401, 403):
+                logger.info("Token expired during request, refreshing...")
+                if await self.authenticate():
+                    # Retry the request with new token
+                    headers["Authorization"] = f"Bearer {self.session_token}"
+                    response = self._make_curl_request("POST", "/api/Account/search", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch accounts: {response['error']}")
@@ -1189,7 +1206,8 @@ class TopStepXTradingBot:
         Convert trading symbol to TopStepX contract ID format.
         
         First tries to find the contract ID from the cached contract list.
-        Falls back to hardcoded mappings if cache is unavailable.
+        If cache is empty, fetches contracts from API.
+        Falls back to hardcoded mappings only if API fetch fails.
         
         Args:
             symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
@@ -1204,6 +1222,8 @@ class TopStepXTradingBot:
             if self._contract_cache is not None:
                 contracts = self._contract_cache['contracts']
                 # Look for contract matching the symbol
+                # Prefer contracts with expiration dates (most recent first)
+                matching_contracts = []
                 for contract in contracts:
                     # Contract might have various field names for symbol
                     contract_symbol = None
@@ -1225,10 +1245,23 @@ class TopStepXTradingBot:
                         )
                         
                         if contract_symbol and contract_symbol.upper() == symbol and contract_id:
-                            logger.debug(f"Found contract ID for {symbol} in cache: {contract_id}")
-                            return str(contract_id)
+                            matching_contracts.append((contract_id, contract))
+                
+                if matching_contracts:
+                    # If multiple contracts found, prefer the one with latest expiration
+                    # or just use the first one (API should return active contracts first)
+                    contract_id = matching_contracts[0][0]
+                    logger.debug(f"Found contract ID for {symbol} in cache: {contract_id}")
+                    if len(matching_contracts) > 1:
+                        logger.debug(f"Multiple contracts found for {symbol}, using: {contract_id} (total: {len(matching_contracts)})")
+                    return str(contract_id)
         
-        # Fallback to hardcoded mappings if cache lookup failed
+        # Cache is empty - log warning but don't try to fetch here (would require async)
+        # The caller should ensure contracts are fetched before calling this
+        logger.warning(f"⚠️  Contract cache empty or {symbol} not found in cache. Contracts should be fetched before getting historical data.")
+        
+        # Fallback to hardcoded mappings if cache lookup and API fetch both failed
+        # WARNING: These may be expired contracts - should only be used as last resort
         contract_mappings = {
             "ES": "CON.F.US.ES.Z25",      # E-mini S&P 500
             "MES": "CON.F.US.MES.Z25",    # Micro E-mini S&P 500
@@ -1243,10 +1276,11 @@ class TopStepXTradingBot:
         }
         
         if symbol in contract_mappings:
+            logger.warning(f"⚠️  Using hardcoded fallback contract for {symbol}: {contract_mappings[symbol]} (may be expired!)")
             return contract_mappings[symbol]
         
         # If not found, try to construct it
-        logger.warning(f"Unknown symbol {symbol}, using generic format")
+        logger.warning(f"Unknown symbol {symbol}, using generic format (may be incorrect!)")
         return f"CON.F.US.{symbol}.Z25"
     
     def _clear_contract_cache(self) -> None:
@@ -6109,6 +6143,115 @@ class TopStepXTradingBot:
         logger.debug(f"Parsed timeframe '{timeframe}' -> unit={api_unit}, unitNumber={api_unit_number}")
         return api_unit, api_unit_number, time_delta_func
     
+    def _aggregate_bars(self, bars: List[Dict], target_timeframe: str) -> List[Dict]:
+        """
+        Aggregate 1-minute bars into higher timeframes (5m, 15m, 30m, 1h, etc.).
+        
+        This ensures accurate data by using reliable 1m data as the source.
+        
+        Args:
+            bars: List of 1-minute bars (must be sorted by timestamp)
+            target_timeframe: Target timeframe to aggregate to (e.g., '5m', '15m', '1h')
+            
+        Returns:
+            List[Dict]: Aggregated bars in the target timeframe
+        """
+        if not bars:
+            return []
+        
+        # Parse target timeframe
+        target_seconds = self._parse_timeframe_to_seconds(target_timeframe)
+        if target_seconds is None or target_seconds <= 60:
+            # Can't aggregate to same or lower timeframe
+            return bars
+        
+        # Group 1m bars into target timeframe periods
+        aggregated = []
+        current_group = []
+        current_group_start = None
+        
+        for bar in bars:
+            # Get timestamp
+            ts_str = bar.get('timestamp') or bar.get('time')
+            if isinstance(ts_str, str):
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                except:
+                    continue
+            elif isinstance(ts_str, datetime):
+                ts = ts_str
+            else:
+                continue
+            
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            
+            # Calculate which target timeframe bar this belongs to
+            bar_start_seconds = int(ts.timestamp()) // target_seconds * target_seconds
+            bar_start = datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
+            
+            # Start new group if needed
+            if current_group_start is None or bar_start != current_group_start:
+                # Finalize previous group
+                if current_group:
+                    agg_bar = {
+                        'timestamp': current_group_start.isoformat(),
+                        'time': current_group_start.isoformat(),
+                        'open': current_group[0].get('open', 0),
+                        'high': max(b.get('high', 0) for b in current_group),
+                        'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
+                        'close': current_group[-1].get('close', 0),
+                        'volume': sum(b.get('volume', 0) or 0 for b in current_group),
+                    }
+                    # Ensure low is valid
+                    if agg_bar['low'] == float('inf'):
+                        agg_bar['low'] = agg_bar['open']
+                    aggregated.append(agg_bar)
+                
+                # Start new group
+                current_group = [bar]
+                current_group_start = bar_start
+            else:
+                # Add to current group
+                current_group.append(bar)
+        
+        # Finalize last group
+        if current_group:
+            agg_bar = {
+                'timestamp': current_group_start.isoformat(),
+                'time': current_group_start.isoformat(),
+                'open': current_group[0].get('open', 0),
+                'high': max(b.get('high', 0) for b in current_group),
+                'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
+                'close': current_group[-1].get('close', 0),
+                'volume': sum(b.get('volume', 0) or 0 for b in current_group),
+            }
+            if agg_bar['low'] == float('inf'):
+                agg_bar['low'] = agg_bar['open']
+            aggregated.append(agg_bar)
+        
+        return aggregated
+    
+    def _parse_timeframe_to_seconds(self, timeframe: str) -> Optional[int]:
+        """Parse timeframe string to seconds."""
+        timeframe = timeframe.strip().lower()
+        
+        if timeframe.endswith('s'):
+            return int(timeframe[:-1])
+        elif timeframe.endswith('m'):
+            return int(timeframe[:-1]) * 60
+        elif timeframe.endswith('h'):
+            return int(timeframe[:-1]) * 3600
+        elif timeframe.endswith('d'):
+            return int(timeframe[:-1]) * 86400
+        elif timeframe.endswith('w'):
+            return int(timeframe[:-1]) * 604800
+        elif timeframe.endswith('M'):
+            # Approximate month as 30 days
+            return int(timeframe[:-1]) * 2592000
+        else:
+            return None
+    
     async def get_historical_data(self, symbol: str, timeframe: str = "1m", 
                                  limit: int = 100, start_time: datetime = None, 
                                  end_time: datetime = None) -> List[Dict]:
@@ -6138,6 +6281,43 @@ class TopStepXTradingBot:
         try:
             logger.info(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
             
+            # Determine end_time first (needed for aggregation decision)
+            from datetime import datetime, timedelta, timezone
+            if end_time is None:
+                end_time = datetime.now(timezone.utc)
+                logger.info(f"Using current time as end time: {end_time}")
+            elif end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
+            
+            # STRATEGY: Determine if we should use 1m aggregation BEFORE checking cache
+            # This ensures we bypass stale cache for aggregated timeframes
+            use_aggregation = False
+            source_timeframe = timeframe
+            
+            # Check if we should use 1m aggregation for this timeframe
+            target_seconds = self._parse_timeframe_to_seconds(timeframe)
+            if target_seconds is None:
+                logger.error(f"Invalid timeframe: {timeframe}")
+                return []
+            
+            # For timeframes > 1m, fetch 1m data and aggregate (bypass cache for target timeframe)
+            # For timeframes < 1m, use API directly
+            if target_seconds > 60:  # Greater than 1 minute
+                use_aggregation = True
+                source_timeframe = "1m"
+                logger.info(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
+            
+            # Ensure contract cache is populated before getting contract ID
+            # This ensures we use the current active contract, not expired hardcoded ones
+            with self._contract_cache_lock:
+                if self._contract_cache is None:
+                    logger.info("Contract cache empty, fetching contracts to ensure correct contract ID...")
+                    try:
+                        contracts = await self.get_available_contracts(use_cache=False)
+                        logger.info(f"Fetched {len(contracts)} contracts from API")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch contracts: {e}, will use fallback contract ID (may be expired!)")
+            
             # For small limits (1-5 bars) on short timeframes, bypass cache or use very short TTL
             # This ensures real-time monitoring gets fresh data
             use_fresh_data = False
@@ -6151,10 +6331,14 @@ class TopStepXTradingBot:
                 use_fresh_data = True
                 logger.info("Date range mode detected - bypassing cache")
             
-            # If end_time is provided and is recent (within last 24 hours), bypass cache to get fresh data
+            # If using aggregation, bypass cache for target timeframe (we'll check 1m cache instead)
+            if use_aggregation:
+                use_fresh_data = True
+                logger.info(f"📊 Aggregation mode: bypassing {timeframe} cache, will check 1m cache or fetch fresh 1m data")
+            
+            # If end_time is recent (within last 24 hours), bypass cache to get fresh data
             # This ensures charts always show up-to-date data when requesting current time
             if end_time is not None:
-                from datetime import timedelta
                 time_since_end = (datetime.now(timezone.utc) - end_time).total_seconds()
                 # If end_time is within last 24 hours, bypass cache to ensure fresh data
                 if time_since_end < 86400:  # 24 hours in seconds
@@ -6162,16 +6346,19 @@ class TopStepXTradingBot:
                     logger.info(f"Recent end_time requested (within 24h) - bypassing cache to get fresh data")
             
             # PHASE 1: Check PostgreSQL database cache first (persistent, fast)
+            # If using aggregation, check 1m cache instead of target timeframe cache
+            cache_timeframe = source_timeframe if use_aggregation else timeframe
+            
             if not use_fresh_data and self.db:
                 try:
-                    # Check cache coverage
-                    coverage = self.db.get_cache_coverage(symbol, timeframe)
+                    # Check cache coverage for the source timeframe (1m if aggregating)
+                    coverage = self.db.get_cache_coverage(symbol, cache_timeframe)
                     if coverage['cached']:
-                        logger.debug(f"📊 DB Cache coverage: {coverage['bar_count']} bars "
+                        logger.debug(f"📊 DB Cache coverage for {cache_timeframe}: {coverage['bar_count']} bars "
                                    f"({coverage['oldest_bar']} to {coverage['newest_bar']})")
                         
-                        # Try to get bars from database
-                        cached_bars = self.db.get_cached_bars(symbol, timeframe, 
+                        # Try to get bars from database (use source timeframe for aggregation)
+                        cached_bars = self.db.get_cached_bars(symbol, cache_timeframe, 
                                                              start_time=start_time,
                                                              end_time=end_time,
                                                              limit=limit * 2)  # Get extra for filtering
@@ -6208,16 +6395,91 @@ class TopStepXTradingBot:
                                         return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
                                 except Exception as parse_err:
                                     logger.debug(f"Could not parse cached bar timestamp, using cache anyway: {parse_err}")
-                                    logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
-                                    metrics_tracker = get_metrics_tracker(db=self.db)
-                                    metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                    return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                                    # If using aggregation, aggregate the cached 1m bars
+                                    if use_aggregation and cache_timeframe == "1m":
+                                        logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol}, aggregating to {timeframe}...")
+                                        aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
+                                        logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
+                                        result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
+                                        metrics_tracker = get_metrics_tracker(db=self.db)
+                                        metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
+                                        return result
+                                    else:
+                                        logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
+                                        metrics_tracker = get_metrics_tracker(db=self.db)
+                                        metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                        return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
                             else:
-                                # No end_time specified or no cached bars, use cache
-                                logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
-                                metrics_tracker = get_metrics_tracker(db=self.db)
-                                metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                                # No end_time specified - check if cached data is recent (within last hour)
+                                if cached_bars:
+                                    newest_bar = cached_bars[-1]
+                                    newest_timestamp_str = newest_bar.get('timestamp') or newest_bar.get('time')
+                                    try:
+                                        if isinstance(newest_timestamp_str, str):
+                                            ts_str = newest_timestamp_str.replace('Z', '+00:00')
+                                            newest_dt = datetime.fromisoformat(ts_str)
+                                        elif isinstance(newest_timestamp_str, datetime):
+                                            newest_dt = newest_timestamp_str
+                                        else:
+                                            newest_dt = None
+                                        
+                                        if newest_dt:
+                                            if newest_dt.tzinfo is None:
+                                                newest_dt = newest_dt.replace(tzinfo=timezone.utc)
+                                            # Check if cached data is recent (within last hour)
+                                            time_gap = (datetime.now(timezone.utc) - newest_dt).total_seconds()
+                                            if time_gap > 3600:  # More than 1 hour old
+                                                logger.warning(f"⚠️  Cached data too old: newest={newest_dt}, gap={time_gap/3600:.1f}h - bypassing cache")
+                                                use_fresh_data = True
+                                            else:
+                                                # Cache is fresh - if using aggregation, aggregate the cached 1m bars
+                                                if use_aggregation and cache_timeframe == "1m":
+                                                    logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol} (newest: {newest_dt}), aggregating to {timeframe}...")
+                                                    aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
+                                                    logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
+                                                    result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
+                                                    metrics_tracker = get_metrics_tracker(db=self.db)
+                                                    metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
+                                                    return result
+                                                else:
+                                                    logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe} (newest: {newest_dt})")
+                                                    metrics_tracker = get_metrics_tracker(db=self.db)
+                                                    metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                                    return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                                        else:
+                                            # Can't parse timestamp - if using aggregation, aggregate anyway
+                                            if use_aggregation and cache_timeframe == "1m":
+                                                logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol}, aggregating to {timeframe}...")
+                                                aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
+                                                logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
+                                                result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
+                                                metrics_tracker = get_metrics_tracker(db=self.db)
+                                                metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
+                                                return result
+                                            else:
+                                                logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
+                                                metrics_tracker = get_metrics_tracker(db=self.db)
+                                                metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                                return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                                    except Exception as parse_err:
+                                        logger.debug(f"Could not parse cached bar timestamp: {parse_err}")
+                                        # If using aggregation, try to aggregate anyway
+                                        if use_aggregation and cache_timeframe == "1m":
+                                            logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol}, aggregating to {timeframe}...")
+                                            aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
+                                            logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
+                                            result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
+                                            metrics_tracker = get_metrics_tracker(db=self.db)
+                                            metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
+                                            return result
+                                        else:
+                                            logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
+                                            metrics_tracker = get_metrics_tracker(db=self.db)
+                                            metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
+                                            return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
+                                else:
+                                    # No cached bars
+                                    logger.debug(f"📉 DB Cache empty for {symbol} {cache_timeframe}")
                         else:
                             logger.debug(f"📉 DB Cache PARTIAL: Only {len(cached_bars) if cached_bars else 0} bars "
                                        f"(need {limit}), will fetch from API")
@@ -6249,17 +6511,24 @@ class TopStepXTradingBot:
                 return []
             
             # Log token status for debugging
-            from datetime import datetime, timezone
             if self.token_expiry:
                 time_remaining = (self.token_expiry - datetime.now(timezone.utc)).total_seconds() / 60
                 logger.info(f"Token valid - expires in {time_remaining:.1f} minutes")
             
-            # Parse timeframe to API format
+            # If using aggregation, calculate how many 1m bars we need
+            if use_aggregation:
+                # Calculate how many 1m bars we need for the target timeframe
+                bars_needed = (target_seconds // 60) * limit * 2  # Extra buffer for gaps
+                original_limit = limit
+                limit = min(bars_needed, 20000)  # Cap at API limit
+                logger.info(f"📊 Need {limit} 1m bars to create {original_limit} {timeframe} bars")
+            
+            # Parse timeframe to API format (for source timeframe)
             # Supports: 1s, 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w, etc.
-            unit, unit_number, time_delta_func = self._parse_timeframe(timeframe)
+            unit, unit_number, time_delta_func = self._parse_timeframe(source_timeframe)
             
             if unit is None:
-                logger.error(f"Invalid timeframe: {timeframe}")
+                logger.error(f"Invalid source timeframe: {source_timeframe}")
                 return []
             
             # Get contract ID for the symbol
@@ -6269,10 +6538,10 @@ class TopStepXTradingBot:
             # Calculate time range for the request
             from datetime import datetime, timedelta, timezone
             
-            # Determine end time: use provided end_time, or last market close, or now
+            # Determine end time: use provided end_time, or current time for real-time data
             if end_time is None:
-                end_time = self._get_last_market_close()
-                logger.info(f"Using last market close as end time: {end_time}")
+                end_time = datetime.now(timezone.utc)
+                logger.info(f"Using current time as end time: {end_time}")
             elif end_time.tzinfo is None:
                 # Assume UTC if no timezone provided
                 end_time = end_time.replace(tzinfo=timezone.utc)
@@ -6446,9 +6715,24 @@ class TopStepXTradingBot:
                 }
                 parsed_bars.append(parsed_bar)
             
-            # Sort by timestamp and filter based on mode
+            # Sort by timestamp
             parsed_bars.sort(key=lambda b: b.get("timestamp", ""))
             
+            # Store original limit for final result
+            original_limit = limit
+            
+            # Store 1m source bars before aggregation (for caching)
+            source_1m_bars = None
+            if use_aggregation and source_timeframe == "1m":
+                source_1m_bars = parsed_bars.copy()  # Save before aggregation
+            
+            # If we're using aggregation strategy, aggregate 1m bars to target timeframe
+            if use_aggregation and source_timeframe == "1m":
+                logger.info(f"📊 Aggregating {len(parsed_bars)} 1m bars into {timeframe} bars...")
+                parsed_bars = self._aggregate_bars(parsed_bars, timeframe)
+                logger.info(f"✅ Aggregated to {len(parsed_bars)} {timeframe} bars")
+            
+            # Filter based on mode (after aggregation)
             if start_time is not None:
                 # Date range mode - filter to exact date range
                 from datetime import datetime
@@ -6466,21 +6750,34 @@ class TopStepXTradingBot:
                         result_bars.append(bar)
                 logger.info(f"Date range filter: {len(result_bars)} bars between {start_time} and {end_time}")
             else:
-                # Bar count mode - take the most recent N bars
-                result_bars = parsed_bars[-limit:] if len(parsed_bars) > limit else parsed_bars
+                # Bar count mode - take the most recent N bars (use original limit)
+                result_bars = parsed_bars[-original_limit:] if len(parsed_bars) > original_limit else parsed_bars
             
             logger.debug(f"[REST API] Found {len(result_bars)} historical bars")
             
             # Save to in-memory cache for future use (legacy)
+            # Use original timeframe for cache key, not source timeframe
+            original_cache_key = self._get_cache_key(symbol, timeframe)
             if parsed_bars:
-                self._save_to_cache(cache_key, parsed_bars)
+                self._save_to_cache(original_cache_key, result_bars)  # Cache aggregated bars
             
             # Save to PostgreSQL database cache (persistent, survives restarts)
+            # Save both 1m source data and aggregated timeframe data
             if parsed_bars and self.db:
                 try:
-                    cached_count = self.db.cache_historical_bars(symbol, timeframe, parsed_bars)
+                    # Save aggregated bars for the requested timeframe
+                    cached_count = self.db.cache_historical_bars(symbol, timeframe, result_bars)
                     if cached_count > 0:
-                        logger.info(f"💾 Saved {cached_count} bars to database cache")
+                        logger.info(f"💾 Saved {cached_count} bars to database cache for {symbol} {timeframe}")
+                    
+                    # Also save 1m source data if we used aggregation (for future use)
+                    if use_aggregation and source_timeframe == "1m" and source_1m_bars:
+                        try:
+                            source_cached = self.db.cache_historical_bars(symbol, "1m", source_1m_bars)
+                            if source_cached > 0:
+                                logger.debug(f"💾 Also cached {source_cached} 1m source bars for future aggregation")
+                        except Exception as e:
+                            logger.debug(f"Failed to cache 1m source data: {e}")
                 except Exception as db_err:
                     logger.debug(f"Failed to cache to database (non-critical): {db_err}")
             
@@ -8527,18 +8824,31 @@ class TopStepXTradingBot:
                                 # Get timestamp - prioritize parsed 'time'/'timestamp' keys
                                 time = bar.get('time') or bar.get('timestamp') or ''
                                 
-                                # Format timestamp nicely (just date and time, no microseconds)
+                                # Format timestamp nicely (convert UTC to ET for display)
                                 if time:
                                     if len(str(time)) > 19:
                                         try:
-                                            # Parse ISO format and format nicely
+                                            # Parse ISO format and convert to ET for display
                                             from datetime import datetime as _dt
+                                            import pytz
                                             dt = _dt.fromisoformat(str(time).replace('Z', '+00:00'))
-                                            time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                            # Ensure timezone-aware (UTC)
+                                            if dt.tzinfo is None:
+                                                dt = dt.replace(tzinfo=timezone.utc)
+                                            # Convert to ET
+                                            et_tz = pytz.timezone('America/New_York')
+                                            dt_et = dt.astimezone(et_tz)
+                                            time = dt_et.strftime('%Y-%m-%d %H:%M:%S ET')
                                         except Exception as e:
-                                            # Keep original if parsing fails
-                                            logger.debug(f"Failed to format timestamp {time}: {e}")
-                                            time = str(time)[:19] if len(str(time)) > 19 else str(time)
+                                            # Fallback: show UTC time if conversion fails
+                                            try:
+                                                dt = _dt.fromisoformat(str(time).replace('Z', '+00:00'))
+                                                if dt.tzinfo is None:
+                                                    dt = dt.replace(tzinfo=timezone.utc)
+                                                time = dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+                                            except:
+                                                time = str(time)[:19] if len(str(time)) > 19 else str(time)
+                                            logger.debug(f"Failed to convert timestamp to ET {time}: {e}")
                                 else:
                                     time = "N/A"
                                     logger.debug(f"Empty timestamp in bar display. Bar keys: {list(bar.keys())}")

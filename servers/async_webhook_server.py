@@ -2125,8 +2125,34 @@ class AsyncWebhookServer:
                         logger.warning(f"⚠️  Could not ensure quote subscription for {symbol}: {e}")
                 if hasattr(self.trading_bot, 'bar_aggregator') and self.trading_bot.bar_aggregator:
                     try:
-                        self.trading_bot.bar_aggregator.register_timeframes(symbol, [timeframe])
-                        logger.debug(f"📊 Registered timeframe {timeframe} for {symbol} in bar aggregator")
+                        # Determine if we're using 1m aggregation for this timeframe
+                        # Parse timeframe to check if it's > 1m
+                        def parse_timeframe_to_seconds(tf: str) -> int:
+                            tf = tf.strip().lower()
+                            if tf.endswith('s'):
+                                return int(tf[:-1])
+                            elif tf.endswith('m'):
+                                return int(tf[:-1]) * 60
+                            elif tf.endswith('h'):
+                                return int(tf[:-1]) * 3600
+                            elif tf.endswith('d'):
+                                return int(tf[:-1]) * 86400
+                            elif tf.endswith('w'):
+                                return int(tf[:-1]) * 604800
+                            elif tf.endswith('M'):
+                                return int(tf[:-1]) * 2592000
+                            return 60  # Default to 1 minute
+                        
+                        target_seconds = parse_timeframe_to_seconds(timeframe)
+                        timeframes_to_register = [timeframe]
+                        
+                        # If timeframe > 1m, also register 1m for aggregation source
+                        if target_seconds > 60:
+                            timeframes_to_register.append('1m')
+                            logger.debug(f"📊 Using 1m aggregation for {timeframe}: registering both {timeframe} and 1m timeframes")
+                        
+                        self.trading_bot.bar_aggregator.register_timeframes(symbol, timeframes_to_register)
+                        logger.debug(f"📊 Registered timeframes {timeframes_to_register} for {symbol} in bar aggregator")
                     except Exception as agg_err:
                         logger.warning(f"⚠️  Could not register timeframe {timeframe} for {symbol}: {agg_err}")
             
@@ -2435,10 +2461,24 @@ async def main():
     logger.info("🤖 Initializing trading bot...")
     trading_bot = TopStepXTradingBot(api_key=api_key, username=username)
     
-    # Authenticate
+    # Authenticate with retry logic
     logger.info("🔐 Authenticating...")
-    if not await trading_bot.authenticate():
-        logger.error("❌ Authentication failed")
+    max_auth_retries = 3
+    auth_success = False
+    for attempt in range(1, max_auth_retries + 1):
+        if await trading_bot.authenticate():
+            auth_success = True
+            break
+        else:
+            if attempt < max_auth_retries:
+                wait_time = attempt * 5  # Exponential backoff: 5s, 10s, 15s
+                logger.warning(f"⚠️  Authentication failed (attempt {attempt}/{max_auth_retries}), retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error("❌ Authentication failed after all retries")
+    
+    if not auth_success:
+        logger.error("❌ Authentication failed - cannot start server")
         sys.exit(1)
     
     # Select account
