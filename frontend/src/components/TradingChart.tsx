@@ -131,7 +131,7 @@ export default function TradingChart({
   // Fetch historical data - refresh periodically to get latest bars
   // Include timestamp in query key to prevent stale cache usage
   const currentTime = new Date().toISOString()
-  const { data, isLoading, refetch, isRefetching } = useQuery<HistoricalDataResponse>(
+  const { data, isLoading, refetch, isRefetching, error } = useQuery<HistoricalDataResponse, Error>(
     ['tradingChartData', symbol, timeframe, barLimit, currentTime],
     () =>
       analyticsApi.getHistoricalData({
@@ -147,6 +147,23 @@ export default function TradingChart({
       refetchInterval: 60_000, // Refresh every 60 seconds to get latest historical bars
       // Real-time updates via WebSocket handle live bar updates, but we still need
       // periodic refresh to catch any missed bars or new completed bars
+      onError: (err) => {
+        console.error('[TradingChart] Error fetching historical data:', err)
+      },
+      onSuccess: (response) => {
+        console.log('[TradingChart] Historical data fetched:', {
+          symbol,
+          timeframe,
+          barCount: response?.bars?.length || 0,
+        })
+        // Check if response has error property (API might return error in response)
+        if (response && typeof response === 'object' && 'error' in response) {
+          const responseWithError = response as HistoricalDataResponse & { error?: string }
+          if (responseWithError.error) {
+            console.error('[TradingChart] API returned error:', responseWithError.error)
+          }
+        }
+      },
     }
   )
   
@@ -426,6 +443,20 @@ export default function TradingChart({
       return { ...config, data: maLineData }
     })
   }, [chartData])
+
+  // OHLC Display data
+  const ohlcDisplay = useMemo<{ displayBar: HistoricalBar; change: number; changePercentValue: number; changePercent: string } | null>(() => {
+    if (!data || data.bars.length === 0 || !chartInitialized) {
+      return null
+    }
+    // Use hovered bar if crosshair is over a bar, otherwise use latest bar
+    const displayBar = hoveredBar || data.bars[data.bars.length - 1]
+    const change = displayBar.close - displayBar.open
+    const changePercentValue = (change / displayBar.open) * 100
+    const changePercent = changePercentValue.toFixed(2)
+    
+    return { displayBar, change, changePercentValue, changePercent }
+  }, [data, chartInitialized, hoveredBar])
 
   // Update chart data when data changes (including timeframe/barLimit changes)
   useEffect(() => {
@@ -900,41 +931,33 @@ export default function TradingChart({
         <div ref={chartContainerRef} className="rounded overflow-hidden" style={{ minHeight: height }} />
         
         {/* OHLC Display - Top Left Overlay (TopStepX Style) - Shows bar under crosshair */}
-        {data && data.bars.length > 0 && chartInitialized && (() => {
-          // Use hovered bar if crosshair is over a bar, otherwise use latest bar
-          const displayBar = hoveredBar || data.bars[data.bars.length - 1]
-          const change = displayBar.close - displayBar.open
-          const changePercentValue = (change / displayBar.open) * 100
-          const changePercent = changePercentValue.toFixed(2)
-          
-          return (
-            <div className="absolute top-2 left-2 z-10 bg-slate-900/90 backdrop-blur-sm rounded px-3 py-2 text-xs font-mono border border-slate-700">
-              <div className="flex items-center gap-4">
-                <span className="text-slate-400">
-                  <span className="text-slate-500">O</span>{' '}
-                  <span className="text-slate-300">{displayBar.open.toFixed(2)}</span>
+        {ohlcDisplay && (
+          <div className="absolute top-2 left-2 z-10 bg-slate-900/90 backdrop-blur-sm rounded px-3 py-2 text-xs font-mono border border-slate-700">
+            <div className="flex items-center gap-4">
+              <span className="text-slate-400">
+                <span className="text-slate-500">O</span>{' '}
+                <span className="text-slate-300">{ohlcDisplay.displayBar.open.toFixed(2)}</span>
+              </span>
+              <span className="text-slate-400">
+                <span className="text-slate-500">H</span>{' '}
+                <span className="text-green-400">{ohlcDisplay.displayBar.high.toFixed(2)}</span>
+              </span>
+              <span className="text-slate-400">
+                <span className="text-slate-500">L</span>{' '}
+                <span className="text-red-400">{ohlcDisplay.displayBar.low.toFixed(2)}</span>
+              </span>
+              <span className="text-slate-400">
+                <span className="text-slate-500">C</span>{' '}
+                <span className={ohlcDisplay.change >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  {ohlcDisplay.displayBar.close.toFixed(2)}
                 </span>
-                <span className="text-slate-400">
-                  <span className="text-slate-500">H</span>{' '}
-                  <span className="text-green-400">{displayBar.high.toFixed(2)}</span>
-                </span>
-                <span className="text-slate-400">
-                  <span className="text-slate-500">L</span>{' '}
-                  <span className="text-red-400">{displayBar.low.toFixed(2)}</span>
-                </span>
-                <span className="text-slate-400">
-                  <span className="text-slate-500">C</span>{' '}
-                  <span className={change >= 0 ? 'text-green-400' : 'text-red-400'}>
-                    {displayBar.close.toFixed(2)}
-                  </span>
-                </span>
-                <span className={`ml-2 ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePercentValue >= 0 ? '+' : ''}{changePercent}%)
-                </span>
-              </div>
+              </span>
+              <span className={`ml-2 ${ohlcDisplay.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {ohlcDisplay.change >= 0 ? '+' : ''}{ohlcDisplay.change.toFixed(2)} ({ohlcDisplay.changePercentValue >= 0 ? '+' : ''}{ohlcDisplay.changePercent}%)
+              </span>
             </div>
-          )
-        })()}
+          </div>
+        )}
 
         {/* Live Data Indicator - Green Circle (TopStepX Style) */}
         {chartInitialized && (
@@ -944,12 +967,34 @@ export default function TradingChart({
           </div>
         )}
 
-        {(!data || data.bars.length === 0) && !isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm bg-slate-900/70">
-            No data available for {symbol}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center text-red-400 text-sm bg-slate-900/70 z-20">
+            <div className="flex flex-col items-center gap-2 max-w-md text-center px-4">
+              <div className="text-red-500 font-semibold">Error loading chart data</div>
+              <div className="text-xs text-slate-400">{error instanceof Error ? error.message : String(error)}</div>
+              <button
+                onClick={() => refetch()}
+                className="mt-2 px-4 py-2 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"
+              >
+                Retry
+              </button>
+            </div>
           </div>
         )}
-        {(isLoading || !chartInitialized) && (
+        {(!data || data.bars.length === 0) && !isLoading && !error && (
+          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm bg-slate-900/70">
+            <div className="flex flex-col items-center gap-2">
+              <div>No data available for {symbol}</div>
+              <button
+                onClick={() => refetch()}
+                className="px-4 py-2 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+        )}
+        {(isLoading || !chartInitialized) && !error && (
           <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm bg-slate-900/70">
             <div className="flex flex-col items-center gap-2">
               <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
