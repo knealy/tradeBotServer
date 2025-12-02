@@ -129,17 +129,20 @@ export default function TradingChart({
   const chartTheme = useChartTheme({ theme: 'dark', height })
 
   // Fetch historical data - refresh periodically to get latest bars
-  // Include timestamp in query key to prevent stale cache usage
-  const currentTime = new Date().toISOString()
+  // Use stable query key (without timestamp) to prevent constant refetches
+  // The refetchInterval will handle periodic updates
   const { data, isLoading, refetch, isRefetching, error } = useQuery<HistoricalDataResponse, Error>(
-    ['tradingChartData', symbol, timeframe, barLimit, currentTime],
-    () =>
-      analyticsApi.getHistoricalData({
+    ['tradingChartData', symbol, timeframe, barLimit],
+    () => {
+      // Always use current time for the API request to get latest data
+      const currentTime = new Date().toISOString()
+      return analyticsApi.getHistoricalData({
         symbol,
         timeframe,
         limit: barLimit,
         end: currentTime, // Always use current time for latest data
-      }),
+      })
+    },
     {
       enabled: Boolean(symbol),
       staleTime: 0, // Always consider data stale to force fresh fetches
@@ -380,8 +383,22 @@ export default function TradingChart({
 
   // Memoize chart data to prevent unnecessary recalculations
   const chartData = useMemo(() => {
+    console.log('[TradingChart] chartData useMemo triggered:', {
+      hasData: !!data,
+      dataType: typeof data,
+      hasBars: !!data?.bars,
+      barCount: data?.bars?.length || 0,
+      dataKeys: data ? Object.keys(data) : [],
+      isLoading,
+      error: error?.message,
+    })
+    
     if (!data?.bars || data.bars.length === 0) {
-      console.log('[TradingChart] No data or empty bars array:', { hasData: !!data, barCount: data?.bars?.length || 0 })
+      console.log('[TradingChart] No data or empty bars array:', { 
+        hasData: !!data, 
+        barCount: data?.bars?.length || 0,
+        dataStructure: data ? JSON.stringify(data).substring(0, 200) : 'null'
+      })
       return null
     }
 
