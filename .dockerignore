@@ -41,13 +41,22 @@ docs/
 .git/
 .gitignore
 
-# Frontend source (we only need built files)
-frontend/src/
+# Frontend - exclude node_modules but include source files for building
 frontend/node_modules/
+# Exclude JSON files except package files and configs
 frontend/*.json
-frontend/*.config.*
 !frontend/package.json
 !frontend/package-lock.json
+!frontend/tsconfig.json
+!frontend/tsconfig.node.json
+# Exclude config files except build configs
+frontend/*.config.*
+!frontend/vite.config.ts
+!frontend/tailwind.config.js
+!frontend/postcss.config.js
+# Exclude other frontend files we don't need
+frontend/QUICK_START.md
+frontend/README.md
 
 # Temporary files
 *.tmp
