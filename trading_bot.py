@@ -6320,9 +6320,16 @@ class TopStepXTradingBot:
             
             # For small limits (1-5 bars) on short timeframes, bypass cache or use very short TTL
             # This ensures real-time monitoring gets fresh data
+            # For sub-1-minute timeframes, ALWAYS bypass cache to get fresh data up to current time
             use_fresh_data = False
             short_timeframes = ['1s', '5s', '10s', '15s', '30s', '1m', '2m', '3m', '5m', '10m', '15m']
-            if limit <= 5 and timeframe in short_timeframes:
+            sub_minute_timeframes = ['1s', '5s', '10s', '15s', '30s']
+            
+            # Sub-1-minute timeframes always need fresh data to show current time
+            if timeframe in sub_minute_timeframes:
+                use_fresh_data = True
+                logger.info(f"📊 Sub-1-minute timeframe ({timeframe}) - bypassing cache to get fresh data up to current time")
+            elif limit <= 5 and timeframe in short_timeframes:
                 use_fresh_data = True
                 logger.debug(f"Small limit ({limit}) on short timeframe ({timeframe}) - fetching fresh data")
             

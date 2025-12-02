@@ -259,16 +259,40 @@ export default function TradingChart({
     }
   }, [])
 
-  // Format stopclock time
+  // Format stopclock time - starts at full timeframe duration and counts down
   const formatStopclock = useMemo(() => {
-    if (!nextBarTime) return null
+    if (!nextBarTime || !timeframe) return null
+    
     const now = Date.now()
-    const diff = Math.max(0, nextBarTime - now)
-    const seconds = Math.floor(diff / 1000)
-    const minutes = Math.floor(seconds / 60)
-    const secs = seconds % 60
+    
+    // Parse timeframe to get full duration in milliseconds
+    const tf = timeframe.toLowerCase().trim()
+    let intervalMs = 0
+    
+    if (tf.endsWith('s')) {
+      intervalMs = parseInt(tf.slice(0, -1)) * 1000
+    } else if (tf.endsWith('m')) {
+      intervalMs = parseInt(tf.slice(0, -1)) * 60 * 1000
+    } else if (tf.endsWith('h')) {
+      intervalMs = parseInt(tf.slice(0, -1)) * 60 * 60 * 1000
+    }
+    
+    if (intervalMs === 0) return null
+    
+    // Calculate how much time has elapsed in the current bar period
+    const currentBarStart = Math.floor(now / intervalMs) * intervalMs
+    const elapsedInCurrentBar = now - currentBarStart
+    
+    // Calculate remaining time in current bar (countdown from full duration)
+    const remainingMs = intervalMs - elapsedInCurrentBar
+    const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000))
+    
+    // Format as MM:SS
+    const minutes = Math.floor(remainingSeconds / 60)
+    const secs = remainingSeconds % 60
+    
     return `${minutes}:${secs.toString().padStart(2, '0')}`
-  }, [nextBarTime])
+  }, [nextBarTime, timeframe])
 
   // Initialize chart
   useLayoutEffect(() => {
@@ -623,8 +647,7 @@ export default function TradingChart({
     }
 
     const calculateNextBarTime = () => {
-      const lastBar = data.bars[data.bars.length - 1]
-      const lastBarTime = new Date(lastBar.timestamp).getTime()
+      const now = Date.now()
       
       // Parse timeframe to get interval in milliseconds
       const tf = timeframe.toLowerCase().trim()
@@ -639,10 +662,10 @@ export default function TradingChart({
       }
       
       if (intervalMs > 0) {
-        // Calculate the start of the current bar period
-        const barStart = Math.floor(lastBarTime / intervalMs) * intervalMs
+        // Calculate the start of the current bar period based on current time
+        const currentBarStart = Math.floor(now / intervalMs) * intervalMs
         // Next bar starts at the next interval
-        const nextBar = barStart + intervalMs
+        const nextBar = currentBarStart + intervalMs
         setNextBarTime(nextBar)
       }
     }
