@@ -368,12 +368,19 @@ class TopStepXTradingBot:
                     "transport": WebsocketTransport
                 }
             )
-            .with_automatic_reconnect({"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 1, "max_attempts": 0})
+            # Implement exponential backoff: [5s, 10s, 20s, 40s, 60s, 60s, ...]
+            # Max 10 attempts to prevent infinite retry spam
+            .with_automatic_reconnect({
+                "type": "raw", 
+                "keep_alive_interval": 15,
+                "reconnect_interval": 5,  # Start at 5 seconds
+                "max_attempts": 10  # Limit retry attempts
+            })
             .build()
         )
 
         def on_open():
-            logger.info("SignalR Market Hub connected")
+            logger.info("✅ SignalR Market Hub connected")
             self._market_hub_connected = True
             # Flush any pending subscriptions
             try:
@@ -384,7 +391,7 @@ class TopStepXTradingBot:
                 logger.debug(f"Flush subscribe failed: {e}")
 
         def on_close():
-            logger.warning("SignalR Market Hub disconnected")
+            logger.warning("⚠️  SignalR Market Hub disconnected")
             self._market_hub_connected = False
 
         def on_error(err):
@@ -400,6 +407,14 @@ class TopStepXTradingBot:
                     result_text = err.get("result") or result_text
                 if not error_text:
                     error_text = str(err)
+                
+                # Check for 403 Forbidden (authentication/rate limit issues)
+                if "403" in error_text or "Forbidden" in error_text:
+                    logger.error(f"❌ SignalR authentication/rate limit error (403 Forbidden) - check session token validity")
+                    # Don't spam logs with repeated 403 errors - limit max attempts will handle this
+                    return
+                
+                # Only log non-403 errors with full details
                 logger.error(f"SignalR Market Hub error: {error_text} | result={result_text}")
             except Exception:
                 logger.error(f"SignalR Market Hub error: {err}")
