@@ -392,7 +392,7 @@ export default function PositionsPage() {
   const hasError = positionsError || ordersError
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 overflow-x-hidden max-w-full">
       {/* Network Error Warning */}
       {hasError && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">
@@ -414,7 +414,7 @@ export default function PositionsPage() {
       )}
 
       {/* Price Chart Container */}
-      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 space-y-4">
+      <div className="bg-slate-800 rounded-lg p-3 sm:p-6 border border-slate-700 space-y-4 overflow-x-hidden">
         <TradingChart 
           symbol="MNQ"
           positions={positions}
@@ -425,78 +425,81 @@ export default function PositionsPage() {
         />
         
         {/* Trading Actions - Right below chart info bar */}
-        <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
+        <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm overflow-x-hidden">
         {/* Collapsible Header */}
         <button
           type="button"
           onClick={() => setIsTabbedOpen((prev) => !prev)}
-          className="w-full flex items-center justify-between px-4 py-3"
+          className="w-full flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3"
         >
-          <div className="flex items-center gap-3 text-left">
-            <div>
-              <p className="text-sm font-semibold text-slate-200">Trading Actions</p>
-              <p className="text-xs text-slate-400">Order Ticket, Positions, Orders, Automation</p>
+          <div className="flex items-center gap-2 sm:gap-3 text-left min-w-0">
+            <div className="min-w-0">
+              <p className="text-xs sm:text-sm font-semibold text-slate-200 truncate">Trading Actions</p>
+              <p className="text-xs text-slate-400 hidden sm:block">Order Ticket, Positions, Orders, Automation</p>
             </div>
           </div>
-          {isTabbedOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+          {isTabbedOpen ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
         </button>
 
         {isTabbedOpen && (
           <>
             {/* Tabs */}
-            <div className="flex items-center gap-1 border-b border-slate-700/50 px-4 pt-2">
+            <div className="flex items-center gap-1 border-b border-slate-700/50 px-2 sm:px-4 pt-2 overflow-x-auto">
           <button
             type="button"
             onClick={() => setActiveTab('order')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
+            className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
               activeTab === 'order'
                 ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
-            <ShoppingCart className="w-4 h-4" />
-            <span>Order Ticket</span>
+            <ShoppingCart className="w-3 h-3 sm:w-4 sm:h-4" />
+            <span className="hidden xs:inline">Order Ticket</span>
+            <span className="xs:hidden">Order</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('positions')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
+            className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
               activeTab === 'positions'
                 ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
-            <TrendingUp className="w-4 h-4" />
-            <span>Positions ({positions.length})</span>
+            <TrendingUp className="w-3 h-3 sm:w-4 sm:h-4" />
+            <span className="hidden sm:inline">Positions ({positions.length})</span>
+            <span className="sm:hidden">Pos ({positions.length})</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('orders')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
+            className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
               activeTab === 'orders'
                 ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
-            <Edit className="w-4 h-4" />
-            <span>Orders ({orders.length})</span>
+            <Edit className="w-3 h-3 sm:w-4 sm:h-4" />
+            <span className="hidden sm:inline">Orders ({orders.length})</span>
+            <span className="sm:hidden">Ord ({orders.length})</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('automation')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
+            className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
               activeTab === 'automation'
                 ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
-            <Zap className="w-4 h-4" />
+            <Zap className="w-3 h-3 sm:w-4 sm:h-4" />
             <span>Automation</span>
           </button>
         </div>
 
             {/* Tab Content */}
-            <div className="p-4">
+            <div className="p-3 sm:p-4 overflow-x-hidden">
           {/* Order Ticket Tab */}
           {activeTab === 'order' && <OrderTicket noWrapper={true} />}
 
@@ -577,36 +580,36 @@ export default function PositionsPage() {
                     return (
                       <div
                         key={position.id || `${position.symbol}-${position.entry_price}`}
-                        className="p-4 bg-slate-700/50 rounded-lg border border-slate-600 hover:border-slate-500 transition-colors"
+                        className="p-3 sm:p-4 bg-slate-700/50 rounded-lg border border-slate-600 hover:border-slate-500 transition-colors overflow-x-hidden"
                       >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-3">
-                            <div className={`px-2 py-1 rounded text-xs font-medium ${
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mb-2">
+                          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                            <div className={`px-2 py-1 rounded text-xs font-medium shrink-0 ${
                               isLong ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                             }`}>
                               {position.side}
                             </div>
-                            <span className="font-semibold">{position.symbol}</span>
-                            <span className="text-slate-400 text-sm">x{Number(position.quantity ?? 0)}</span>
+                            <span className="font-semibold text-sm sm:text-base">{position.symbol}</span>
+                            <span className="text-slate-400 text-xs sm:text-sm">x{Number(position.quantity ?? 0)}</span>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                             <div className={`flex items-center gap-1 ${pnlColor}`}>
-                              <PnlIcon className="w-4 h-4" />
-                              <span className="font-semibold">
+                              <PnlIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                              <span className="font-semibold text-sm sm:text-base">
                                 ${unrealized.toFixed(2)}
                               </span>
                             </div>
                             <button
                               onClick={() => handleClosePosition(position.id)}
-                              className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
+                              className="px-2 sm:px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1 shrink-0"
                               disabled={!canControl || closePositionMutation.isLoading}
                             >
                               <Trash2 className="w-3 h-3" />
-                              Close
+                              <span className="whitespace-nowrap">Close</span>
                             </button>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4 text-sm">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2 sm:gap-3 md:gap-4 text-xs sm:text-sm">
                           <div>
                             <p className="text-slate-400">Entry</p>
                             <p className="font-semibold">${entryPrice.toFixed(2)}</p>
@@ -660,7 +663,7 @@ export default function PositionsPage() {
                             </p>
                           </div>
                         </div>
-                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <div>
                             <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Stop Loss</p>
                             <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -673,12 +676,12 @@ export default function PositionsPage() {
                                   }
                                 }}
                                 placeholder="New stop price"
-                                className="w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                                className="w-24 sm:w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
                                 disabled={!canControl}
                               />
                               <button
                                 onClick={() => handleStopLossUpdate(position)}
-                                className="px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors"
+                                className="px-2 sm:px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors whitespace-nowrap shrink-0"
                                 disabled={!canControl || modifyStopLossMutation.isLoading}
                               >
                                 Update SL
@@ -697,12 +700,12 @@ export default function PositionsPage() {
                                   }
                                 }}
                                 placeholder="New target price"
-                                className="w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                                className="w-24 sm:w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
                                 disabled={!canControl}
                               />
                               <button
                                 onClick={() => handleTakeProfitUpdate(position)}
-                                className="px-3 py-1 text-xs bg-green-500/20 text-green-300 rounded hover:bg-green-500/30 transition-colors"
+                                className="px-2 sm:px-3 py-1 text-xs bg-green-500/20 text-green-300 rounded hover:bg-green-500/30 transition-colors whitespace-nowrap shrink-0"
                                 disabled={!canControl || modifyTakeProfitMutation.isLoading}
                               >
                                 Update TP
@@ -710,7 +713,7 @@ export default function PositionsPage() {
                             </div>
                           </div>
                         </div>
-                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <div className="mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
                           <div className="flex items-center gap-2">
                             <input
                               type="number"
@@ -833,30 +836,30 @@ export default function PositionsPage() {
                       ? `${stopLoss ? `SL $${stopLoss.toFixed(2)}` : ''}${stopLoss && takeProfit ? ' / ' : ''}${takeProfit ? `TP $${takeProfit.toFixed(2)}` : ''}`
                       : '—'
 
-                    return (
-                      <div
-                        key={order.id}
-                        className="p-4 bg-slate-700/50 rounded-lg border border-slate-600 hover:border-slate-500 transition-colors"
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-3">
-                            <div className={`px-2 py-1 rounded text-xs font-medium ${
-                              isBuy ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                            }`}>
-                              {order.side}
-                            </div>
-                            <span className="font-semibold">{order.symbol}</span>
-                            <span className="text-slate-400 text-sm">x{Number(order.quantity ?? 0)}</span>
-                            <span className={`px-2 py-1 rounded text-xs ${
-                              status === 'FILLED' ? 'bg-green-500/20 text-green-400' :
-                              status === 'CANCELLED' ? 'bg-red-500/20 text-red-400' :
-                              'bg-yellow-500/20 text-yellow-400'
-                            }`}>
-                              {status}
-                            </span>
-                          </div>
-                          {canModify && (
-                            <div className="flex items-center gap-2">
+                            return (
+                              <div
+                                key={order.id}
+                                className="p-3 sm:p-4 bg-slate-700/50 rounded-lg border border-slate-600 hover:border-slate-500 transition-colors overflow-x-hidden"
+                              >
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mb-2">
+                                  <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                                    <div className={`px-2 py-1 rounded text-xs font-medium shrink-0 ${
+                                      isBuy ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                    }`}>
+                                      {order.side}
+                                    </div>
+                                    <span className="font-semibold text-sm sm:text-base">{order.symbol}</span>
+                                    <span className="text-slate-400 text-xs sm:text-sm">x{Number(order.quantity ?? 0)}</span>
+                                    <span className={`px-2 py-1 rounded text-xs shrink-0 ${
+                                      status === 'FILLED' ? 'bg-green-500/20 text-green-400' :
+                                      status === 'CANCELLED' ? 'bg-red-500/20 text-red-400' :
+                                      'bg-yellow-500/20 text-yellow-400'
+                                    }`}>
+                                      {status}
+                                    </span>
+                                  </div>
+                                  {canModify && (
+                                    <div className="flex items-center gap-2 flex-wrap">
                               {editingOrder?.id === order.id ? (
                                 <>
                                   <input
@@ -864,18 +867,18 @@ export default function PositionsPage() {
                                     value={modifyPrice}
                                     onChange={(e) => setModifyPrice(e.target.value)}
                                     placeholder="Price"
-                                    className="w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                                    className="w-18 sm:w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
                                   />
                                   <input
                                     type="number"
                                     value={modifyQuantity}
                                     onChange={(e) => setModifyQuantity(e.target.value)}
                                     placeholder="Qty"
-                                    className="w-16 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                                    className="w-14 sm:w-16 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
                                   />
                                   <button
                                     onClick={handleSaveModify}
-                                    className="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors"
+                                    className="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors whitespace-nowrap shrink-0"
                                     disabled={modifyOrderMutation.isLoading}
                                   >
                                     Save
@@ -886,7 +889,7 @@ export default function PositionsPage() {
                                       setModifyPrice('')
                                       setModifyQuantity('')
                                     }}
-                                    className="px-2 py-1 text-xs bg-slate-600 text-slate-300 rounded hover:bg-slate-500 transition-colors"
+                                    className="px-2 py-1 text-xs bg-slate-600 text-slate-300 rounded hover:bg-slate-500 transition-colors whitespace-nowrap shrink-0"
                                   >
                                     Cancel
                                   </button>

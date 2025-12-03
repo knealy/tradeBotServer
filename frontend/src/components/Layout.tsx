@@ -23,7 +23,7 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       {/* Main Content Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-6 xl:px-8 py-4 sm:py-6 overflow-x-hidden">
         {/* Account Selector and Notifications - Above Navigation */}
         <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
           <div className="w-full sm:w-auto sm:max-w-md">
@@ -39,10 +39,10 @@ export default function Layout({ children }: LayoutProps) {
         </div>
 
         {/* Navigation Tabs and Page Content Wrapper */}
-        <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
+        <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-3 sm:p-4 lg:p-6 xl:p-8 backdrop-blur-sm space-y-4 sm:space-y-5 overflow-x-hidden">
           {/* Top Navigation Tabs */}
-          <nav>
-            <div className="flex items-center justify-center gap-1">
+          <nav className="overflow-x-auto -mx-3 sm:mx-0 px-3 sm:px-0">
+            <div className="flex items-center justify-center gap-1 min-w-max sm:min-w-0">
               {navItems.map((item) => {
                 const Icon = item.icon
                 const isActive = location.pathname === item.path
@@ -50,14 +50,14 @@ export default function Layout({ children }: LayoutProps) {
                   <Link
                     key={item.path}
                     to={item.path}
-                    className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
+                    className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
                       isActive
                         ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
                     }`}
                   >
-                    <Icon className="w-4 h-4" />
-                    <span className="hidden sm:inline">{item.label}</span>
+                    <Icon className="w-3 h-3 sm:w-4 sm:h-4" />
+                    <span className="hidden xs:inline">{item.label}</span>
                   </Link>
                 )
               })}

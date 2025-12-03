@@ -1274,31 +1274,31 @@ export default function TradingChart({
   ]
 
   return (
-    <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 space-y-4">
+    <div className="bg-slate-800 rounded-lg p-3 sm:p-6 border border-slate-700 space-y-4 overflow-x-hidden">
       {/* Chart Controls */}
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <h2 className="text-xl font-semibold text-slate-100">
+        <div className="flex flex-col gap-3">
+          <h2 className="text-lg sm:text-xl font-semibold text-slate-100">
             {symbol} Price Chart
           </h2>
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={handleRefresh}
               disabled={isRefetching}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-2"
+              className="px-2 sm:px-3 py-1 sm:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors flex items-center gap-1 sm:gap-2 shrink-0"
               title="Refresh chart data"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
-              Refresh
+              <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 ${isRefetching ? 'animate-spin' : ''}`} />
+              <span className="hidden xs:inline">Refresh</span>
             </button>
               <div className="flex items-center gap-1">
-                <span className="text-xs text-slate-400">Auto:</span>
+                <span className="text-xs text-slate-400 hidden sm:inline">Auto:</span>
                 <select
                   value={autoRefreshRate || ''}
                   onChange={(e) => setAutoRefreshRate(e.target.value ? parseInt(e.target.value) : null)}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  title="Auto-refresh rate (seconds, default uses timeframe-based rate)"
+                  className="bg-slate-900 border border-slate-700 rounded px-1.5 sm:px-2 py-1 sm:py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  title="Auto-refresh rate"
                 >
                   <option value="">Default</option>
                   <option value="1">1s</option>
@@ -1312,16 +1312,16 @@ export default function TradingChart({
             <input
               value={symbol}
               onChange={(event) => setSymbol(event.target.value.toUpperCase())}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="bg-slate-900 border border-slate-700 rounded px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 w-20 sm:w-auto"
               placeholder="Symbol"
               maxLength={10}
             />
-            <div className="flex gap-1 items-center">
+            <div className="flex gap-1 items-center overflow-x-auto pb-1 -mx-1 px-1">
               {TIMEFRAME_OPTIONS.map((option) => (
                 <button
                   key={option}
                   onClick={() => handleTimeframeChange(option)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+                  className={`px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded transition-colors shrink-0 ${
                     timeframe === option && !customTimeframe
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
@@ -1334,8 +1334,8 @@ export default function TradingChart({
                 type="text"
                 value={customTimeframe}
                 onChange={(e) => handleCustomTimeframe(e.target.value)}
-                placeholder="Custom (e.g., 10s, 3m)"
-                className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors w-24 ${
+                placeholder="Custom"
+                className={`px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded transition-colors w-20 sm:w-24 shrink-0 ${
                   customTimeframe && isValidTimeframe(customTimeframe)
                     ? 'bg-blue-600 text-white border-2 border-blue-400'
                     : customTimeframe
@@ -1349,14 +1349,14 @@ export default function TradingChart({
         </div>
 
         {/* Bar limit controls */}
-        <div className="flex items-center gap-3 text-sm flex-wrap">
-          <span className="text-slate-400">Bars:</span>
-          <div className="flex gap-1 items-center">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 text-sm">
+          <span className="text-slate-400 text-xs sm:text-sm shrink-0">Bars:</span>
+          <div className="flex gap-1 items-center overflow-x-auto pb-1 -mx-1 px-1">
             {BAR_LIMITS.map((limit) => (
               <button
                 key={limit.value}
                 onClick={() => handleBarLimitChange(limit.value)}
-                className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                className={`px-2 sm:px-3 py-1 text-xs font-semibold rounded transition-colors shrink-0 ${
                   barLimit === limit.value && !customBarLimit
                     ? 'bg-green-600 text-white'
                     : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
@@ -1372,7 +1372,7 @@ export default function TradingChart({
               placeholder="100-3000"
               min={100}
               max={3000}
-              className={`px-3 py-1 text-xs font-semibold rounded transition-colors w-20 ${
+              className={`px-2 sm:px-3 py-1 text-xs font-semibold rounded transition-colors w-18 sm:w-20 shrink-0 ${
                 customBarLimit && parseInt(customBarLimit) >= 100 && parseInt(customBarLimit) <= 3000
                   ? 'bg-green-600 text-white border-2 border-green-400'
                   : customBarLimit
@@ -1384,33 +1384,33 @@ export default function TradingChart({
           </div>
 
           {/* Toggle switches */}
-          <div className="flex items-center gap-4 ml-auto">
-            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+          <div className="flex items-center gap-2 sm:gap-4 sm:ml-auto flex-wrap">
+            <label className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-400 cursor-pointer shrink-0">
               <input
                 type="checkbox"
                 checked={showMAs}
                 onChange={(e) => setShowMAs(e.target.checked)}
-                className="rounded"
+                className="rounded w-3 h-3 sm:w-4 sm:h-4"
               />
-              Moving Averages
+              <span className="whitespace-nowrap">Moving Averages</span>
             </label>
-            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+            <label className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-400 cursor-pointer shrink-0">
               <input
                 type="checkbox"
                 checked={showPositions}
                 onChange={(e) => setShowPositions(e.target.checked)}
-                className="rounded"
+                className="rounded w-3 h-3 sm:w-4 sm:h-4"
               />
-              Show Positions
+              <span className="whitespace-nowrap">Show Positions</span>
             </label>
-            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+            <label className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-400 cursor-pointer shrink-0">
               <input
                 type="checkbox"
                 checked={showOrders}
                 onChange={(e) => setShowOrders(e.target.checked)}
-                className="rounded"
+                className="rounded w-3 h-3 sm:w-4 sm:h-4"
               />
-              Show Orders
+              <span className="whitespace-nowrap">Show Orders</span>
             </label>
           </div>
         </div>
@@ -1506,11 +1506,11 @@ export default function TradingChart({
 
       {/* Chart Info Footer */}
       {data && data.bars.length > 0 && (
-        <div className="flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 rounded px-4 py-2">
-          <div className="text-slate-500">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 sm:gap-0 text-xs text-slate-400 bg-slate-900/60 rounded px-3 sm:px-4 py-2">
+          <div className="text-slate-500 whitespace-nowrap">
             {positions.filter(p => p.symbol === symbol).length} position(s) • {orders.filter(o => o.symbol === symbol && o.status === 'PENDING').length} order(s)
           </div>
-          <div className="text-slate-500">
+          <div className="text-slate-500 whitespace-nowrap">
             {data.bars.length} bars • {timeframe} timeframe
           </div>
         </div>

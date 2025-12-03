@@ -400,7 +400,7 @@ export default function OrderTicket({ onOrderPlaced, noWrapper = false }: OrderT
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 pt-2">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 pt-2">
           <button
             type="submit"
             disabled={isSubmitting || disableActions}
