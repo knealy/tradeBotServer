@@ -4,6 +4,8 @@ import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import OrderTicket from '../components/OrderTicket'
 import TradingChart from '../components/TradingChart'
+import AccountSelector from '../components/AccountSelector'
+import NotificationsFeed from '../components/NotificationsFeed'
 import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info, Zap, Target, Play, ShoppingCart } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
@@ -11,33 +13,58 @@ import type { Position, Order } from '../types'
 type TabType = 'order' | 'automation' | 'positions' | 'orders'
 
 export default function PositionsPage() {
-  const { selectedAccount } = useAccount()
+  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
   const accountId = selectedAccount?.id
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<TabType>('order')
+  const [isTabbedOpen, setIsTabbedOpen] = useState(true)
+  const [positionsErrorCount, setPositionsErrorCount] = useState(0)
+  const [ordersErrorCount, setOrdersErrorCount] = useState(0)
   
   // Enable live market updates for positions/orders
   useMarketSocket()
 
-  // Fetch positions
-  const { data: positions = [], isLoading: positionsLoading } = useQuery<Position[]>(
+  // Fetch positions with more frequent updates
+  const { data: positions = [], isLoading: positionsLoading, isError: positionsError } = useQuery<Position[]>(
     ['positions', accountId],
     positionApi.getPositions,
     {
       enabled: !!accountId,
-      staleTime: 30_000,
-      refetchInterval: 10_000, // Refresh every 10 seconds
+      staleTime: 10_000, // 10 seconds stale time
+      // Pause refetching if we've had multiple consecutive errors
+      refetchInterval: positionsErrorCount > 2 ? false : 10_000, // Refresh every 10 seconds when healthy
+      retry: 1, // Only retry once on failure
+      retryDelay: 5000, // Wait 5 seconds before retry
+      refetchOnMount: true,
+      refetchOnWindowFocus: false,
+      onError: () => {
+        setPositionsErrorCount((prev) => prev + 1)
+      },
+      onSuccess: () => {
+        setPositionsErrorCount(0) // Reset error count on success
+      },
     }
   )
 
   // Fetch orders
-  const { data: orders = [], isLoading: ordersLoading } = useQuery<Order[]>(
+  const { data: orders = [], isLoading: ordersLoading, isError: ordersError } = useQuery<Order[]>(
     ['orders', accountId],
     orderApi.getOrders,
     {
       enabled: !!accountId,
       staleTime: 30_000,
-      refetchInterval: 10_000, // Refresh every 10 seconds
+      // Pause refetching if we've had multiple consecutive errors
+      refetchInterval: ordersErrorCount > 2 ? false : 10_000, // Refresh every 10 seconds when healthy
+      retry: 1, // Only retry once on failure
+      retryDelay: 5000, // Wait 5 seconds before retry
+      refetchOnMount: true,
+      refetchOnWindowFocus: false,
+      onError: () => {
+        setOrdersErrorCount((prev) => prev + 1)
+      },
+      onSuccess: () => {
+        setOrdersErrorCount(0) // Reset error count on success
+      },
     }
   )
 
@@ -364,9 +391,32 @@ export default function PositionsPage() {
   }
 
   const isLoading = positionsLoading || ordersLoading
+  const hasError = positionsError || ordersError
 
   return (
     <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
+      {/* Account Selector and Notifications */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <div className="w-full sm:w-auto sm:max-w-md">
+          <AccountSelector
+            accounts={accounts}
+            selectedAccount={selectedAccount}
+            onAccountChange={setSelectedAccount}
+          />
+        </div>
+        <div className="w-full sm:w-auto sm:flex-1">
+          <NotificationsFeed />
+        </div>
+      </div>
+
+      {/* Network Error Warning */}
+      {hasError && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">
+          <p>⚠️ Network error: Unable to fetch positions/orders. Retrying...</p>
+          <p className="text-xs text-red-400/80 mt-1">WebSocket updates will continue if connected.</p>
+        </div>
+      )}
+
       {feedback && (
         <div
           className={`rounded-lg border px-4 py-2 text-sm ${
@@ -391,8 +441,25 @@ export default function PositionsPage() {
       
       {/* Tabbed Interface for Order Ticket, Automation, Positions, and Orders */}
       <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
-        {/* Tabs */}
-        <div className="flex items-center gap-1 border-b border-slate-700/50 px-4 pt-2">
+        {/* Collapsible Header */}
+        <button
+          type="button"
+          onClick={() => setIsTabbedOpen((prev) => !prev)}
+          className="w-full flex items-center justify-between px-4 py-3"
+        >
+          <div className="flex items-center gap-3 text-left">
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Trading Actions</p>
+              <p className="text-xs text-slate-400">Order Ticket, Positions, Orders, Automation</p>
+            </div>
+          </div>
+          {isTabbedOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+        </button>
+
+        {isTabbedOpen && (
+          <>
+            {/* Tabs */}
+            <div className="flex items-center gap-1 border-b border-slate-700/50 px-4 pt-2">
           <button
             type="button"
             onClick={() => setActiveTab('order')}
@@ -404,18 +471,6 @@ export default function PositionsPage() {
           >
             <ShoppingCart className="w-4 h-4" />
             <span>Order Ticket</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('automation')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
-              activeTab === 'automation'
-                ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <Zap className="w-4 h-4" />
-            <span>Automation</span>
           </button>
           <button
             type="button"
@@ -441,10 +496,22 @@ export default function PositionsPage() {
             <Edit className="w-4 h-4" />
             <span>Orders ({orders.length})</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('automation')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-medium transition-all ${
+              activeTab === 'automation'
+                ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Zap className="w-4 h-4" />
+            <span>Automation</span>
+          </button>
         </div>
 
-        {/* Tab Content */}
-        <div className="p-4">
+            {/* Tab Content */}
+            <div className="p-4">
           {/* Order Ticket Tab */}
           {activeTab === 'order' && <OrderTicket noWrapper={true} />}
 
@@ -899,7 +966,9 @@ export default function PositionsPage() {
               )}
             </div>
           )}
-        </div>
+          </div>
+        </>
+        )}
       </div>
     </div>
   )

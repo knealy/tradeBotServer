@@ -227,6 +227,8 @@ class AsyncWebhookServer:
         self.app.router.add_get('/api/positions', self.handle_get_positions)
         self.app.router.add_post('/api/positions/{position_id}/close', self.handle_close_position)
         self.app.router.add_post('/api/positions/flatten', self.handle_flatten_positions)
+        self.app.router.add_post('/api/positions/{position_id}/modify-stop', self.handle_modify_position_stop)
+        self.app.router.add_post('/api/positions/{position_id}/modify-tp', self.handle_modify_position_take_profit)
         self.app.router.add_post('/api/positions/{position_id}/trailing-stop', self.handle_trailing_stop)
         self.app.router.add_post('/api/positions/{position_id}/breakeven', self.handle_breakeven_toggle)
         

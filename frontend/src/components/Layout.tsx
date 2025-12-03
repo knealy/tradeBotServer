@@ -1,13 +1,6 @@
-import { ReactNode, useMemo } from 'react'
+import { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { Activity, TrendingUp, Settings, BarChart3 } from 'lucide-react'
-import { useAccount } from '../contexts/AccountContext'
-import { useWebSocket } from '../contexts/WebSocketContext'
-// import { useQuery } from 'react-query'
-// import { metricsApi } from '../services/api'
-import AccountSelector from './AccountSelector'
-import NotificationsFeed from './NotificationsFeed'
-// import MetricsCard from './MetricsCard' // Commented out for future use
 
 interface LayoutProps {
   children: ReactNode
@@ -15,51 +8,6 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation()
-  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
-  const { status: socketStatus, reconnectAttempts, lastError: socketError, reconnect: reconnectSocket } = useWebSocket()
-
-  // Fetch metrics for MetricsCard - Commented out for future use
-  // const { data: metricsData } = useQuery(
-  //   ['metrics'],
-  //   metricsApi.getMetrics,
-  //   {
-  //     refetchInterval: socketStatus === 'connected' ? false : 60_000,
-  //     staleTime: 30_000,
-  //     refetchOnWindowFocus: false,
-  //   }
-  // )
-  // const metrics = (metricsData as any)?.performance || metricsData
-
-  const connectionBadge = useMemo(() => {
-    switch (socketStatus) {
-      case 'connected':
-        return {
-          label: 'Connected',
-          container: 'bg-green-500/20 text-green-300',
-          dot: 'bg-green-400',
-        }
-      case 'reconnecting':
-        return {
-          label: `Reconnecting (${reconnectAttempts})`,
-          container: 'bg-amber-500/20 text-amber-200',
-          dot: 'bg-amber-300',
-        }
-      case 'error':
-        return {
-          label: 'Connection Error',
-          container: 'bg-red-500/20 text-red-300',
-          dot: 'bg-red-400',
-        }
-      default:
-        return {
-          label: 'Disconnected',
-          container: 'bg-red-500/20 text-red-300',
-          dot: 'bg-red-400',
-        }
-    }
-  }, [socketStatus, reconnectAttempts])
-
-  const showRetryButton = socketStatus === 'error' || socketStatus === 'disconnected'
 
   const navItems = [
     { path: '/', icon: BarChart3, label: 'Dashboard' },
@@ -95,51 +43,6 @@ export default function Layout({ children }: LayoutProps) {
             })}
           </div>
         </nav>
-
-        {/* Persistent Header: Connection Status, Account Selector, Metrics, and Notifications */}
-        <div className="mb-6 space-y-3">
-          {/* Connection Status - Upper Left */}
-          <div className="flex items-start gap-4">
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs ${connectionBadge.container}`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${connectionBadge.dot}`} />
-              <span className="font-medium">{connectionBadge.label}</span>
-              {socketError && (
-                <span className="text-xs truncate max-w-[150px]">
-                  {socketError}
-                </span>
-              )}
-              {showRetryButton && (
-                <button
-                  onClick={reconnectSocket}
-                  className="ml-2 text-xs font-semibold underline"
-                >
-                  Retry
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Account Selector and Notifications Row */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-            <div className="w-full sm:w-auto sm:max-w-md">
-              <AccountSelector
-                accounts={accounts}
-                selectedAccount={selectedAccount}
-                onAccountChange={setSelectedAccount}
-              />
-            </div>
-            <div className="w-full sm:w-auto sm:flex-1">
-              <NotificationsFeed />
-            </div>
-            {/* MetricsCard - Commented out for future use
-            {metrics && (
-              <div className="w-full sm:w-auto sm:flex-1 sm:max-w-md">
-                <MetricsCard metrics={metrics} />
-              </div>
-            )}
-            */}
-          </div>
-        </div>
 
         {/* Page Content */}
         {children}

@@ -1104,12 +1104,9 @@ export default function TradingChart({
       if (newPrice && newPrice > 0 && Math.abs(newPrice - currentDrag.startPrice) > 0.01) {
         // Price changed significantly - update order
         try {
-          const orderType = currentDrag.order.type || 'LIMIT'
-          const isStopOrder = orderType === 'STOP' || currentDrag.order.stop_price
-          
+          // Don't pass order_type - let backend detect it from the order
           await orderApi.modifyOrder(currentDrag.order.id, {
             price: newPrice,
-            order_type: isStopOrder ? 4 : 1, // 4 = Stop, 1 = Limit
           })
           
           console.log(`[TradingChart] Order ${currentDrag.order.id} price updated from ${currentDrag.startPrice} to ${newPrice}`)
