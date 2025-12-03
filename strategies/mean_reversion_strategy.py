@@ -356,10 +356,10 @@ class MeanReversionStrategy(BaseStrategy):
                 symbol=symbol,
                 side=side,
                 quantity=position_size,
-                entry_type="MARKET",
                 stop_loss_price=stop_loss,
                 take_profit_price=take_profit,
-                account_id=self.trading_bot.selected_account
+                account_id=self.trading_bot.selected_account if isinstance(self.trading_bot.selected_account, str) else self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else None,
+                strategy_name=self.config.name  # Add strategy name for tracking
             )
             
             if result and 'order' in result:

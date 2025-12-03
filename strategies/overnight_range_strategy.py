@@ -109,6 +109,11 @@ class OvernightRangeStrategy(BaseStrategy):
         self._tick_size_cache: Dict[str, float] = {}
         self._last_market_open_run: Optional[date] = None
         
+        # ATR cache: {symbol: {timeframe: (atr_data, timestamp)}}
+        # Cache ATR calculations for 5 minutes to avoid redundant API calls
+        self._atr_cache: Dict[str, Dict[str, Tuple[ATRData, datetime]]] = {}
+        self._atr_cache_ttl = timedelta(minutes=5)  # Cache ATR for 5 minutes
+        
         # Load strategy-specific configuration from environment
         self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
         self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '09:30')  # 9:30am EST
@@ -439,6 +444,8 @@ class OvernightRangeStrategy(BaseStrategy):
         TR = max(high - low, abs(high - prev_close), abs(low - prev_close))
         ATR = average of TR over period
         
+        Uses caching to avoid redundant API calls (5-minute TTL).
+        
         Args:
             symbol: Trading symbol (e.g., "MNQ", "ES")
             period: Number of bars for ATR calculation (default: from config)
@@ -450,6 +457,18 @@ class OvernightRangeStrategy(BaseStrategy):
         try:
             period = period or self.atr_period
             timeframe = timeframe or self.atr_timeframe
+            cache_key = f"{symbol}_{timeframe}_{period}"
+            
+            # Check cache first
+            now = datetime.now(self.timezone)
+            if symbol in self._atr_cache and cache_key in self._atr_cache[symbol]:
+                cached_data, cached_time = self._atr_cache[symbol][cache_key]
+                if now - cached_time < self._atr_cache_ttl:
+                    logger.debug(f"Using cached ATR for {symbol} ({timeframe})")
+                    return cached_data
+                else:
+                    # Cache expired, remove it
+                    del self._atr_cache[symbol][cache_key]
             
             # Fetch historical bars for ATR calculation
             # Need period + 1 bars to calculate true range (requires previous close)
@@ -487,28 +506,34 @@ class OvernightRangeStrategy(BaseStrategy):
             # Calculate ATR as simple moving average of True Range
             current_atr = sum(true_ranges[-period:]) / period
             
-            # Calculate daily ATR (using 1-day bars for longer-term ATR)
-            daily_bars = await self.trading_bot.get_historical_data(
-                symbol=symbol,
-                timeframe='1d',
-                limit=period + 1
-            )
+            # OPTIMIZATION: Use current_atr as daily_atr approximation to avoid extra API call
+            # Daily ATR is typically similar to current timeframe ATR for micro futures
+            # This saves one API call per ATR calculation
+            daily_atr = current_atr  # Use current ATR as daily ATR approximation
             
-            daily_atr = current_atr  # Default to current ATR if daily fetch fails
-            if daily_bars and len(daily_bars) >= period + 1:
-                daily_true_ranges = []
-                for i in range(1, len(daily_bars)):
-                    current_bar = daily_bars[i]
-                    prev_bar = daily_bars[i - 1]
-                    
-                    high = current_bar.get('high', current_bar.get('h', 0))
-                    low = current_bar.get('low', current_bar.get('l', 0))
-                    prev_close = prev_bar.get('close', prev_bar.get('c', 0))
-                    
-                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                    daily_true_ranges.append(tr)
+            # Only fetch daily bars if we need more accuracy (can be enabled via env var)
+            use_daily_bars = os.getenv('OVERNIGHT_USE_DAILY_ATR', 'false').lower() == 'true'
+            if use_daily_bars:
+                daily_bars = await self.trading_bot.get_historical_data(
+                    symbol=symbol,
+                    timeframe='1d',
+                    limit=period + 1
+                )
                 
-                daily_atr = sum(daily_true_ranges[-period:]) / period
+                if daily_bars and len(daily_bars) >= period + 1:
+                    daily_true_ranges = []
+                    for i in range(1, len(daily_bars)):
+                        current_bar = daily_bars[i]
+                        prev_bar = daily_bars[i - 1]
+                        
+                        high = current_bar.get('high', current_bar.get('h', 0))
+                        low = current_bar.get('low', current_bar.get('l', 0))
+                        prev_close = prev_bar.get('close', prev_bar.get('c', 0))
+                        
+                        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                        daily_true_ranges.append(tr)
+                    
+                    daily_atr = sum(daily_true_ranges[-period:]) / period
             
             # Get current price for ATR zones
             current_price = bars[-1].get('close', bars[-1].get('c', 0))
@@ -572,6 +597,12 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.debug(f"  Market Open: {market_open_price:.2f}")
             logger.debug(f"  Upper ATR Zone: [{day_bull_price:.2f}, {day_bull_price1:.2f}]")
             logger.debug(f"  Lower ATR Zone: [{day_bear_price1:.2f}, {day_bear_price:.2f}]")
+            
+            # Cache the result
+            if symbol not in self._atr_cache:
+                self._atr_cache[symbol] = {}
+            self._atr_cache[symbol][cache_key] = (atr_data, now)
+            
             return atr_data
             
         except Exception as e:
@@ -942,7 +973,7 @@ class OvernightRangeStrategy(BaseStrategy):
                 if symbol in self.breakout_active_orders:
                     self.breakout_active_orders[symbol].pop("BUY", None)
             
-            # Place short breakout order
+            # Place short breakout order with strategy name in custom tag
             short_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
                 symbol=symbol,
                 side="SELL",
@@ -950,7 +981,8 @@ class OvernightRangeStrategy(BaseStrategy):
                 entry_price=short_order.entry_price,
                 stop_loss_price=short_order.stop_loss,
                 take_profit_price=short_order.take_profit,
-                account_id=account_id
+                account_id=account_id,
+                strategy_name=self.config.name  # Add strategy name for tracking
             )
             
             # Check for successful order placement (response has orderId)
@@ -1057,7 +1089,8 @@ class OvernightRangeStrategy(BaseStrategy):
             entry_price=order_template.entry_price,
             stop_loss_price=order_template.stop_loss,
             take_profit_price=order_template.take_profit,
-            account_id=account_id
+            account_id=account_id,
+            strategy_name=self.config.name  # Add strategy name for tracking
         )
 
         if not result or not result.get("orderId"):

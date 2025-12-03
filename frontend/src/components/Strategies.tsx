@@ -148,11 +148,17 @@ export default function Strategies() {
 
   const { data: verificationData, isLoading: verifyLoading, refetch: refetchVerify } = useQuery(
     ['strategy-verify', selectedStrategyForVerify],
-    () => strategyApi.verifyStrategy(selectedStrategyForVerify!),
+    () => {
+      if (!selectedStrategyForVerify || selectedStrategyForVerify.trim() === '') {
+        throw new Error('Strategy name is required')
+      }
+      return strategyApi.verifyStrategy(selectedStrategyForVerify)
+    },
     {
-      enabled: !!selectedStrategyForVerify,
+      enabled: !!selectedStrategyForVerify && selectedStrategyForVerify.trim() !== '',
       staleTime: 30_000,
       refetchInterval: 60_000, // Refetch every minute to update next execution time
+      retry: false, // Don't retry on 404 errors
     }
   )
 

@@ -1769,15 +1769,31 @@ class TopStepXTradingBot:
         
         return point_values.get(symbol, 1.0)  # Default to $1 per point if unknown
     
-    def _generate_unique_custom_tag(self, order_type: str = "order") -> str:
-        """Generate a unique custom tag for orders."""
+    def _generate_unique_custom_tag(self, order_type: str = "order", strategy_name: str = None) -> str:
+        """
+        Generate a unique custom tag for orders.
+        
+        Args:
+            order_type: Type of order (e.g., "market", "stop_bracket", "bracket")
+            strategy_name: Optional strategy name to include in tag for tracking
+        
+        Returns:
+            Custom tag string like "TradingBot-v1.0-strategy-overnight_range-order-123-1234567890"
+        """
         self._order_counter += 1
         timestamp = int(datetime.now().timestamp())
-        return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
+        
+        # Include strategy name in tag if provided
+        if strategy_name:
+            # Sanitize strategy name (remove spaces, special chars)
+            clean_strategy = strategy_name.lower().replace(' ', '_').replace('-', '_')
+            return f"{BOT_ORDER_TAG_PREFIX}-strategy-{clean_strategy}-{order_type}-{self._order_counter}-{timestamp}"
+        else:
+            return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
 
     async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
                                 stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
-                                limit_price: float = None) -> Dict:
+                                limit_price: float = None, strategy_name: str = None) -> Dict:
         """
         Place a market or limit order on the selected account.
         
@@ -1839,7 +1855,7 @@ class TopStepXTradingBot:
                 "size": quantity,
                 "limitPrice": limit_price if order_type.lower() == "limit" else None,
                 "stopPrice": None,
-                "customTag": self._generate_unique_custom_tag("market")
+                "customTag": self._generate_unique_custom_tag("market", strategy_name)
             }
             
             # Add bracket orders if specified
@@ -3127,6 +3143,19 @@ class TopStepXTradingBot:
                         point_value = self._get_point_value(symbol)
                         pnl = (entry_price - exit_price) * closed_qty * point_value  # Reversed for short
                         
+                        # Extract strategy from entry order's custom tag
+                        entry_order = position['entry_order']
+                        strategy_name = None
+                        custom_tag = entry_order.get('customTag') or entry_order.get('custom_tag')
+                        if custom_tag and '-strategy-' in str(custom_tag):
+                            try:
+                                # Format: TradingBot-v1.0-strategy-{strategy_name}-{order_type}-...
+                                parts = str(custom_tag).split('-strategy-')
+                                if len(parts) >= 2:
+                                    strategy_name = parts[1].split('-')[0]
+                            except Exception:
+                                pass
+                        
                         # Create consolidated trade
                         trade = {
                             'symbol': symbol,
@@ -3138,7 +3167,8 @@ class TopStepXTradingBot:
                             'exit_time': timestamp,
                             'pnl': pnl,
                             'entry_order_id': position['entry_order'].get('id'),
-                            'exit_order_id': order.get('id')
+                            'exit_order_id': order.get('id'),
+                            'strategy': strategy_name  # Add strategy name from custom tag
                         }
                         consolidated_trades.append(trade)
                         logger.debug(f"Created SHORT trade: {closed_qty} @ ${entry_price:.2f} → ${exit_price:.2f}, P&L: ${pnl:.2f}")
@@ -3176,6 +3206,19 @@ class TopStepXTradingBot:
                         point_value = self._get_point_value(symbol)
                         pnl = (exit_price - entry_price) * closed_qty * point_value
                         
+                        # Extract strategy from entry order's custom tag
+                        entry_order = position['entry_order']
+                        strategy_name = None
+                        custom_tag = entry_order.get('customTag') or entry_order.get('custom_tag')
+                        if custom_tag and '-strategy-' in str(custom_tag):
+                            try:
+                                # Format: TradingBot-v1.0-strategy-{strategy_name}-{order_type}-...
+                                parts = str(custom_tag).split('-strategy-')
+                                if len(parts) >= 2:
+                                    strategy_name = parts[1].split('-')[0]
+                            except Exception:
+                                pass
+                        
                         # Create consolidated trade
                         trade = {
                             'symbol': symbol,
@@ -3187,7 +3230,8 @@ class TopStepXTradingBot:
                             'exit_time': timestamp,
                             'pnl': pnl,
                             'entry_order_id': position['entry_order'].get('id'),
-                            'exit_order_id': order.get('id')
+                            'exit_order_id': order.get('id'),
+                            'strategy': strategy_name  # Add strategy name from custom tag
                         }
                         consolidated_trades.append(trade)
                         logger.debug(f"Created LONG trade: {closed_qty} @ ${entry_price:.2f} → ${exit_price:.2f}, P&L: ${pnl:.2f}")
@@ -3469,7 +3513,8 @@ class TopStepXTradingBot:
     
     async def create_bracket_order_improved(self, symbol: str, side: str, quantity: int,
                                            entry_stop_price: float, stop_loss_price: float,
-                                           take_profit_price: float, account_id: str = None) -> Dict:
+                                           take_profit_price: float, account_id: str = None,
+                                           strategy_name: Optional[str] = None) -> Dict:
         """
         Create an improved bracket order using stop order for entry, then modifying stop/take profit.
         This approach places a stop order for entry, then after fill, creates/modifies stop loss and take profit.
@@ -3482,6 +3527,7 @@ class TopStepXTradingBot:
             stop_loss_price: Stop loss price (after entry)
             take_profit_price: Take profit price (after entry)
             account_id: Account ID (uses selected account if not provided)
+            strategy_name: Optional strategy name for custom tagging
             
         Returns:
             Dict: Bracket order response or error
@@ -3507,7 +3553,8 @@ class TopStepXTradingBot:
                 side=side,
                 quantity=quantity,
                 stop_price=entry_stop_price,
-                account_id=target_account
+                account_id=target_account,
+                strategy_name=strategy_name
             )
             
             if "error" in entry_result:
@@ -3575,7 +3622,8 @@ class TopStepXTradingBot:
                                         side=stop_side,
                                         quantity=quantity,
                                         stop_price=stop_loss_price,
-                                        account_id=target_account
+                                        account_id=target_account,
+                                        strategy_name=strategy_name
                                     )
                                     
                                     # Create take profit limit order
@@ -3619,7 +3667,7 @@ class TopStepXTradingBot:
     async def create_bracket_order(self, symbol: str, side: str, quantity: int, 
                                  stop_loss_price: float = None, take_profit_price: float = None,
                                  stop_loss_ticks: int = None, take_profit_ticks: int = None,
-                                 account_id: str = None) -> Dict:
+                                 account_id: str = None, strategy_name: str = None) -> Dict:
         """
         Create a native TopStepX bracket order with linked stop loss and take profit.
         Uses the same approach as the working place_market_order method.
@@ -3670,7 +3718,7 @@ class TopStepXTradingBot:
                 "size": quantity,
                 "limitPrice": None,
                 "stopPrice": None,
-                "customTag": self._generate_unique_custom_tag("bracket")
+                "customTag": self._generate_unique_custom_tag("bracket", strategy_name)
             }
             
             # For bracket orders, we should use the entry price as the reference point
@@ -3991,7 +4039,8 @@ class TopStepXTradingBot:
                     side=stop_side,
                     quantity=quantity,
                     stop_price=rounded_stop_price,
-                    account_id=target_account
+                    account_id=target_account,
+                    strategy_name=None  # This function doesn't have strategy_name parameter
                 )
                 if "error" in stop_result:
                     logger.warning(f"Stop loss order failed: {stop_result['error']}")
@@ -4687,7 +4736,7 @@ class TopStepXTradingBot:
     # ============================================================================
     
     async def place_stop_order(self, symbol: str, side: str, quantity: int, stop_price: float,
-                              account_id: str = None) -> Dict:
+                              account_id: str = None, strategy_name: Optional[str] = None) -> Dict:
         """
         Place a stop order (entry stop - triggers market order when price is hit).
         Use stop_buy for BUY stop orders or stop_sell for SELL stop orders.
@@ -4698,6 +4747,7 @@ class TopStepXTradingBot:
             quantity: Number of contracts
             stop_price: Stop price (triggers when price reaches this level)
             account_id: Account ID (uses selected account if not provided)
+            strategy_name: Optional strategy name for custom tagging
             
         Returns:
             Dict: Stop order response or error
@@ -4734,7 +4784,7 @@ class TopStepXTradingBot:
                 "side": side_value,
                 "size": quantity,
                 "stopPrice": rounded_stop_price,
-                "customTag": self._generate_unique_custom_tag("stop_entry")
+                "customTag": self._generate_unique_custom_tag("stop_entry", strategy_name)
             }
             
             headers = {
@@ -4762,7 +4812,7 @@ class TopStepXTradingBot:
     async def place_oco_bracket_with_stop_entry(self, symbol: str, side: str, quantity: int,
                                                 entry_price: float, stop_loss_price: float,
                                                 take_profit_price: float, account_id: str = None,
-                                                enable_breakeven: bool = False) -> Dict:
+                                                enable_breakeven: bool = False, strategy_name: str = None) -> Dict:
         """
         Place OCO bracket order with stop order as entry.
         
@@ -4887,7 +4937,7 @@ class TopStepXTradingBot:
                 "size": quantity,
                 "limitPrice": None,
                 "stopPrice": entry_price,  # This makes it a stop order
-                "customTag": self._generate_unique_custom_tag("stop_bracket")
+                "customTag": self._generate_unique_custom_tag("stop_bracket", strategy_name)
             }
             
             # Add bracket orders using the same format as create_bracket_order
@@ -4932,7 +4982,8 @@ class TopStepXTradingBot:
                         stop_loss_price=stop_loss_price,
                         take_profit_price=take_profit_price,
                         account_id=target_account,
-                        enable_breakeven=enable_breakeven
+                        enable_breakeven=enable_breakeven,
+                        strategy_name=strategy_name
                     )
                 return response
             
@@ -4953,7 +5004,8 @@ class TopStepXTradingBot:
                         stop_loss_price=stop_loss_price,
                         take_profit_price=take_profit_price,
                         account_id=target_account,
-                        enable_breakeven=enable_breakeven
+                        enable_breakeven=enable_breakeven,
+                        strategy_name=strategy_name
                     )
                 
                 return {"error": f"Stop bracket order failed: Error Code {error_code}, Message: {error_message}"}
@@ -5033,7 +5085,7 @@ class TopStepXTradingBot:
     async def _stop_bracket_hybrid(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float,
                                   take_profit_price: float, account_id: str = None,
-                                  enable_breakeven: bool = False) -> Dict:
+                                  enable_breakeven: bool = False, strategy_name: Optional[str] = None) -> Dict:
         """
         Hybrid stop bracket: place stop order for entry, then auto-bracket on fill.
         
@@ -5061,7 +5113,8 @@ class TopStepXTradingBot:
                 side=side,
                 quantity=quantity,
                 stop_price=entry_price,
-                account_id=account_id
+                account_id=account_id,
+                strategy_name=strategy_name
             )
             
             if "error" in stop_result:

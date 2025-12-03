@@ -860,6 +860,16 @@ class DashboardAPI:
                     quantity = self._extract_trade_quantity(trade)
                     price = self._extract_trade_price(trade)
 
+                    # Extract strategy from trade or custom tag
+                    strategy = trade.get('strategy') or trade.get('strategyName')
+                    if not strategy:
+                        # Try to extract from order's custom tag if available
+                        order_metadata = trade.get('metadata', {})
+                        if isinstance(order_metadata, dict):
+                            custom_tag = order_metadata.get('customTag') or order_metadata.get('custom_tag')
+                            if custom_tag:
+                                strategy = self._extract_strategy_from_custom_tag(custom_tag)
+                    
                     normalized = {
                         "id": str(trade.get('id') or trade.get('orderId') or trade.get('fillId') or int(trade_ts.timestamp())),
                         "order_id": str(trade.get('orderId') or trade.get('id') or ''),
@@ -871,7 +881,7 @@ class DashboardAPI:
                         "fees": fees,
                         "net_pnl": pnl - fees,
                         "status": normalized_status,
-                        "strategy": trade.get('strategy') or trade.get('strategyName'),
+                        "strategy": strategy,  # Strategy name from trade or custom tag
                         "timestamp": self._format_iso(trade_ts),
                     }
                     trades_normalized.append(normalized)
@@ -964,21 +974,66 @@ class DashboardAPI:
             logger.error(f"Error getting performance stats: {e}")
             return {"error": str(e)}
     
+    def _extract_strategy_from_custom_tag(self, custom_tag: str) -> Optional[str]:
+        """
+        Extract strategy name from custom tag.
+        
+        Tags format: "TradingBot-v1.0-strategy-{strategy_name}-{order_type}-{counter}-{timestamp}"
+        Example: "TradingBot-v1.0-strategy-overnight_range-stop_bracket-123-1234567890"
+        """
+        if not custom_tag or not isinstance(custom_tag, str):
+            return None
+        
+        # Check if tag contains strategy marker
+        if '-strategy-' not in custom_tag:
+            return None
+        
+        try:
+            # Extract strategy name from tag
+            # Format: TradingBot-v1.0-strategy-{strategy_name}-{order_type}-...
+            parts = custom_tag.split('-strategy-')
+            if len(parts) >= 2:
+                strategy_part = parts[1].split('-')[0]  # Get first part after "strategy-"
+                # Convert back from snake_case to original name
+                return strategy_part.replace('_', '_')  # Keep as-is for now
+        except Exception:
+            pass
+        
+        return None
+    
     async def get_strategy_stats(self, strategy_name: str, account_id: str = None) -> Dict[str, Any]:
         """Get performance statistics for a specific strategy."""
         try:
+            if not strategy_name:
+                return {"error": "Strategy name is required"}
+            
             # Get trades for this strategy
             history = await self.get_trade_history_paginated(
                 limit=1000,  # Get more trades for accurate stats
                 account_id=account_id
             )
             
-            # Filter trades by strategy name
-            strategy_trades = [
-                t for t in history.get('items', [])
-                if t.get('strategy', '').lower() == strategy_name.lower() or
-                   t.get('strategy_name', '').lower() == strategy_name.lower()
-            ]
+            # Filter trades by strategy name - check both direct field and custom tag
+            strategy_trades = []
+            for t in history.get('items', []):
+                # Check direct strategy field first
+                trade_strategy = t.get('strategy') or t.get('strategy_name') or t.get('strategyName')
+                
+                # If not found, try to extract from order metadata/custom tag
+                if not trade_strategy:
+                    # Check if trade has order metadata with custom tag
+                    order_metadata = t.get('metadata', {})
+                    if isinstance(order_metadata, dict):
+                        custom_tag = order_metadata.get('customTag') or order_metadata.get('custom_tag')
+                        if custom_tag:
+                            trade_strategy = self._extract_strategy_from_custom_tag(custom_tag)
+                
+                # Normalize strategy names for comparison
+                if trade_strategy:
+                    trade_strategy_clean = str(trade_strategy).lower().replace('_', '-').replace(' ', '-')
+                    strategy_name_clean = strategy_name.lower().replace('_', '-').replace(' ', '-')
+                    if trade_strategy_clean == strategy_name_clean:
+                        strategy_trades.append(t)
             
             if not strategy_trades:
                 return {
