@@ -10,7 +10,6 @@ import {
   ISeriesMarkersPluginApi,
   IPriceLine,
   LineStyle,
-  SeriesMarker,
   Time,
   CandlestickData,
   LineData,
@@ -144,6 +143,7 @@ export default function TradingChart({
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
   const priceLineOrderMapRef = useRef<Map<IPriceLine, Order>>(new Map()) // Map price lines to orders
+  const positionPriceLinesRef = useRef<IPriceLine[]>([]) // Price lines for positions
   const barStoreRef = useRef<Record<string, StoredBar[]>>({})
   const draggingOrderRef = useRef<{ order: Order; startPrice: number; startY: number } | null>(null)
   
@@ -191,13 +191,7 @@ export default function TradingChart({
         console.error('[TradingChart] Error fetching historical data:', err)
       },
       onSuccess: (response) => {
-        console.log('[TradingChart] Historical data fetched:', {
-          symbol,
-          timeframe,
-          barCount: response?.bars?.length || 0,
-          firstBar: response?.bars?.[0],
-          lastBar: response?.bars?.[response?.bars?.length - 1],
-        })
+        // Reduced logging - only log on initial fetch or errors
         // Check if response has error property (API might return error in response)
         if (response && typeof response === 'object' && 'error' in response) {
           const responseWithError = response as HistoricalDataResponse & { error?: string }
@@ -217,7 +211,7 @@ export default function TradingChart({
     
     // Request subscription to this specific timeframe from backend
     // This ensures the bar aggregator is building bars for this timeframe
-    console.log(`[TradingChart] Requesting subscription to ${symbol} ${timeframe} bars`)
+    // Requesting subscription to market updates
     
     // Send subscription request via WebSocket
     wsService.emit('subscribe', {
@@ -664,7 +658,7 @@ export default function TradingChart({
   useEffect(() => {
     if (formatStopclock === '0:00') {
       // Trigger refetch when new bar is created
-      console.log('[TradingChart] New bar created - auto-refreshing chart data')
+      // New bar created - auto-refreshing chart data
       refetch()
     }
   }, [formatStopclock, refetch])
@@ -835,38 +829,48 @@ export default function TradingChart({
     return filtered
   }, [positions, symbol])
 
-  // Memoize position markers
-  const positionMarkers = useMemo(() => {
-    if (!showPositions || relevantPositions.length === 0) return []
-
-    return relevantPositions.map((pos) => {
-      const isLong = pos.side === 'LONG'
-      // Try multiple timestamp fields, fallback to current time for display
-      let timestamp = pos.timestamp || pos.opened_at || pos.created_at
-      if (!timestamp) {
-        // If no timestamp, use current time (position is active now)
-        timestamp = new Date().toISOString()
-      }
-      const time = toUnixTimestamp(timestamp)
-
-      return {
-        time,
-        position: isLong ? 'belowBar' : 'aboveBar',
-        color: isLong ? '#26A69A' : '#EF5350',
-        shape: isLong ? 'arrowUp' : 'arrowDown',
-        text: `${pos.side} ${pos.quantity}@${pos.entry_price.toFixed(2)}`,
-        size: 1,
-      } as SeriesMarker<Time>
-    }).filter((m): m is SeriesMarker<Time> => m !== null)
-  }, [relevantPositions, showPositions])
-
-  // Add position markers
+  // Add position price lines (replacing markers with price lines)
   useEffect(() => {
-    if (!chartInitialized || !markersPluginRef.current) return
+    if (!chartInitialized || !candlestickSeriesRef.current) return
 
+    // Remove existing position price lines
+    positionPriceLinesRef.current.forEach((line) => {
+      try {
+        candlestickSeriesRef.current?.removePriceLine(line)
+      } catch (error) {
+        console.warn('[TradingChart] Failed to remove position price line', error)
+      }
+    })
+    positionPriceLinesRef.current = []
 
-    markersPluginRef.current.setMarkers(positionMarkers)
-  }, [positionMarkers, chartInitialized, symbol])
+    if (!showPositions || relevantPositions.length === 0) {
+      return
+    }
+
+    relevantPositions.forEach((pos) => {
+      if (!candlestickSeriesRef.current) return
+
+      const entryPrice = Number(pos.entry_price)
+      if (!entryPrice || !isFinite(entryPrice)) return
+
+      const isLong = pos.side === 'LONG'
+      const quantity = Number(pos.quantity ?? 0)
+
+      try {
+        const line = candlestickSeriesRef.current.createPriceLine({
+          price: entryPrice,
+          color: isLong ? '#26A69A' : '#EF5350',
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: `${pos.side} ${quantity}@${entryPrice.toFixed(2)}`,
+        })
+        positionPriceLinesRef.current.push(line)
+      } catch (error) {
+        console.error('[TradingChart] Error creating position price line:', error)
+      }
+    })
+  }, [relevantPositions, showPositions, chartInitialized, symbol])
 
   // Memoize relevant orders to prevent unnecessary recalculations
   // Include orders with either price (limit orders) or stop_price (stop orders)
@@ -896,10 +900,7 @@ export default function TradingChart({
       return
     }
 
-    console.log('[TradingChart] Updating order price lines', { 
-      relevantOrders: relevantOrders.length,
-      symbol 
-    })
+    // Updating order price lines
 
     relevantOrders.forEach((order) => {
       if (!candlestickSeriesRef.current) return
@@ -1104,14 +1105,34 @@ export default function TradingChart({
       if (newPrice && newPrice > 0 && Math.abs(newPrice - currentDrag.startPrice) > 0.01) {
         // Price changed significantly - update order
         try {
-          // Don't pass order_type - let backend detect it from the order
+          // Ensure price is a valid number
+          const priceValue = Number(newPrice)
+          if (!isFinite(priceValue) || priceValue <= 0) {
+            throw new Error('Invalid price value')
+          }
+
+          // Determine order type: 4 = Stop, 1 = Limit
+          // Check if it's a stop order by looking at order type or stop_price field
+          const isStopOrder = currentDrag.order.type === 'STOP' || 
+                             currentDrag.order.stop_price !== undefined ||
+                             (currentDrag.order.type && String(currentDrag.order.type) === '4')
+          const orderType = isStopOrder ? 4 : 1
+
           await orderApi.modifyOrder(currentDrag.order.id, {
-            price: newPrice,
+            price: priceValue,
+            order_type: orderType,
           })
           
-          console.log(`[TradingChart] Order ${currentDrag.order.id} price updated from ${currentDrag.startPrice} to ${newPrice}`)
-        } catch (error) {
-          console.error('[TradingChart] Error modifying order:', error)
+          console.log(`[TradingChart] Order ${currentDrag.order.id} price updated from ${currentDrag.startPrice} to ${priceValue} (type: ${orderType})`)
+          
+          // Invalidate queries to refresh order data
+          queryClient.invalidateQueries(['orders'])
+        } catch (error: any) {
+          const errorMessage = error?.response?.data?.error || error?.message || 'Failed to modify order'
+          console.error('[TradingChart] Error modifying order:', errorMessage)
+          if (error?.response?.data) {
+            console.error('[TradingChart] Error response:', error.response.data)
+          }
           // Revert price line to original position on error
           const targetLine = priceLinesRef.current.find((line) => {
             const order = priceLineOrderMapRef.current.get(line)
