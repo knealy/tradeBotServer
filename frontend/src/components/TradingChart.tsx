@@ -977,12 +977,23 @@ export default function TradingChart({
       const priceLineInfo = findPriceLineAtY(y)
       if (priceLineInfo) {
         // Check if this is a bracket order (cannot be modified)
-        const isBracketOrder = !priceLineInfo.order.custom_tag || priceLineInfo.order.type === 'BRACKET'
+        // Bracket orders are identified by:
+        // 1. No custom_tag (orders attached to positions don't have custom tags)
+        // 2. Type is BRACKET
+        // 3. Order is a stop loss or take profit without a custom_tag
+        const order = priceLineInfo.order
+        const hasCustomTag = order.custom_tag && order.custom_tag.trim().length > 0
+        const isBracketOrder = !hasCustomTag || 
+                              order.type === 'BRACKET' ||
+                              (order.type === 'STOP' && !hasCustomTag) ||
+                              (order.type === 'LIMIT' && !hasCustomTag && (order.stop_loss || order.take_profit))
         
         if (isBracketOrder) {
           // Show user-friendly message that bracket orders can't be dragged
           console.warn('[TradingChart] Bracket orders (stop loss/take profit attached to positions) cannot be modified. Close the position to remove bracket orders.')
           container.style.cursor = 'not-allowed'
+          e.preventDefault()
+          e.stopPropagation()
           return // Don't allow dragging bracket orders
         }
         
@@ -1105,6 +1116,20 @@ export default function TradingChart({
       const newPrice = candlestickSeriesRef.current.coordinateToPrice(y) as number | null
 
       if (newPrice && newPrice > 0 && Math.abs(newPrice - currentDrag.startPrice) > 0.01) {
+        // Double-check that this is not a bracket order before attempting modification
+        const order = currentDrag.order
+        const hasCustomTag = order.custom_tag && order.custom_tag.trim().length > 0
+        const isBracketOrder = !hasCustomTag || 
+                              order.type === 'BRACKET' ||
+                              (order.type === 'STOP' && !hasCustomTag) ||
+                              (order.type === 'LIMIT' && !hasCustomTag && (order.stop_loss || order.take_profit))
+        
+        if (isBracketOrder) {
+          console.warn('[TradingChart] Cannot modify bracket orders attached to positions.')
+          draggingOrderRef.current = null
+          return
+        }
+        
         // Price changed significantly - update order
         try {
           // Ensure price is a valid number
@@ -1274,13 +1299,24 @@ export default function TradingChart({
     // Throttle WebSocket updates to prevent excessive re-renders
     let updateQueue: any[] = []
     let isProcessing = false
+    let lastProcessTime = 0
+    const MIN_PROCESS_INTERVAL = 100 // Process at most every 100ms (10 updates/second)
     
     const processUpdates = () => {
+      const now = Date.now()
       if (isProcessing || updateQueue.length === 0) return
-      isProcessing = true
       
-      // Process batch of updates
-      const batch = updateQueue.splice(0, 10) // Process up to 10 at a time
+      // Throttle processing to prevent excessive updates
+      if (now - lastProcessTime < MIN_PROCESS_INTERVAL) {
+        requestAnimationFrame(processUpdates)
+        return
+      }
+      
+      isProcessing = true
+      lastProcessTime = now
+      
+      // Process batch of updates (reduced from 10 to 5 for better performance)
+      const batch = updateQueue.splice(0, 5)
       batch.forEach(applyUpdate)
       
       isProcessing = false
@@ -1295,6 +1331,13 @@ export default function TradingChart({
       if (!payload) return
       const raw = payload.data ?? payload
       const updates = Array.isArray(raw) ? raw : [raw]
+      
+      // Limit queue size to prevent memory issues
+      if (updateQueue.length > 50) {
+        // Drop oldest updates if queue is too large
+        updateQueue = updateQueue.slice(-25)
+      }
+      
       updateQueue.push(...updates)
       
       // Trigger processing if not already processing

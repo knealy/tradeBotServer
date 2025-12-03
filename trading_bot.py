@@ -2798,6 +2798,7 @@ class TopStepXTradingBot:
                         break
                 
                 # Check if order is a bracket order (no customTag) and trying to modify size
+                # NOTE: Price modifications are allowed for bracket orders, only size modifications are blocked
                 if new_quantity is not None and order_info and not order_info.get('customTag'):
                     return {
                         "error": "Cannot modify size of bracket order attached to position. "
@@ -2861,11 +2862,19 @@ class TopStepXTradingBot:
                 logger.error(f"Order modification failed: Error Code {error_code}, Message: {error_message}")
                 
                 # Provide helpful error message for common errors
-                if error_code == 3 or "attached to position" in error_message.lower():
+                # Only show bracket order error if we were trying to modify size
+                # Price modifications should work for bracket orders
+                if (error_code == 3 or "attached to position" in error_message.lower()) and new_quantity is not None:
                     return {
                         "error": "Cannot modify size of bracket order attached to position. "
                                 "Bracket orders (stop loss/take profit) automatically match position size. "
                                 "You can only modify the price, or close the position to remove the bracket orders."
+                    }
+                # For price-only modifications that fail, provide a different message
+                elif (error_code == 3 or "attached to position" in error_message.lower()) and new_price is not None:
+                    return {
+                        "error": f"Unable to modify bracket order price. The TopStepX API may not allow price modifications for bracket orders attached to positions. "
+                                f"Error: {error_message}. Try closing the position and placing new orders instead."
                     }
                 
                 return {"error": f"Order modification failed: Error Code {error_code}, Message: {error_message}"}
