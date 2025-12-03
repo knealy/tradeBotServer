@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useAccount } from '../contexts/AccountContext'
+import { useWebSocket } from '../contexts/WebSocketContext'
 import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import OrderTicket from '../components/OrderTicket'
@@ -21,16 +22,18 @@ export default function PositionsPage() {
   
   // Enable live market updates for positions/orders
   useMarketSocket()
+  const { isConnected } = useWebSocket()
 
-  // Fetch positions with more frequent updates
+  // Fetch positions - disable polling when WebSocket is connected (WebSocket provides real-time updates)
   const { data: positions = [], isLoading: positionsLoading, isError: positionsError } = useQuery<Position[]>(
     ['positions', accountId],
     positionApi.getPositions,
     {
       enabled: !!accountId,
-      staleTime: 10_000, // 10 seconds stale time
-      // Pause refetching if we've had multiple consecutive errors
-      refetchInterval: positionsErrorCount > 2 ? false : 10_000, // Refresh every 10 seconds when healthy
+      staleTime: 30_000, // 30 seconds stale time (increased from 10s)
+      // Disable polling when WebSocket is connected - WebSocket provides real-time updates
+      // Only poll as fallback when WebSocket is disconnected
+      refetchInterval: (!isConnected || positionsErrorCount > 2) ? false : 30_000, // Poll every 30s only if WS disconnected
       retry: 1, // Only retry once on failure
       retryDelay: 5000, // Wait 5 seconds before retry
       refetchOnMount: true,
@@ -44,15 +47,16 @@ export default function PositionsPage() {
     }
   )
 
-  // Fetch orders
+  // Fetch orders - disable polling when WebSocket is connected
   const { data: orders = [], isLoading: ordersLoading, isError: ordersError } = useQuery<Order[]>(
     ['orders', accountId],
     orderApi.getOrders,
     {
       enabled: !!accountId,
-      staleTime: 30_000,
-      // Pause refetching if we've had multiple consecutive errors
-      refetchInterval: ordersErrorCount > 2 ? false : 10_000, // Refresh every 10 seconds when healthy
+      staleTime: 30_000, // 30 seconds stale time
+      // Disable polling when WebSocket is connected - WebSocket provides real-time updates
+      // Only poll as fallback when WebSocket is disconnected
+      refetchInterval: (!isConnected || ordersErrorCount > 2) ? false : 30_000, // Poll every 30s only if WS disconnected
       retry: 1, // Only retry once on failure
       retryDelay: 5000, // Wait 5 seconds before retry
       refetchOnMount: true,

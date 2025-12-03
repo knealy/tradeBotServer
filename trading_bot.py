@@ -2872,10 +2872,19 @@ class TopStepXTradingBot:
                     }
                 # For price-only modifications that fail, provide a different message
                 elif (error_code == 3 or "attached to position" in error_message.lower()) and new_price is not None:
-                    return {
-                        "error": f"Unable to modify bracket order price. The TopStepX API may not allow price modifications for bracket orders attached to positions. "
-                                f"Error: {error_message}. Try closing the position and placing new orders instead."
-                    }
+                    # Check if this is actually a bracket order by checking order_info
+                    is_actually_bracket = order_info and not order_info.get('customTag')
+                    if is_actually_bracket:
+                        return {
+                            "error": f"Unable to modify bracket order price. The TopStepX API does not allow modifications to bracket orders attached to positions. "
+                                    f"Error: {error_message}. Try closing the position and placing new orders instead."
+                        }
+                    else:
+                        # Not a bracket order, but API rejected - provide generic error
+                        return {
+                            "error": f"Order modification failed: {error_message} (Error Code: {error_code}). "
+                                    f"The order may be in a state that cannot be modified, or the TopStepX API may have restrictions on this order type."
+                        }
                 
                 return {"error": f"Order modification failed: Error Code {error_code}, Message: {error_message}"}
             
