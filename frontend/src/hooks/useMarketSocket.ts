@@ -8,7 +8,7 @@ import { wsService } from '../services/websocket'
  */
 export const useMarketSocket = () => {
   const queryClient = useQueryClient()
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastInvalidateRef = useRef<number>(0)
   const INVALIDATE_DEBOUNCE_MS = 2000 // Only invalidate at most every 2 seconds
 
