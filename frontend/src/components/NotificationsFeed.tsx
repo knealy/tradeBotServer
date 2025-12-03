@@ -99,67 +99,67 @@ export default function NotificationsFeed() {
   return (
     <div className="w-full sm:w-auto sm:max-w-md">
       <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
-        <button
-          onClick={() => setIsOpen(!isOpen)}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
           className={`w-full flex items-center justify-between px-4 py-3 rounded-t-lg transition-colors ${
-            isOpen
+          isOpen
               ? 'bg-slate-800 border-b border-slate-700 text-slate-200'
               : 'bg-slate-800/50 hover:bg-slate-800 text-slate-300'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <Bell className="w-4 h-4" />
-            <span className="text-sm font-semibold">Notifications</span>
-            {unreadCount > 0 && (
-              <span className="px-1.5 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full min-w-[1.25rem] text-center">
-                {unreadCount}
-              </span>
-            )}
-          </div>
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <Bell className="w-4 h-4" />
+          <span className="text-sm font-semibold">Notifications</span>
+          {unreadCount > 0 && (
+            <span className="px-1.5 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full min-w-[1.25rem] text-center">
+              {unreadCount}
+            </span>
+          )}
+        </div>
           {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-        </button>
+      </button>
 
-        {isOpen && (
+      {isOpen && (
           <div className="bg-slate-800/50 border-x border-b border-slate-700/50 rounded-b-lg max-h-[32rem] flex flex-col">
-            {isLoading ? (
-              <div className="p-4 text-center text-slate-400 text-sm">Loading notifications...</div>
-            ) : error ? (
-              <div className="p-4 text-center text-red-400 text-sm">Failed to load notifications</div>
-            ) : !hasNotifications ? (
-              <div className="p-4 text-center text-slate-400 text-sm">No notifications</div>
-            ) : (
-              <div className="overflow-y-auto flex-1">
-                {notifications.map((notification) => (
-                  <div
-                    key={notification.id}
-                    className={`p-3 border-b border-slate-700/50 ${getNotificationClass(notification.level)}`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <div className="mt-0.5">{getNotificationIcon(notification.level)}</div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium">{notification.message}</p>
-                        {notification.meta && (
-                          <div className="mt-1 text-xs text-slate-400">
-                            {notification.meta.symbol && (
-                              <span className="mr-2">Symbol: {notification.meta.symbol}</span>
-                            )}
-                            {notification.meta.side && (
-                              <span className="mr-2">Side: {notification.meta.side}</span>
-                            )}
-                            {notification.meta.quantity && (
-                              <span>Qty: {notification.meta.quantity}</span>
-                            )}
-                          </div>
-                        )}
-                        <p className="mt-1 text-xs text-slate-500">{formatDateTime(notification.timestamp)}</p>
-                      </div>
+          {isLoading ? (
+            <div className="p-4 text-center text-slate-400 text-sm">Loading notifications...</div>
+          ) : error ? (
+            <div className="p-4 text-center text-red-400 text-sm">Failed to load notifications</div>
+          ) : !hasNotifications ? (
+            <div className="p-4 text-center text-slate-400 text-sm">No notifications</div>
+          ) : (
+            <div className="overflow-y-auto flex-1">
+              {notifications.map((notification) => (
+                <div
+                  key={notification.id}
+                  className={`p-3 border-b border-slate-700/50 ${getNotificationClass(notification.level)}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="mt-0.5">{getNotificationIcon(notification.level)}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{notification.message}</p>
+                      {notification.meta && (
+                        <div className="mt-1 text-xs text-slate-400">
+                          {notification.meta.symbol && (
+                            <span className="mr-2">Symbol: {notification.meta.symbol}</span>
+                          )}
+                          {notification.meta.side && (
+                            <span className="mr-2">Side: {notification.meta.side}</span>
+                          )}
+                          {notification.meta.quantity && (
+                            <span>Qty: {notification.meta.quantity}</span>
+                          )}
+                        </div>
+                      )}
+                      <p className="mt-1 text-xs text-slate-500">{formatDateTime(notification.timestamp)}</p>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       </div>
     </div>
   )

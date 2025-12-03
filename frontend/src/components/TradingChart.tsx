@@ -245,27 +245,10 @@ export default function TradingChart({
     setUserScrollPosition(null) // Reset scroll on timeframe change
   }, [])
 
-  const handleCustomTimeframe = useCallback((value: string) => {
-    setCustomTimeframe(value)
-    if (isValidTimeframe(value)) {
-      setTimeframe(value.trim().toLowerCase())
-      setUserScrollPosition(null) // Reset scroll on timeframe change
-    }
-  }, [])
-
   const handleBarLimitChange = useCallback((newLimit: number) => {
     setBarLimit(newLimit)
     setCustomBarLimit('')
     setUserScrollPosition(null) // Reset scroll on bar limit change
-  }, [])
-
-  const handleCustomBarLimit = useCallback((value: string) => {
-    setCustomBarLimit(value)
-    const num = parseInt(value)
-    if (!isNaN(num) && num >= 100 && num <= 3000) {
-      setBarLimit(num)
-      setUserScrollPosition(null) // Reset scroll on bar limit change
-    }
   }, [])
 
   // Format stopclock time - starts at full timeframe duration and counts down
@@ -912,6 +895,10 @@ export default function TradingChart({
       const isLongOrder = order.side === 'BUY'
       const orderType = order.type || 'LIMIT'
       const isStopOrder = orderType === 'STOP' || order.stop_price
+      
+      // Check if this is a bracket order (attached to position - no customTag)
+      // Bracket orders cannot be modified via drag-and-drop
+      const isBracketOrder = !order.custom_tag || order.type === 'BRACKET'
 
       try {
         const line = candlestickSeriesRef.current.createPriceLine({
@@ -920,10 +907,15 @@ export default function TradingChart({
           lineWidth: 2,
           lineStyle: isStopOrder ? LineStyle.Dotted : LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `${order.side} ${order.quantity} ${orderType}`,
+          title: isBracketOrder 
+            ? `${order.side} ${order.quantity} ${orderType} (Bracket - not draggable)`
+            : `${order.side} ${order.quantity} ${orderType}`,
         })
         priceLinesRef.current.push(line)
-        priceLineOrderMapRef.current.set(line, order) // Map line to order for drag handling
+        // Only map non-bracket orders for drag handling
+        if (!isBracketOrder) {
+          priceLineOrderMapRef.current.set(line, order)
+        }
       } catch (error) {
         console.error('[TradingChart] Error creating price line:', error)
       }
@@ -984,6 +976,16 @@ export default function TradingChart({
       
       const priceLineInfo = findPriceLineAtY(y)
       if (priceLineInfo) {
+        // Check if this is a bracket order (cannot be modified)
+        const isBracketOrder = !priceLineInfo.order.custom_tag || priceLineInfo.order.type === 'BRACKET'
+        
+        if (isBracketOrder) {
+          // Show user-friendly message that bracket orders can't be dragged
+          console.warn('[TradingChart] Bracket orders (stop loss/take profit attached to positions) cannot be modified. Close the position to remove bracket orders.')
+          container.style.cursor = 'not-allowed'
+          return // Don't allow dragging bracket orders
+        }
+        
         // Disable chart scrolling/panning while dragging order
         chart.applyOptions({
           handleScroll: {
@@ -1269,11 +1271,36 @@ export default function TradingChart({
       }
     }
 
+    // Throttle WebSocket updates to prevent excessive re-renders
+    let updateQueue: any[] = []
+    let isProcessing = false
+    
+    const processUpdates = () => {
+      if (isProcessing || updateQueue.length === 0) return
+      isProcessing = true
+      
+      // Process batch of updates
+      const batch = updateQueue.splice(0, 10) // Process up to 10 at a time
+      batch.forEach(applyUpdate)
+      
+      isProcessing = false
+      
+      // Schedule next batch if queue has more
+      if (updateQueue.length > 0) {
+        requestAnimationFrame(processUpdates)
+      }
+    }
+    
     const handleMessage = (payload: any) => {
       if (!payload) return
       const raw = payload.data ?? payload
       const updates = Array.isArray(raw) ? raw : [raw]
-      updates.forEach(applyUpdate)
+      updateQueue.push(...updates)
+      
+      // Trigger processing if not already processing
+      if (!isProcessing) {
+        requestAnimationFrame(processUpdates)
+      }
     }
 
     wsService.on('market_update', handleMessage)
@@ -1282,6 +1309,7 @@ export default function TradingChart({
     return () => {
       wsService.off('market_update', handleMessage)
       wsService.off('market_update_batch', handleMessage)
+      updateQueue = [] // Clear queue on unmount
     }
   }, [symbol, timeframe, chartInitialized, barLimit])
 
@@ -1337,34 +1365,50 @@ export default function TradingChart({
               placeholder="Symbol"
               maxLength={10}
             />
-            <div className="flex gap-1 items-center overflow-x-auto pb-1 -mx-1 px-1">
-              {TIMEFRAME_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  onClick={() => handleTimeframeChange(option)}
-                  className={`px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded transition-colors shrink-0 ${
-                    timeframe === option && !customTimeframe
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+            <div className="flex items-center gap-2">
+              <select
+                value={customTimeframe ? 'custom' : timeframe}
+                onChange={(e) => {
+                  const value = e.target.value
+                  if (value === 'custom') {
+                    // Show input field
+                  } else if (TIMEFRAME_OPTIONS.includes(value)) {
+                    setCustomTimeframe('')
+                    handleTimeframeChange(value)
+                  }
+                }}
+                className="bg-slate-900 border border-slate-700 rounded px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[80px] sm:min-w-[100px]"
+                title="Select timeframe"
+              >
+                {TIMEFRAME_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option.toUpperCase()}
+                  </option>
+                ))}
+                <option value="custom">Custom...</option>
+              </select>
+              {(customTimeframe || (!customTimeframe && !TIMEFRAME_OPTIONS.includes(timeframe))) && (
+                <input
+                  type="text"
+                  value={customTimeframe || timeframe}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setCustomTimeframe(value)
+                    if (isValidTimeframe(value)) {
+                      handleTimeframeChange(value.trim().toLowerCase())
+                    }
+                  }}
+                  placeholder="e.g. 10s, 3m"
+                  className={`px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded transition-colors w-20 sm:w-24 shrink-0 ${
+                    customTimeframe && isValidTimeframe(customTimeframe)
+                      ? 'bg-blue-600 text-white border-2 border-blue-400'
+                      : customTimeframe
+                      ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
+                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
                   }`}
-                >
-                  {option.toUpperCase()}
-                </button>
-              ))}
-              <input
-                type="text"
-                value={customTimeframe}
-                onChange={(e) => handleCustomTimeframe(e.target.value)}
-                placeholder="Custom"
-                className={`px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded transition-colors w-20 sm:w-24 shrink-0 ${
-                  customTimeframe && isValidTimeframe(customTimeframe)
-                    ? 'bg-blue-600 text-white border-2 border-blue-400'
-                    : customTimeframe
-                    ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
-                }`}
-                title="Enter custom timeframe (e.g., 10s, 3m, 2h)"
-              />
+                  title="Enter custom timeframe (e.g., 10s, 3m, 2h)"
+                />
+              )}
             </div>
           </div>
         </div>
@@ -1372,36 +1416,56 @@ export default function TradingChart({
         {/* Bar limit controls */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 text-sm">
           <span className="text-slate-400 text-xs sm:text-sm shrink-0">Bars:</span>
-          <div className="flex gap-1 items-center overflow-x-auto pb-1 -mx-1 px-1">
-            {BAR_LIMITS.map((limit) => (
-              <button
-                key={limit.value}
-                onClick={() => handleBarLimitChange(limit.value)}
-                className={`px-2 sm:px-3 py-1 text-xs font-semibold rounded transition-colors shrink-0 ${
-                  barLimit === limit.value && !customBarLimit
-                    ? 'bg-green-600 text-white'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+          <div className="flex items-center gap-2">
+            <select
+              value={customBarLimit || barLimit}
+              onChange={(e) => {
+                const value = e.target.value
+                if (value === 'custom') {
+                  // Keep current value, just show input
+                } else {
+                  const numValue = parseInt(value)
+                  if (!isNaN(numValue)) {
+                    setCustomBarLimit('')
+                    handleBarLimitChange(numValue)
+                  }
+                }
+              }}
+              className="bg-slate-900 border border-slate-700 rounded px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-green-500 min-w-[80px] sm:min-w-[100px]"
+              title="Select bar count"
+            >
+              {BAR_LIMITS.map((limit) => (
+                <option key={limit.value} value={limit.value}>
+                  {limit.label}
+                </option>
+              ))}
+              <option value="custom">Custom...</option>
+            </select>
+            {(!customBarLimit || parseInt(customBarLimit) < 100 || parseInt(customBarLimit) > 3000) && (
+              <input
+                type="number"
+                value={customBarLimit}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setCustomBarLimit(value)
+                  const numValue = parseInt(value)
+                  if (!isNaN(numValue) && numValue >= 100 && numValue <= 3000) {
+                    handleBarLimitChange(numValue)
+                  }
+                }}
+                placeholder="100-3000"
+                min={100}
+                max={3000}
+                className={`px-2 sm:px-3 py-1 text-xs font-semibold rounded transition-colors w-20 sm:w-24 shrink-0 ${
+                  customBarLimit && parseInt(customBarLimit) >= 100 && parseInt(customBarLimit) <= 3000
+                    ? 'bg-green-600 text-white border-2 border-green-400'
+                    : customBarLimit
+                    ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
                 }`}
-              >
-                {limit.label}
-              </button>
-            ))}
-            <input
-              type="number"
-              value={customBarLimit}
-              onChange={(e) => handleCustomBarLimit(e.target.value)}
-              placeholder="100-3000"
-              min={100}
-              max={3000}
-              className={`px-2 sm:px-3 py-1 text-xs font-semibold rounded transition-colors w-18 sm:w-20 shrink-0 ${
-                customBarLimit && parseInt(customBarLimit) >= 100 && parseInt(customBarLimit) <= 3000
-                  ? 'bg-green-600 text-white border-2 border-green-400'
-                  : customBarLimit
-                  ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
-              }`}
-              title="Enter custom bar count (100-3000)"
-            />
+                title="Enter custom bar count (100-3000)"
+              />
+            )}
           </div>
 
           {/* Toggle switches */}
