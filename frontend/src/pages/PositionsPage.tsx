@@ -4,8 +4,6 @@ import { positionApi, orderApi, automationApi } from '../services/api'
 import { useMarketSocket } from '../hooks/useMarketSocket'
 import OrderTicket from '../components/OrderTicket'
 import TradingChart from '../components/TradingChart'
-import AccountSelector from '../components/AccountSelector'
-import NotificationsFeed from '../components/NotificationsFeed'
 import { TrendingUp, TrendingDown, X, AlertCircle, Edit, Trash2, ChevronDown, ChevronUp, Info, Zap, Target, Play, ShoppingCart } from 'lucide-react'
 import { useState } from 'react'
 import type { Position, Order } from '../types'
@@ -13,7 +11,7 @@ import type { Position, Order } from '../types'
 type TabType = 'order' | 'automation' | 'positions' | 'orders'
 
 export default function PositionsPage() {
-  const { accounts, selectedAccount, setSelectedAccount } = useAccount()
+  const { selectedAccount } = useAccount()
   const accountId = selectedAccount?.id
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<TabType>('order')
@@ -394,21 +392,7 @@ export default function PositionsPage() {
   const hasError = positionsError || ordersError
 
   return (
-    <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
-      {/* Account Selector and Notifications */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-        <div className="w-full sm:w-auto sm:max-w-md">
-          <AccountSelector
-            accounts={accounts}
-            selectedAccount={selectedAccount}
-            onAccountChange={setSelectedAccount}
-          />
-        </div>
-        <div className="w-full sm:w-auto sm:flex-1">
-          <NotificationsFeed />
-        </div>
-      </div>
-
+    <div className="space-y-5">
       {/* Network Error Warning */}
       {hasError && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">
@@ -429,18 +413,19 @@ export default function PositionsPage() {
         </div>
       )}
 
-      {/* Price Chart */}
-      <TradingChart 
-        symbol="MNQ"
-        positions={positions}
-        orders={orders}
-        height={500}
-        showPositions={true}
-        showOrders={true}
-      />
-      
-      {/* Tabbed Interface for Order Ticket, Automation, Positions, and Orders */}
-      <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
+      {/* Price Chart Container */}
+      <div className="bg-slate-800 rounded-lg p-6 border border-slate-700 space-y-4">
+        <TradingChart 
+          symbol="MNQ"
+          positions={positions}
+          orders={orders}
+          height={500}
+          showPositions={true}
+          showOrders={true}
+        />
+        
+        {/* Trading Actions - Right below chart info bar */}
+        <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm">
         {/* Collapsible Header */}
         <button
           type="button"
@@ -969,6 +954,7 @@ export default function PositionsPage() {
           </div>
         </>
         )}
+        </div>
       </div>
     </div>
   )
