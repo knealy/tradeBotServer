@@ -514,26 +514,26 @@ class OvernightRangeStrategy(BaseStrategy):
             # Only fetch daily bars if we need more accuracy (can be enabled via env var)
             use_daily_bars = os.getenv('OVERNIGHT_USE_DAILY_ATR', 'false').lower() == 'true'
             if use_daily_bars:
-                daily_bars = await self.trading_bot.get_historical_data(
-                    symbol=symbol,
-                    timeframe='1d',
-                    limit=period + 1
-                )
-                
-                if daily_bars and len(daily_bars) >= period + 1:
-                    daily_true_ranges = []
-                    for i in range(1, len(daily_bars)):
-                        current_bar = daily_bars[i]
-                        prev_bar = daily_bars[i - 1]
-                        
-                        high = current_bar.get('high', current_bar.get('h', 0))
-                        low = current_bar.get('low', current_bar.get('l', 0))
-                        prev_close = prev_bar.get('close', prev_bar.get('c', 0))
-                        
-                        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                        daily_true_ranges.append(tr)
+            daily_bars = await self.trading_bot.get_historical_data(
+                symbol=symbol,
+                timeframe='1d',
+                limit=period + 1
+            )
+            
+            if daily_bars and len(daily_bars) >= period + 1:
+                daily_true_ranges = []
+                for i in range(1, len(daily_bars)):
+                    current_bar = daily_bars[i]
+                    prev_bar = daily_bars[i - 1]
                     
-                    daily_atr = sum(daily_true_ranges[-period:]) / period
+                    high = current_bar.get('high', current_bar.get('h', 0))
+                    low = current_bar.get('low', current_bar.get('l', 0))
+                    prev_close = prev_bar.get('close', prev_bar.get('c', 0))
+                    
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    daily_true_ranges.append(tr)
+                
+                daily_atr = sum(daily_true_ranges[-period:]) / period
             
             # Get current price for ATR zones
             current_price = bars[-1].get('close', bars[-1].get('c', 0))
@@ -922,16 +922,60 @@ class OvernightRangeStrategy(BaseStrategy):
             self.breakout_active_orders.setdefault(symbol, {})
             
             # Extract account ID (handle both dict and string formats)
+            # CRITICAL: Validate account selection to ensure PRAC account is used
             account_id = None
+            account_name = "Unknown"
+            
             if self.trading_bot.selected_account:
                 if isinstance(self.trading_bot.selected_account, dict):
                     account_id = self.trading_bot.selected_account.get('id')
+                    account_name = self.trading_bot.selected_account.get('name', 'Unknown')
                 else:
                     account_id = self.trading_bot.selected_account
+                    account_name = str(account_id)
+            
+            # Validate account selection - ensure PRAC account is used
+            if account_id:
+                account_id_str = str(account_id)
+                account_name_upper = account_name.upper()
+                
+                # Check if account name contains PRAC or PRACTICE
+                is_prac_account = 'PRAC' in account_name_upper or 'PRACTICE' in account_name_upper
+                
+                if not is_prac_account:
+                    logger.error(f"⚠️  WARNING: Strategy attempting to use non-PRAC account: {account_name} (ID: {account_id_str})")
+                    logger.error(f"⚠️  This should be a PRAC/PRACTICE account. Checking for PRAC account...")
+                    
+                    # Try to find PRAC account
+                    try:
+                        accounts = await self.trading_bot.list_accounts()
+                        prac_account = None
+                        for acc in accounts:
+                            acc_name = acc.get('name', '').upper()
+                            if 'PRAC' in acc_name or 'PRACTICE' in acc_name:
+                                prac_account = acc
+                                break
+                        
+                        if prac_account:
+                            account_id = prac_account.get('id')
+                            account_name = prac_account.get('name', 'Unknown')
+                            logger.warning(f"✅ Found PRAC account: {account_name} (ID: {account_id}), switching to it")
+                            self.trading_bot.selected_account = prac_account
+                        else:
+                            logger.error(f"❌ No PRAC account found! Available accounts: {[acc.get('name') for acc in accounts]}")
+                            return {"success": False, "error": f"No PRAC account found. Current account: {account_name}"}
+                    except Exception as acc_err:
+                        logger.error(f"❌ Failed to validate account: {acc_err}")
+                        return {"success": False, "error": f"Account validation failed: {acc_err}"}
+                else:
+                    logger.info(f"✅ Using PRAC account: {account_name} (ID: {account_id})")
+            else:
+                logger.error("❌ No account selected for strategy execution")
+                return {"success": False, "error": "No account selected"}
             
             results = {"symbol": symbol, "orders": []}
             
-            # Place long breakout order
+            # Place long breakout order with strategy name in custom tag
             long_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
                 symbol=symbol,
                 side="BUY",
@@ -939,7 +983,8 @@ class OvernightRangeStrategy(BaseStrategy):
                 entry_price=long_order.entry_price,
                 stop_loss_price=long_order.stop_loss,
                 take_profit_price=long_order.take_profit,
-                account_id=account_id
+                account_id=account_id,
+                strategy_name=self.config.name  # Add strategy name for tracking
             )
             
             # Check for successful order placement (response has orderId or success=True)

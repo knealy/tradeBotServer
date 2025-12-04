@@ -419,15 +419,15 @@ export default function PositionsPage() {
 
       {/* Price Chart Container */}
       <div className="bg-slate-800 rounded-lg p-3 sm:p-6 border border-slate-700 space-y-4 overflow-x-hidden">
-        <TradingChart 
-          symbol="MNQ"
-          positions={positions}
-          orders={orders}
-          height={500}
-          showPositions={true}
-          showOrders={true}
-        />
-        
+      <TradingChart 
+        symbol="MNQ"
+        positions={positions}
+        orders={orders}
+        height={500}
+        showPositions={true}
+        showOrders={true}
+      />
+      
         {/* Trading Actions - Right below chart info bar */}
         <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl shadow-sm overflow-x-hidden">
         {/* Collapsible Header */}
@@ -449,8 +449,8 @@ export default function PositionsPage() {
           <>
             {/* Tabs */}
             <div className="flex items-center gap-1 border-b border-slate-700/50 px-2 sm:px-4 pt-2 overflow-x-auto">
-          <button
-            type="button"
+        <button
+          type="button"
             onClick={() => setActiveTab('order')}
             className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
               activeTab === 'order'
@@ -511,453 +511,453 @@ export default function PositionsPage() {
           {activeTab === 'automation' && (
             <div>
               <div className="flex items-center gap-3 mb-4">
-                <Zap className="w-5 h-5 text-yellow-400" />
-                <div>
-                  <p className="text-sm font-semibold text-slate-200">Automation Tools</p>
-                  <p className="text-xs text-slate-400">Overnight breakout testing</p>
-                </div>
-              </div>
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => testBreakoutMutation.mutate({ symbol: 'MNQ', quantity: 1, accountName: 'PRAC' })}
-                    className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2"
-                    disabled={testBreakoutMutation.isLoading || !accountId}
-                  >
-                    <Play className="w-4 h-4" />
-                    {testBreakoutMutation.isLoading ? 'Testing...' : 'Test Overnight Breakout'}
-                  </button>
-                  <p className="text-sm text-slate-400">
-                    Simulates overnight breakout trades on practice account (MNQ, 1 contract)
-                  </p>
-                </div>
+            <Zap className="w-5 h-5 text-yellow-400" />
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Automation Tools</p>
+              <p className="text-xs text-slate-400">Overnight breakout testing</p>
+            </div>
+          </div>
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => testBreakoutMutation.mutate({ symbol: 'MNQ', quantity: 1, accountName: 'PRAC' })}
+                  className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-2"
+                  disabled={testBreakoutMutation.isLoading || !accountId}
+                >
+                  <Play className="w-4 h-4" />
+                  {testBreakoutMutation.isLoading ? 'Testing...' : 'Test Overnight Breakout'}
+                </button>
+                <p className="text-sm text-slate-400">
+                  Simulates overnight breakout trades on practice account (MNQ, 1 contract)
+                </p>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
           {/* Open Positions Tab */}
           {activeTab === 'positions' && (
             <div>
-              {isLoading ? (
-                <div className="text-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
-                  <p className="text-slate-400 mt-2">Loading positions...</p>
-                </div>
-              ) : positions.length === 0 ? (
-                <div className="text-center py-8 text-slate-400">
-                  <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                  <p>No open positions</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {positions.map((position) => {
-                    const isLong = position.side === 'LONG'
-                    const unrealized = Number(position.unrealized_pnl ?? 0)
-                    const realized = Number(position.realized_pnl ?? 0)
-                    const entryPrice = Number(position.entry_price ?? 0)
-                    const currentPrice = Number(position.current_price ?? entryPrice)
-                    const PnlIcon = unrealized >= 0 ? TrendingUp : TrendingDown
-                    const pnlColor = unrealized >= 0 ? 'text-green-400' : 'text-red-400'
-                    const stateKey = position.id ?? ''
-                    const partialValue = stateKey ? partialCloseQty[stateKey] ?? '' : ''
-                    const stopValue = stateKey ? stopInputs[stateKey] ?? '' : ''
-                    const takeValue = stateKey ? takeProfitInputs[stateKey] ?? '' : ''
-                    const trailingValue = stateKey ? trailingStopInputs[stateKey] ?? '' : ''
-                    const isTrailingEnabled = stateKey ? trailingStopEnabled[stateKey] ?? false : false
-                    const isBreakevenEnabled = stateKey ? breakevenEnabled[stateKey] ?? false : false
-                    const openedLabel = position.timestamp ? new Date(position.timestamp).toLocaleString() : '—'
-                    const unrealizedPct =
-                      typeof position.unrealized_pnl_pct === 'number' && isFinite(position.unrealized_pnl_pct)
-                        ? `${position.unrealized_pnl_pct.toFixed(2)}%`
-                        : '—'
-                    const tickSize =
-                      typeof position.tick_size === 'number' && isFinite(position.tick_size)
-                        ? position.tick_size
-                        : null
-                    const pointValue =
-                      typeof position.point_value === 'number' && isFinite(position.point_value)
-                        ? position.point_value
-                        : null
-                    const canControl = Boolean(position.id)
-                    const isExpanded = expandedPosition === position.id
+            {isLoading ? (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
+                <p className="text-slate-400 mt-2">Loading positions...</p>
+              </div>
+            ) : positions.length === 0 ? (
+              <div className="text-center py-8 text-slate-400">
+                <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p>No open positions</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+            {positions.map((position) => {
+              const isLong = position.side === 'LONG'
+              const unrealized = Number(position.unrealized_pnl ?? 0)
+              const realized = Number(position.realized_pnl ?? 0)
+              const entryPrice = Number(position.entry_price ?? 0)
+              const currentPrice = Number(position.current_price ?? entryPrice)
+              const PnlIcon = unrealized >= 0 ? TrendingUp : TrendingDown
+              const pnlColor = unrealized >= 0 ? 'text-green-400' : 'text-red-400'
+              const stateKey = position.id ?? ''
+              const partialValue = stateKey ? partialCloseQty[stateKey] ?? '' : ''
+              const stopValue = stateKey ? stopInputs[stateKey] ?? '' : ''
+              const takeValue = stateKey ? takeProfitInputs[stateKey] ?? '' : ''
+              const trailingValue = stateKey ? trailingStopInputs[stateKey] ?? '' : ''
+              const isTrailingEnabled = stateKey ? trailingStopEnabled[stateKey] ?? false : false
+              const isBreakevenEnabled = stateKey ? breakevenEnabled[stateKey] ?? false : false
+              const openedLabel = position.timestamp ? new Date(position.timestamp).toLocaleString() : '—'
+              const unrealizedPct =
+                typeof position.unrealized_pnl_pct === 'number' && isFinite(position.unrealized_pnl_pct)
+                  ? `${position.unrealized_pnl_pct.toFixed(2)}%`
+                  : '—'
+              const tickSize =
+                typeof position.tick_size === 'number' && isFinite(position.tick_size)
+                  ? position.tick_size
+                  : null
+              const pointValue =
+                typeof position.point_value === 'number' && isFinite(position.point_value)
+                  ? position.point_value
+                  : null
+              const canControl = Boolean(position.id)
+              const isExpanded = expandedPosition === position.id
 
-                    return (
-                      <div
-                        key={position.id || `${position.symbol}-${position.entry_price}`}
+              return (
+                <div
+                  key={position.id || `${position.symbol}-${position.entry_price}`}
                         className="p-3 sm:p-4 bg-slate-700/50 rounded-lg border border-slate-600 hover:border-slate-500 transition-colors overflow-x-hidden"
-                      >
+                >
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mb-2">
                           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                             <div className={`px-2 py-1 rounded text-xs font-medium shrink-0 ${
-                              isLong ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                            }`}>
-                              {position.side}
-                            </div>
+                        isLong ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                      }`}>
+                        {position.side}
+                      </div>
                             <span className="font-semibold text-sm sm:text-base">{position.symbol}</span>
                             <span className="text-slate-400 text-xs sm:text-sm">x{Number(position.quantity ?? 0)}</span>
-                          </div>
+                    </div>
                           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                            <div className={`flex items-center gap-1 ${pnlColor}`}>
+                      <div className={`flex items-center gap-1 ${pnlColor}`}>
                               <PnlIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                               <span className="font-semibold text-sm sm:text-base">
-                                ${unrealized.toFixed(2)}
-                              </span>
-                            </div>
-                            <button
-                              onClick={() => handleClosePosition(position.id)}
-                              className="px-2 sm:px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1 shrink-0"
-                              disabled={!canControl || closePositionMutation.isLoading}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span className="whitespace-nowrap">Close</span>
-                            </button>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2 sm:gap-3 md:gap-4 text-xs sm:text-sm">
-                          <div>
-                            <p className="text-slate-400">Entry</p>
-                            <p className="font-semibold">${entryPrice.toFixed(2)}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Current</p>
-                            <p className="font-semibold">${currentPrice.toFixed(2)}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Realized P&L</p>
-                            <p className={`font-semibold ${
-                              realized >= 0 ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                              ${realized.toFixed(2)}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Unrealized %</p>
-                            <p className="font-semibold text-slate-200">{unrealizedPct}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Stop Loss</p>
-                            <p className="font-semibold text-slate-200">
-                              {position.stop_loss !== undefined && position.stop_loss !== null
-                                ? `$${Number(position.stop_loss).toFixed(2)}`
-                                : '—'}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Take Profit</p>
-                            <p className="font-semibold text-slate-200">
-                              {position.take_profit !== undefined && position.take_profit !== null
-                                ? `$${Number(position.take_profit).toFixed(2)}`
-                                : '—'}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Opened</p>
-                            <p className="font-semibold text-slate-200">{openedLabel}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Tick Size</p>
-                            <p className="font-semibold text-slate-200">
-                              {tickSize ? tickSize.toFixed(4) : '—'}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Point Value</p>
-                            <p className="font-semibold text-slate-200">
-                              {pointValue ? `$${pointValue.toFixed(2)}` : '—'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                          <div>
-                            <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Stop Loss</p>
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <input
-                                type="number"
-                                value={stopValue}
-                                onChange={(e) => {
-                                  if (position.id) {
-                                    setStopInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
-                                  }
-                                }}
-                                placeholder="New stop price"
-                                className="w-24 sm:w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
-                                disabled={!canControl}
-                              />
-                              <button
-                                onClick={() => handleStopLossUpdate(position)}
-                                className="px-2 sm:px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors whitespace-nowrap shrink-0"
-                                disabled={!canControl || modifyStopLossMutation.isLoading}
-                              >
-                                Update SL
-                              </button>
-                            </div>
-                          </div>
-                          <div>
-                            <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Take Profit</p>
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <input
-                                type="number"
-                                value={takeValue}
-                                onChange={(e) => {
-                                  if (position.id) {
-                                    setTakeProfitInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
-                                  }
-                                }}
-                                placeholder="New target price"
-                                className="w-24 sm:w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
-                                disabled={!canControl}
-                              />
-                              <button
-                                onClick={() => handleTakeProfitUpdate(position)}
-                                className="px-2 sm:px-3 py-1 text-xs bg-green-500/20 text-green-300 rounded hover:bg-green-500/30 transition-colors whitespace-nowrap shrink-0"
-                                disabled={!canControl || modifyTakeProfitMutation.isLoading}
-                              >
-                                Update TP
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={1}
-                              value={partialValue}
-                              onChange={(e) => {
-                                if (position.id) {
-                                  setPartialCloseQty((prev) => ({ ...prev, [position.id as string]: e.target.value }))
-                                }
-                              }}
-                              placeholder="Qty"
-                              className="w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
-                              disabled={!canControl}
-                            />
-                            <button
-                              onClick={() => handlePartialClose(position)}
-                              className="px-3 py-1 text-xs bg-amber-500/20 text-amber-300 rounded hover:bg-amber-500/30 transition-colors"
-                              disabled={!canControl || closePositionMutation.isLoading}
-                            >
-                              Partial Close
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              step="0.01"
-                              value={trailingValue}
-                              onChange={(e) => {
-                                if (position.id) {
-                                  setTrailingStopInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
-                                }
-                              }}
-                              placeholder="Trail $"
-                              className="w-24 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
-                              disabled={!canControl || isTrailingEnabled}
-                            />
-                            <button
-                              onClick={() => handleTrailingStop(position)}
-                              className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
-                                isTrailingEnabled
-                                  ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
-                                  : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'
-                              }`}
-                              disabled={!canControl || enableTrailingStopMutation.isLoading || disableTrailingStopMutation.isLoading}
-                            >
-                              <Zap className="w-3 h-3" />
-                              {isTrailingEnabled ? 'Disable Trail' : 'Enable Trail'}
-                            </button>
-                          </div>
-                          <button
-                            onClick={() => handleBreakevenToggle(position)}
-                            className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
-                              isBreakevenEnabled
-                                ? 'bg-green-500/20 text-green-300 hover:bg-green-500/30'
-                                : 'bg-slate-600/40 text-slate-200 hover:bg-slate-600/60'
-                            }`}
-                            disabled={!canControl || enableBreakevenMutation.isLoading || disableBreakevenMutation.isLoading}
-                          >
-                            <Target className="w-3 h-3" />
-                            {isBreakevenEnabled ? 'Breakeven ON' : 'Set Breakeven'}
-                          </button>
-                          <button
-                            onClick={() => toggleExpandedPosition(position.id)}
-                            className="px-3 py-1 text-xs bg-slate-600/40 text-slate-200 rounded hover:bg-slate-600/60 transition-colors flex items-center gap-1"
-                          >
-                            {isExpanded ? (
-                              <>
-                                <ChevronUp className="w-3 h-3" /> Hide Details
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="w-3 h-3" /> View Details
-                              </>
-                            )}
-                          </button>
-                        </div>
-                        {isExpanded && (
-                          <div className="mt-3 bg-slate-900/60 border border-slate-700/70 rounded-lg p-3 text-xs text-left overflow-x-auto">
-                            <div className="flex items-center gap-2 text-slate-400 mb-2">
-                              <Info className="w-4 h-4" />
-                              <span>Raw position payload</span>
-                            </div>
-                            <pre className="whitespace-pre-wrap text-slate-200">
-                              {JSON.stringify(position._raw ?? position, null, 2)}
-                            </pre>
-                          </div>
-                        )}
+                          ${unrealized.toFixed(2)}
+                        </span>
                       </div>
-                    )
-                  })}
+                      <button
+                        onClick={() => handleClosePosition(position.id)}
+                              className="px-2 sm:px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1 shrink-0"
+                        disabled={!canControl || closePositionMutation.isLoading}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                              <span className="whitespace-nowrap">Close</span>
+                      </button>
+                    </div>
+                  </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2 sm:gap-3 md:gap-4 text-xs sm:text-sm">
+                    <div>
+                      <p className="text-slate-400">Entry</p>
+                      <p className="font-semibold">${entryPrice.toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Current</p>
+                      <p className="font-semibold">${currentPrice.toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Realized P&L</p>
+                      <p className={`font-semibold ${
+                        realized >= 0 ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        ${realized.toFixed(2)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Unrealized %</p>
+                      <p className="font-semibold text-slate-200">{unrealizedPct}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Stop Loss</p>
+                      <p className="font-semibold text-slate-200">
+                        {position.stop_loss !== undefined && position.stop_loss !== null
+                          ? `$${Number(position.stop_loss).toFixed(2)}`
+                          : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Take Profit</p>
+                      <p className="font-semibold text-slate-200">
+                        {position.take_profit !== undefined && position.take_profit !== null
+                          ? `$${Number(position.take_profit).toFixed(2)}`
+                          : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Opened</p>
+                      <p className="font-semibold text-slate-200">{openedLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Tick Size</p>
+                      <p className="font-semibold text-slate-200">
+                        {tickSize ? tickSize.toFixed(4) : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Point Value</p>
+                      <p className="font-semibold text-slate-200">
+                        {pointValue ? `$${pointValue.toFixed(2)}` : '—'}
+                      </p>
+                    </div>
+                  </div>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Stop Loss</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          value={stopValue}
+                          onChange={(e) => {
+                            if (position.id) {
+                              setStopInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                            }
+                          }}
+                          placeholder="New stop price"
+                                className="w-24 sm:w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                          disabled={!canControl}
+                        />
+                        <button
+                          onClick={() => handleStopLossUpdate(position)}
+                                className="px-2 sm:px-3 py-1 text-xs bg-blue-500/20 text-blue-300 rounded hover:bg-blue-500/30 transition-colors whitespace-nowrap shrink-0"
+                          disabled={!canControl || modifyStopLossMutation.isLoading}
+                        >
+                          Update SL
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-slate-400 text-xs uppercase tracking-wide">Adjust Take Profit</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          value={takeValue}
+                          onChange={(e) => {
+                            if (position.id) {
+                              setTakeProfitInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                            }
+                          }}
+                          placeholder="New target price"
+                                className="w-24 sm:w-28 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                          disabled={!canControl}
+                        />
+                        <button
+                          onClick={() => handleTakeProfitUpdate(position)}
+                                className="px-2 sm:px-3 py-1 text-xs bg-green-500/20 text-green-300 rounded hover:bg-green-500/30 transition-colors whitespace-nowrap shrink-0"
+                          disabled={!canControl || modifyTakeProfitMutation.isLoading}
+                        >
+                          Update TP
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2 sm:gap-3">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        value={partialValue}
+                        onChange={(e) => {
+                          if (position.id) {
+                            setPartialCloseQty((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                          }
+                        }}
+                        placeholder="Qty"
+                        className="w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                        disabled={!canControl}
+                      />
+                      <button
+                        onClick={() => handlePartialClose(position)}
+                        className="px-3 py-1 text-xs bg-amber-500/20 text-amber-300 rounded hover:bg-amber-500/30 transition-colors"
+                        disabled={!canControl || closePositionMutation.isLoading}
+                      >
+                        Partial Close
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={trailingValue}
+                        onChange={(e) => {
+                          if (position.id) {
+                            setTrailingStopInputs((prev) => ({ ...prev, [position.id as string]: e.target.value }))
+                          }
+                        }}
+                        placeholder="Trail $"
+                        className="w-24 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
+                        disabled={!canControl || isTrailingEnabled}
+                      />
+                      <button
+                        onClick={() => handleTrailingStop(position)}
+                        className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
+                          isTrailingEnabled
+                            ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
+                            : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'
+                        }`}
+                        disabled={!canControl || enableTrailingStopMutation.isLoading || disableTrailingStopMutation.isLoading}
+                      >
+                        <Zap className="w-3 h-3" />
+                        {isTrailingEnabled ? 'Disable Trail' : 'Enable Trail'}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => handleBreakevenToggle(position)}
+                      className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
+                        isBreakevenEnabled
+                          ? 'bg-green-500/20 text-green-300 hover:bg-green-500/30'
+                          : 'bg-slate-600/40 text-slate-200 hover:bg-slate-600/60'
+                      }`}
+                      disabled={!canControl || enableBreakevenMutation.isLoading || disableBreakevenMutation.isLoading}
+                    >
+                      <Target className="w-3 h-3" />
+                      {isBreakevenEnabled ? 'Breakeven ON' : 'Set Breakeven'}
+                    </button>
+                    <button
+                      onClick={() => toggleExpandedPosition(position.id)}
+                      className="px-3 py-1 text-xs bg-slate-600/40 text-slate-200 rounded hover:bg-slate-600/60 transition-colors flex items-center gap-1"
+                    >
+                      {isExpanded ? (
+                        <>
+                          <ChevronUp className="w-3 h-3" /> Hide Details
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="w-3 h-3" /> View Details
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {isExpanded && (
+                    <div className="mt-3 bg-slate-900/60 border border-slate-700/70 rounded-lg p-3 text-xs text-left overflow-x-auto">
+                      <div className="flex items-center gap-2 text-slate-400 mb-2">
+                        <Info className="w-4 h-4" />
+                        <span>Raw position payload</span>
+                      </div>
+                      <pre className="whitespace-pre-wrap text-slate-200">
+                        {JSON.stringify(position._raw ?? position, null, 2)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+              )
+              })}
+              </div>
+            )}
+          </div>
+        )}
 
           {/* Open Orders Tab */}
           {activeTab === 'orders' && (
             <div>
-              {isLoading ? (
-                <div className="text-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
-                  <p className="text-slate-400 mt-2">Loading orders...</p>
-                </div>
-              ) : orders.length === 0 ? (
-                <div className="text-center py-8 text-slate-400">
-                  <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                  <p>No open orders</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {orders.map((order) => {
-                    const isBuy = order.side === 'BUY'
-                    const orderType = order.type || 'UNKNOWN'
-                    const status = (order.status || 'PENDING').toUpperCase()
-                    const canModify = status !== 'FILLED' && status !== 'CANCELLED' && status !== 'REJECTED'
-                    const stopPrice = order.stop_price ? Number(order.stop_price) : null
-                    const stopLoss = order.stop_loss ? Number(order.stop_loss) : null
-                    const takeProfit = order.take_profit ? Number(order.take_profit) : null
-                    const bracketSummary = stopLoss || takeProfit
-                      ? `${stopLoss ? `SL $${stopLoss.toFixed(2)}` : ''}${stopLoss && takeProfit ? ' / ' : ''}${takeProfit ? `TP $${takeProfit.toFixed(2)}` : ''}`
-                      : '—'
+            {isLoading ? (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
+                <p className="text-slate-400 mt-2">Loading orders...</p>
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="text-center py-8 text-slate-400">
+                <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p>No open orders</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+            {orders.map((order) => {
+              const isBuy = order.side === 'BUY'
+              const orderType = order.type || 'UNKNOWN'
+              const status = (order.status || 'PENDING').toUpperCase()
+              const canModify = status !== 'FILLED' && status !== 'CANCELLED' && status !== 'REJECTED'
+              const stopPrice = order.stop_price ? Number(order.stop_price) : null
+              const stopLoss = order.stop_loss ? Number(order.stop_loss) : null
+              const takeProfit = order.take_profit ? Number(order.take_profit) : null
+              const bracketSummary = stopLoss || takeProfit
+                ? `${stopLoss ? `SL $${stopLoss.toFixed(2)}` : ''}${stopLoss && takeProfit ? ' / ' : ''}${takeProfit ? `TP $${takeProfit.toFixed(2)}` : ''}`
+                : '—'
 
-                            return (
-                              <div
-                                key={order.id}
+              return (
+                <div
+                  key={order.id}
                                 className="p-3 sm:p-4 bg-slate-700/50 rounded-lg border border-slate-600 hover:border-slate-500 transition-colors overflow-x-hidden"
-                              >
+                >
                                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mb-2">
                                   <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                                     <div className={`px-2 py-1 rounded text-xs font-medium shrink-0 ${
-                                      isBuy ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                                    }`}>
-                                      {order.side}
-                                    </div>
+                        isBuy ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                      }`}>
+                        {order.side}
+                      </div>
                                     <span className="font-semibold text-sm sm:text-base">{order.symbol}</span>
                                     <span className="text-slate-400 text-xs sm:text-sm">x{Number(order.quantity ?? 0)}</span>
                                     <span className={`px-2 py-1 rounded text-xs shrink-0 ${
-                                      status === 'FILLED' ? 'bg-green-500/20 text-green-400' :
-                                      status === 'CANCELLED' ? 'bg-red-500/20 text-red-400' :
-                                      'bg-yellow-500/20 text-yellow-400'
-                                    }`}>
-                                      {status}
-                                    </span>
-                                  </div>
-                                  {canModify && (
+                        status === 'FILLED' ? 'bg-green-500/20 text-green-400' :
+                        status === 'CANCELLED' ? 'bg-red-500/20 text-red-400' :
+                        'bg-yellow-500/20 text-yellow-400'
+                      }`}>
+                        {status}
+                      </span>
+                    </div>
+                    {canModify && (
                                     <div className="flex items-center gap-2 flex-wrap">
-                              {editingOrder?.id === order.id ? (
-                                <>
-                                  <input
-                                    type="number"
-                                    value={modifyPrice}
-                                    onChange={(e) => setModifyPrice(e.target.value)}
-                                    placeholder="Price"
+                        {editingOrder?.id === order.id ? (
+                          <>
+                            <input
+                              type="number"
+                              value={modifyPrice}
+                              onChange={(e) => setModifyPrice(e.target.value)}
+                              placeholder="Price"
                                     className="w-18 sm:w-20 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
-                                  />
-                                  <input
-                                    type="number"
-                                    value={modifyQuantity}
-                                    onChange={(e) => setModifyQuantity(e.target.value)}
-                                    placeholder="Qty"
+                            />
+                            <input
+                              type="number"
+                              value={modifyQuantity}
+                              onChange={(e) => setModifyQuantity(e.target.value)}
+                              placeholder="Qty"
                                     className="w-14 sm:w-16 px-2 py-1 text-xs bg-slate-900 border border-slate-600 rounded text-slate-200"
-                                  />
-                                  <button
-                                    onClick={handleSaveModify}
+                            />
+                            <button
+                              onClick={handleSaveModify}
                                     className="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors whitespace-nowrap shrink-0"
-                                    disabled={modifyOrderMutation.isLoading}
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setEditingOrder(null)
-                                      setModifyPrice('')
-                                      setModifyQuantity('')
-                                    }}
+                              disabled={modifyOrderMutation.isLoading}
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingOrder(null)
+                                setModifyPrice('')
+                                setModifyQuantity('')
+                              }}
                                     className="px-2 py-1 text-xs bg-slate-600 text-slate-300 rounded hover:bg-slate-500 transition-colors whitespace-nowrap shrink-0"
-                                  >
-                                    Cancel
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    onClick={() => handleStartEdit(order)}
-                                    className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-1"
-                                    disabled={modifyOrderMutation.isLoading}
-                                  >
-                                    <Edit className="w-3 h-3" />
-                                    Modify
-                                  </button>
-                                  <button
-                                    onClick={() => handleCancelOrder(order.id)}
-                                    className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
-                                    disabled={cancelOrderMutation.isLoading}
-                                  >
-                                    <X className="w-3 h-3" />
-                                    Cancel
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-4">
-                          <div>
-                            <p className="text-slate-400">Type</p>
-                            <p className="font-semibold">{orderType}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Price</p>
-                            <p className="font-semibold">
-                              {order.price ? `$${Number(order.price).toFixed(2)}` : 'Market'}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Stop</p>
-                            <p className="font-semibold">
-                              {stopPrice ? `$${stopPrice.toFixed(2)}` : '—'}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Bracket</p>
-                            <p className="font-semibold text-xs text-slate-200">{bracketSummary}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Time in Force</p>
-                            <p className="font-semibold text-slate-200">{order.time_in_force || 'DAY'}</p>
-                          </div>
-                          <div>
-                            <p className="text-slate-400">Order ID</p>
-                            <p className="font-mono text-xs text-slate-400 truncate">{order.id}</p>
-                          </div>
-                        </div>
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleStartEdit(order)}
+                              className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors flex items-center gap-1"
+                              disabled={modifyOrderMutation.isLoading}
+                            >
+                              <Edit className="w-3 h-3" />
+                              Modify
+                            </button>
+                            <button
+                              onClick={() => handleCancelOrder(order.id)}
+                              className="px-3 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors flex items-center gap-1"
+                              disabled={cancelOrderMutation.isLoading}
+                            >
+                              <X className="w-3 h-3" />
+                              Cancel
+                            </button>
+                          </>
+                        )}
                       </div>
-                    )
-                  })}
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-4">
+                    <div>
+                      <p className="text-slate-400">Type</p>
+                      <p className="font-semibold">{orderType}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Price</p>
+                      <p className="font-semibold">
+                        {order.price ? `$${Number(order.price).toFixed(2)}` : 'Market'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Stop</p>
+                      <p className="font-semibold">
+                        {stopPrice ? `$${stopPrice.toFixed(2)}` : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Bracket</p>
+                      <p className="font-semibold text-xs text-slate-200">{bracketSummary}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Time in Force</p>
+                      <p className="font-semibold text-slate-200">{order.time_in_force || 'DAY'}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Order ID</p>
+                      <p className="font-mono text-xs text-slate-400 truncate">{order.id}</p>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
+              )
+            })}
+              </div>
+            )}
+          </div>
+        )}
           </div>
         </>
         )}

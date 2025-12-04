@@ -43,29 +43,29 @@ export default function Layout({ children }: LayoutProps) {
           {/* Top Navigation Tabs */}
           <nav className="overflow-x-auto -mx-3 sm:mx-0 px-3 sm:px-0">
             <div className="flex items-center justify-center gap-1 min-w-max sm:min-w-0">
-              {navItems.map((item) => {
-                const Icon = item.icon
-                const isActive = location.pathname === item.path
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
+          {navItems.map((item) => {
+            const Icon = item.icon
+            const isActive = location.pathname === item.path
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
                     className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-t-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap shrink-0 ${
-                      isActive
+                  isActive
                         ? 'bg-slate-800 text-primary-400 border-t border-x border-slate-700 -mb-px'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                    }`}
-                  >
+                }`}
+              >
                     <Icon className="w-3 h-3 sm:w-4 sm:h-4" />
                     <span className="hidden xs:inline">{item.label}</span>
-                  </Link>
-                )
-              })}
+              </Link>
+            )
+          })}
             </div>
-          </nav>
+        </nav>
 
           {/* Page Content */}
-          {children}
+        {children}
         </div>
       </main>
     </div>

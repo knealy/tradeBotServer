@@ -189,7 +189,7 @@ export default function OrderTicket({ onOrderPlaced, noWrapper = false }: OrderT
 
   const formContent = (
     <>
-      {formError && (
+          {formError && (
         <div className="mb-4 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           <AlertCircle className="h-4 w-4" />
           <span>{formError}</span>

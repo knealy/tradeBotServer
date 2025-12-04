@@ -842,7 +842,7 @@ export default function TradingChart({
       try {
         const line = candlestickSeriesRef.current.createPriceLine({
           price: entryPrice,
-          color: isLong ? '#26A69A' : '#EF5350',
+        color: isLong ? '#26A69A' : '#EF5350',
           lineWidth: 2,
           lineStyle: LineStyle.Solid,
           axisLabelVisible: true,
@@ -1144,7 +1144,7 @@ export default function TradingChart({
                              currentDrag.order.stop_price !== undefined ||
                              (currentDrag.order.type && String(currentDrag.order.type) === '4')
           const orderType = isStopOrder ? 4 : 1
-
+          
           await orderApi.modifyOrder(currentDrag.order.id, {
             price: priceValue,
             order_type: orderType,
@@ -1211,6 +1211,29 @@ export default function TradingChart({
       container.removeEventListener('mouseleave', handleMouseUp, true)
     }
   }, [chartInitialized, showOrders]) // Remove draggingOrder from deps - we use ref now
+
+  // Device-aware performance optimization (moved outside WebSocket effect)
+  const [isMobileDevice, setIsMobileDevice] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.innerWidth < 1024 || 'ontouchstart' in window
+  })
+  
+  useEffect(() => {
+    const checkDevice = () => {
+      setIsMobileDevice(window.innerWidth < 1024 || 'ontouchstart' in window)
+    }
+    checkDevice()
+    let resizeTimeout: ReturnType<typeof setTimeout>
+    const handleResize = () => {
+      clearTimeout(resizeTimeout)
+      resizeTimeout = setTimeout(checkDevice, 200)
+    }
+    window.addEventListener('resize', handleResize, { passive: true })
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      clearTimeout(resizeTimeout)
+    }
+  }, [])
 
   // WebSocket integration for live updates
   useEffect(() => {
@@ -1297,10 +1320,12 @@ export default function TradingChart({
     }
 
     // Throttle WebSocket updates to prevent excessive re-renders
+    // Device-aware: Desktop gets faster updates (50ms), Mobile gets slower (100ms) to save battery
     let updateQueue: any[] = []
     let isProcessing = false
     let lastProcessTime = 0
-    const MIN_PROCESS_INTERVAL = 100 // Process at most every 100ms (10 updates/second)
+    // Desktop: faster updates (50ms), Mobile: slower updates (100ms) to save battery
+    const MIN_PROCESS_INTERVAL = isMobileDevice ? 100 : 50
     
     const processUpdates = () => {
       const now = Date.now()
@@ -1326,7 +1351,7 @@ export default function TradingChart({
         requestAnimationFrame(processUpdates)
       }
     }
-    
+
     const handleMessage = (payload: any) => {
       if (!payload) return
       const raw = payload.data ?? payload
@@ -1425,14 +1450,14 @@ export default function TradingChart({
               >
                 {TIMEFRAME_OPTIONS.map((option) => (
                   <option key={option} value={option}>
-                    {option.toUpperCase()}
+                  {option.toUpperCase()}
                   </option>
-                ))}
+              ))}
                 <option value="custom">Custom...</option>
               </select>
               {(customTimeframe || (!customTimeframe && !TIMEFRAME_OPTIONS.includes(timeframe))) && (
-                <input
-                  type="text"
+              <input
+                type="text"
                   value={customTimeframe || timeframe}
                   onChange={(e) => {
                     const value = e.target.value
@@ -1443,14 +1468,14 @@ export default function TradingChart({
                   }}
                   placeholder="e.g. 10s, 3m"
                   className={`px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded transition-colors w-20 sm:w-24 shrink-0 ${
-                    customTimeframe && isValidTimeframe(customTimeframe)
-                      ? 'bg-blue-600 text-white border-2 border-blue-400'
-                      : customTimeframe
-                      ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
-                  }`}
-                  title="Enter custom timeframe (e.g., 10s, 3m, 2h)"
-                />
+                  customTimeframe && isValidTimeframe(customTimeframe)
+                    ? 'bg-blue-600 text-white border-2 border-blue-400'
+                    : customTimeframe
+                    ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
+                }`}
+                title="Enter custom timeframe (e.g., 10s, 3m, 2h)"
+              />
               )}
             </div>
           </div>
@@ -1479,15 +1504,15 @@ export default function TradingChart({
             >
               {BAR_LIMITS.map((limit) => (
                 <option key={limit.value} value={limit.value}>
-                  {limit.label}
+                {limit.label}
                 </option>
-              ))}
+            ))}
               <option value="custom">Custom...</option>
             </select>
             {(!customBarLimit || parseInt(customBarLimit) < 100 || parseInt(customBarLimit) > 3000) && (
-              <input
-                type="number"
-                value={customBarLimit}
+            <input
+              type="number"
+              value={customBarLimit}
                 onChange={(e) => {
                   const value = e.target.value
                   setCustomBarLimit(value)
@@ -1496,18 +1521,18 @@ export default function TradingChart({
                     handleBarLimitChange(numValue)
                   }
                 }}
-                placeholder="100-3000"
-                min={100}
-                max={3000}
+              placeholder="100-3000"
+              min={100}
+              max={3000}
                 className={`px-2 sm:px-3 py-1 text-xs font-semibold rounded transition-colors w-20 sm:w-24 shrink-0 ${
-                  customBarLimit && parseInt(customBarLimit) >= 100 && parseInt(customBarLimit) <= 3000
-                    ? 'bg-green-600 text-white border-2 border-green-400'
-                    : customBarLimit
-                    ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
-                }`}
-                title="Enter custom bar count (100-3000)"
-              />
+                customBarLimit && parseInt(customBarLimit) >= 100 && parseInt(customBarLimit) <= 3000
+                  ? 'bg-green-600 text-white border-2 border-green-400'
+                  : customBarLimit
+                  ? 'bg-red-900/50 text-red-300 border-2 border-red-500'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600 border border-slate-600'
+              }`}
+              title="Enter custom bar count (100-3000)"
+            />
             )}
           </div>
 

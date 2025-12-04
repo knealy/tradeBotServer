@@ -2508,14 +2508,48 @@ async def main():
         selected_account = next((acc for acc in accounts if str(acc['id']) == str(account_choice)), None)
         if selected_account:
             trading_bot.selected_account = selected_account
-            logger.info(f"✅ Selected account: {selected_account['name']} (source={'env' if env_account_id else 'settings'})")
+            logger.info(f"✅ Selected account: {selected_account['name']} (ID: {selected_account['id']}, source={'env' if env_account_id else 'settings'})")
+            
+            # CRITICAL: Validate that PRAC account is selected
+            account_name_upper = selected_account.get('name', '').upper()
+            if 'PRAC' not in account_name_upper and 'PRACTICE' not in account_name_upper:
+                logger.warning(f"⚠️  WARNING: Selected account '{selected_account['name']}' does not appear to be a PRAC/PRACTICE account!")
+                logger.warning(f"⚠️  Attempting to find PRAC account...")
+                
+                # Try to find PRAC account
+                prac_account = None
+                for acc in accounts:
+                    acc_name = acc.get('name', '').upper()
+                    if 'PRAC' in acc_name or 'PRACTICE' in acc_name:
+                        prac_account = acc
+                        break
+                
+                if prac_account:
+                    trading_bot.selected_account = prac_account
+                    logger.warning(f"✅ Switched to PRAC account: {prac_account['name']} (ID: {prac_account['id']})")
+                else:
+                    logger.error(f"❌ No PRAC account found! Available accounts: {[acc.get('name') for acc in accounts]}")
+                    logger.error(f"❌ Continuing with non-PRAC account, but this may cause issues!")
         else:
             logger.error(f"❌ Preferred account ID {account_choice} not found among available accounts")
+            logger.error(f"❌ Available accounts: {[acc.get('name') for acc in accounts]}")
             sys.exit(1)
     else:
-        # Fallback: select first account
-        trading_bot.selected_account = accounts[0]
-        logger.info(f"✅ Auto-selected account: {accounts[0]['name']}")
+        # Fallback: try to find PRAC account first, then use first account
+        prac_account = None
+        for acc in accounts:
+            acc_name = acc.get('name', '').upper()
+            if 'PRAC' in acc_name or 'PRACTICE' in acc_name:
+                prac_account = acc
+                break
+        
+        if prac_account:
+            trading_bot.selected_account = prac_account
+            logger.info(f"✅ Auto-selected PRAC account: {prac_account['name']} (ID: {prac_account['id']})")
+        else:
+            trading_bot.selected_account = accounts[0]
+            logger.warning(f"⚠️  Auto-selected first account (not PRAC): {accounts[0]['name']} (ID: {accounts[0]['id']})")
+            logger.warning(f"⚠️  Available accounts: {[acc.get('name') for acc in accounts]}")
     
     # Apply persisted strategy state (if available)
     if hasattr(trading_bot, 'strategy_manager'):

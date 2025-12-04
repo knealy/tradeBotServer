@@ -83,11 +83,11 @@ export default function SettingsPage() {
 
   return (
     <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6 sm:p-8 backdrop-blur-sm space-y-5">
-      {saveStatus && (
-        <div className="bg-green-500/20 border border-green-500/30 rounded-lg px-4 py-2">
-          <p className="text-green-400 text-sm">{saveStatus}</p>
-        </div>
-      )}
+        {saveStatus && (
+          <div className="bg-green-500/20 border border-green-500/30 rounded-lg px-4 py-2">
+            <p className="text-green-400 text-sm">{saveStatus}</p>
+          </div>
+        )}
 
       <div className="grid gap-5">
         {/* Account Settings */}

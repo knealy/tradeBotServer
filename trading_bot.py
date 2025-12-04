@@ -1789,7 +1789,7 @@ class TopStepXTradingBot:
             clean_strategy = strategy_name.lower().replace(' ', '_').replace('-', '_')
             return f"{BOT_ORDER_TAG_PREFIX}-strategy-{clean_strategy}-{order_type}-{self._order_counter}-{timestamp}"
         else:
-            return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
+        return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
 
     async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
                                 stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
@@ -2884,7 +2884,7 @@ class TopStepXTradingBot:
                         return {
                             "error": f"Order modification failed: {error_message} (Error Code: {error_code}). "
                                     f"The order may be in a state that cannot be modified, or the TopStepX API may have restrictions on this order type."
-                        }
+                    }
                 
                 return {"error": f"Order modification failed: Error Code {error_code}, Message: {error_message}"}
             
@@ -4985,10 +4985,55 @@ class TopStepXTradingBot:
             response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
             if "error" in response:
-                logger.error(f"Failed to create stop bracket order: {response['error']}")
+                error_msg = response.get("error", "")
+                logger.error(f"Failed to create stop bracket order: {error_msg}")
+                
+                # Send notification even on error
+                try:
+                    account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                    account_id_str = str(target_account) if target_account else 'Unknown'
+                    
+                    notification_data = {
+                        'symbol': symbol,
+                        'side': side,
+                        'quantity': quantity,
+                        'price': f"${entry_price:.2f} (stop)",
+                        'order_type': 'Stop Bracket',
+                        'order_id': 'Failed',
+                        'status': 'Failed',
+                        'account_id': account_id_str,
+                        'account_name': account_name,
+                        'error': error_msg
+                    }
+                    
+                    # Send Discord notification for failed order
+                    self.discord_notifier.send_order_notification(notification_data, account_name)
+                    logger.info(f"✅ Discord notification sent for FAILED stop bracket {side} {quantity} {symbol} on {account_name}")
+                    
+                    # Record server-side notification
+                    if hasattr(self, 'db') and self.db:
+                        try:
+                            self.db.record_notification(
+                                account_id=account_id_str,
+                                notification_type='order_failed',
+                                message=f"Order FAILED: {symbol} {side} x{quantity} - {error_msg}",
+                                level='error',
+                                meta={
+                                    'symbol': symbol,
+                                    'side': side,
+                                    'quantity': quantity,
+                                    'error': error_msg,
+                                    'account_name': account_name
+                                }
+                            )
+                        except Exception as db_notif_err:
+                            logger.warning(f"Failed to record server notification: {db_notif_err}")
+                except Exception as notify_err:
+                    logger.warning(f"Failed to send error notification: {notify_err}")
+                
                 # Check if it's a bracket-related error
-                error_msg = response.get("error", "").lower()
-                if any(keyword in error_msg for keyword in ["bracket", "not enabled", "not supported", "position brackets"]):
+                error_msg_lower = error_msg.lower()
+                if any(keyword in error_msg_lower for keyword in ["bracket", "not enabled", "not supported", "position brackets"]):
                     logger.warning("Brackets might not be enabled, falling back to hybrid approach")
                     print("⚠️  Native brackets not supported in this configuration")
                     print("   Falling back to hybrid approach: stop order + auto-bracket on fill")
@@ -5036,6 +5081,7 @@ class TopStepXTradingBot:
             # Send Discord notification for successful bracket order
             try:
                 account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                account_id_str = str(target_account) if target_account else 'Unknown'
                 
                 notification_data = {
                     'symbol': symbol,
@@ -5045,14 +5091,35 @@ class TopStepXTradingBot:
                     'order_type': 'Stop Bracket',
                     'order_id': response.get('orderId', 'Unknown'),
                     'status': 'Placed',
+                    'account_id': account_id_str,
                     'account_name': account_name
                 }
                 
-                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                # Send Discord notification
                 self.discord_notifier.send_order_notification(notification_data, account_name)
-                logger.info(f"Discord notification sent for stop bracket {side} {quantity} {symbol}")
+                logger.info(f"✅ Discord notification sent for stop bracket {side} {quantity} {symbol} on {account_name}")
+                
+                # Also record server-side notification
+                if hasattr(self, 'db') and self.db:
+                    try:
+                        self.db.record_notification(
+                            account_id=account_id_str,
+                            notification_type='order_placed',
+                            message=f"Order placed: {symbol} {side} x{quantity} @ ${entry_price:.2f} (stop)",
+                            level='info',
+                            meta={
+                                'symbol': symbol,
+                                'side': side,
+                                'quantity': quantity,
+                                'order_type': 'Stop Bracket',
+                                'order_id': response.get('orderId'),
+                                'account_name': account_name
+                            }
+                        )
+                    except Exception as db_notif_err:
+                        logger.warning(f"Failed to record server notification: {db_notif_err}")
             except Exception as notify_err:
-                logger.warning(f"Failed to send Discord notification: {notify_err}")
+                logger.error(f"❌ Failed to send notification: {notify_err}", exc_info=True)
             
             # Setup breakeven monitoring if enabled
             if enable_breakeven:

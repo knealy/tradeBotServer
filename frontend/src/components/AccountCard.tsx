@@ -36,14 +36,14 @@ export default function AccountCard({ account, isSelected, onSelect }: AccountCa
       </div>
 
       <div className="space-y-3">
-        <div>
+          <div>
           <p className="text-xs text-slate-500 mb-1">Balance</p>
           <p className="text-2xl font-bold text-slate-100 tracking-tight">
-            {account.currency} {account.balance.toLocaleString('en-US', {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
-          </p>
+              {account.currency} {account.balance.toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </p>
         </div>
 
         {pnl !== 0 && (

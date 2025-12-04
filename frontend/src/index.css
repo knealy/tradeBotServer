@@ -2,10 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Prevent horizontal overflow on mobile */
-html, body {
-  overflow-x: hidden;
-  max-width: 100vw;
+/* Prevent horizontal overflow on mobile only */
+@media (max-width: 1023px) {
+  html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+}
+
+/* Desktop: allow horizontal scroll if needed, but prevent layout thrashing */
+@media (min-width: 1024px) {
+  html, body {
+    overflow-x: auto;
+    max-width: 100%;
+  }
 }
 
 * {
