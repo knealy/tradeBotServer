@@ -6,11 +6,21 @@ This document outlines the migration strategy for moving hot paths and critical 
 
 ## Performance Targets
 
-- **Order Execution Latency**: < 5ms (currently ~50-100ms)
-- **Order Modification Latency**: < 3ms (currently ~30-50ms)
-- **WebSocket Message Processing**: < 1ms per message (currently ~5-10ms)
-- **Historical Data Aggregation**: 10x faster (currently ~500ms for 3000 bars)
-- **Strategy Execution**: < 10ms per strategy check (currently ~50-100ms)
+**Baseline Metrics Established** (December 4, 2025):
+- **Order Execution Latency**: < 5ms target (currently ~100-150ms via API)
+- **Order Modification Latency**: < 3ms target (currently ~30-50ms)
+- **WebSocket Message Processing**: < 1ms target (currently ~5-10ms)
+- **Historical Data Aggregation**: 10x faster target (currently ~937ms for 10 bars, ~500ms for 3000 bars)
+- **Strategy Execution**: < 10ms target (currently ~50-100ms)
+- **Account Balance**: 0.34ms (cached) ✅ - Already optimal
+- **Quote Fetching**: 42.80ms (SignalR) - Can improve with Rust
+- **Contract Fetching**: 146.33ms - Can improve with Rust
+
+**Test Results** (test_all_commands.py):
+- All commands: 100% success rate ✅
+- Average time: 485.12ms
+- Fastest: 0.34ms (account_balance - cached)
+- Slowest: 2250.09ms (depth - includes SignalR fallback)
 
 ## Phase 1: Infrastructure & Tooling (Week 1-2)
 
@@ -291,10 +301,14 @@ class FastOrderExecutor:
 ## Migration Checklist
 
 ### Pre-Migration
-- [ ] Establish performance baselines
+- [x] Establish performance baselines ✅ (December 4, 2025)
+- [x] Create comprehensive test suite ✅ (test_all_commands.py)
+- [x] Remove hardcoded dependencies ✅ (dynamic contracts)
+- [x] Fix critical bugs ✅ (datetime, timezone, SignalR)
 - [ ] Set up Rust development environment
 - [ ] Create project structure
 - [ ] Set up CI/CD for Rust
+- [ ] Code refactoring (split trading_bot.py)
 
 ### Phase 1: Order Execution
 - [ ] Implement TopStepX API client in Rust

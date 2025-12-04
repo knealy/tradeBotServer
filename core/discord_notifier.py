@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Dict, Optional
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +69,9 @@ class DiscordNotifier:
                     {"name": "Fill Price", "value": str(price), "inline": True},
                     {"name": "Order ID", "value": str(order_id), "inline": True},
                     {"name": "Status", "value": status, "inline": True},
-                    {"name": "Timestamp", "value": datetime.utcnow().strftime("%H:%M:%S UTC"), "inline": True}
+                    {"name": "Timestamp", "value": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"), "inline": True}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Add bracket order details if available
@@ -115,7 +115,7 @@ class DiscordNotifier:
                 "fields": [
                     {"name": "Context", "value": context or "N/A", "inline": False}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             payload = {"embeds": [embed]}
@@ -163,9 +163,9 @@ class DiscordNotifier:
                     {"name": "Fill Price", "value": str(fill_price), "inline": True},
                     {"name": "Order ID", "value": str(order_id), "inline": True},
                     {"name": "Position ID", "value": str(position_id), "inline": True},
-                    {"name": "Timestamp", "value": datetime.utcnow().strftime("%H:%M:%S UTC"), "inline": True}
+                    {"name": "Timestamp", "value": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"), "inline": True}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             payload = {"embeds": [embed]}
@@ -228,9 +228,9 @@ class DiscordNotifier:
                     {"name": "P&L", "value": f"${pnl:.2f}", "inline": True},
                     {"name": "Close Method", "value": str(close_method), "inline": True},
                     {"name": "Position ID", "value": str(position_id), "inline": True},
-                    {"name": "Timestamp", "value": datetime.utcnow().strftime("%H:%M:%S UTC"), "inline": True}
+                    {"name": "Timestamp", "value": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"), "inline": True}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             payload = {"embeds": [embed]}
@@ -284,7 +284,7 @@ class DiscordNotifier:
                     {"name": "Symbol", "value": symbol, "inline": True},
                     {"name": "Signal", "value": signal_type, "inline": True}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Add details if provided

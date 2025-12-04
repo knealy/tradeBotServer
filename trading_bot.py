@@ -74,11 +74,13 @@ file_handler = RotatingFileHandler(
     maxBytes=10*1024*1024,  # 10MB per file
     backupCount=5  # Keep 5 backup files (50MB total)
 )
+# File handler gets all logs (INFO and above by default, DEBUG if verbose)
 file_handler.setLevel(getattr(logging, log_level, logging.INFO))
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
+# Console handler only shows warnings and errors to reduce terminal verbosity
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(getattr(logging, log_level, logging.INFO))
+console_handler.setLevel(logging.WARNING)  # Only WARNING, ERROR, CRITICAL in terminal
 console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
 logging.basicConfig(
@@ -88,7 +90,8 @@ logging.basicConfig(
     force=True  # Override any existing configuration
 )
 logger = logging.getLogger(__name__)
-logger.info("Logging initialized - file: trading_bot.log, console: stdout")
+# Only log to file, not console (this is INFO level)
+logger.info("Logging initialized - file: trading_bot.log (INFO+), console: stdout (WARNING+)")
 
 # Bot identifier for order tagging - will be made unique per order
 BOT_ORDER_TAG_PREFIX = "TradingBot-v1.0"
@@ -304,7 +307,7 @@ class TopStepXTradingBot:
         # Track filled orders to avoid duplicate notifications
         self._notified_orders = set()
         self._notification_warmup_done: Dict[str, bool] = {}
-        self._startup_time = datetime.utcnow()
+        self._startup_time = datetime.now(timezone.utc)
         self._notified_positions = set()  # Track position close notifications
         
         # Auto fills settings
@@ -602,9 +605,10 @@ class TopStepXTradingBot:
             return
         try:
             # Get contract ID (e.g., CON.F.US.MNQ.Z25)
-            contract_id = self._get_contract_id(sym)
-            if not contract_id:
-                logger.warning(f"No contract ID found for {sym}, cannot subscribe to quotes")
+            try:
+                contract_id = self._get_contract_id(sym)
+            except ValueError as e:
+                logger.warning(f"Cannot subscribe to quotes for {sym}: {e}")
                 return
             
             # Per ProjectX docs: invoke SubscribeContractQuotes with contract ID string
@@ -627,23 +631,43 @@ class TopStepXTradingBot:
             return
         try:
             # Subscribe to depth data - try different possible method names
-            cid = self._get_contract_id(sym)
-            # Try only the most likely depth subscription methods to reduce errors
+            try:
+                cid = self._get_contract_id(sym)
+            except ValueError as e:
+                logger.warning(f"Cannot subscribe to depth for {sym}: {e}")
+                return
+            
+            # Try depth subscription methods (following pattern from SubscribeContractQuotes)
+            # Note: Depth data may be auto-subscribed or use different method names
             depth_methods = [
-                "SubscribeOrderBook",  # Most common for depth data
-                "SubscribeLevel2"      # Alternative depth method
+                "SubscribeContractDepth",  # Following SubscribeContractQuotes pattern
+                "SubscribeDepth",          # Alternative
+                "SubscribeOrderBook",       # Legacy attempt (may not exist)
+                "SubscribeLevel2"          # Legacy attempt (may not exist)
             ]
             
+            subscribed = False
             for method in depth_methods:
                 try:
                     self._market_hub.send(method, [cid])
-                    logger.info(f"Subscribed to depth data for {sym} via {cid} using {method}")
+                    logger.debug(f"Attempted depth subscription for {sym} via {cid} using {method}")
+                    # Don't log success immediately - wait to see if it actually works
+                    subscribed = True
+                    break  # If no exception, assume it worked
                 except Exception as e:
-                    logger.debug(f"Depth method {method} failed: {e}")
+                    error_str = str(e)
+                    # Only log if it's not a "method does not exist" error (expected for wrong methods)
+                    if "does not exist" not in error_str.lower() and "Method" not in error_str:
+                        logger.debug(f"Depth method {method} failed: {e}")
                     continue
+            
+            if subscribed:
+                logger.debug(f"Depth subscription attempted for {sym} - will use REST API fallback if SignalR fails")
+            else:
+                logger.debug(f"All depth subscription methods failed for {sym} - will use REST API fallback")
                 
         except Exception as e:
-            logger.warning(f"Failed to subscribe to depth for {sym}: {e}")
+            logger.debug(f"Depth subscription error for {sym}: {e} (will use REST API fallback)")
         
         if not self.api_key or not self.username:
             raise ValueError("API key and username must be provided either as parameters or environment variables")
@@ -1220,83 +1244,170 @@ class TopStepXTradingBot:
         """
         Convert trading symbol to TopStepX contract ID format.
         
-        First tries to find the contract ID from the cached contract list.
-        If cache is empty, fetches contracts from API.
-        Falls back to hardcoded mappings only if API fetch fails.
+        Gets the contract ID from the cached contract list.
+        Selects the most recent active contract with highest volume for the symbol.
+        Contracts must be fetched before calling this method (via get_available_contracts()).
         
         Args:
             symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
             
         Returns:
             str: Contract ID in TopStepX format
+            
+        Raises:
+            ValueError: If contract cache is empty or symbol not found
         """
         symbol = symbol.upper()
         
-        # Try to find in cached contract list first
+        # Try to find in cached contract list
         with self._contract_cache_lock:
-            if self._contract_cache is not None:
-                contracts = self._contract_cache['contracts']
-                # Look for contract matching the symbol
-                # Prefer contracts with expiration dates (most recent first)
-                matching_contracts = []
-                for contract in contracts:
-                    # Contract might have various field names for symbol
-                    contract_symbol = None
+            if self._contract_cache is None:
+                error_msg = (
+                    f"Contract cache is empty. "
+                    f"Please fetch contracts first using 'get_available_contracts()' or run 'contracts' command."
+                )
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+            
+            contracts = self._contract_cache['contracts']
+            if not contracts:
+                error_msg = (
+                    f"Contract cache is empty (no contracts found). "
+                    f"Please fetch contracts first using 'get_available_contracts()' or run 'contracts' command."
+                )
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+            
+            # Look for contract matching the symbol
+            matching_contracts = []
+            for contract in contracts:
+                if not isinstance(contract, dict):
+                    continue
+                
+                # Try to get contract ID first
+                contract_id = (
+                    contract.get('contractId') or
+                    contract.get('ContractId') or
+                    contract.get('id') or
+                    contract.get('Id') or
+                    contract.get('contract_id') or
+                    contract.get('contractID')
+                )
+                
+                if not contract_id:
+                    continue
+                
+                # Try various field names for symbol
+                contract_symbol = (
+                    contract.get('symbol') or
+                    contract.get('Symbol') or
+                    contract.get('ticker') or
+                    contract.get('Ticker') or
+                    contract.get('instrument') or
+                    contract.get('Instrument')
+                )
+                
+                # If symbol field not found, try to extract from contract ID
+                # Format: CON.F.US.MNQ.Z25 -> extract MNQ (second to last part)
+                if not contract_symbol and contract_id:
+                    if '.' in str(contract_id):
+                        parts = str(contract_id).split('.')
+                        if len(parts) >= 4:
+                            # Second to last part is usually the symbol (before expiration code)
+                            contract_symbol = parts[-2]
+                
+                # Also try extracting from name field (e.g., "MNQZ5" -> "MNQ")
+                if not contract_symbol:
+                    name = contract.get('name') or contract.get('Name') or contract.get('description') or contract.get('Description')
+                    if name:
+                        # Try to extract symbol from name (e.g., "Micro E-mini NASDAQ-100: MNQ" or "MNQZ5")
+                        name_str = str(name).upper()
+                        # Look for symbol pattern in name
+                        for test_symbol in [symbol, symbol[:3], symbol[:2]]:
+                            if test_symbol in name_str:
+                                # Check if it's at word boundary
+                                import re
+                                pattern = r'\b' + re.escape(test_symbol) + r'\b'
+                                if re.search(pattern, name_str):
+                                    contract_symbol = test_symbol
+                                    break
+                
+                # Normalize symbol for comparison
+                if contract_symbol:
+                    contract_symbol = str(contract_symbol).upper().strip()
+                
+                # Check if symbol matches
+                if contract_symbol == symbol:
+                    # Extract metadata for sorting
+                    expiration = contract.get('expiration') or contract.get('Expiration') or contract.get('expiry') or contract.get('Expiry')
+                    volume = contract.get('volume') or contract.get('Volume') or contract.get('dailyVolume') or contract.get('openInterest') or 0
+                    if not isinstance(volume, (int, float)):
+                        volume = 0
+                    
+                    # Try to extract expiration from contract ID if not in separate field
+                    # Format: CON.F.US.MNQ.Z25 -> Z25 is expiration code
+                    if not expiration and contract_id and '.' in str(contract_id):
+                        parts = str(contract_id).split('.')
+                        if len(parts) >= 1:
+                            expiration = parts[-1]  # Last part is expiration code
+                    
+                    matching_contracts.append({
+                        'contract_id': str(contract_id),
+                        'contract': contract,
+                        'expiration': expiration,
+                        'volume': volume,
+                        'raw_contract_id': contract_id
+                    })
+            
+            if not matching_contracts:
+                # Log available symbols for debugging
+                available_symbols = set()
+                for contract in contracts[:20]:  # Check first 20 contracts
                     if isinstance(contract, dict):
-                        contract_symbol = (
+                        sym = (
                             contract.get('symbol') or
                             contract.get('Symbol') or
                             contract.get('ticker') or
-                            contract.get('Ticker') or
-                            contract.get('name') or
-                            contract.get('Name')
+                            contract.get('Ticker')
                         )
-                        contract_id = (
-                            contract.get('contractId') or
-                            contract.get('ContractId') or
-                            contract.get('id') or
-                            contract.get('Id') or
-                            contract.get('contract_id')
-                        )
-                        
-                        if contract_symbol and contract_symbol.upper() == symbol and contract_id:
-                            matching_contracts.append((contract_id, contract))
+                        if not sym and contract.get('contractId'):
+                            # Extract from contract ID
+                            cid = str(contract.get('contractId'))
+                            if '.' in cid:
+                                parts = cid.split('.')
+                                if len(parts) >= 4:
+                                    sym = parts[-2]
+                        if sym:
+                            available_symbols.add(str(sym).upper())
                 
-                if matching_contracts:
-                    # If multiple contracts found, prefer the one with latest expiration
-                    # or just use the first one (API should return active contracts first)
-                    contract_id = matching_contracts[0][0]
-                    logger.debug(f"Found contract ID for {symbol} in cache: {contract_id}")
-                    if len(matching_contracts) > 1:
-                        logger.debug(f"Multiple contracts found for {symbol}, using: {contract_id} (total: {len(matching_contracts)})")
-                    return str(contract_id)
-        
-        # Cache is empty - log warning but don't try to fetch here (would require async)
-        # The caller should ensure contracts are fetched before calling this
-        logger.warning(f"⚠️  Contract cache empty or {symbol} not found in cache. Contracts should be fetched before getting historical data.")
-        
-        # Fallback to hardcoded mappings if cache lookup and API fetch both failed
-        # WARNING: These may be expired contracts - should only be used as last resort
-        contract_mappings = {
-            "ES": "CON.F.US.ES.Z25",      # E-mini S&P 500
-            "MES": "CON.F.US.MES.Z25",    # Micro E-mini S&P 500
-            "NQ": "CON.F.US.NQ.Z25",      # E-mini NASDAQ-100
-            "MNQ": "CON.F.US.MNQ.Z25",    # Micro E-mini NASDAQ-100
-            "YM": "CON.F.US.YM.Z25",       # E-mini Dow Jones
-            "MYM": "CON.F.US.MYM.Z25",    # Micro E-mini Dow Jones
-            "RTY": "CON.F.US.RTY.Z25",    # E-mini Russell 2000
-            "M2K": "CON.F.US.M2K.Z25",    # Micro E-mini Russell 2000
-            "GC": "CON.F.US.GC.Z25",       # Gold
-            "MGC": "CON.F.US.MGC.Z25",     # Micro Gold
-        }
-        
-        if symbol in contract_mappings:
-            logger.warning(f"⚠️  Using hardcoded fallback contract for {symbol}: {contract_mappings[symbol]} (may be expired!)")
-            return contract_mappings[symbol]
-        
-        # If not found, try to construct it
-        logger.warning(f"Unknown symbol {symbol}, using generic format (may be incorrect!)")
-        return f"CON.F.US.{symbol}.Z25"
+                error_msg = (
+                    f"Symbol '{symbol}' not found in contract cache. "
+                    f"Available symbols (sample): {sorted(list(available_symbols))[:10]}. "
+                    f"Please ensure contracts are fetched and the symbol is correct."
+                )
+                logger.error(f"❌ {error_msg}")
+                logger.debug(f"Contract cache contains {len(contracts)} contracts")
+                raise ValueError(error_msg)
+            
+            # Sort contracts: prefer most recent expiration and highest volume
+            def sort_key(c):
+                # Higher volume is better
+                volume_score = c['volume'] if isinstance(c['volume'], (int, float)) else 0
+                # More recent expiration is better (alphabetically later codes are usually more recent)
+                exp_score = str(c['expiration'] or '').upper()
+                return (-volume_score, exp_score)  # Negative volume for descending order
+            
+            matching_contracts.sort(key=sort_key, reverse=True)
+            
+            # Select the best contract (highest volume, most recent expiration)
+            best_contract = matching_contracts[0]
+            contract_id = best_contract['contract_id']
+            
+            logger.info(f"✅ Found contract ID for {symbol}: {contract_id} (from {len(matching_contracts)} matches, selected by volume/expiration)")
+            if len(matching_contracts) > 1:
+                logger.debug(f"   Other matches: {[c['contract_id'] for c in matching_contracts[1:3]]}")
+            
+            return str(contract_id)
     
     def _clear_contract_cache(self) -> None:
         """Clear the contract list cache (useful for testing or forced refresh)."""
@@ -1338,9 +1449,13 @@ class TopStepXTradingBot:
         """
         sym = (symbol or "").upper()
         variants: List[str] = []
-        contract_id = self._get_contract_id(sym)
-        if contract_id:
-            variants.append(contract_id)
+        try:
+            contract_id = self._get_contract_id(sym)
+            if contract_id:
+                variants.append(contract_id)
+        except ValueError:
+            # Contract not found - will try other variants below
+            pass
             derived = self._derive_symbol_id_from_contract(contract_id)
             if derived:
                 variants.append(derived)
@@ -1851,7 +1966,12 @@ class TopStepXTradingBot:
             side_value = 0 if side.upper() == "BUY" else 1
             
             # Get proper contract ID
-            contract_id = self._get_contract_id(symbol)
+            try:
+                contract_id = self._get_contract_id(symbol)
+            except ValueError as e:
+                error_msg = f"Cannot place order: {e}. Please fetch contracts first using 'contracts' command."
+                logger.error(f"❌ {error_msg}")
+                return {"error": error_msg}
             
             # Determine order type (TopStepX API uses numbers)
             if order_type.lower() == "limit":
@@ -2179,6 +2299,13 @@ class TopStepXTradingBot:
                 logger.warning(f"Unexpected contracts response type: {type(response)}")
                 contracts = []
             
+            # Log sample contract structure for debugging
+            if contracts and len(contracts) > 0:
+                sample = contracts[0]
+                logger.debug(f"Sample contract structure: {list(sample.keys()) if isinstance(sample, dict) else type(sample)}")
+                if isinstance(sample, dict):
+                    logger.debug(f"Sample contract fields: symbol={sample.get('symbol')}, contractId={sample.get('contractId')}, name={sample.get('name')}")
+            
             # Cache the contracts
             if use_cache:
                 with self._contract_cache_lock:
@@ -2187,7 +2314,22 @@ class TopStepXTradingBot:
                         'timestamp': datetime.now(),
                         'ttl_minutes': cache_ttl_minutes
                     }
-                    logger.debug(f"Cached {len(contracts)} contracts for {cache_ttl_minutes} minutes")
+                    logger.info(f"✅ Cached {len(contracts)} contracts for {cache_ttl_minutes} minutes")
+                    # Log a few sample symbols for verification
+                    sample_symbols = []
+                    for contract in contracts[:10]:
+                        if isinstance(contract, dict):
+                            sym = contract.get('symbol') or contract.get('Symbol') or contract.get('ticker')
+                            if not sym and contract.get('contractId'):
+                                cid = str(contract.get('contractId'))
+                                if '.' in cid:
+                                    parts = cid.split('.')
+                                    if len(parts) >= 4:
+                                        sym = parts[-2]
+                            if sym:
+                                sample_symbols.append(str(sym).upper())
+                    if sample_symbols:
+                        logger.debug(f"Sample symbols in cache: {sorted(set(sample_symbols))}")
             
             logger.info(f"Found {len(contracts)} available contracts")
             return contracts
@@ -3737,7 +3879,12 @@ class TopStepXTradingBot:
             logger.info(f"Creating bracket order for {side} {quantity} {symbol} on account {target_account}")
             
             # Get proper contract ID
-            contract_id = self._get_contract_id(symbol)
+            try:
+                contract_id = self._get_contract_id(symbol)
+            except ValueError as e:
+                error_msg = f"Cannot create bracket order: {e}. Please fetch contracts first using 'contracts' command."
+                logger.error(f"❌ {error_msg}")
+                return {"error": error_msg}
             
             # Convert side to numeric value
             side_value = 0 if side.upper() == "BUY" else 1
@@ -4050,10 +4197,15 @@ class TopStepXTradingBot:
             # Get the position ID for the new position
             positions = await self.get_open_positions(target_account)
             position_id = None
-            for pos in positions:
-                if pos.get('contractId') == self._get_contract_id(symbol):
-                    position_id = pos.get('id')
-                    break
+            try:
+                symbol_contract_id = self._get_contract_id(symbol)
+                for pos in positions:
+                    if pos.get('contractId') == symbol_contract_id:
+                        position_id = pos.get('id')
+                        break
+            except ValueError as e:
+                logger.error(f"❌ Cannot find position: {e}. Please fetch contracts first.")
+                return {"error": str(e)}
             
             if not position_id:
                 return {"error": "Could not find position after entry order"}
@@ -4231,10 +4383,15 @@ class TopStepXTradingBot:
             # Get all open orders for this symbol (using individual call since we only need orders)
             orders = await self.get_open_orders(account_id)
             symbol_orders = []
-            for order in orders:
-                order_contract = order.get('contractId', '')
-                if order_contract == self._get_contract_id(symbol):
-                    symbol_orders.append(order)
+            try:
+                symbol_contract_id = self._get_contract_id(symbol)
+                for order in orders:
+                    order_contract = order.get('contractId', '')
+                    if order_contract == symbol_contract_id:
+                        symbol_orders.append(order)
+            except ValueError as e:
+                logger.error(f"❌ Cannot filter orders: {e}. Please fetch contracts first.")
+                return {"error": str(e)}
             
             # Cancel all existing TP and SL orders for this symbol
             canceled_orders = []
@@ -4804,7 +4961,12 @@ class TopStepXTradingBot:
             logger.info(f"Placing stop {side} order for {quantity} {symbol} at {rounded_stop_price}")
             
             # Get proper contract ID
-            contract_id = self._get_contract_id(symbol)
+            try:
+                contract_id = self._get_contract_id(symbol)
+            except ValueError as e:
+                error_msg = f"Cannot create bracket order: {e}. Please fetch contracts first using 'contracts' command."
+                logger.error(f"❌ {error_msg}")
+                return {"error": error_msg}
             
             # Convert side to numeric value
             side_value = 0 if side.upper() == "BUY" else 1
@@ -4886,7 +5048,12 @@ class TopStepXTradingBot:
             logger.info(f"  Take Profit: ${take_profit_price:.2f}")
             
             # Get proper contract ID
-            contract_id = self._get_contract_id(symbol)
+            try:
+                contract_id = self._get_contract_id(symbol)
+            except ValueError as e:
+                error_msg = f"Cannot create bracket order: {e}. Please fetch contracts first using 'contracts' command."
+                logger.error(f"❌ {error_msg}")
+                return {"error": error_msg}
             
             # Convert side to numeric value
             side_value = 0 if side.upper() == "BUY" else 1
@@ -5417,7 +5584,12 @@ class TopStepXTradingBot:
                     
                     try:
                         # Get contract ID for the order
-                        contract_id = self._get_contract_id(symbol)
+                        try:
+                            contract_id = self._get_contract_id(symbol)
+                        except ValueError as e:
+                            error_msg = f"Cannot place trailing stop order: {e}. Please fetch contracts first."
+                            logger.error(f"❌ {error_msg}")
+                            return {"error": error_msg}
                         
                         # Convert side to numeric value (0=BUY, 1=SELL)
                         side_value = 0 if side.upper() == "BUY" else 1
@@ -5790,7 +5962,12 @@ class TopStepXTradingBot:
             logger.info(f"Falling back to REST API for market depth: {symbol}")
             
             # Get proper contract ID
-            contract_id = self._get_contract_id(symbol)
+            try:
+                contract_id = self._get_contract_id(symbol)
+            except ValueError as e:
+                error_msg = f"Cannot get market depth: {e}. Please fetch contracts first using 'contracts' command."
+                logger.error(f"❌ {error_msg}")
+                return {"error": error_msg}
             
             headers = {
                 "accept": "text/plain",
@@ -6495,14 +6672,21 @@ class TopStepXTradingBot:
             
             # Ensure contract cache is populated before getting contract ID
             # This ensures we use the current active contract, not expired hardcoded ones
-            with self._contract_cache_lock:
-                if self._contract_cache is None:
-                    logger.info("Contract cache empty, fetching contracts to ensure correct contract ID...")
-                    try:
-                        contracts = await self.get_available_contracts(use_cache=False)
-                        logger.info(f"Fetched {len(contracts)} contracts from API")
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch contracts: {e}, will use fallback contract ID (may be expired!)")
+            try:
+                # Try to get contract ID - this will raise ValueError if cache is empty or symbol not found
+                contract_id = self._get_contract_id(symbol)
+            except ValueError:
+                # Contract cache is empty or symbol not found - fetch contracts
+                logger.info("Contract cache empty or symbol not found, fetching contracts to ensure correct contract ID...")
+                try:
+                    contracts = await self.get_available_contracts(use_cache=False)
+                    logger.info(f"Fetched {len(contracts)} contracts from API")
+                    # Now try again to get contract ID
+                    contract_id = self._get_contract_id(symbol)
+                except Exception as e:
+                    error_msg = f"Failed to fetch contracts or get contract ID for {symbol}: {e}"
+                    logger.error(f"❌ {error_msg}")
+                    return []
             
             # For small limits (1-5 bars) on short timeframes, bypass cache or use very short TTL
             # This ensures real-time monitoring gets fresh data
@@ -6724,8 +6908,7 @@ class TopStepXTradingBot:
                 logger.error(f"Invalid source timeframe: {source_timeframe}")
                 return []
             
-            # Get contract ID for the symbol
-            contract_id = self._get_contract_id(symbol)
+            # Contract ID already obtained above (with error handling)
             logger.info(f"Using contract ID: {contract_id} for symbol {symbol}")
             
             # Calculate time range for the request
@@ -7117,15 +7300,17 @@ class TopStepXTradingBot:
         Updates highest EOD balance for trailing drawdown calculations.
         """
         import asyncio
-        from datetime import datetime, time as dt_time, timedelta
+        from datetime import datetime, time as dt_time, timedelta, timezone
         
         logger.info("EOD scheduler started - will update balance at midnight UTC")
         
         while True:
             try:
                 # Calculate time until next midnight UTC
-                now = datetime.utcnow()
-                midnight = datetime.combine(now.date() + timedelta(days=1), dt_time.min)
+                now = datetime.now(timezone.utc)
+                # Create timezone-aware midnight datetime
+                tomorrow = now.date() + timedelta(days=1)
+                midnight = datetime.combine(tomorrow, dt_time.min, tzinfo=timezone.utc)
                 seconds_until_midnight = (midnight - now).total_seconds()
                 
                 logger.debug(f"EOD scheduler: Next update in {seconds_until_midnight/3600:.1f} hours")
@@ -7179,11 +7364,19 @@ class TopStepXTradingBot:
             # Create tasks for parallel execution
             # Note: Cache initialization is now LAZY (done on first history command)
             accounts_task = asyncio.create_task(self.list_accounts())
-            contracts_task = asyncio.create_task(self.get_available_contracts())
+            # Ensure contracts are cached (use_cache=True by default)
+            contracts_task = asyncio.create_task(self.get_available_contracts(use_cache=True))
             
             # Wait for all parallel tasks to complete
             accounts_result = await accounts_task
             contracts_result = await contracts_task
+            
+            # Verify contracts were cached
+            with self._contract_cache_lock:
+                if self._contract_cache is None:
+                    logger.warning("⚠️  Contracts fetched but cache is empty - this should not happen")
+                else:
+                    logger.debug(f"✅ Contract cache verified: {len(self._contract_cache['contracts'])} contracts cached")
             
             _parallel_ms = int((_t.time() - _parallel_start) * 1000)
             
@@ -9517,6 +9710,12 @@ def main():
         for handler in logging.getLogger().handlers:
             handler.setLevel(logging.DEBUG)
         logger.info("Verbose logging enabled")
+        print("📊 Verbose logging enabled - all logs will appear in terminal")
+    else:
+        # Ensure console only shows WARNING+ in non-verbose mode
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
+                handler.setLevel(logging.WARNING)
     
     print("TopStepX Trading Bot - Real API Version")
     print("=======================================")
@@ -9526,6 +9725,9 @@ def main():
     print("2. List your active accounts")
     print("3. Select which account to trade on")
     print("4. Place live market orders")
+    print()
+    print("ℹ️  Detailed logs are being written to: trading_bot.log")
+    print("   (Terminal will only show warnings and errors)")
     print()
     
     # Check for environment variables

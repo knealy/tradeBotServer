@@ -351,6 +351,24 @@ class DatabaseManager:
             settings JSONB NOT NULL,
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
+        
+        -- Notifications table for server-side notification tracking
+        CREATE TABLE IF NOT EXISTS notifications (
+            id SERIAL PRIMARY KEY,
+            account_id VARCHAR(50) NOT NULL,
+            notification_type VARCHAR(50) NOT NULL,
+            message TEXT NOT NULL,
+            level VARCHAR(20) DEFAULT 'info',  -- 'info', 'success', 'warning', 'error'
+            meta JSONB,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_notifications_account 
+            ON notifications(account_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notifications_type 
+            ON notifications(notification_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notifications_level 
+            ON notifications(level, created_at DESC);
         """
         
         try:
@@ -1118,6 +1136,36 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"❌ Failed to get database stats: {e}")
             return {}
+    
+    def record_notification(self, account_id: str, notification_type: str, message: str, 
+                           level: str = "info", meta: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Record a notification in the database.
+        
+        Args:
+            account_id: Account ID for the notification
+            notification_type: Type of notification (e.g., 'order_failed', 'risk_alert')
+            message: Notification message
+            level: Notification level ('info', 'success', 'warning', 'error')
+            meta: Optional metadata dictionary
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO notifications (account_id, notification_type, message, level, meta)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        str(account_id),
+                        notification_type,
+                        message,
+                        level,
+                        json.dumps(meta) if meta else None
+                    ))
+            logger.debug(f"✅ Notification recorded: {notification_type} for account {account_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to record notification: {e}")
+            # Don't raise - notification recording failure shouldn't break the app
     
     def close(self):
         """Close all connections in the pool."""

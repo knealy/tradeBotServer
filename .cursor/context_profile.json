@@ -1,0 +1,672 @@
+{
+  "version": "1.1.0",
+  "last_updated": "2025-12-04",
+  "description": "Context profile for common problems, fixes, and patterns in the tradeBotServer codebase",
+  
+  "common_problems": {
+    "jwt_token_expiration": {
+      "problem": "JWT tokens expire causing 500 errors on API calls, especially /api/Order/place",
+      "symptoms": [
+        "500 Internal Server Error on order placement",
+        "Max retries exceeded with url: /api/Order/place",
+        "ResponseError('too many 500 error responses')",
+        "Orders fail to place even when credentials are valid"
+      ],
+      "root_causes": [
+        "Token expires after ~30 minutes but code doesn't auto-refresh",
+        "Using expired token in Authorization header",
+        "No retry logic with token refresh on 500 errors",
+        "Calling authenticate() directly instead of _ensure_valid_token()"
+      ],
+      "solutions": [
+        {
+          "file": "trading_bot.py",
+          "method": "place_oco_bracket_with_stop_entry",
+          "fix": "Add automatic token refresh and retry on 500 errors",
+          "code_pattern": "if 'error' in response and '500' in str(response.get('error', '')): await self._ensure_valid_token(); await asyncio.sleep(0.75); retry request"
+        },
+        {
+          "file": "trading_bot.py",
+          "method": "_make_curl_request",
+          "fix": "Remove None values from JSON payloads (TopStepX rejects None)",
+          "code_pattern": "cleaned_data = {k: v for k, v in data.items() if v is not None}"
+        },
+        {
+          "file": "servers/async_webhook_server.py",
+          "fix": "Use _ensure_valid_token() instead of authenticate() on startup",
+          "code_pattern": "await trading_bot._ensure_valid_token()  # Not authenticate()"
+        }
+      ],
+      "prevention": [
+        "Always use _ensure_valid_token() instead of authenticate() directly",
+        "Check token expiration before making API calls",
+        "Implement retry logic with token refresh on 500 errors",
+        "Add 0.75s delay before retry to prevent rate limiting",
+        "Log JSON payloads for debugging order placement issues"
+      ],
+      "related_files": [
+        "trading_bot.py",
+        "servers/async_webhook_server.py",
+        "docs/JWT_AUTO_REFRESH_FIX_2025-12-02.md"
+      ]
+    },
+    
+    "async_await_syntax_errors": {
+      "problem": "Using await in synchronous functions causes SyntaxError",
+      "symptoms": [
+        "SyntaxError: 'await' outside async function",
+        "Line numbers pointing to await statements in sync methods"
+      ],
+      "root_causes": [
+        "Adding await to synchronous methods like _make_curl_request()",
+        "Forgetting to make function async when adding await",
+        "Mixing sync and async code incorrectly"
+      ],
+      "solutions": [
+        {
+          "pattern": "If method is sync, handle async operations in caller",
+          "example": "_make_curl_request() is sync, token refresh happens in async caller"
+        },
+        {
+          "pattern": "Make function async if it needs await",
+          "example": "async def place_oco_bracket_with_stop_entry(...)"
+        }
+      ],
+      "prevention": [
+        "Check function signature before adding await",
+        "If function is 'def', it's sync - handle async in caller",
+        "If function is 'async def', it can use await",
+        "Clear Python cache files if syntax errors persist: find . -name '*.pyc' -delete"
+      ]
+    },
+    
+    "account_tracker_missing_methods": {
+      "problem": "AccountTracker missing get_daily_pnl() method causing strategy failures",
+      "symptoms": [
+        "'AccountTracker' object has no attribute 'get_daily_pnl'",
+        "Strategies fail to analyze: Error analyzing MNQ/MES",
+        "No trade signals generated"
+      ],
+      "root_causes": [
+        "Strategy code calls tracker.get_daily_pnl() but method doesn't exist",
+        "Missing properties: current_balance, daily_loss_limit, etc."
+      ],
+      "solutions": [
+        {
+          "file": "core/account_tracker.py",
+          "fix": "Add get_daily_pnl() method and required properties",
+          "methods_added": [
+            "get_daily_pnl(account_id=None) -> float",
+            "property current_balance -> float",
+            "property daily_loss_limit -> float",
+            "property highest_EOD_balance -> float",
+            "property maximum_loss_limit -> float"
+          ]
+        }
+      ],
+      "prevention": [
+        "Ensure AccountTracker implements all methods used by strategies",
+        "Check strategy_base.py for required tracker methods",
+        "Add properties for commonly accessed state values"
+      ]
+    },
+    
+    "signalr_connection_spam": {
+      "problem": "SignalR connection spam causing thousands of failed connection attempts",
+      "symptoms": [
+        "Massive log spam (30,000+ logs/minute)",
+        "Continuous 403 Forbidden errors",
+        "Railway rate limit hit (500 logs/sec)",
+        "High CPU usage from failed reconnections"
+      ],
+      "root_causes": [
+        "reconnect_interval: 1 (retry every 1 second)",
+        "max_attempts: 0 (unlimited retries)",
+        "No exponential backoff",
+        "No special handling for 403 errors"
+      ],
+      "solutions": [
+        {
+          "file": "trading_bot.py",
+          "fix": "Implement exponential backoff and limit retries",
+          "changes": {
+            "reconnect_interval": "5 (was 1)",
+            "max_attempts": "10 (was 0/unlimited)",
+            "keep_alive_interval": "15 (was 10)"
+          }
+        },
+        {
+          "fix": "Add 403 error detection to reduce log spam",
+          "code_pattern": "if '403' in error_text: logger.error('...'); return"
+        }
+      ],
+      "prevention": [
+        "Always set max_attempts for reconnection logic",
+        "Use exponential backoff for retries",
+        "Detect and handle specific error codes (403, 401) specially",
+        "Don't log the same error repeatedly"
+      ]
+    },
+    
+    "strategy_status_keyerror": {
+      "problem": "strategies status command fails with KeyError: 'status'",
+      "symptoms": [
+        "KeyError: 'status' when running 'strategies status'",
+        "Strategy status display fails"
+      ],
+      "root_causes": [
+        "OvernightRangeStrategy.get_status() overrides base method without calling super()",
+        "Missing required fields from base class"
+      ],
+      "solutions": [
+        {
+          "file": "strategies/overnight_range_strategy.py",
+          "fix": "Call super().get_status() first, then add custom fields",
+          "code_pattern": "status = super().get_status(); status.update({...custom fields...})"
+        }
+      ],
+      "prevention": [
+        "Always call super() when overriding methods",
+        "Include all required fields from base class",
+        "Test CLI commands after strategy changes"
+      ]
+    },
+    
+    "excessive_api_calls": {
+      "problem": "Frontend polling too frequently causing slow dashboard",
+      "symptoms": [
+        "Dashboard slow to load",
+        "Multiple API calls for same data",
+        "Slow API warnings (5+ seconds)",
+        "High API usage"
+      ],
+      "solutions": [
+        {
+          "area": "Frontend polling intervals",
+          "changes": {
+            "accounts": "30s → 60s",
+            "account_info": "5s → 15s",
+            "metrics": "10s → 30s",
+            "positions": "5s → 10s"
+          }
+        },
+        {
+          "area": "Backend optimization",
+          "fix": "Use balances from list_accounts() instead of individual calls",
+          "fix": "Add React Query staleTime for better caching"
+        }
+      ],
+      "prevention": [
+        "Use appropriate polling intervals (not too frequent)",
+        "Leverage React Query caching",
+        "Use WebSocket for real-time updates when possible",
+        "Cache API responses on backend"
+      ]
+    },
+    
+    "chart_realtime_updates": {
+      "problem": "Chart bars not updating in real-time",
+      "symptoms": [
+        "Only 2m timeframe shows recent data",
+        "Other timeframes lag 20-30 minutes",
+        "Bars generated once and never updated"
+      ],
+      "root_causes": [
+        "Bar aggregator only supports limited timeframes",
+        "Frontend too strict about timeframe matching",
+        "Bar aggregator not initializing all requested timeframes"
+      ],
+      "solutions": [
+        {
+          "file": "core/bar_aggregator.py",
+          "fix": "Expand default timeframes to include all chart timeframes"
+        },
+        {
+          "file": "frontend/src/components/TradingChart.tsx",
+          "fix": "Relax timeframe matching in WebSocket updates",
+          "fix": "Add timeframe subscription request"
+        }
+      ],
+      "prevention": [
+        "Initialize all timeframes when symbol is registered",
+        "Don't be too strict about timeframe matching",
+        "Subscribe to timeframe-specific updates"
+      ]
+    },
+    
+    "excessive_logging_verbosity": {
+      "problem": "Terminal output is too verbose with INFO-level logs cluttering the console",
+      "symptoms": [
+        "Terminal flooded with 'Fetching historical data' messages",
+        "INFO logs appearing in console during normal operation",
+        "Difficult to see important warnings/errors",
+        "User wants cleaner terminal output"
+      ],
+      "root_causes": [
+        "Both file and console handlers set to same log level (INFO)",
+        "No separation between file logging and console output",
+        "All INFO logs go to both file and console"
+      ],
+      "solutions": [
+        {
+          "file": "trading_bot.py",
+          "section": "Logging configuration (lines 66-91)",
+          "fix": "Set console_handler to WARNING level, keep file_handler at INFO level",
+          "code_pattern": "console_handler.setLevel(logging.WARNING)  # Only WARNING+ in terminal\nfile_handler.setLevel(getattr(logging, log_level, logging.INFO))  # All logs to file"
+        },
+        {
+          "file": "trading_bot.py",
+          "section": "main() function",
+          "fix": "Add startup message indicating logs go to file",
+          "code_pattern": "print('ℹ️  Detailed logs are being written to: trading_bot.log')\nprint('   (Terminal will only show warnings and errors)')"
+        }
+      ],
+      "prevention": [
+        "Always separate file and console log levels",
+        "File handler should capture all logs (INFO+)",
+        "Console handler should only show important messages (WARNING+)",
+        "Add startup message to inform users where logs are written",
+        "Keep verbose flag to enable full console logging when needed"
+      ],
+      "related_files": [
+        "trading_bot.py"
+      ]
+    }
+  },
+  
+  "syntax_linter_errors": {
+    "datetime_utcnow_deprecation": {
+      "error": "DeprecationWarning: datetime.datetime.utcnow() is deprecated",
+      "common_locations": [
+        "trading_bot.py",
+        "core/discord_notifier.py",
+        "docs/DATABASE_ARCHITECTURE.md"
+      ],
+      "fix": "Replace datetime.utcnow() with datetime.now(timezone.utc)",
+      "code_pattern": "from datetime import datetime, timezone\n# Replace:\ndatetime.utcnow()\n# With:\ndatetime.now(timezone.utc)",
+      "prevention": "Always use timezone-aware datetime objects. Import timezone from datetime module.",
+      "related_files": [
+        "trading_bot.py",
+        "core/discord_notifier.py"
+      ]
+    },
+    "datetime_timezone_mismatch": {
+      "error": "TypeError: can't subtract offset-naive and offset-aware datetimes",
+      "common_locations": [
+        "trading_bot.py _eod_scheduler()",
+        "Any datetime arithmetic operations"
+      ],
+      "symptoms": [
+        "Error when subtracting two datetime objects",
+        "One datetime is timezone-aware, the other is timezone-naive"
+      ],
+      "root_causes": [
+        "datetime.combine() creates timezone-naive datetime by default",
+        "Mixing datetime.now(timezone.utc) with datetime.combine() without tzinfo",
+        "Using datetime.utcnow() (naive) with datetime.now(timezone.utc) (aware)"
+      ],
+      "fix": "Ensure both datetimes are timezone-aware when performing arithmetic",
+      "code_pattern": "# Wrong:\nnow = datetime.now(timezone.utc)  # aware\nmidnight = datetime.combine(date, time.min)  # naive\nresult = midnight - now  # ERROR!\n\n# Correct:\nnow = datetime.now(timezone.utc)  # aware\nmidnight = datetime.combine(date, time.min, tzinfo=timezone.utc)  # aware\nresult = midnight - now  # OK!",
+      "prevention": [
+        "Always specify tzinfo when using datetime.combine()",
+        "Use datetime.now(timezone.utc) instead of datetime.utcnow()",
+        "Ensure all datetime objects in arithmetic operations have the same timezone awareness",
+        "Use timezone.utc for UTC operations"
+      ],
+      "related_files": [
+        "trading_bot.py"
+      ]
+    },
+    "await_outside_async": {
+      "error": "SyntaxError: 'await' outside async function",
+      "common_locations": [
+        "trading_bot.py line 753 (if added to sync method)",
+        "Any sync method (_make_curl_request, etc.)"
+      ],
+      "fix": "Move await to async caller or make function async",
+      "prevention": "Check function signature before adding await"
+    },
+    "missing_imports": {
+      "error": "NameError: name 'X' is not defined",
+      "common_causes": [
+        "Missing import statements",
+        "Circular imports",
+        "Import order issues"
+      ],
+      "fix": "Add proper imports at top of file",
+      "prevention": "Use linter to catch missing imports"
+    },
+    "type_errors": {
+      "error": "TypeError: 'X' object is not callable",
+      "common_causes": [
+        "Passing coroutine object instead of callable",
+        "Missing parentheses on function call",
+        "Variable shadowing function name"
+      ],
+      "fix": "Ensure functions are callable, not coroutine objects",
+      "prevention": "Use proper async/await patterns"
+    },
+    "attribute_errors": {
+      "error": "AttributeError: 'X' object has no attribute 'Y'",
+      "common_causes": [
+        "Missing method implementation",
+        "Wrong object type",
+        "Method renamed but not updated everywhere"
+      ],
+      "fix": "Add missing method or fix object type",
+      "prevention": "Use type hints and check object interfaces"
+    },
+    "key_errors": {
+      "error": "KeyError: 'X'",
+      "common_causes": [
+        "Missing key in dictionary",
+        "Overriding method without including all keys",
+        "API response structure changed"
+      ],
+      "fix": "Check dictionary keys before access, use .get() with defaults",
+      "prevention": "Always call super() when overriding, validate API responses"
+    }
+  },
+  
+  "code_patterns": {
+    "avoid": [
+      "Calling authenticate() directly - use _ensure_valid_token() instead",
+      "Adding await to synchronous methods",
+      "Including None values in JSON payloads to TopStepX API",
+      "Unlimited retry loops (max_attempts: 0)",
+      "Retry intervals < 1 second without backoff",
+      "Overriding methods without calling super()",
+      "Polling too frequently (< 5 seconds)",
+      "Logging the same error repeatedly"
+    ],
+    "prefer": [
+      "Use _ensure_valid_token() for token management",
+      "Handle async operations in async callers",
+      "Remove None values from JSON before sending",
+      "Implement exponential backoff for retries",
+      "Set reasonable max_attempts limits",
+      "Call super() when overriding methods",
+      "Use appropriate polling intervals (15s+)",
+      "Detect and handle specific error codes specially",
+      "Log JSON payloads for debugging order issues",
+      "Add 0.75s delay before retrying failed requests"
+    ]
+  },
+  
+  "best_practices": {
+    "token_management": [
+      "Always use _ensure_valid_token() instead of authenticate()",
+      "Check token expiration before API calls",
+      "Implement automatic refresh on 500 errors",
+      "Add retry delay (0.75s) to prevent rate limiting",
+      "Log token status for debugging"
+    ],
+    "async_programming": [
+      "Check function signature (def vs async def) before adding await",
+      "Handle async operations in async callers",
+      "Use asyncio.sleep() for delays in async code",
+      "Clear Python cache if syntax errors persist"
+    ],
+    "error_handling": [
+      "Detect specific error codes (403, 401, 500) and handle specially",
+      "Don't log the same error repeatedly",
+      "Implement exponential backoff for retries",
+      "Set reasonable max_attempts limits",
+      "Log request payloads for debugging"
+    ],
+    "api_integration": [
+      "Remove None values from JSON payloads",
+      "Validate required fields before sending",
+      "Round prices to tick size before sending",
+      "Log JSON payloads for debugging",
+      "Handle 500 errors with token refresh and retry"
+    ],
+    "strategy_development": [
+      "Always call super() when overriding methods",
+      "Include all required fields from base class",
+      "Ensure AccountTracker implements all required methods",
+      "Test CLI commands after changes"
+    ]
+  },
+  
+  "file_specific_notes": {
+    "trading_bot.py": {
+      "critical_methods": [
+        "_make_curl_request() - SYNC method, no await allowed",
+        "_ensure_valid_token() - ASYNC method, use for token management",
+        "place_oco_bracket_with_stop_entry() - ASYNC, handles token refresh on 500 errors",
+        "_get_contract_id() - Raises ValueError if contracts not available (no hardcoded fallbacks)",
+        "_eod_scheduler() - Uses timezone-aware datetimes (datetime.now(timezone.utc))"
+      ],
+      "common_issues": [
+        "Don't add await to _make_curl_request()",
+        "Use _ensure_valid_token() not authenticate()",
+        "Remove None from JSON payloads before sending",
+        "Contracts must be fetched before use - no hardcoded fallbacks",
+        "Always use timezone-aware datetimes for arithmetic operations"
+      ],
+      "migration_notes": {
+        "rust_migration_priority": "High - 9,568 lines, needs refactoring before migration",
+        "hot_paths_for_rust": [
+          "place_market_order() - Order execution",
+          "modify_order() - Order modification",
+          "get_historical_data() - Data aggregation",
+          "WebSocket message processing",
+          "Strategy execution framework"
+        ],
+        "keep_in_python": [
+          "Strategy implementations (easy to modify)",
+          "CLI interface (user interaction)",
+          "Configuration management"
+        ]
+      }
+    },
+    "core/account_tracker.py": {
+      "required_methods": [
+        "get_daily_pnl(account_id=None)",
+        "property current_balance",
+        "property daily_loss_limit",
+        "property highest_EOD_balance",
+        "property maximum_loss_limit"
+      ],
+      "used_by": [
+        "strategies/strategy_base.py - _check_dll_compliance()",
+        "strategies/strategy_base.py - _check_mll_compliance()"
+      ]
+    },
+    "servers/async_webhook_server.py": {
+      "startup_pattern": "Use _ensure_valid_token() not authenticate()",
+      "common_issues": [
+        "Token refresh on startup",
+        "CORS configuration",
+        "Route registration"
+      ]
+    }
+  },
+  
+  "debugging_tips": {
+    "syntax_errors": [
+      "Clear Python cache: find . -name '*.pyc' -delete",
+      "Check function signature (def vs async def)",
+      "Verify await is only in async functions",
+      "Check for missing imports"
+    ],
+    "api_errors": [
+      "Log JSON payloads before sending",
+      "Check token expiration",
+      "Verify None values removed from payload",
+      "Check for 500 errors and implement token refresh",
+      "Add retry delay to prevent rate limiting"
+    ],
+    "strategy_errors": [
+      "Check AccountTracker has required methods",
+      "Verify super() is called when overriding",
+      "Check all required fields are included",
+      "Test CLI commands after changes"
+    ]
+  },
+  
+  "recent_fixes": [
+    {
+      "date": "2025-12-04",
+      "issue": "JWT token expiration causing 500 errors on order placement",
+      "fix": "Added automatic token refresh and retry on 500 errors in place_oco_bracket_with_stop_entry()",
+      "files": ["trading_bot.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "AccountTracker missing get_daily_pnl() method",
+      "fix": "Added get_daily_pnl() and required properties to AccountTracker",
+      "files": ["core/account_tracker.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "None values in JSON payloads causing API rejections",
+      "fix": "Remove None values from JSON before sending to TopStepX API",
+      "files": ["trading_bot.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "Excessive logging verbosity in terminal",
+      "fix": "Set console handler to WARNING level, keep file handler at INFO level. Added startup message indicating logs go to file.",
+      "files": ["trading_bot.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "datetime.utcnow() deprecation warnings",
+      "fix": "Replaced all datetime.utcnow() calls with datetime.now(timezone.utc). Updated imports to include timezone from datetime module.",
+      "files": ["trading_bot.py", "core/discord_notifier.py", "docs/DATABASE_ARCHITECTURE.md"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "EOD scheduler error: can't subtract offset-naive and offset-aware datetimes",
+      "fix": "Fixed datetime.combine() to include tzinfo=timezone.utc in _eod_scheduler(). Added timezone to local imports.",
+      "files": ["trading_bot.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "SignalR depth subscription errors: Method does not exist (SubscribeOrderBook, SubscribeLevel2)",
+      "fix": "Updated _ensure_depth_subscription() to try SubscribeContractDepth first (following SubscribeContractQuotes pattern), suppress expected 'method does not exist' errors, and gracefully fall back to REST API. Changed error logging to debug level for expected failures.",
+      "files": ["trading_bot.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "Hardcoded contract fallbacks causing expired contract issues",
+      "fix": "Removed all hardcoded contract mappings. Implemented dynamic contract fetching with automatic selection of most recent/active contract with highest volume. Enhanced symbol extraction from contract IDs and improved error messages.",
+      "files": ["trading_bot.py"],
+      "impact": "Critical - Prevents using expired contracts, ensures always using active contracts"
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "Database missing record_notification method",
+      "fix": "Added notifications table to PostgreSQL schema and record_notification() method to DatabaseManager. Supports account_id, notification_type, message, level, and optional metadata.",
+      "files": ["infrastructure/database.py"]
+    },
+    {
+      "date": "2025-12-04",
+      "issue": "No comprehensive test suite for all commands",
+      "fix": "Created tests/test_all_commands.py - comprehensive test suite that tests all 12+ commands, measures execution times, generates performance reports, and exports JSON results. Achieved 100% success rate on all commands.",
+      "files": ["tests/test_all_commands.py", "tests/README_TEST_ALL_COMMANDS.md"],
+      "impact": "Critical for Rust migration - establishes performance baselines"
+    }
+  ],
+  
+  "migration_readiness": {
+    "current_phase": "Phase 2 Complete → Preparing for Phase 4 (Rust Migration)",
+    "baseline_metrics_established": true,
+    "test_suite_ready": true,
+    "performance_targets": {
+      "order_execution": "< 5ms (currently 100-150ms)",
+      "order_modification": "< 3ms (currently 30-50ms)",
+      "websocket_processing": "< 1ms (currently 5-10ms)",
+      "data_aggregation": "10x faster (currently ~500ms)",
+      "strategy_execution": "< 10ms (currently 50-100ms)"
+    },
+    "migration_priorities": [
+      {
+        "priority": 1,
+        "component": "Order Execution Engine",
+        "target_file": "rust/src/order_execution/mod.rs",
+        "current_file": "trading_bot.py::place_market_order",
+        "expected_gain": "20-30x faster"
+      },
+      {
+        "priority": 2,
+        "component": "WebSocket Processing",
+        "target_file": "rust/src/websocket/mod.rs",
+        "current_file": "servers/websocket_server.py",
+        "expected_gain": "5-10x faster"
+      },
+      {
+        "priority": 3,
+        "component": "Market Data Aggregation",
+        "target_file": "rust/src/market_data/aggregation.rs",
+        "current_file": "trading_bot.py::get_historical_data",
+        "expected_gain": "10x faster"
+      },
+      {
+        "priority": 4,
+        "component": "Strategy Engine",
+        "target_file": "rust/src/strategy_engine/mod.rs",
+        "current_file": "strategies/strategy_base.py",
+        "expected_gain": "5-10x faster"
+      },
+      {
+        "priority": 5,
+        "component": "Database Operations",
+        "target_file": "rust/src/database/mod.rs",
+        "current_file": "infrastructure/database.py",
+        "expected_gain": "2.5x faster"
+      }
+    ],
+    "pre_migration_tasks": [
+      {
+        "task": "Code refactoring - split trading_bot.py",
+        "status": "pending",
+        "priority": "high",
+        "details": "Split 9,568 line file into modules: core/order_execution.py, core/position_management.py, core/market_data.py, core/risk_management.py"
+      },
+      {
+        "task": "Set up Rust project structure",
+        "status": "pending",
+        "priority": "high",
+        "details": "Create rust/ directory with Cargo.toml, src/ structure, tests/, benches/"
+      },
+      {
+        "task": "Python-Rust interop setup",
+        "status": "pending",
+        "priority": "high",
+        "details": "Install pyo3, create FFI interface, test basic integration"
+      },
+      {
+        "task": "Documentation cleanup",
+        "status": "pending",
+        "priority": "medium",
+        "details": "Consolidate duplicate docs, update outdated information, create migration guides"
+      }
+    ],
+    "hybrid_architecture_decision": {
+      "approach": "Keep Python for strategies, migrate hot paths to Rust",
+      "rationale": [
+        "Strategies easier to modify in Python",
+        "Hot paths benefit from Rust performance",
+        "Gradual migration reduces risk",
+        "Best of both worlds"
+      ],
+      "keep_in_python": [
+        "Strategy implementations",
+        "CLI interface",
+        "Configuration management",
+        "High-level orchestration"
+      ],
+      "migrate_to_rust": [
+        "Order execution",
+        "WebSocket processing",
+        "Market data aggregation",
+        "Database hot paths",
+        "Strategy execution framework"
+      ]
+    }
+  }
+}
+

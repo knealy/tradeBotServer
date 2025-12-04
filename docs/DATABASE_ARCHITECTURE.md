@@ -500,7 +500,7 @@ import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 logger = logging.getLogger(__name__)
@@ -610,7 +610,7 @@ class TradingDatabase:
                 order_data.get('limit_price'),
                 order_data.get('stop_price'),
                 order_data.get('status', 0),  # 0 = Pending
-                order_data.get('created_at', datetime.utcnow()),
+                order_data.get('created_at', datetime.now(timezone.utc)),
                 order_data.get('custom_tag')
             ))
             return cursor.lastrowid
@@ -759,7 +759,7 @@ class TradingDatabase:
 def backup_database(db_path: str, backup_dir: str = "./backups"):
     """Create timestamped backup of database."""
     from shutil import copy2
-    from datetime import datetime
+    from datetime import datetime, timezone
     
     backup_path = Path(backup_dir)
     backup_path.mkdir(exist_ok=True)
