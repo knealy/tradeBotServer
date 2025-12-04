@@ -724,9 +724,17 @@ class TopStepXTradingBot:
             
             # Add JSON data for POST/PUT requests
             if data and method.upper() in ('POST', 'PUT', 'PATCH'):
-                request_kwargs['json'] = data
+                # Remove None values from data (TopStepX API may reject None values)
+                cleaned_data = {k: v for k, v in data.items() if v is not None}
+                request_kwargs['json'] = cleaned_data
                 if 'Content-Type' not in request_kwargs['headers']:
                     request_kwargs['headers']['Content-Type'] = 'application/json'
+            
+            # Log request details (especially for order placement)
+            if endpoint == "/api/Order/place" and data:
+                logger.info(f"📤 Sending order to /api/Order/place:")
+                logger.info(f"   JSON payload: {json.dumps(data, indent=2)}")
+                logger.info(f"   Token: {self.session_token[:20] + '...' if self.session_token else 'MISSING'}")
             
             logger.debug(f"HTTP {method} request to {endpoint}")
             
@@ -748,6 +756,13 @@ class TopStepXTradingBot:
                     logger.debug(f"HTTP error {response.status_code}: {e}")
                 else:
                     logger.error(f"HTTP error {response.status_code}: {e}")
+                    # Log response body for 500 errors to help debug
+                    if status_code == 500:
+                        try:
+                            error_body = response.text[:500]
+                            logger.error(f"   500 Error response body: {error_body}")
+                        except:
+                            pass
                 return {"error": error_message}
             
             # Parse JSON response
@@ -4953,10 +4968,18 @@ class TopStepXTradingBot:
                 "type": 4,  # Stop-market order for entry (instead of 2=market)
                 "side": side_value,
                 "size": quantity,
-                "limitPrice": None,
                 "stopPrice": entry_price,  # This makes it a stop order
                 "customTag": self._generate_unique_custom_tag("stop_bracket", strategy_name)
             }
+            # Don't include limitPrice for stop orders (TopStepX may reject None values)
+            
+            # Validate required fields
+            if not contract_id:
+                return {"error": f"Invalid contract ID for symbol {symbol}"}
+            if quantity <= 0:
+                return {"error": f"Invalid quantity: {quantity}"}
+            if entry_price <= 0:
+                return {"error": f"Invalid entry price: {entry_price}"}
             
             # Add bracket orders using the same format as create_bracket_order
             order_data["stopLossBracket"] = {
@@ -4975,6 +4998,12 @@ class TopStepXTradingBot:
             }
             logger.info(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
             
+            # Final validation: ensure all bracket ticks are valid
+            if abs(stop_loss_ticks) == 0:
+                logger.warning("⚠️  Stop loss ticks is 0 - this may cause issues")
+            if abs(take_profit_ticks) == 0:
+                logger.warning("⚠️  Take profit ticks is 0 - this may cause issues")
+            
             headers = {
                 "accept": "text/plain",
                 "Content-Type": "application/json",
@@ -4983,6 +5012,25 @@ class TopStepXTradingBot:
             
             # Use the same endpoint as create_bracket_order
             response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            
+            # Handle 500 errors with automatic token refresh and retry
+            if "error" in response and "500" in str(response.get("error", "")):
+                logger.warning(f"⚠️  Received 500 error on order placement. Attempting token refresh and retry...")
+                
+                # Refresh token
+                token_refreshed = await self._ensure_valid_token()
+                if token_refreshed:
+                    # Update headers with new token
+                    headers["Authorization"] = f"Bearer {self.session_token}"
+                    
+                    # Add small delay before retry (0.75s as recommended)
+                    import asyncio
+                    await asyncio.sleep(0.75)
+                    
+                    logger.info("🔄 Retrying order placement with refreshed token...")
+                    # Retry the request
+                    response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
+                    logger.info(f"   Retry response: {'success' if 'error' not in response else 'failed'}")
             
             if "error" in response:
                 error_msg = response.get("error", "")

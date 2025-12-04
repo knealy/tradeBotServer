@@ -473,6 +473,61 @@ class AccountTracker:
         with self.lock:
             return self.accounts.copy()
     
+    def _get_current_state(self, account_id: Optional[str] = None) -> Optional[AccountState]:
+        """Get current account state, or None if not found."""
+        target_id = account_id or self.current_account_id
+        if not target_id:
+            return None
+        with self.lock:
+            return self.accounts.get(str(target_id))
+    
+    def get_daily_pnl(self, account_id: Optional[str] = None) -> float:
+        """
+        Get daily PnL for current or specified account.
+        
+        Args:
+            account_id: Account ID (uses current account if None)
+            
+        Returns:
+            Daily net PnL (realised + unrealised - commissions - fees)
+        """
+        state = self._get_current_state(account_id)
+        if not state:
+            return 0.0
+        return state.net_PnL
+    
+    @property
+    def current_balance(self) -> float:
+        """Get current balance for current account."""
+        state = self._get_current_state()
+        if not state:
+            return 0.0
+        return state.current_balance
+    
+    @property
+    def daily_loss_limit(self) -> float:
+        """Get daily loss limit for current account."""
+        state = self._get_current_state()
+        if not state:
+            return 1000.0  # Default
+        return state.daily_loss_limit
+    
+    @property
+    def highest_EOD_balance(self) -> float:
+        """Get highest EOD balance for current account."""
+        state = self._get_current_state()
+        if not state:
+            return 0.0
+        return state.highest_EOD_balance
+    
+    @property
+    def maximum_loss_limit(self) -> float:
+        """Get maximum loss limit for current account."""
+        state = self._get_current_state()
+        if not state:
+            return 2500.0  # Default
+        return state.maximum_loss_limit
+    
     def initialize(self, account_id: str, starting_balance: float, account_type: str) -> None:
         """
         Convenience method to initialize account tracking.
