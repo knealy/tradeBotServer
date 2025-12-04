@@ -514,26 +514,26 @@ class OvernightRangeStrategy(BaseStrategy):
             # Only fetch daily bars if we need more accuracy (can be enabled via env var)
             use_daily_bars = os.getenv('OVERNIGHT_USE_DAILY_ATR', 'false').lower() == 'true'
             if use_daily_bars:
-            daily_bars = await self.trading_bot.get_historical_data(
-                symbol=symbol,
-                timeframe='1d',
-                limit=period + 1
-            )
-            
-            if daily_bars and len(daily_bars) >= period + 1:
-                daily_true_ranges = []
-                for i in range(1, len(daily_bars)):
-                    current_bar = daily_bars[i]
-                    prev_bar = daily_bars[i - 1]
-                    
-                    high = current_bar.get('high', current_bar.get('h', 0))
-                    low = current_bar.get('low', current_bar.get('l', 0))
-                    prev_close = prev_bar.get('close', prev_bar.get('c', 0))
-                    
-                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                    daily_true_ranges.append(tr)
+                daily_bars = await self.trading_bot.get_historical_data(
+                    symbol=symbol,
+                    timeframe='1d',
+                    limit=period + 1
+                )
                 
-                daily_atr = sum(daily_true_ranges[-period:]) / period
+                if daily_bars and len(daily_bars) >= period + 1:
+                    daily_true_ranges = []
+                    for i in range(1, len(daily_bars)):
+                        current_bar = daily_bars[i]
+                        prev_bar = daily_bars[i - 1]
+                        
+                        high = current_bar.get('high', current_bar.get('h', 0))
+                        low = current_bar.get('low', current_bar.get('l', 0))
+                        prev_close = prev_bar.get('close', prev_bar.get('c', 0))
+                        
+                        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                        daily_true_ranges.append(tr)
+                    
+                    daily_atr = sum(daily_true_ranges[-period:]) / period
             
             # Get current price for ATR zones
             current_price = bars[-1].get('close', bars[-1].get('c', 0))

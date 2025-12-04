@@ -1789,7 +1789,7 @@ class TopStepXTradingBot:
             clean_strategy = strategy_name.lower().replace(' ', '_').replace('-', '_')
             return f"{BOT_ORDER_TAG_PREFIX}-strategy-{clean_strategy}-{order_type}-{self._order_counter}-{timestamp}"
         else:
-        return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
+            return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
 
     async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
                                 stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
