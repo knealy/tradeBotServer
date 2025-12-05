@@ -12,9 +12,16 @@ Uses connection pooling for efficiency and supports Railway's PostgreSQL.
 
 import os
 import logging
-import psycopg2
-from psycopg2 import pool, sql
-from psycopg2.extras import RealDictCursor, execute_values
+try:
+    import psycopg2
+    from psycopg2 import pool, sql
+    from psycopg2.extras import RealDictCursor, execute_values
+except ImportError:
+    psycopg2 = None
+    pool = None
+    sql = None
+    RealDictCursor = None
+    execute_values = None
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
 from contextlib import contextmanager
@@ -36,6 +43,10 @@ class DatabaseManager:
     
     def __init__(self):
         """Initialize database manager with connection pool."""
+        if not psycopg2:
+            logger.warning("⚠️  psycopg2 not available - database features will be disabled")
+            self.pool = None
+            return
         self.pool = None
         self._initialize_pool()
         self._initialize_schema()
@@ -126,6 +137,9 @@ class DatabaseManager:
     
     def _initialize_pool(self):
         """Create connection pool for efficient database access."""
+        if not psycopg2:
+            logger.warning("⚠️  psycopg2 not available - database features will be disabled")
+            return
         try:
             params = self._get_connection_params()
             

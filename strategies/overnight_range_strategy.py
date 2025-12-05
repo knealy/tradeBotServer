@@ -23,7 +23,10 @@ from datetime import datetime, date, time, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import deque
-import pytz
+try:
+    import pytz
+except ImportError:
+    pytz = None  # Optional dependency
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
 
@@ -118,7 +121,12 @@ class OvernightRangeStrategy(BaseStrategy):
         self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
         self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '09:30')  # 9:30am EST
         self.market_open_time = os.getenv('MARKET_OPEN_TIME', '09:30')  # 9:30am EST
-        self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+        if pytz:
+            self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+        else:
+            # Fallback to UTC if pytz not available
+            self.timezone = timezone.utc
+            logger.warning("pytz not available, using UTC timezone. Install pytz for timezone support.")
         
         # ATR configuration
         self.atr_period = int(os.getenv('ATR_PERIOD', '14'))  # 14 bars default
@@ -671,8 +679,12 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.info(f"  Duration: {session_minutes} minutes")
             
             # Convert to UTC for API request
-            start_time_utc = start_time.astimezone(pytz.UTC)
-            end_time_utc = end_time.astimezone(pytz.UTC)
+            if pytz:
+                start_time_utc = start_time.astimezone(pytz.UTC)
+                end_time_utc = end_time.astimezone(pytz.UTC)
+            else:
+                start_time_utc = start_time.astimezone(timezone.utc)
+                end_time_utc = end_time.astimezone(timezone.utc)
             
             # Fetch bars for the overnight session using explicit date range to avoid cache mismatch
             bars = await self.trading_bot.get_historical_data(
@@ -1446,7 +1458,12 @@ class OvernightRangeStrategy(BaseStrategy):
             ['MARKET_OPEN_TIME', 'OVERNIGHT_MARKET_OPEN_TIME', 'OVERNIGHT_RANGE_MARKET_OPEN_TIME'],
             '09:30'
         )
-        self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+        if pytz:
+            self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+        else:
+            # Fallback to UTC if pytz not available
+            self.timezone = timezone.utc
+            logger.warning("pytz not available, using UTC timezone. Install pytz for timezone support.")
         self.atr_period = int(os.getenv('ATR_PERIOD', '14'))
         self.atr_timeframe = os.getenv('ATR_TIMEFRAME', '5m')
         self.stop_atr_multiplier = float(os.getenv('STOP_ATR_MULTIPLIER', '1.25'))

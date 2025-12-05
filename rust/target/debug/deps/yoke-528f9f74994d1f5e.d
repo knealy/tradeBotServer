@@ -1,0 +1,13 @@
+/Users/knealy/tradeBotServer/rust/target/debug/deps/libyoke-528f9f74994d1f5e.rmeta: /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/lib.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/cartable_ptr.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/either.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/kinda_sorta_dangling.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/macro_impls.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/utils.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/yoke.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/yokeable.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/zero_from.rs
+
+/Users/knealy/tradeBotServer/rust/target/debug/deps/yoke-528f9f74994d1f5e.d: /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/lib.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/cartable_ptr.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/either.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/kinda_sorta_dangling.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/macro_impls.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/utils.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/yoke.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/yokeable.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/zero_from.rs
+
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/lib.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/cartable_ptr.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/either.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/kinda_sorta_dangling.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/macro_impls.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/utils.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/yoke.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/yokeable.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoke-0.8.1/src/zero_from.rs:

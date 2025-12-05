@@ -7,7 +7,10 @@ Provides real-time visibility into bot performance and bottlenecks.
 
 import time
 import logging
-import psutil
+try:
+    import psutil
+except ImportError:
+    psutil = None  # Optional dependency
 import functools
 from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass, field
@@ -115,8 +118,11 @@ class MetricsTracker:
         self.recent_api_calls: deque = deque(maxlen=1000)  # Keep last 1000 API calls
         
         self.start_time = datetime.now()
-        self.process = psutil.Process()
+        self.process = psutil.Process() if psutil else None
         self.db = db  # Optional database for persistent metrics
+        
+        if not psutil:
+            logger.warning("psutil not available, system metrics will be limited")
         
         logger.info("📊 Metrics tracker initialized")
     
@@ -180,11 +186,15 @@ class MetricsTracker:
     
     def get_memory_usage_mb(self) -> float:
         """Get current memory usage in MB."""
-        return self.process.memory_info().rss / 1024 / 1024
+        if self.process:
+            return self.process.memory_info().rss / 1024 / 1024
+        return 0.0
     
     def get_cpu_percent(self) -> float:
         """Get current CPU usage percentage."""
-        return self.process.cpu_percent(interval=0.1)
+        if self.process:
+            return self.process.cpu_percent(interval=0.1)
+        return 0.0
     
     def get_api_summary(self) -> Dict:
         """Get summary of API call metrics."""

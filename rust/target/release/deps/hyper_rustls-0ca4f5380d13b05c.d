@@ -1,0 +1,11 @@
+/Users/knealy/tradeBotServer/rust/target/release/deps/libhyper_rustls-0ca4f5380d13b05c.rmeta: /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/lib.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/config.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector/builder.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/stream.rs
+
+/Users/knealy/tradeBotServer/rust/target/release/deps/libhyper_rustls-0ca4f5380d13b05c.rlib: /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/lib.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/config.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector/builder.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/stream.rs
+
+/Users/knealy/tradeBotServer/rust/target/release/deps/hyper_rustls-0ca4f5380d13b05c.d: /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/lib.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/config.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector/builder.rs /Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/stream.rs
+
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/lib.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/config.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/connector/builder.rs:
+/Users/knealy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.24.2/src/stream.rs:

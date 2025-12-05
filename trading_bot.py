@@ -22,7 +22,11 @@ import readline
 import pickle
 import hashlib
 import csv
-import jwt
+# jwt is optional - imported conditionally where needed
+try:
+    import jwt
+except ImportError:
+    jwt = None
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta, timezone
@@ -32,8 +36,15 @@ import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from signalrcore.hub_connection_builder import HubConnectionBuilder
-from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
+# SignalR is optional - imported conditionally where needed
+try:
+    from signalrcore.hub_connection_builder import HubConnectionBuilder
+    from signalrcore.transport.websockets.websocket_transport import WebsocketTransport
+    SIGNALR_AVAILABLE = True
+except ImportError:
+    HubConnectionBuilder = None
+    WebsocketTransport = None
+    SIGNALR_AVAILABLE = False
 
 # Import from new organized structure
 from core.discord_notifier import DiscordNotifier
@@ -44,6 +55,17 @@ from strategies.trend_following_strategy import TrendFollowingStrategy
 from strategies.strategy_manager import StrategyManager
 from infrastructure.performance_metrics import get_metrics_tracker
 from infrastructure.database import get_database
+
+# Import new modular architecture components
+from core.auth import AuthManager
+from core.rate_limiter import RateLimiter as RateLimiterModule
+from core.market_data import ContractManager
+from core.risk_management import RiskManager
+from core.position_management import PositionManager
+from core.websocket_manager import WebSocketManager
+from core.order_execution import OrderExecutor
+from brokers.topstepx_adapter import TopStepXAdapter
+from events.event_bus import EventBus, get_event_bus
 
 # Optional ProjectX SDK adapter
 try:
@@ -92,6 +114,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 # Only log to file, not console (this is INFO level)
 logger.info("Logging initialized - file: trading_bot.log (INFO+), console: stdout (WARNING+)")
+
+# SignalR errors are now properly handled with token refresh - no suppression needed
+# Keep log levels reasonable to avoid spam but show important errors
+logging.getLogger("SignalRCoreClient").setLevel(logging.INFO)  # Show info and above
+logging.getLogger("websocket").setLevel(logging.WARNING)  # Only warnings and errors for websocket library
 
 # Bot identifier for order tagging - will be made unique per order
 BOT_ORDER_TAG_PREFIX = "TradingBot-v1.0"
@@ -283,7 +310,70 @@ class TopStepXTradingBot:
         rate_limit_max = int(os.getenv('API_RATE_LIMIT_MAX', '60'))
         rate_limit_period = int(os.getenv('API_RATE_LIMIT_PERIOD', '60'))
         self._rate_limiter = RateLimiter(max_calls=rate_limit_max, period=rate_limit_period)
+        self.rate_limiter = self._rate_limiter  # Alias for compatibility
         logger.debug(f"Rate limiter initialized: {rate_limit_max} calls per {rate_limit_period} seconds")
+        
+        # ========================================================================
+        # NEW MODULAR ARCHITECTURE - Dependency Injection Setup
+        # ========================================================================
+        logger.info("🔧 Initializing modular architecture components...")
+        
+        # Initialize AuthManager (handles authentication and token management)
+        self.auth_manager = AuthManager(
+            api_key=self.api_key,
+            username=self.username,
+            base_url=self.base_url
+        )
+        # Sync session token from AuthManager if available
+        if self.auth_manager.session_token:
+            self.session_token = self.auth_manager.session_token
+            self.token_expiry = self.auth_manager.token_expiry
+        logger.debug("✅ AuthManager initialized")
+        
+        # Initialize ContractManager (handles contract ID resolution)
+        self.contract_manager = ContractManager()
+        logger.debug("✅ ContractManager initialized")
+        
+        # Initialize EventBus (for event-driven architecture)
+        self.event_bus = get_event_bus()
+        logger.debug("✅ EventBus initialized")
+        
+        # Initialize RiskManager (handles tick sizes, point values, trading sessions)
+        self.risk_manager = RiskManager()
+        logger.debug("✅ RiskManager initialized")
+        
+        # Initialize TopStepXAdapter (broker-specific implementation)
+        self.broker_adapter = TopStepXAdapter(
+            auth_manager=self.auth_manager,
+            contract_manager=self.contract_manager,
+            rate_limiter=self._rate_limiter,
+            base_url=self.base_url
+        )
+        logger.debug("✅ TopStepXAdapter initialized")
+        
+        # Initialize PositionManager (handles position modifications)
+        self.position_manager = PositionManager(broker_adapter=self.broker_adapter)
+        logger.debug("✅ PositionManager initialized")
+        
+        # Initialize WebSocketManager (handles SignalR real-time data)
+        self.websocket_manager = WebSocketManager(
+            auth_manager=self.auth_manager,
+            contract_manager=self.contract_manager
+        )
+        # Register quote callback to update local cache
+        self.websocket_manager.register_quote_callback(self._on_websocket_quote)
+        self.websocket_manager.register_depth_callback(self._on_websocket_depth)
+        logger.debug("✅ WebSocketManager initialized")
+        
+        # Initialize OrderExecutor (high-level order orchestration)
+        self.order_executor = OrderExecutor(
+            broker_adapter=self.broker_adapter,
+            event_bus=self.event_bus,
+            selected_account=self.selected_account
+        )
+        logger.debug("✅ OrderExecutor initialized")
+        
+        logger.info("✅ Modular architecture components initialized")
         
         # Initialize in-memory cache for historical data (ultra-fast access)
         # LRU cache with max size and TTL
@@ -328,11 +418,95 @@ class TopStepXTradingBot:
     # ---------------------------
     # SignalR Market Hub Support
     # ---------------------------
+    def _on_websocket_quote(self, symbol: str, data: Dict):
+        """
+        Callback for WebSocket quote events.
+        
+        Updates local quote cache and feeds bar aggregator.
+        """
+        try:
+            with self._quote_cache_lock:
+                entry = self._quote_cache.setdefault(symbol, {})
+                # GatewayQuote payload fields per docs
+                if "bestBid" in data:
+                    entry["bid"] = data.get("bestBid")
+                if "bestAsk" in data:
+                    entry["ask"] = data.get("bestAsk")
+                if "lastPrice" in data:
+                    entry["last"] = data.get("lastPrice")
+                if "volume" in data:
+                    entry["volume"] = data.get("volume")
+                entry["ts"] = datetime.now(timezone.utc).isoformat()
+            
+            # Feed quote to bar aggregator for real-time bar updates
+            if hasattr(self, 'bar_aggregator') and self.bar_aggregator:
+                last_price = data.get("lastPrice")
+                volume = data.get("volume", 0)
+                if last_price is not None:
+                    try:
+                        self.bar_aggregator.add_quote(
+                            symbol=symbol,
+                            price=float(last_price),
+                            volume=int(volume) if volume else 0,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        # Log first few quotes per symbol to verify flow
+                        if not hasattr(self, '_quote_log_count'):
+                            self._quote_log_count = {}
+                        count = self._quote_log_count.get(symbol, 0)
+                        if count < 5:
+                            logger.info(f"📈 Quote #{count+1} for {symbol}: ${last_price} (vol: {volume}) → bar aggregator")
+                            self._quote_log_count[symbol] = count + 1
+                        elif count == 5:
+                            logger.info(f"📈 Quote flow confirmed for {symbol} (suppressing further logs)")
+                            self._quote_log_count[symbol] = count + 1
+                    except Exception as e:
+                        logger.debug(f"Error adding quote to bar aggregator for {symbol}: {e}")
+        except Exception as e:
+            logger.debug(f"Failed processing quote message: {e}")
+    
+    def _on_websocket_depth(self, symbol: str, data: Dict):
+        """
+        Callback for WebSocket depth events.
+        
+        Updates local depth cache.
+        """
+        try:
+            with self._depth_cache_lock:
+                entry = self._depth_cache.setdefault(symbol, {})
+                # Handle different depth data formats
+                if "bids" in data:
+                    entry["bids"] = data.get("bids", [])
+                if "asks" in data:
+                    entry["asks"] = data.get("asks", [])
+                if "orderBook" in data:
+                    order_book = data.get("orderBook", {})
+                    entry["bids"] = order_book.get("bids", [])
+                    entry["asks"] = order_book.get("asks", [])
+                entry["ts"] = datetime.now(timezone.utc).isoformat()
+        except Exception as e:
+            logger.debug(f"Failed processing depth message: {e}")
+    
     async def _ensure_market_socket_started(self) -> None:
         """
         Start market data socket only when actually needed (e.g., for quotes/depth).
-        Uses connection pooling to reuse WebSocket connections for multiple symbols.
+        
+        Now uses WebSocketManager for SignalR connections, maintaining backward compatibility.
         """
+        # Use WebSocketManager if available
+        if hasattr(self, 'websocket_manager'):
+            if self.websocket_manager.is_connected():
+                self._market_hub_connected = True
+                return
+            # Start WebSocketManager connection
+            success = await self.websocket_manager.start()
+            if success:
+                self._market_hub_connected = True
+                # Sync subscribed symbols
+                self._subscribed_symbols = self.websocket_manager.get_subscribed_symbols()
+                return
+        
+        # Fallback to legacy SignalR implementation for backward compatibility
         if self._market_hub_connected:
             return
         
@@ -592,10 +766,17 @@ class TopStepXTradingBot:
     async def _ensure_quote_subscription(self, symbol: str) -> None:
         """
         Subscribe to real-time quotes using ProjectX Gateway Market Hub API.
-        Per docs: https://gateway.docs.projectx.com/docs/realtime/
-        Method: SubscribeContractQuotes([contractId])
-        Event: GatewayQuote
+        
+        Now uses WebSocketManager for subscriptions, maintaining backward compatibility.
         """
+        # Use WebSocketManager if available
+        if hasattr(self, 'websocket_manager'):
+            success = await self.websocket_manager.subscribe_quote(symbol)
+            if success:
+                self._subscribed_symbols.add(symbol.upper())
+            return
+        
+        # Fallback to legacy SignalR implementation
         sym = symbol.upper()
         if sym in self._subscribed_symbols:
             return
@@ -624,7 +805,17 @@ class TopStepXTradingBot:
             logger.debug(traceback.format_exc())
     
     async def _ensure_depth_subscription(self, symbol: str) -> None:
-        """Subscribe to market depth data via SignalR."""
+        """
+        Subscribe to market depth data via SignalR.
+        
+        Now uses WebSocketManager for depth subscriptions, maintaining backward compatibility.
+        """
+        # Use WebSocketManager if available
+        if hasattr(self, 'websocket_manager'):
+            await self.websocket_manager.subscribe_depth(symbol)
+            return
+        
+        # Fallback to legacy SignalR implementation
         sym = symbol.upper()
         if not self._market_hub_connected:
             logger.debug(f"Market hub not connected, cannot subscribe to depth for {sym}")
@@ -938,116 +1129,56 @@ class TopStepXTradingBot:
         Check if the JWT token is expired or close to expiring.
         Refresh proactively if less than 5 minutes remaining.
         
+        Uses AuthManager for token expiration checking.
+        
         Returns:
             bool: True if token needs refresh
         """
-        if not self.session_token or not self.token_expiry:
-            return True
+        # Use AuthManager's token expiration check
+        expired = self.auth_manager._is_token_expired()
         
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
-        # Refresh if token expires in less than 5 minutes
-        buffer = timedelta(minutes=5)
-        return now >= (self.token_expiry - buffer)
+        # Sync state for backward compatibility
+        if expired:
+            self.session_token = None
+            self.token_expiry = None
+        
+        return expired
     
     async def _ensure_valid_token(self) -> bool:
         """
         Ensure we have a valid, non-expired JWT token.
         Automatically refreshes if needed.
         
+        Uses AuthManager for token management.
+        
         Returns:
             bool: True if token is valid/refreshed successfully
         """
-        if not self._is_token_expired():
-            return True
+        # Use AuthManager's ensure_valid_token
+        success = await self.auth_manager.ensure_valid_token()
         
-        logger.info("Token expired or missing, refreshing...")
-        return await self.authenticate()
+        if success:
+            # Sync session token and expiry for backward compatibility
+            self.session_token = self.auth_manager.session_token
+            self.token_expiry = self.auth_manager.token_expiry
+        
+        return success
     
     async def list_accounts(self) -> List[Dict]:
         """
         List all active accounts for the authenticated user.
         
+        Uses AuthManager for account listing, maintaining backward compatibility.
+        
         Returns:
             List[Dict]: List of account information
         """
         try:
-            # Ensure valid token before making request
-            await self._ensure_valid_token()
+            # Use AuthManager's list_accounts method
+            accounts = await self.auth_manager.list_accounts()
             
-            logger.info("Fetching active accounts from TopStepX API...")
-            
-            if not self.session_token:
-                logger.error("No session token available. Please authenticate first.")
-                return []
-            
-            # Make real API call to get accounts using session token
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            # Search for active accounts
-            search_data = {
-                "onlyActiveAccounts": True
-            }
-            
-            response = self._make_curl_request("POST", "/api/Account/search", data=search_data, headers=headers)
-            
-            # If we get 401/403, try refreshing token and retry once
-            if response.get("status_code") in (401, 403):
-                logger.info("Token expired during request, refreshing...")
-                if await self.authenticate():
-                    # Retry the request with new token
-                    headers["Authorization"] = f"Bearer {self.session_token}"
-                    response = self._make_curl_request("POST", "/api/Account/search", data=search_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Failed to fetch accounts: {response['error']}")
-                return []
-            
-            # Parse the response - adjust based on actual API response structure
-            if isinstance(response, list):
-                accounts = response
-            elif isinstance(response, dict) and "accounts" in response:
-                accounts = response["accounts"]
-            elif isinstance(response, dict) and "data" in response:
-                accounts = response["data"]
-            elif isinstance(response, dict) and "result" in response:
-                accounts = response["result"]
-            else:
-                logger.warning(f"Unexpected API response format: {response}")
-                accounts = []
-            
-            # Normalize account data structure
-            normalized_accounts = []
-            for account in accounts:
-                # Determine account type from name or other fields
-                account_name = account.get("name") or account.get("accountName", "Unknown Account")
-                account_type = "unknown"
-                
-                if "PRAC" in account_name.upper():
-                    account_type = "practice"
-                elif "150KTC" in account_name.upper():
-                    account_type = "eval"
-                elif "EXPRESS" in account_name.upper():
-                    account_type = "funded"
-                elif "EVAL" in account_name.upper():
-                    account_type = "evaluation"
-                
-                normalized_account = {
-                    "id": account.get("id") or account.get("accountId"),
-                    "name": account_name,
-                    "status": account.get("status", "active"),
-                    "balance": account.get("balance", 0.0),
-                    "currency": account.get("currency", "USD"),
-                    "account_type": account_type
-                }
-                normalized_accounts.append(normalized_account)
-            
-            logger.info(f"Found {len(normalized_accounts)} active accounts")
-            return normalized_accounts
+            logger.info(f"Found {len(accounts)} active accounts")
+            return accounts
             
         except Exception as e:
             logger.error(f"Failed to fetch accounts: {str(e)}")
@@ -1105,6 +1236,9 @@ class TopStepXTradingBot:
                 if 0 <= account_index < len(accounts):
                     selected_account = accounts[account_index]
                     self.selected_account = selected_account
+                    
+                    # Update OrderExecutor's selected account
+                    self.order_executor.set_selected_account(selected_account)
                     
                     print(f"\n✓ Selected Account: {selected_account['name']}")
                     print(f"  Account ID: {selected_account['id']}")
@@ -1183,10 +1317,18 @@ class TopStepXTradingBot:
             Dict: Account information or error
         """
         try:
+            # If account_id is provided but selected_account is not set, find and set it
+            if account_id and not self.selected_account:
+                accounts = await self.list_accounts()
+                for acc in accounts:
+                    if str(acc.get('id')) == str(account_id):
+                        self.selected_account = acc
+                        break
+            
             target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
             
             if not target_account:
-                return {"error": "No account selected"}
+                return {"error": "No account selected or provided"}
             
             if not self.session_token:
                 return {"error": "No session token available. Please authenticate first."}
@@ -1226,15 +1368,34 @@ class TopStepXTradingBot:
             # If no endpoint worked, return minimal info from cached account data
             logger.debug("All account info endpoints failed - using cached account data")
             if self.selected_account:
-                return {
+                # Try to get current balance if available
+                current_balance = None
+                try:
+                    current_balance = await self.get_account_balance(target_account)
+                except Exception:
+                    pass
+                
+                account_info = {
                     "id": self.selected_account.get('id'),
                     "name": self.selected_account.get('name', 'Unknown'),
-                    "balance": self.selected_account.get('balance', 0),
+                    "balance": current_balance or self.selected_account.get('balance', 0),
                     "status": self.selected_account.get('status', 'unknown'),
                     "type": self.selected_account.get('type', 'unknown'),
-                    "note": "Detailed account info endpoints not available - showing cached basic info"
+                    "note": "Detailed account info endpoints not available - showing cached basic info",
+                    "success": True  # Mark as success even though using cached data
                 }
-            return {"error": "Could not fetch account info - no API endpoints available"}
+                
+                # Add compliance/risk info if we can get it from account state
+                try:
+                    positions = await self.get_open_positions(target_account)
+                    orders = await self.get_open_orders(target_account)
+                    account_info["positions_count"] = len(positions) if positions else 0
+                    account_info["orders_count"] = len(orders) if orders else 0
+                except Exception:
+                    pass
+                
+                return account_info
+            return {"error": "Could not fetch account info - no account selected"}
             
         except Exception as e:
             logger.error(f"Failed to fetch account info: {str(e)}")
@@ -1244,9 +1405,7 @@ class TopStepXTradingBot:
         """
         Convert trading symbol to TopStepX contract ID format.
         
-        Gets the contract ID from the cached contract list.
-        Selects the most recent active contract with highest volume for the symbol.
-        Contracts must be fetched before calling this method (via get_available_contracts()).
+        Now uses ContractManager for contract ID resolution, maintaining backward compatibility.
         
         Args:
             symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
@@ -1257,157 +1416,13 @@ class TopStepXTradingBot:
         Raises:
             ValueError: If contract cache is empty or symbol not found
         """
-        symbol = symbol.upper()
-        
-        # Try to find in cached contract list
-        with self._contract_cache_lock:
-            if self._contract_cache is None:
-                error_msg = (
-                    f"Contract cache is empty. "
-                    f"Please fetch contracts first using 'get_available_contracts()' or run 'contracts' command."
-                )
-                logger.error(f"❌ {error_msg}")
-                raise ValueError(error_msg)
-            
-            contracts = self._contract_cache['contracts']
-            if not contracts:
-                error_msg = (
-                    f"Contract cache is empty (no contracts found). "
-                    f"Please fetch contracts first using 'get_available_contracts()' or run 'contracts' command."
-                )
-                logger.error(f"❌ {error_msg}")
-                raise ValueError(error_msg)
-            
-            # Look for contract matching the symbol
-            matching_contracts = []
-            for contract in contracts:
-                if not isinstance(contract, dict):
-                    continue
-                
-                # Try to get contract ID first
-                contract_id = (
-                    contract.get('contractId') or
-                    contract.get('ContractId') or
-                    contract.get('id') or
-                    contract.get('Id') or
-                    contract.get('contract_id') or
-                    contract.get('contractID')
-                )
-                
-                if not contract_id:
-                    continue
-                
-                # Try various field names for symbol
-                contract_symbol = (
-                    contract.get('symbol') or
-                    contract.get('Symbol') or
-                    contract.get('ticker') or
-                    contract.get('Ticker') or
-                    contract.get('instrument') or
-                    contract.get('Instrument')
-                )
-                
-                # If symbol field not found, try to extract from contract ID
-                # Format: CON.F.US.MNQ.Z25 -> extract MNQ (second to last part)
-                if not contract_symbol and contract_id:
-                    if '.' in str(contract_id):
-                        parts = str(contract_id).split('.')
-                        if len(parts) >= 4:
-                            # Second to last part is usually the symbol (before expiration code)
-                            contract_symbol = parts[-2]
-                
-                # Also try extracting from name field (e.g., "MNQZ5" -> "MNQ")
-                if not contract_symbol:
-                    name = contract.get('name') or contract.get('Name') or contract.get('description') or contract.get('Description')
-                    if name:
-                        # Try to extract symbol from name (e.g., "Micro E-mini NASDAQ-100: MNQ" or "MNQZ5")
-                        name_str = str(name).upper()
-                        # Look for symbol pattern in name
-                        for test_symbol in [symbol, symbol[:3], symbol[:2]]:
-                            if test_symbol in name_str:
-                                # Check if it's at word boundary
-                                import re
-                                pattern = r'\b' + re.escape(test_symbol) + r'\b'
-                                if re.search(pattern, name_str):
-                                    contract_symbol = test_symbol
-                                    break
-                
-                # Normalize symbol for comparison
-                if contract_symbol:
-                    contract_symbol = str(contract_symbol).upper().strip()
-                
-                # Check if symbol matches
-                if contract_symbol == symbol:
-                    # Extract metadata for sorting
-                    expiration = contract.get('expiration') or contract.get('Expiration') or contract.get('expiry') or contract.get('Expiry')
-                    volume = contract.get('volume') or contract.get('Volume') or contract.get('dailyVolume') or contract.get('openInterest') or 0
-                    if not isinstance(volume, (int, float)):
-                        volume = 0
-                    
-                    # Try to extract expiration from contract ID if not in separate field
-                    # Format: CON.F.US.MNQ.Z25 -> Z25 is expiration code
-                    if not expiration and contract_id and '.' in str(contract_id):
-                        parts = str(contract_id).split('.')
-                        if len(parts) >= 1:
-                            expiration = parts[-1]  # Last part is expiration code
-                    
-                    matching_contracts.append({
-                        'contract_id': str(contract_id),
-                        'contract': contract,
-                        'expiration': expiration,
-                        'volume': volume,
-                        'raw_contract_id': contract_id
-                    })
-            
-            if not matching_contracts:
-                # Log available symbols for debugging
-                available_symbols = set()
-                for contract in contracts[:20]:  # Check first 20 contracts
-                    if isinstance(contract, dict):
-                        sym = (
-                            contract.get('symbol') or
-                            contract.get('Symbol') or
-                            contract.get('ticker') or
-                            contract.get('Ticker')
-                        )
-                        if not sym and contract.get('contractId'):
-                            # Extract from contract ID
-                            cid = str(contract.get('contractId'))
-                            if '.' in cid:
-                                parts = cid.split('.')
-                                if len(parts) >= 4:
-                                    sym = parts[-2]
-                        if sym:
-                            available_symbols.add(str(sym).upper())
-                
-                error_msg = (
-                    f"Symbol '{symbol}' not found in contract cache. "
-                    f"Available symbols (sample): {sorted(list(available_symbols))[:10]}. "
-                    f"Please ensure contracts are fetched and the symbol is correct."
-                )
-                logger.error(f"❌ {error_msg}")
-                logger.debug(f"Contract cache contains {len(contracts)} contracts")
-                raise ValueError(error_msg)
-            
-            # Sort contracts: prefer most recent expiration and highest volume
-            def sort_key(c):
-                # Higher volume is better
-                volume_score = c['volume'] if isinstance(c['volume'], (int, float)) else 0
-                # More recent expiration is better (alphabetically later codes are usually more recent)
-                exp_score = str(c['expiration'] or '').upper()
-                return (-volume_score, exp_score)  # Negative volume for descending order
-            
-            matching_contracts.sort(key=sort_key, reverse=True)
-            
-            # Select the best contract (highest volume, most recent expiration)
-            best_contract = matching_contracts[0]
-            contract_id = best_contract['contract_id']
-            
-            logger.info(f"✅ Found contract ID for {symbol}: {contract_id} (from {len(matching_contracts)} matches, selected by volume/expiration)")
-            if len(matching_contracts) > 1:
-                logger.debug(f"   Other matches: {[c['contract_id'] for c in matching_contracts[1:3]]}")
-            
-            return str(contract_id)
+        try:
+            # Use ContractManager for contract ID resolution
+            contract_id = self.contract_manager.get_contract_id(symbol)
+            return contract_id
+        except ValueError as e:
+            # Re-raise with same error message for backward compatibility
+            raise e
     
     def _clear_contract_cache(self) -> None:
         """Clear the contract list cache (useful for testing or forced refresh)."""
@@ -1792,112 +1807,23 @@ class TopStepXTradingBot:
         """
         Get the tick size for a trading symbol.
         
+        Now uses RiskManager for tick size calculations, maintaining backward compatibility.
+        
         Args:
             symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
             
         Returns:
             float: Tick size for the symbol
         """
-        symbol = symbol.upper()
-        
-        # Tick sizes for common futures contracts
-        tick_sizes = {
-            "ES": 0.25,      # E-mini S&P 500
-            "MES": 0.25,     # Micro E-mini S&P 500
-            "NQ": 0.25,      # E-mini NASDAQ-100
-            "MNQ": 0.25,     # Micro E-mini NASDAQ-100
-            "YM": 1.0,       # E-mini Dow Jones
-            "MYM": 0.5,      # Micro E-mini Dow Jones (0.5 point ticks)
-            "RTY": 0.1,      # E-mini Russell 2000
-            "M2K": 0.1,      # Micro E-mini Russell 2000
-            "CL": 0.01,      # Crude Oil
-            "NG": 0.001,     # Natural Gas
-            "GC": 0.1,       # Gold
-            "SI": 0.005,     # Silver
-            "MGC": 0.1,      # Micro Gold
-        }
-        
-        if symbol in tick_sizes:
-            base_ts = tick_sizes[symbol]
-            # Hard guard for critical micros
-            hard_map = {"MNQ": 0.25, "MES": 0.25, "MYM": 0.5, "MGC": 0.1}
-            if symbol in hard_map and base_ts != hard_map[symbol]:
-                logger.warning(f"Hard guard: overriding tick size for {symbol} to {hard_map[symbol]} (was {base_ts})")
-                return hard_map[symbol]
-            return base_ts
-
-        # Try to discover tick size from contract metadata via API
-        try:
-            if self.session_token:
-                contracts = await self.get_available_contracts()  # type: ignore  # called from async contexts
-                # Find by symbol occurrence in known fields
-                for c in contracts or []:
-                    sym = (c.get("symbol") or c.get("name") or "").upper()
-                    cid = (c.get("contractId") or c.get("id") or "").upper()
-                    if symbol in sym or f".{symbol}." in cid:
-                        # check various possible keys for tick size
-                        for key in ("tickSize", "minTick", "priceIncrement", "minimumPriceIncrement", "tick"):
-                            if c.get(key):
-                                try:
-                                    ts = float(c.get(key))
-                                    if ts > 0:
-                                        # Enforce hard guards if symbol is one of our known micros
-                                        hard_map = {"MNQ": 0.25, "MES": 0.25, "MYM": 0.5, "MGC": 0.1}
-                                        if symbol in hard_map and abs(ts - hard_map[symbol]) > 1e-9:
-                                            logger.warning(f"Hard guard: API tick for {symbol}={ts} differs from expected {hard_map[symbol]}; using expected")
-                                            return hard_map[symbol]
-                                        logger.info(f"Discovered tick size from API for {symbol}: {ts} (key {key})")
-                                        return ts
-                                except Exception:
-                                    pass
-        except Exception as e:
-            logger.debug(f"Tick size discovery via API failed for {symbol}: {e}")
-        
-        # Default tick size
-        # Before defaulting, apply hard guard if symbol is one of our known ones
-        hard_map = {"MNQ": 0.25, "MES": 0.25, "MYM": 0.5, "MGC": 0.1}
-        if symbol in hard_map:
-            logger.warning(f"Hard guard default: using {hard_map[symbol]} for {symbol}")
-            return hard_map[symbol]
-        logger.warning(f"Unknown symbol {symbol}, using default tick size: 0.25")
-        return 0.25
+        return self.risk_manager.get_tick_size(symbol)
     
     def _round_to_tick_size(self, price: float, tick_size: float) -> float:
-        """Round price to nearest valid tick size."""
-        if tick_size <= 0:
-            return price
-        return round(price / tick_size) * tick_size
-    
-    def _get_point_value(self, symbol: str) -> float:
         """
-        Get the point value (dollar value per point) for a trading symbol.
+        Round price to nearest valid tick size.
         
-        Args:
-            symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
-            
-        Returns:
-            float: Point value in dollars per point per contract
+        Now uses RiskManager for price rounding, maintaining backward compatibility.
         """
-        symbol = symbol.upper()
-        
-        # Point values for common futures contracts (dollars per point per contract)
-        point_values = {
-            "ES": 50.0,      # E-mini S&P 500: $50 per point
-            "MES": 5.0,      # Micro E-mini S&P 500: $5 per point
-            "NQ": 20.0,      # E-mini NASDAQ-100: $20 per point
-            "MNQ": 2.0,      # Micro E-mini NASDAQ-100: $2 per point
-            "YM": 5.0,       # E-mini Dow Jones: $5 per point
-            "MYM": 0.5,      # Micro E-mini Dow Jones: $0.50 per point
-            "RTY": 50.0,     # E-mini Russell 2000: $50 per point
-            "M2K": 5.0,      # Micro E-mini Russell 2000: $5 per point
-            "CL": 10.0,      # Crude Oil: $10 per point
-            "NG": 10.0,      # Natural Gas: $10 per point
-            "GC": 100.0,     # Gold: $100 per point
-            "SI": 50.0,      # Silver: $50 per point
-            "MGC": 10.0,     # Micro Gold: $10 per point
-        }
-        
-        return point_values.get(symbol, 1.0)  # Default to $1 per point if unknown
+        return self.risk_manager.round_to_tick_size(price, tick_size)
     
     def _generate_unique_custom_tag(self, order_type: str = "order", strategy_name: str = None) -> str:
         """
@@ -2213,20 +2139,41 @@ class TopStepXTradingBot:
             
             logger.info("Fetching available contracts...")
             
-            if not self.session_token:
+            # Use AuthManager for authentication
+            if not await self.auth_manager.ensure_valid_token():
                 logger.error("No session token available. Please authenticate first.")
                 return []
             
             headers = {
                 "accept": "application/json",
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
+                **self.auth_manager.get_auth_headers()
             }
             
             # Use correct endpoint per API documentation:
             # https://gateway.docs.projectx.com/docs/api-reference/market-data/available-contracts/
             # POST /api/Contract/available with { "live": false }
             
+            # Use broker adapter for contract fetching if available
+            if hasattr(self, 'broker_adapter'):
+                try:
+                    contracts = await self.broker_adapter.get_available_contracts(use_cache=use_cache, cache_ttl_minutes=cache_ttl_minutes)
+                    # Sync to local cache
+                    if contracts:
+                        with self._contract_cache_lock:
+                            self._contract_cache = {
+                                'contracts': contracts.copy(),
+                                'timestamp': datetime.now(),
+                                'ttl_minutes': cache_ttl_minutes
+                            }
+                        if hasattr(self, 'contract_manager'):
+                            self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
+                    logger.info(f"Found {len(contracts)} available contracts via adapter")
+                    return contracts
+                except Exception as adapter_err:
+                    logger.warning(f"Adapter contract fetch failed, falling back to direct API: {adapter_err}")
+            
+            # Fallback to direct API call
             response = self._make_curl_request(
                 "POST",
                 "/api/Contract/available",
@@ -2348,6 +2295,8 @@ class TopStepXTradingBot:
         """
         Close all open positions and cancel all open orders on the selected account.
         
+        Now uses TopStepXAdapter for flattening, maintaining backward compatibility.
+        
         Args:
             interactive: If True, ask for confirmation. If False, proceed automatically.
         
@@ -2358,10 +2307,6 @@ class TopStepXTradingBot:
             if not self.selected_account:
                 print("❌ No account selected")
                 return {"error": "No account selected"}
-            
-            if not self.session_token:
-                print("❌ No session token available. Please authenticate first.")
-                return {"error": "No session token available"}
             
             target_account = self.selected_account['id']
             print(f"\n⚠️  FLATTEN ALL POSITIONS")
@@ -2378,121 +2323,30 @@ class TopStepXTradingBot:
             
             logger.info(f"Flattening all positions on account {target_account}")
             
-            # Get all open positions first
-            positions = await self.get_open_positions(target_account)
-            if not positions:
-                logger.info("No open positions found to close")
-                print("✅ No open positions found")
-                return {"success": True, "message": "No positions to close"}
+            # Use TopStepXAdapter for flattening
+            result = await self.broker_adapter.flatten_all_positions(account_id=target_account)
             
-            # Close each position individually
-            closed_positions = []
-            failed_positions = []
+            # Send Discord notifications for closed positions
+            try:
+                if result.get("closed_positions"):
+                    positions = await self.get_open_positions(target_account)
+                    # Note: positions will be empty after flatten, so we can't get details
+                    # But we already sent notifications in close_position()
+            except Exception:
+                pass  # Notifications are best-effort
             
-            for position in positions:
-                position_id = position.get("id")
-                position_size = position.get("size", 0)
-                position_type = position.get("type", 0)
+            # Format result for backward compatibility
+            if result.get("success"):
+                closed_count = len(result.get("closed_positions", []))
+                canceled_count = len(result.get("canceled_orders", []))
                 
-                if not position_id:
-                    logger.warning(f"Skipping position without ID: {position}")
-                    continue
-                
-                logger.info(f"Closing position {position_id} with size {position_size}")
-                
-                # Close the position
-                result = await self.close_position(position_id, account_id=target_account)
-                
-                if "error" in result:
-                    logger.error(f"Failed to close position {position_id}: {result['error']}")
-                    failed_positions.append({"id": position_id, "error": result["error"]})
+                if closed_count > 0 or canceled_count > 0:
+                    print(f"✅ All positions flattened successfully!")
+                    print(f"   Account: {self.selected_account['name']}")
+                    print(f"   Closed positions: {closed_count}")
+                    print(f"   Canceled orders: {canceled_count}")
                 else:
-                    logger.info(f"Successfully closed position {position_id}")
-                    closed_positions.append(position_id)
-                    
-                    # Send Discord notification for position close
-                    try:
-                        account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                        
-                        # Get position details for notification
-                        position_details = None
-                        for pos in positions:
-                            if str(pos.get('id', '')) == str(position_id):
-                                position_details = pos
-                                break
-                        
-                        if position_details:
-                            contract_id = position_details.get('contractId')
-                            symbol = self._get_symbol_from_contract_id(contract_id)
-                            
-                            # Get current market price for exit price
-                            exit_price = "Unknown"
-                            try:
-                                quote = await self.get_market_quote(symbol)
-                                if "error" not in quote:
-                                    if position_details.get('side', 0) == 0:  # Long position
-                                        exit_price = quote.get("bid") or quote.get("last")
-                                    else:  # Short position
-                                        exit_price = quote.get("ask") or quote.get("last")
-                                    if exit_price:
-                                        exit_price = f"${float(exit_price):.2f}"
-                            except Exception as price_err:
-                                logger.warning(f"Could not fetch exit price: {price_err}")
-                            
-                            notification_data = {
-                                'symbol': symbol,
-                                'side': 'LONG' if position_details.get('side', 0) == 0 else 'SHORT',
-                                'quantity': position_details.get('size', 0),
-                                'entry_price': f"${position_details.get('entryPrice', 0):.2f}",
-                                'exit_price': exit_price,
-                                'pnl': position_details.get('unrealizedPnl', 0),
-                                'position_id': position_id
-                            }
-                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
-                    except Exception as notif_err:
-                        logger.warning(f"Failed to send Discord position close notification: {notif_err}")
-            
-            # Cancel all open orders
-            logger.info("Canceling all open orders")
-            orders = await self.get_open_orders(target_account)
-            canceled_orders = []
-            failed_orders = []
-            
-            for order in orders:
-                order_id = order.get("id")
-                if not order_id:
-                    continue
-                
-                logger.info(f"Canceling order {order_id}")
-                result = await self.cancel_order(order_id, account_id=target_account)
-                
-                if "error" in result:
-                    logger.error(f"Failed to cancel order {order_id}: {result['error']}")
-                    failed_orders.append({"id": order_id, "error": result["error"]})
-                else:
-                    logger.info(f"Successfully canceled order {order_id}")
-                    canceled_orders.append(order_id)
-            
-            # Prepare result
-            result = {
-                "success": True,
-                "closed_positions": closed_positions,
-                "canceled_orders": canceled_orders,
-                "failed_positions": failed_positions,
-                "failed_orders": failed_orders,
-                "positions_count": len(closed_positions),
-                "orders_count": len(canceled_orders)
-            }
-            
-            if closed_positions or canceled_orders:
-                logger.info(f"Successfully closed {len(closed_positions)} positions and canceled {len(canceled_orders)} orders")
-                print(f"✅ All positions flattened successfully!")
-                print(f"   Account: {self.selected_account['name']}")
-                print(f"   Closed positions: {len(closed_positions)}")
-                print(f"   Canceled orders: {len(canceled_orders)}")
-            else:
-                logger.info("No positions or orders found to close/cancel")
-                print("✅ No positions or orders found to close/cancel")
+                    print("✅ No positions or orders found to close/cancel")
             
             return result
             
@@ -2509,6 +2363,8 @@ class TopStepXTradingBot:
         """
         Get all open positions for the selected account.
         
+        Now uses TopStepXAdapter for position fetching, maintaining backward compatibility.
+        
         Args:
             account_id: Account ID (uses selected account if not provided)
             
@@ -2522,47 +2378,48 @@ class TopStepXTradingBot:
                 logger.error("No account selected")
                 return []
             
-            if not self.session_token:
-                logger.error("No session token available. Please authenticate first.")
-                return []
+            # Use TopStepXAdapter for position fetching
+            positions = await self.broker_adapter.get_open_positions(account_id=target_account)
             
-            logger.info(f"Fetching open positions for account {target_account}")
+            # Convert Position objects to dicts for backward compatibility
+            result = []
+            for pos in positions:
+                if hasattr(pos, 'raw_data') and pos.raw_data:
+                    result.append(pos.raw_data)
+                else:
+                    # Convert Position dataclass to dict format
+                    try:
+                        contract_id = None
+                        if pos.symbol:
+                            try:
+                                contract_id = self.contract_manager.get_contract_id(pos.symbol)
+                            except (ValueError, AttributeError):
+                                pass
+                        
+                        result.append({
+                            'id': pos.position_id,
+                            'position_id': pos.position_id,
+                            'symbol': pos.symbol,
+                            'contractId': contract_id,
+                            'contract_id': contract_id,
+                            'side': 0 if pos.side == "LONG" else 1,
+                            'size': pos.quantity,
+                            'quantity': pos.quantity,
+                            'entryPrice': pos.entry_price,
+                            'entry_price': pos.entry_price,
+                            'currentPrice': pos.current_price,
+                            'current_price': pos.current_price,
+                            'unrealizedPnl': pos.unrealized_pnl,
+                            'unrealized_pnl': pos.unrealized_pnl,
+                            'accountId': pos.account_id,
+                            'account_id': pos.account_id
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to convert position to dict: {e}")
+                        continue
             
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            # Use the official TopStepX Gateway API for positions
-            # Based on https://gateway.docs.projectx.com/docs/api-reference/positions/search-open-positions
-            search_data = {
-                "accountId": int(target_account)
-            }
-            
-            logger.info(f"Requesting open positions for account {target_account} using TopStepX Gateway API")
-            logger.info(f"Request data: {search_data}")
-            
-            # Call the official TopStepX Gateway API
-            response = self._make_curl_request("POST", "/api/Position/searchOpen", data=search_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"TopStepX Gateway API failed: {response['error']}")
-                return []
-            
-            if not response.get("success"):
-                logger.error(f"TopStepX Gateway API returned error: {response}")
-                return []
-            
-            positions = response.get("positions", [])
-            if not positions:
-                logger.info(f"No open positions found for account {target_account}")
-                return []
-            
-            logger.info(f"Successfully found {len(positions)} open positions from TopStepX Gateway API")
-            logger.info(f"Positions data: {positions}")
-            
-            return positions
+            logger.info(f"Found {len(result)} open positions for account {target_account}")
+            return result
             
         except Exception as e:
             logger.error(f"Failed to fetch positions: {str(e)}")
@@ -2645,6 +2502,8 @@ class TopStepXTradingBot:
         """
         Get detailed information about a specific position.
         
+        Now uses TopStepXAdapter for position details, maintaining backward compatibility.
+        
         Args:
             position_id: Position ID
             account_id: Account ID (uses selected account if not provided)
@@ -2658,24 +2517,34 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            if not self.session_token:
-                return {"error": "No session token available. Please authenticate first."}
+            # Use TopStepXAdapter for position details
+            position = await self.broker_adapter.get_position_details(
+                position_id=position_id,
+                account_id=target_account
+            )
             
-            logger.info(f"Fetching position details for position {position_id}")
+            if position is None:
+                return {"error": f"Position {position_id} not found"}
             
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            response = self._make_curl_request("GET", f"/api/Position/{position_id}", headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Failed to fetch position details: {response['error']}")
-                return response
-            
-            return response
+            # Convert Position object to dict for backward compatibility
+            if hasattr(position, 'raw_data'):
+                return position.raw_data
+            else:
+                return {
+                    'id': position.position_id,
+                    'symbol': position.symbol,
+                    'side': 0 if position.side == "LONG" else 1,
+                    'size': position.quantity,
+                    'quantity': position.quantity,
+                    'entryPrice': position.entry_price,
+                    'entry_price': position.entry_price,
+                    'currentPrice': position.current_price,
+                    'current_price': position.current_price,
+                    'unrealizedPnl': position.unrealized_pnl,
+                    'unrealized_pnl': position.unrealized_pnl,
+                    'accountId': position.account_id,
+                    'account_id': position.account_id
+                }
             
         except Exception as e:
             logger.error(f"Failed to fetch position details: {str(e)}")
@@ -2684,6 +2553,8 @@ class TopStepXTradingBot:
     async def close_position(self, position_id: str, quantity: int = None, account_id: str = None) -> Dict:
         """
         Close a specific position or part of it.
+        
+        Now uses TopStepXAdapter for position closing, maintaining backward compatibility.
         
         Args:
             position_id: Position ID to close
@@ -2699,89 +2570,69 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            if not self.session_token:
-                return {"error": "No session token available. Please authenticate first."}
-            
             logger.info(f"Closing position {position_id} on account {target_account}")
             if quantity:
-                logger.info(f"Closing {quantity} contracts")
+                logger.info(f"Closing {quantity} contracts (partial close)")
             
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
+            # Get position details before closing for notification
+            position_details = await self.get_position_details(position_id, target_account)
             
-            # Get the contract ID for this position
-            positions = await self.get_open_positions(target_account)
-            contract_id = None
-            for pos in positions:
-                if str(pos.get('id', '')) == str(position_id):
-                    contract_id = pos.get('contractId')
-                    break
+            # Use TopStepXAdapter for position closing
+            result = await self.broker_adapter.close_position(
+                position_id=position_id,
+                quantity=quantity,
+                account_id=target_account
+            )
             
-            if not contract_id:
-                return {"error": f"Could not find contract ID for position {position_id}"}
-            
-            close_data = {
-                "accountId": int(target_account),
-                "contractId": contract_id
-            }
-            
-            if quantity:
-                close_data["quantity"] = quantity
-            
-            response = self._make_curl_request("POST", "/api/Position/closeContract", data=close_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Failed to close position: {response['error']}")
-                return response
-            
-            logger.info(f"Position closed successfully: {response}")
-            
-            # Send Discord notification for position close
-            try:
-                # Get position details before closing for notification
-                positions = await self.get_open_positions(target_account)
-                position_details = None
-                for pos in positions:
-                    if str(pos.get('id', '')) == str(position_id):
-                        position_details = pos
-                        break
-                
-                if position_details:
-                    account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                    
-                    # Get current market price for exit price
-                    symbol = self._get_symbol_from_contract_id(contract_id)
-                    exit_price = "Unknown"
+            # Convert CloseResponse to dict for backward compatibility
+            if hasattr(result, 'success'):
+                if result.success:
+                    # Send Discord notification
                     try:
-                        quote = await self.get_market_quote(symbol)
-                        if "error" not in quote:
-                            if position_details.get('side', 0) == 0:  # Long position
-                                exit_price = quote.get("bid") or quote.get("last")
-                            else:  # Short position
-                                exit_price = quote.get("ask") or quote.get("last")
-                            if exit_price:
-                                exit_price = f"${float(exit_price):.2f}"
-                                logger.info(f"Set exit price to: {exit_price}")
-                    except Exception as price_err:
-                        logger.warning(f"Could not fetch exit price: {price_err}")
+                        if position_details and "error" not in position_details:
+                            account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                            
+                            # Get current market price for exit price
+                            symbol = position_details.get('symbol') or self._get_symbol_from_contract_id(position_details.get('contractId', ''))
+                            exit_price = "Unknown"
+                            try:
+                                quote = await self.get_market_quote(symbol)
+                                if "error" not in quote and isinstance(quote, dict):
+                                    side_value = position_details.get('side', 0)
+                                    if side_value == 0:  # Long position
+                                        exit_price = quote.get("bid") or quote.get("last")
+                                    else:  # Short position
+                                        exit_price = quote.get("ask") or quote.get("last")
+                                    if exit_price:
+                                        exit_price = f"${float(exit_price):.2f}"
+                            except Exception as price_err:
+                                logger.warning(f"Could not fetch exit price: {price_err}")
+                            
+                            notification_data = {
+                                'symbol': symbol,
+                                'side': 'LONG' if position_details.get('side', 0) == 0 else 'SHORT',
+                                'quantity': position_details.get('size', 0) or position_details.get('quantity', 0),
+                                'entry_price': f"${position_details.get('entryPrice', 0) or position_details.get('entry_price', 0):.2f}",
+                                'exit_price': exit_price,
+                                'pnl': position_details.get('unrealizedPnl', 0) or position_details.get('unrealized_pnl', 0),
+                                'position_id': position_id
+                            }
+                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                    except Exception as notif_err:
+                        logger.warning(f"Failed to send Discord notification: {notif_err}")
                     
-                    notification_data = {
-                        'symbol': symbol,
-                        'side': 'LONG' if position_details.get('side', 0) == 0 else 'SHORT',
-                        'quantity': position_details.get('size', 0),
-                        'entry_price': f"${position_details.get('entryPrice', 0):.2f}",
-                        'exit_price': exit_price,
-                        'pnl': position_details.get('unrealizedPnl', 0),
-                        'position_id': position_id
+                    return {
+                        "success": True,
+                        "position_id": result.position_id,
+                        "message": result.message or "Position closed successfully"
                     }
-                    self.discord_notifier.send_position_close_notification(notification_data, account_name)
-            except Exception as notif_err:
-                logger.warning(f"Failed to send Discord position close notification: {notif_err}")
+                else:
+                    return {
+                        "error": result.error or "Failed to close position"
+                    }
             
-            return response
+            # If already a dict, return as-is
+            return result if isinstance(result, dict) else {"error": "Unexpected response type"}
             
         except Exception as e:
             logger.error(f"Failed to close position: {str(e)}")
@@ -2794,6 +2645,8 @@ class TopStepXTradingBot:
     async def get_open_orders(self, account_id: str = None) -> List[Dict]:
         """
         Get all open orders for the selected account.
+        
+        Now uses TopStepXAdapter for order fetching, maintaining backward compatibility.
         
         Args:
             account_id: Account ID (uses selected account if not provided)
@@ -2808,68 +2661,11 @@ class TopStepXTradingBot:
                 logger.error("No account selected")
                 return []
             
-            if not self.session_token:
-                logger.error("No session token available. Please authenticate first.")
-                return []
+            # Use TopStepXAdapter for order fetching
+            orders = await self.broker_adapter.get_open_orders(account_id=target_account)
             
-            logger.info(f"Fetching open orders for account {target_account}")
-            
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            # Use the official TopStepX Gateway API for orders
-            # Try the standard order search endpoint with proper data
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc)
-            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            search_data = {
-                "accountId": int(target_account),
-                "startTimestamp": start_time.isoformat(),
-                "endTimestamp": now.isoformat(),
-                "request": {
-                    "accountId": int(target_account),
-                    "status": "Open"
-                }
-            }
-            
-            logger.info(f"Requesting open orders for account {target_account} using TopStepX Gateway API")
-            logger.info(f"Request data: {search_data}")
-            
-            # Call the official TopStepX Gateway API
-            response = self._make_curl_request("POST", "/api/Order/search", data=search_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"TopStepX Gateway API failed: {response['error']}")
-                return []
-            
-            if not response.get("success"):
-                logger.error(f"TopStepX Gateway API returned error: {response}")
-                return []
-            
-            # Check for different possible order data fields
-            orders = []
-            for field in ["orders", "data", "result", "items", "list"]:
-                if field in response and isinstance(response[field], list):
-                    orders = response[field]
-                    break
-            
-            if not orders:
-                logger.info(f"No open orders found for account {target_account}")
-                return []
-            
-            total_orders = len(orders)
-            # Filter strictly to OPEN orders (status == 1)
-            open_only = [o for o in orders if o.get("status") == 1]
-            logger.info(f"Orders returned: {total_orders}; OPEN filtered: {len(open_only)}")
-            if total_orders != len(open_only):
-                logger.debug(f"Filtered out non-open orders; first 3 removed examples: {[o for o in orders if o.get('status') != 1][:3]}")
-            logger.info(f"Open Orders data: {open_only}")
-            
-            return open_only
+            logger.info(f"Found {len(orders)} open orders for account {target_account}")
+            return orders
             
         except Exception as e:
             logger.error(f"Failed to fetch orders: {str(e)}")
@@ -2878,6 +2674,8 @@ class TopStepXTradingBot:
     async def cancel_order(self, order_id: str, account_id: str = None) -> Dict:
         """
         Cancel a specific order.
+        
+        Now uses TopStepXAdapter for order cancellation, maintaining backward compatibility.
         
         Args:
             order_id: Order ID to cancel
@@ -2892,30 +2690,27 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            if not self.session_token:
-                return {"error": "No session token available. Please authenticate first."}
+            # Use TopStepXAdapter for order cancellation
+            result = await self.broker_adapter.cancel_order(
+                order_id=order_id,
+                account_id=target_account
+            )
             
-            logger.info(f"Canceling order {order_id} on account {target_account}")
+            # Convert CancelResponse to dict for backward compatibility
+            if hasattr(result, 'success'):
+                if result.success:
+                    return {
+                        "success": True,
+                        "orderId": result.order_id,
+                        "message": result.message or "Order canceled successfully"
+                    }
+                else:
+                    return {
+                        "error": result.error or "Failed to cancel order"
+                    }
             
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            cancel_data = {
-                "orderId": order_id,
-                "accountId": int(target_account)
-            }
-            
-            response = self._make_curl_request("POST", "/api/Order/cancel", data=cancel_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Failed to cancel order: {response['error']}")
-                return response
-            
-            logger.info(f"Order canceled successfully: {response}")
-            return response
+            # If already a dict, return as-is
+            return result if isinstance(result, dict) else {"error": "Unexpected response type"}
             
         except Exception as e:
             logger.error(f"Failed to cancel order: {str(e)}")
@@ -2925,6 +2720,8 @@ class TopStepXTradingBot:
                           account_id: str = None, order_type: int = None) -> Dict:
         """
         Modify an existing order.
+        
+        Now uses TopStepXAdapter for order modification, maintaining backward compatibility.
         
         Args:
             order_id: Order ID to modify
@@ -2942,111 +2739,30 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            if not self.session_token:
-                return {"error": "No session token available. Please authenticate first."}
+            # Use TopStepXAdapter for order modification
+            result = await self.broker_adapter.modify_order(
+                order_id=order_id,
+                quantity=new_quantity,
+                price=new_price,
+                account_id=target_account,
+                order_type=order_type
+            )
             
-            # Get order info to determine type and check if it's a bracket order
-            order_info = None
-            if new_quantity is not None or new_price is not None:
-                orders = await self.get_open_orders(target_account)
-                for order in orders:
-                    if str(order.get('id', '')) == str(order_id):
-                        order_info = order
-                        break
-                
-                # Check if order is a bracket order (no customTag) and trying to modify size
-                # NOTE: Price modifications are allowed for bracket orders, only size modifications are blocked
-                if new_quantity is not None and order_info and not order_info.get('customTag'):
+            # Convert ModifyOrderResponse to dict for backward compatibility
+            if hasattr(result, 'success'):
+                if result.success:
                     return {
-                        "error": "Cannot modify size of bracket order attached to position. "
-                                "Bracket orders (stop loss/take profit) automatically match position size. "
-                                "You can only modify the price, or close the position to remove the bracket orders."
+                        "success": True,
+                        "orderId": result.order_id,
+                        "message": result.message or "Order modified successfully"
                     }
-            
-            logger.info(f"Modifying order {order_id} on account {target_account}")
-            
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            modify_data = {
-                "orderId": int(order_id),
-                "accountId": int(target_account)
-            }
-            
-            # Only include size if provided and not trying to modify bracket order
-            if new_quantity is not None:
-                modify_data["size"] = new_quantity  # Use 'size' field for TopStepX API
-            
-            if new_price is not None:
-                # Determine price field based on order type
-                # Get order type from order_info if we fetched it, otherwise use provided order_type
-                actual_order_type = None
-                if order_info:
-                    actual_order_type = order_info.get('type', order_type)
-                elif order_type is not None:
-                    actual_order_type = order_type
                 else:
-                    # Need to fetch order type
-                    if order_info is None:
-                        orders = await self.get_open_orders(target_account)
-                        for order in orders:
-                            if str(order.get('id', '')) == str(order_id):
-                                order_info = order
-                                break
-                    if order_info:
-                        actual_order_type = order_info.get('type')
-                    else:
-                        actual_order_type = 1  # Default to limit order
-                
-                if actual_order_type == 4:  # Stop order
-                    modify_data["stopPrice"] = new_price
-                else:  # Limit order or other types
-                    modify_data["limitPrice"] = new_price
-            
-            response = self._make_curl_request("POST", "/api/Order/modify", data=modify_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Failed to modify order: {response['error']}")
-                return response
-            
-            # Check if the API response indicates success
-            if response.get("success") == False:
-                error_code = response.get("errorCode", "Unknown")
-                error_message = response.get("errorMessage", "No error message")
-                logger.error(f"Order modification failed: Error Code {error_code}, Message: {error_message}")
-                
-                # Provide helpful error message for common errors
-                # Only show bracket order error if we were trying to modify size
-                # Price modifications should work for bracket orders
-                if (error_code == 3 or "attached to position" in error_message.lower()) and new_quantity is not None:
                     return {
-                        "error": "Cannot modify size of bracket order attached to position. "
-                                "Bracket orders (stop loss/take profit) automatically match position size. "
-                                "You can only modify the price, or close the position to remove the bracket orders."
+                        "error": result.error or "Failed to modify order"
                     }
-                # For price-only modifications that fail, provide a different message
-                elif (error_code == 3 or "attached to position" in error_message.lower()) and new_price is not None:
-                    # Check if this is actually a bracket order by checking order_info
-                    is_actually_bracket = order_info and not order_info.get('customTag')
-                    if is_actually_bracket:
-                        return {
-                            "error": f"Unable to modify bracket order price. The TopStepX API does not allow modifications to bracket orders attached to positions. "
-                                    f"Error: {error_message}. Try closing the position and placing new orders instead."
-                        }
-                    else:
-                        # Not a bracket order, but API rejected - provide generic error
-                        return {
-                            "error": f"Order modification failed: {error_message} (Error Code: {error_code}). "
-                                    f"The order may be in a state that cannot be modified, or the TopStepX API may have restrictions on this order type."
-                    }
-                
-                return {"error": f"Order modification failed: Error Code {error_code}, Message: {error_message}"}
             
-            logger.info(f"Order modified successfully: {response}")
-            return response
+            # If already a dict, return as-is
+            return result if isinstance(result, dict) else {"error": "Unexpected response type"}
             
         except Exception as e:
             logger.error(f"Failed to modify order: {str(e)}")
@@ -3055,6 +2771,8 @@ class TopStepXTradingBot:
     async def modify_stop_loss(self, position_id: str, new_stop_price: float, account_id: str = None) -> Dict:
         """
         Modify the stop loss order attached to a position.
+        
+        Now uses PositionManager for position modifications, maintaining backward compatibility.
         
         Args:
             position_id: Position ID
@@ -3070,41 +2788,12 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            # Get linked orders for the position
-            linked_orders = await self.get_linked_orders(position_id, target_account)
-            
-            # Find the stop loss order (type 4 = Stop order)
-            stop_order = None
-            for order in linked_orders:
-                if order.get('type') == 4:  # Stop order type
-                    stop_order = order
-                    break
-            
-            if not stop_order:
-                return {"error": "No stop loss order found for this position"}
-            
-            stop_order_id = str(stop_order.get('id', ''))
-            
-            # Modify the stop loss order (only price, not size)
-            result = await self.modify_order(
-                stop_order_id, 
-                new_quantity=None,  # Don't change size
-                new_price=new_stop_price,
-                account_id=target_account,
-                order_type=4  # Stop order
+            # Delegate to PositionManager
+            return await self.position_manager.modify_stop_loss(
+                position_id=position_id,
+                new_stop_price=new_stop_price,
+                account_id=str(target_account)
             )
-            
-            if "error" in result:
-                return result
-            
-            logger.info(f"Stop loss modified successfully for position {position_id}: new price = {new_stop_price}")
-            return {
-                "success": True,
-                "position_id": position_id,
-                "stop_order_id": stop_order_id,
-                "new_stop_price": new_stop_price,
-                "message": f"Stop loss modified to ${new_stop_price}"
-            }
             
         except Exception as e:
             logger.error(f"Failed to modify stop loss: {str(e)}")
@@ -3113,6 +2802,8 @@ class TopStepXTradingBot:
     async def modify_take_profit(self, position_id: str, new_tp_price: float, account_id: str = None) -> Dict:
         """
         Modify the take profit order attached to a position.
+        
+        Now uses PositionManager for position modifications, maintaining backward compatibility.
         
         Args:
             position_id: Position ID
@@ -3128,41 +2819,12 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            # Get linked orders for the position
-            linked_orders = await self.get_linked_orders(position_id, target_account)
-            
-            # Find the take profit order (type 1 = Limit order, opposite side of position)
-            tp_order = None
-            for order in linked_orders:
-                if order.get('type') == 1:  # Limit order type (take profit)
-                    tp_order = order
-                    break
-            
-            if not tp_order:
-                return {"error": "No take profit order found for this position"}
-            
-            tp_order_id = str(tp_order.get('id', ''))
-            
-            # Modify the take profit order (only price, not size)
-            result = await self.modify_order(
-                tp_order_id, 
-                new_quantity=None,  # Don't change size
-                new_price=new_tp_price,
-                account_id=target_account,
-                order_type=1  # Limit order
+            # Delegate to PositionManager
+            return await self.position_manager.modify_take_profit(
+                position_id=position_id,
+                new_tp_price=new_tp_price,
+                account_id=str(target_account)
             )
-            
-            if "error" in result:
-                return result
-            
-            logger.info(f"Take profit modified successfully for position {position_id}: new price = {new_tp_price}")
-            return {
-                "success": True,
-                "position_id": position_id,
-                "tp_order_id": tp_order_id,
-                "new_tp_price": new_tp_price,
-                "message": f"Take profit modified to ${new_tp_price}"
-            }
             
         except Exception as e:
             logger.error(f"Failed to modify take profit: {str(e)}")
@@ -3173,77 +2835,27 @@ class TopStepXTradingBot:
         Get the start and end dates for the trading session containing the given date.
         Sessions run from 6pm EST to 4pm EST next day, Sunday through Friday.
         
+        Now uses RiskManager for session date calculations, maintaining backward compatibility.
+        
         Args:
             date: Date to find session for (defaults to now)
             
         Returns:
             tuple: (session_start, session_end) as datetime objects in UTC
         """
-        from datetime import timedelta
-        from pytz import timezone as tz
-        import pytz
-        
-        if date is None:
-            date = datetime.now(pytz.UTC)
-        
-        # Convert to EST
-        est = tz('US/Eastern')
-        if date.tzinfo is None:
-            date = pytz.UTC.localize(date)
-        date_est = date.astimezone(est)
-        
-        # Get the day of week (0=Monday, 6=Sunday)
-        weekday = date_est.weekday()
-        
-        # If Saturday (5) or Sunday before 6pm, use previous Friday's session
-        # If Sunday after 6pm, start new session
-        if weekday == 5:  # Saturday - use Friday's session end
-            session_start_est = date_est.replace(hour=18, minute=0, second=0, microsecond=0) - timedelta(days=1)
-            session_end_est = date_est.replace(hour=16, minute=0, second=0, microsecond=0)
-        elif weekday == 6:  # Sunday
-            if date_est.hour < 18:  # Before 6pm Sunday - use previous Friday
-                session_start_est = date_est.replace(hour=18, minute=0, second=0, microsecond=0) - timedelta(days=2)
-                session_end_est = (date_est.replace(hour=18, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=16, minute=0)
-            else:  # After 6pm Sunday - start new session
-                session_start_est = date_est.replace(hour=18, minute=0, second=0, microsecond=0)
-                session_end_est = (date_est + timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0)
-        else:  # Monday-Friday
-            # Check if we're before 6pm today or after
-            if date_est.hour < 18:  # Before 6pm - use previous day's session
-                if weekday == 0:  # Monday before 6pm - use Sunday's session
-                    session_start_est = (date_est - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
-                    session_end_est = date_est.replace(hour=16, minute=0, second=0, microsecond=0)
-                else:
-                    session_start_est = (date_est - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
-                    session_end_est = date_est.replace(hour=16, minute=0, second=0, microsecond=0)
-            else:  # After 6pm - current session
-                session_start_est = date_est.replace(hour=18, minute=0, second=0, microsecond=0)
-                session_end_est = (date_est + timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0)
-        
-        # Convert back to UTC
-        session_start_utc = session_start_est.astimezone(pytz.UTC)
-        session_end_utc = session_end_est.astimezone(pytz.UTC)
-        
-        return (session_start_utc, session_end_utc)
+        result = self.risk_manager.get_trading_session_dates(date)
+        # RiskManager returns a dict, convert to tuple for backward compatibility
+        if isinstance(result, dict):
+            return (result.get('session_start'), result.get('session_end'))
+        return result
 
-    @staticmethod
-    def _get_point_value(symbol: str) -> float:
-        """Get point value for a symbol ($ per point movement)"""
-        symbol = symbol.upper()
-        if 'MNQ' in symbol or 'NQ' in symbol:
-            return 2.0  # Micro NQ: $2 per point
-        elif 'MES' in symbol or 'ES' in symbol:
-            return 5.0  # Micro ES: $5 per point
-        elif 'MYM' in symbol or 'YM' in symbol:
-            return 0.5  # Micro YM: $0.50 per point
-        elif 'M2K' in symbol or 'RTY' in symbol:
-            return 5.0  # Micro Russell: $5 per point
-        elif 'MGC' in symbol:
-            return 10.0  # Micro Gold: $10 per point
-        elif 'GC' in symbol:
-            return 100.0  # Gold: $100 per point
-        else:
-            return 1.0  # Default
+    def _get_point_value(self, symbol: str) -> float:
+        """
+        Get point value for a symbol ($ per point movement).
+        
+        Now uses RiskManager for point value calculations, maintaining backward compatibility.
+        """
+        return self.risk_manager.get_point_value(symbol)
 
     def _consolidate_orders_into_trades(self, orders: List[Dict]) -> List[Dict]:
         """
@@ -3294,7 +2906,23 @@ class TopStepXTradingBot:
                         order.get('price') or 
                         order.get('limitPrice') or 
                         order.get('stopPrice') or 0.0)
-                timestamp = order.get('executionTimestamp') or order.get('creationTimestamp', '')
+                timestamp_raw = order.get('executionTimestamp') or order.get('creationTimestamp') or ''
+                
+                # Convert timestamp to datetime if it's a string, otherwise keep as-is
+                from datetime import datetime, timezone
+                if isinstance(timestamp_raw, str) and timestamp_raw:
+                    try:
+                        # Try parsing ISO format timestamp
+                        timestamp = datetime.fromisoformat(timestamp_raw.replace('Z', '+00:00'))
+                    except (ValueError, AttributeError):
+                        # If parsing fails, keep as string but log warning
+                        logger.warning(f"Could not parse timestamp '{timestamp_raw}', keeping as string")
+                        timestamp = timestamp_raw
+                elif isinstance(timestamp_raw, datetime):
+                    timestamp = timestamp_raw
+                else:
+                    # Fallback to current time if no timestamp
+                    timestamp = datetime.now(timezone.utc)
                 
                 # Debug logging for order details (only if verbose logging enabled)
                 if logger.level <= logging.DEBUG:
@@ -3440,54 +3068,6 @@ class TopStepXTradingBot:
         
         return consolidated_trades
     
-    def _get_point_value(self, symbol: str) -> float:
-        """
-        Get the dollar value per point move for a symbol.
-        
-        Args:
-            symbol: Symbol/contract code
-            
-        Returns:
-            float: Dollar value per point
-        """
-        symbol_upper = symbol.upper()
-        
-        # Micro contracts
-        if 'MNQ' in symbol_upper:
-            return 2.0  # $2 per point
-        elif 'MES' in symbol_upper:
-            return 5.0  # $5 per point
-        elif 'MYM' in symbol_upper:
-            return 0.5  # $0.50 per point
-        elif 'M2K' in symbol_upper or 'MRTYZ' in symbol_upper:
-            return 0.5  # $0.50 per point
-        
-        # Full-size contracts
-        elif 'NQ' in symbol_upper and 'MNQ' not in symbol_upper:
-            return 20.0  # $20 per point
-        elif 'ES' in symbol_upper and 'MES' not in symbol_upper:
-            return 50.0  # $50 per point
-        elif 'YM' in symbol_upper and 'MYM' not in symbol_upper:
-            return 5.0  # $5 per point
-        elif 'RTY' in symbol_upper or 'M2K' in symbol_upper:
-            return 50.0  # $50 per point (full-size Russell)
-        
-        # Commodities
-        elif 'MGC' in symbol_upper:
-            return 10.0  # Micro Gold: $10 per point
-        elif 'CL' in symbol_upper:
-            return 1000.0  # $1000 per point for crude oil
-        elif 'GC' in symbol_upper:
-            return 100.0  # $100 per point for gold
-        elif 'SI' in symbol_upper:
-            return 5000.0  # $5000 per point for silver
-        elif '6E' in symbol_upper:
-            return 125000.0  # $125,000 per point for Euro FX
-        
-        # Default fallback
-        logger.warning(f"Unknown symbol {symbol}, using default point value $1")
-        return 1.0
-    
     def _calculate_trade_statistics(self, trades: List[Dict]) -> Dict:
         """
         Calculate statistics from a list of trades.
@@ -3545,6 +3125,8 @@ class TopStepXTradingBot:
         """
         Get order history for the selected account.
         
+        Now uses TopStepXAdapter for order history, maintaining backward compatibility.
+        
         Args:
             account_id: Account ID (uses selected account if not provided)
             limit: Maximum number of orders to return
@@ -3561,122 +3143,16 @@ class TopStepXTradingBot:
                 logger.error("No account selected")
                 return []
             
-            if not self.session_token:
-                logger.error("No session token available. Please authenticate first.")
-                return []
+            # Use TopStepXAdapter for order history
+            orders = await self.broker_adapter.get_order_history(
+                account_id=target_account,
+                limit=limit,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp
+            )
             
-            logger.info(f"Fetching order history for account {target_account}")
-            
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            # Use the same approach as get_open_orders but for all orders (not just open)
-            from datetime import datetime, timezone, timedelta
-            import pytz
-            
-            if start_timestamp:
-                start_time = datetime.fromisoformat(start_timestamp.replace('Z', '+00:00'))
-            else:
-                now = datetime.now(timezone.utc)
-                start_time = now - timedelta(days=7)
-            
-            if end_timestamp:
-                end_time = datetime.fromisoformat(end_timestamp.replace('Z', '+00:00'))
-            else:
-                end_time = datetime.now(timezone.utc)
-            
-            search_data = {
-                "accountId": int(target_account),
-                "startTimestamp": start_time.isoformat(),
-                "endTimestamp": end_time.isoformat(),
-                "request": {
-                    "accountId": int(target_account),
-                    "limit": limit
-                }
-            }
-            
-            logger.info(f"Requesting order history for account {target_account} using TopStepX Gateway API")
-            logger.info(f"Request data: {search_data}")
-            
-            # Use the same endpoint as get_open_orders but without status filter
-            response = self._make_curl_request("POST", "/api/Order/search", data=search_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"TopStepX Gateway API failed: {response['error']}")
-                return []
-            
-            if not response.get("success"):
-                logger.error(f"TopStepX Gateway API returned error: {response}")
-                return []
-            
-            # Check for different possible order data fields
-            orders = []
-            for field in ["orders", "data", "result", "items", "list"]:
-                if field in response and isinstance(response[field], list):
-                    orders = response[field]
-                    break
-            
-            if not orders:
-                logger.info(f"No historical orders found for account {target_account}")
-                return []
-            
-            # Filter to only filled/executed orders for history
-            # Status codes: 0=Pending, 1=Working, 2=Filled, 3=Cancelled, 4=Rejected
-            # Only include status=2 (Filled) and ensure fillVolume > 0
-            filled_orders = [o for o in orders if o.get("status") == 2 and o.get("fillVolume", 0) > 0]
-            logger.info(f"Total orders returned: {len(orders)}; Filled orders: {len(filled_orders)}")
-            
-            # If no filled orders found, try the Fill API endpoint
-            if not filled_orders:
-                logger.info("No filled orders from Order/search, trying Fill/search endpoint")
-                
-                fill_search_data = {
-                    "accountId": int(target_account),
-                    "startTime": start_time.isoformat(),
-                    "endTime": end_time.isoformat(),
-                    "limit": limit
-                }
-                
-                fill_response = self._make_curl_request("POST", "/api/Fill/search", data=fill_search_data, headers=headers, suppress_errors=True)
-                
-                if fill_response and not "error" in fill_response and fill_response.get("success"):
-                    # Check for fills in response
-                    fills = []
-                    for field in ["fills", "data", "result", "items", "list"]:
-                        if field in fill_response and isinstance(fill_response[field], list):
-                            fills = fill_response[field]
-                            break
-                    
-                    if fills:
-                        logger.info(f"Found {len(fills)} fills from Fill/search endpoint")
-                        # Convert fills to order format for consistency
-                        for fill in fills:
-                            filled_orders.append({
-                                'id': fill.get('id') or fill.get('fillId'),
-                                'symbol': fill.get('symbol') or fill.get('contractId'),
-                                'side': fill.get('side'),
-                                'quantity': fill.get('quantity') or fill.get('qty'),
-                                'price': fill.get('price') or fill.get('fillPrice'),
-                                'timestamp': fill.get('timestamp') or fill.get('fillTime'),
-                                'status': 4,  # Mark as filled
-                                'orderId': fill.get('orderId'),
-                                'type': 'fill',
-                                **fill  # Include all original fill data
-                            })
-                    else:
-                        logger.info("Fill/search also returned no results")
-                else:
-                    logger.debug("Fill/search endpoint not available or returned error")
-            
-            # Limit results
-            if len(filled_orders) > limit:
-                filled_orders = filled_orders[:limit]
-            
-            logger.info(f"Found {len(filled_orders)} historical filled orders")
-            return filled_orders
+            logger.info(f"Found {len(orders)} historical orders for account {target_account}")
+            return orders
             
         except Exception as e:
             logger.error(f"Failed to fetch order history: {str(e)}")
@@ -3845,7 +3321,8 @@ class TopStepXTradingBot:
                                  account_id: str = None, strategy_name: str = None) -> Dict:
         """
         Create a native TopStepX bracket order with linked stop loss and take profit.
-        Uses the same approach as the working place_market_order method.
+        
+        Now uses TopStepXAdapter for bracket order creation, maintaining backward compatibility.
         
         Args:
             symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
@@ -3856,6 +3333,7 @@ class TopStepXTradingBot:
             stop_loss_ticks: Stop loss in ticks (optional if stop_loss_price provided)
             take_profit_ticks: Take profit in ticks (optional if take_profit_price provided)
             account_id: Account ID (uses selected account if not provided)
+            strategy_name: Optional strategy name for tracking
             
         Returns:
             Dict: Bracket order response or error
@@ -3866,276 +3344,38 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
             
-            if not self.session_token:
-                return {"error": "No session token available. Please authenticate first."}
-            
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
             
-            # Check if OCO brackets are enabled for the account
-            logger.warning("⚠️  IMPORTANT: Bracket orders require 'Auto OCO Brackets' to be enabled in your TopStepX account settings.")
-            logger.warning("   If this order fails with 'Brackets cannot be used with Position Brackets', please enable Auto OCO Brackets in your account.")
+            # Use TopStepXAdapter for bracket order creation
+            result = await self.broker_adapter.create_bracket_order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                stop_loss_ticks=stop_loss_ticks,
+                take_profit_ticks=take_profit_ticks,
+                account_id=target_account,
+                strategy_name=strategy_name
+            )
             
-            logger.info(f"Creating bracket order for {side} {quantity} {symbol} on account {target_account}")
-            
-            # Get proper contract ID
-            try:
-                contract_id = self._get_contract_id(symbol)
-            except ValueError as e:
-                error_msg = f"Cannot create bracket order: {e}. Please fetch contracts first using 'contracts' command."
-                logger.error(f"❌ {error_msg}")
-                return {"error": error_msg}
-            
-            # Convert side to numeric value
-            side_value = 0 if side.upper() == "BUY" else 1
-            
-            # Prepare order data using the same format as place_market_order
-            order_data = {
-                "accountId": int(target_account),
-                "contractId": contract_id,
-                "type": 2,  # Market order for entry
-                "side": side_value,
-                "size": quantity,
-                "limitPrice": None,
-                "stopPrice": None,
-                "customTag": self._generate_unique_custom_tag("bracket", strategy_name)
-            }
-            
-            # For bracket orders, we should use the entry price as the reference point
-            # rather than trying to get current market price, since we're placing a market order
-            # that will execute at the current market price
-            tick_size = await self._get_tick_size(symbol)
-            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}")
-            
-            # For bracket orders, we calculate ticks from the entry price (which will be the market price when filled)
-            # We don't need to get current market price since we're placing a market order
-            
-            # Calculate stop loss ticks from entry price
-            if stop_loss_price is not None and stop_loss_ticks is None:
-                try:
-                    # Prefer bid/ask aligned to side for better precision
-                    quote = await self.get_market_quote(symbol)
-                    if "error" not in quote and (quote.get("bid") or quote.get("ask") or quote.get("last")):
-                        if side.upper() == "BUY":
-                            entry_price = float(quote.get("ask") or quote.get("last"))
-                        else:
-                            entry_price = float(quote.get("bid") or quote.get("last"))
-                        logger.info(f"Using current market price as entry: ${entry_price}")
-                        
-                        if side.upper() == "BUY":
-                            # For BUY orders, stop loss should be below entry price
-                            # TopStepX expects negative ticks for long stop loss
-                            price_diff = entry_price - stop_loss_price
-                            stop_loss_ticks = int(price_diff / tick_size)
-                            # Ensure negative ticks for long stop loss
-                            if stop_loss_ticks > 0:
-                                stop_loss_ticks = -stop_loss_ticks
-                        else:
-                            # For SELL orders, stop loss should be above entry price
-                            # TopStepX expects positive ticks for short stop loss
-                            price_diff = stop_loss_price - entry_price
-                            stop_loss_ticks = int(price_diff / tick_size)
-                            # Ensure positive ticks for short stop loss
-                            if stop_loss_ticks < 0:
-                                stop_loss_ticks = -stop_loss_ticks
-                        
-                        logger.info(f"Stop Loss Calculation: Entry=${entry_price}, Target=${stop_loss_price}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks} (tick_size={tick_size})")
-                        
-                        # Validate tick values (TopStepX has limits)
-                        if abs(stop_loss_ticks) > 1000:
-                            logger.warning(f"Stop loss ticks ({stop_loss_ticks}) exceeds 1000 limit, capping at 1000")
-                            stop_loss_ticks = 1000 if stop_loss_ticks > 0 else -1000
-                    else:
-                        logger.error(f"Could not get market price for {symbol}")
-                        return {"error": f"Could not get market price for {symbol}. Market data is required for bracket orders."}
-                except Exception as e:
-                    logger.error(f"Failed to calculate stop loss ticks: {e}")
-                    return {"error": f"Failed to calculate stop loss ticks: {e}"}
-            
-            # Calculate take profit ticks from entry price
-            if take_profit_price is not None and take_profit_ticks is None:
-                try:
-                    quote = await self.get_market_quote(symbol)
-                    if "error" not in quote and (quote.get("bid") or quote.get("ask") or quote.get("last")):
-                        if side.upper() == "BUY":
-                            entry_price = float(quote.get("ask") or quote.get("last"))
-                        else:
-                            entry_price = float(quote.get("bid") or quote.get("last"))
-                        
-                        if side.upper() == "BUY":
-                            # For BUY orders, take profit should be above entry price
-                            # TopStepX expects positive ticks for long take profit
-                            price_diff = take_profit_price - entry_price
-                            take_profit_ticks = int(price_diff / tick_size)
-                            # Ensure positive ticks for long take profit
-                            if take_profit_ticks < 0:
-                                take_profit_ticks = -take_profit_ticks
-                        else:
-                            # For SELL orders, take profit should be below entry price
-                            # TopStepX expects negative ticks for short take profit
-                            price_diff = entry_price - take_profit_price
-                            take_profit_ticks = int(price_diff / tick_size)
-                            # Ensure negative ticks for short take profit
-                            if take_profit_ticks > 0:
-                                take_profit_ticks = -take_profit_ticks
-                        
-                        logger.info(f"Take Profit Calculation: Entry=${entry_price}, Target=${take_profit_price}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks} (tick_size={tick_size})")
-                        
-                        # Validate tick values (TopStepX has limits)
-                        if abs(take_profit_ticks) > 1000:
-                            logger.warning(f"Take profit ticks ({take_profit_ticks}) exceeds 1000 limit, capping at 1000")
-                            take_profit_ticks = 1000 if take_profit_ticks > 0 else -1000
-                    else:
-                        logger.error(f"Could not get market price for {symbol}")
-                        return {"error": f"Could not get market price for {symbol}. Market data is required for bracket orders."}
-                except Exception as e:
-                    logger.error(f"Failed to calculate take profit ticks: {e}")
-                    return {"error": f"Failed to calculate take profit ticks: {e}"}
-            
-            # Add bracket orders using the same format as place_market_order
-            if stop_loss_ticks is not None:
-                order_data["stopLossBracket"] = {
-                    "ticks": stop_loss_ticks,
-                    "type": 4,  # Stop loss type
-                    "size": quantity,
-                    "reduceOnly": True
+            # Convert OrderResponse to dict for backward compatibility
+            if result.success:
+                return {
+                    "success": True,
+                    "orderId": result.order_id,
+                    "message": result.message,
+                    **({"raw_response": result.raw_response} if result.raw_response else {})
                 }
-                logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks, size: {quantity}, reduceOnly: True")
-            
-            if take_profit_ticks is not None:
-                order_data["takeProfitBracket"] = {
-                    "ticks": take_profit_ticks,
-                    "type": 1,  # Take profit type
-                    "size": quantity,
-                    "reduceOnly": True
-                }
-                logger.info(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
-            
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            # Use the same endpoint as place_market_order
-            response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
-            
-            if "error" in response:
-                logger.error(f"Failed to create bracket order: {response['error']}")
-                return response
-            
-            # Check if order was actually successful
-            if response.get("success") == False:
-                error_code = response.get("errorCode", "Unknown")
-                error_message = response.get("errorMessage", "No error message")
-                logger.error(f"Bracket order failed: Error Code {error_code}, Message: {error_message}")
-                
-                # If bracket order fails due to tick limits, try a regular market order
-                if "ticks" in error_message.lower() and "1000" in error_message:
-                    logger.warning("Bracket order failed due to tick limits, falling back to regular market order")
-                    
-                    # Place a regular market order without brackets
-                    fallback_result = await self.place_market_order(
-                        symbol=symbol,
-                        side=side,
-                        quantity=quantity,
-                        account_id=target_account
-                    )
-                    
-                    if "error" not in fallback_result:
-                        logger.info("Fallback market order placed successfully")
-                        return {
-                            "success": True,
-                            "order_result": fallback_result,
-                            "warning": "Bracket order failed due to tick limits, placed regular market order instead"
-                        }
-                    else:
-                        logger.error(f"Fallback market order also failed: {fallback_result['error']}")
-                        return {"error": f"Both bracket order and fallback market order failed. Bracket: {error_message}, Market: {fallback_result['error']}"}
-                else:
-                    return {"error": f"Bracket order failed: Error Code {error_code}, Message: {error_message}"}
-            
-            logger.info(f"Bracket order created successfully: {response}")
-            
-            # Send Discord notification for successful bracket order
-            try:
-                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                
-                # Get actual execution price from positions after a brief delay
-                execution_price = "Market"
-                if response.get('executionPrice'):
-                    execution_price = f"${response['executionPrice']:.2f}"
-                else:
-                    # For market orders, get current market price as entry price
-                    try:
-                        quote = await self.get_market_quote(symbol)
-                        if "error" not in quote:
-                            if side.upper() == "BUY":
-                                current_price = quote.get("ask") or quote.get("last")
-                            else:
-                                current_price = quote.get("bid") or quote.get("last")
-                            if current_price:
-                                execution_price = f"${float(current_price):.2f}"
-                                logger.info(f"Set execution price to current market price: {execution_price}")
-                    except Exception as price_err:
-                        logger.warning(f"Could not fetch current market price: {price_err}")
-                
-                # Determine order status
-                order_status = "Placed"
-                if response.get('status'):
-                    order_status = response['status']
-                
-                notification_data = {
-                    'symbol': symbol,
-                    'side': side,
-                    'quantity': quantity,
-                    'price': execution_price,
-                    'order_type': 'Native Bracket',
-                    'order_id': response.get('orderId', 'Unknown'),
-                    'status': order_status,
-                    'account_id': target_account,
-                    'stop_loss': stop_loss_price,
-                    'take_profit': take_profit_price
-                }
-                self.discord_notifier.send_order_notification(notification_data, account_name)
-            except Exception as notif_err:
-                logger.warning(f"Failed to send Discord notification: {notif_err}")
-            
-            # Start monitoring for this position if we have a position ID
-            if "orderId" in response and response.get("success"):
-                # We need to get the position ID from the order response or by checking positions
-                # For now, we'll start monitoring after a brief delay to let the position be created
-                import asyncio
-                await asyncio.sleep(1)  # Brief delay to let position be created
-                
-                # Get the most recent position for this symbol
-                positions = await self.get_open_positions(target_account)
-                if positions:
-                    # Find the most recent position for this symbol
-                    symbol_positions = []
-                    for pos in positions:
-                        if pos.get('contractId') == contract_id:
-                            symbol_positions.append(pos)
-                    
-                    if symbol_positions:
-                        # Get the most recent position
-                        latest_position = max(symbol_positions, key=lambda x: x.get('creationTimestamp', ''))
-                        position_id = str(latest_position.get('id'))
-                        
-                        # Start monitoring with trade parameters
-                        await self._start_bracket_monitoring(
-                            position_id, symbol, target_account,
-                            side=side, stop_loss_price=stop_loss_price, take_profit_price=take_profit_price
-                        )
-                        logger.info(f"Started bracket monitoring for position {position_id}")
-            
-            return response
+            else:
+                return {"error": result.error}
             
         except Exception as e:
             logger.error(f"Failed to create bracket order: {str(e)}")
             return {"error": str(e)}
     
-    async def create_partial_tp_bracket_order(self, symbol: str, side: str, quantity: int, 
+    async def create_partial_tp_bracket_order(self, symbol: str, side: str, quantity: int,
                                              stop_loss_price: float = None, take_profit_1_price: float = None,
                                              take_profit_2_price: float = None, tp1_quantity: int = None,
                                              account_id: str = None) -> Dict:
@@ -5011,8 +4251,7 @@ class TopStepXTradingBot:
         """
         Place OCO bracket order with stop order as entry.
         
-        Works like native_bracket but uses a stop order for entry instead of market order.
-        Uses the same /api/Order/place endpoint with stopLossBracket and takeProfitBracket.
+        Now uses TopStepXAdapter for bracket order placement, maintaining backward compatibility.
         
         Args:
             symbol: Trading symbol (e.g., "MNQ", "ES")
@@ -5023,6 +4262,7 @@ class TopStepXTradingBot:
             take_profit_price: Take profit price
             account_id: Account ID (uses selected account if not provided)
             enable_breakeven: Enable breakeven stop monitoring (default: False)
+            strategy_name: Optional strategy name for tracking
             
         Returns:
             Dict: OCO bracket response or error
@@ -5036,351 +4276,33 @@ class TopStepXTradingBot:
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
             
-            # Ensure valid token
-            await self._ensure_valid_token()
-            
-            logger.info(f"Placing OCO bracket with stop entry:")
-            logger.info(f"  Symbol: {symbol}")
-            logger.info(f"  Side: {side}")
-            logger.info(f"  Quantity: {quantity}")
-            logger.info(f"  Entry (stop): ${entry_price:.2f}")
-            logger.info(f"  Stop Loss: ${stop_loss_price:.2f}")
-            logger.info(f"  Take Profit: ${take_profit_price:.2f}")
-            
-            # Get proper contract ID
-            try:
-                contract_id = self._get_contract_id(symbol)
-            except ValueError as e:
-                error_msg = f"Cannot create bracket order: {e}. Please fetch contracts first using 'contracts' command."
-                logger.error(f"❌ {error_msg}")
-                return {"error": error_msg}
-            
-            # Convert side to numeric value
-            side_value = 0 if side.upper() == "BUY" else 1
-            
-            # Get tick size for calculations
-            tick_size = await self._get_tick_size(symbol)
-            
-            # Round entry price to valid tick size (CRITICAL: prevents "Invalid stop price" rejections)
-            rounded_entry_price = self._round_to_tick_size(entry_price, tick_size)
-            logger.info(f"Entry price: {entry_price} -> {rounded_entry_price} (tick_size: {tick_size})")
-            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}, entry_price=${rounded_entry_price:.2f}")
-            
-            # Use rounded entry price for all calculations
-            entry_price = rounded_entry_price
-            
-            # Round stop loss and take profit prices to valid tick size
-            rounded_stop_loss_price = self._round_to_tick_size(stop_loss_price, tick_size)
-            rounded_take_profit_price = self._round_to_tick_size(take_profit_price, tick_size)
-            logger.info(f"Stop Loss: {stop_loss_price} -> {rounded_stop_loss_price}")
-            logger.info(f"Take Profit: {take_profit_price} -> {rounded_take_profit_price}")
-            
-            # Use rounded prices for calculations
-            stop_loss_price = rounded_stop_loss_price
-            take_profit_price = rounded_take_profit_price
-            
-            # Calculate stop loss ticks from entry price
-            if side.upper() == "BUY":
-                # For BUY orders, stop loss should be below entry price
-                # TopStepX expects negative ticks for long stop loss
-                price_diff = entry_price - stop_loss_price
-                stop_loss_ticks = int(price_diff / tick_size)
-                # Ensure negative ticks for long stop loss
-                if stop_loss_ticks > 0:
-                    stop_loss_ticks = -stop_loss_ticks
-            else:
-                # For SELL orders, stop loss should be above entry price
-                # TopStepX expects positive ticks for short stop loss
-                price_diff = stop_loss_price - entry_price
-                stop_loss_ticks = int(price_diff / tick_size)
-                # Ensure positive ticks for short stop loss
-                if stop_loss_ticks < 0:
-                    stop_loss_ticks = -stop_loss_ticks
-            
-            logger.info(f"Stop Loss Calculation: Entry=${entry_price:.2f}, Target=${stop_loss_price:.2f}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks} (tick_size={tick_size})")
-            
-            # Calculate take profit ticks from entry price
-            if side.upper() == "BUY":
-                # For BUY orders, take profit should be above entry price
-                # TopStepX expects positive ticks for long take profit
-                price_diff = take_profit_price - entry_price
-                take_profit_ticks = int(price_diff / tick_size)
-                # Ensure positive ticks for long take profit
-                if take_profit_ticks < 0:
-                    take_profit_ticks = -take_profit_ticks
-            else:
-                # For SELL orders, take profit should be below entry price
-                # TopStepX expects negative ticks for short take profit
-                price_diff = entry_price - take_profit_price
-                take_profit_ticks = int(price_diff / tick_size)
-                # Ensure negative ticks for short take profit
-                if take_profit_ticks > 0:
-                    take_profit_ticks = -take_profit_ticks
-            
-            logger.info(f"Take Profit Calculation: Entry=${entry_price:.2f}, Target=${take_profit_price:.2f}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks} (tick_size={tick_size})")
-            
-            # Validate tick values (TopStepX has limits)
-            if abs(stop_loss_ticks) > 1000:
-                logger.warning(f"Stop loss ticks ({stop_loss_ticks}) exceeds 1000 limit, capping at 1000")
-                stop_loss_ticks = 1000 if stop_loss_ticks > 0 else -1000
-            if abs(take_profit_ticks) > 1000:
-                logger.warning(f"Take profit ticks ({take_profit_ticks}) exceeds 1000 limit, capping at 1000")
-                take_profit_ticks = 1000 if take_profit_ticks > 0 else -1000
-            
-            # Prepare order data using the same format as create_bracket_order
-            # but with stop order type instead of market
-            order_data = {
-                "accountId": int(target_account),
-                "contractId": contract_id,
-                "type": 4,  # Stop-market order for entry (instead of 2=market)
-                "side": side_value,
-                "size": quantity,
-                "stopPrice": entry_price,  # This makes it a stop order
-                "customTag": self._generate_unique_custom_tag("stop_bracket", strategy_name)
-            }
-            # Don't include limitPrice for stop orders (TopStepX may reject None values)
-            
-            # Validate required fields
-            if not contract_id:
-                return {"error": f"Invalid contract ID for symbol {symbol}"}
-            if quantity <= 0:
-                return {"error": f"Invalid quantity: {quantity}"}
-            if entry_price <= 0:
-                return {"error": f"Invalid entry price: {entry_price}"}
-            
-            # Add bracket orders using the same format as create_bracket_order
-            order_data["stopLossBracket"] = {
-                "ticks": stop_loss_ticks,
-                "type": 4,  # Stop loss type
-                "size": quantity,
-                "reduceOnly": True
-            }
-            logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks, size: {quantity}, reduceOnly: True")
-            
-            order_data["takeProfitBracket"] = {
-                "ticks": take_profit_ticks,
-                "type": 1,  # Take profit type
-                "size": quantity,
-                "reduceOnly": True
-            }
-            logger.info(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
-            
-            # Final validation: ensure all bracket ticks are valid
-            if abs(stop_loss_ticks) == 0:
-                logger.warning("⚠️  Stop loss ticks is 0 - this may cause issues")
-            if abs(take_profit_ticks) == 0:
-                logger.warning("⚠️  Take profit ticks is 0 - this may cause issues")
-            
-            headers = {
-                "accept": "text/plain",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.session_token}"
-            }
-            
-            # Use the same endpoint as create_bracket_order
-            response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
-            
-            # Handle 500 errors with automatic token refresh and retry
-            if "error" in response and "500" in str(response.get("error", "")):
-                logger.warning(f"⚠️  Received 500 error on order placement. Attempting token refresh and retry...")
-                
-                # Refresh token
-                token_refreshed = await self._ensure_valid_token()
-                if token_refreshed:
-                    # Update headers with new token
-                    headers["Authorization"] = f"Bearer {self.session_token}"
-                    
-                    # Add small delay before retry (0.75s as recommended)
-                    import asyncio
-                    await asyncio.sleep(0.75)
-                    
-                    logger.info("🔄 Retrying order placement with refreshed token...")
-                    # Retry the request
-                    response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
-                    logger.info(f"   Retry response: {'success' if 'error' not in response else 'failed'}")
-            
-            if "error" in response:
-                error_msg = response.get("error", "")
-                logger.error(f"Failed to create stop bracket order: {error_msg}")
-                
-                # Send notification even on error
-                try:
-                    account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                    account_id_str = str(target_account) if target_account else 'Unknown'
-                    
-                    notification_data = {
-                        'symbol': symbol,
-                        'side': side,
-                        'quantity': quantity,
-                        'price': f"${entry_price:.2f} (stop)",
-                        'order_type': 'Stop Bracket',
-                        'order_id': 'Failed',
-                        'status': 'Failed',
-                        'account_id': account_id_str,
-                        'account_name': account_name,
-                        'error': error_msg
-                    }
-                    
-                    # Send Discord notification for failed order
-                    self.discord_notifier.send_order_notification(notification_data, account_name)
-                    logger.info(f"✅ Discord notification sent for FAILED stop bracket {side} {quantity} {symbol} on {account_name}")
-                    
-                    # Record server-side notification
-                    if hasattr(self, 'db') and self.db:
-                        try:
-                            self.db.record_notification(
-                                account_id=account_id_str,
-                                notification_type='order_failed',
-                                message=f"Order FAILED: {symbol} {side} x{quantity} - {error_msg}",
-                                level='error',
-                                meta={
-                                    'symbol': symbol,
-                                    'side': side,
-                                    'quantity': quantity,
-                                    'error': error_msg,
-                                    'account_name': account_name
-                                }
-                            )
-                        except Exception as db_notif_err:
-                            logger.warning(f"Failed to record server notification: {db_notif_err}")
-                except Exception as notify_err:
-                    logger.warning(f"Failed to send error notification: {notify_err}")
-                
-                # Check if it's a bracket-related error
-                error_msg_lower = error_msg.lower()
-                if any(keyword in error_msg_lower for keyword in ["bracket", "not enabled", "not supported", "position brackets"]):
-                    logger.warning("Brackets might not be enabled, falling back to hybrid approach")
-                    print("⚠️  Native brackets not supported in this configuration")
-                    print("   Falling back to hybrid approach: stop order + auto-bracket on fill")
-                    return await self._stop_bracket_hybrid(
-                        symbol=symbol,
-                        side=side,
-                        quantity=quantity,
-                        entry_price=entry_price,
-                        stop_loss_price=stop_loss_price,
-                        take_profit_price=take_profit_price,
-                        account_id=target_account,
-                        enable_breakeven=enable_breakeven,
-                        strategy_name=strategy_name
-                    )
-                return response
-            
-            # Check if order was actually successful
-            if response.get("success") == False:
-                error_code = response.get("errorCode", "Unknown")
-                error_message = response.get("errorMessage", "No error message")
-                logger.error(f"Stop bracket order failed: Error Code {error_code}, Message: {error_message}")
-                
-                # Check for bracket-related errors
-                if "bracket" in error_message.lower() or "position brackets" in error_message.lower():
-                    logger.warning("Falling back to hybrid approach due to bracket error")
-                    return await self._stop_bracket_hybrid(
-                        symbol=symbol,
-                        side=side,
-                        quantity=quantity,
-                        entry_price=entry_price,
-                        stop_loss_price=stop_loss_price,
-                        take_profit_price=take_profit_price,
-                        account_id=target_account,
-                        enable_breakeven=enable_breakeven,
-                        strategy_name=strategy_name
-                    )
-                
-                return {"error": f"Stop bracket order failed: Error Code {error_code}, Message: {error_message}"}
-            
-            # Update order activity timestamp
-            self._update_order_activity()
-            
-            logger.info(f"Stop bracket order created successfully: {response}")
-            
-            # Send Discord notification for successful bracket order
-            try:
-                account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
-                account_id_str = str(target_account) if target_account else 'Unknown'
-                
-                notification_data = {
-                    'symbol': symbol,
-                    'side': side,
-                    'quantity': quantity,
-                    'price': f"${entry_price:.2f} (stop)",
-                    'order_type': 'Stop Bracket',
-                    'order_id': response.get('orderId', 'Unknown'),
-                    'status': 'Placed',
-                    'account_id': account_id_str,
-                    'account_name': account_name
-                }
-                
-                # Send Discord notification
-                self.discord_notifier.send_order_notification(notification_data, account_name)
-                logger.info(f"✅ Discord notification sent for stop bracket {side} {quantity} {symbol} on {account_name}")
-                
-                # Also record server-side notification
-                if hasattr(self, 'db') and self.db:
-                    try:
-                        self.db.record_notification(
-                            account_id=account_id_str,
-                            notification_type='order_placed',
-                            message=f"Order placed: {symbol} {side} x{quantity} @ ${entry_price:.2f} (stop)",
-                            level='info',
-                            meta={
-                                'symbol': symbol,
-                                'side': side,
-                                'quantity': quantity,
-                                'order_type': 'Stop Bracket',
-                                'order_id': response.get('orderId'),
-                                'account_name': account_name
-                            }
-                        )
-                    except Exception as db_notif_err:
-                        logger.warning(f"Failed to record server notification: {db_notif_err}")
-            except Exception as notify_err:
-                logger.error(f"❌ Failed to send notification: {notify_err}", exc_info=True)
-            
-            # Setup breakeven monitoring if enabled
-            if enable_breakeven:
-                order_id = response.get("orderId")
-                if order_id and hasattr(self, 'overnight_strategy'):
-                    logger.info(f"Setting up breakeven monitoring for order {order_id}")
-                    breakeven_points = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
-                    self.overnight_strategy.breakeven_monitoring[order_id] = {
-                        "symbol": symbol,
-                        "side": "LONG" if side.upper() == "BUY" else "SHORT",
-                        "entry_price": entry_price,
-                        "original_stop": stop_loss_price,
-                        "breakeven_threshold": breakeven_points,
-                        "breakeven_triggered": False,
-                        "is_filled": False  # Will be set to True when entry order fills
-                    }
-                    logger.info(f"Breakeven monitoring active: {breakeven_points} pts profit threshold")
-            
-            return {
-                "success": True,
-                "orderId": response.get("orderId"),
-                "method": "oco_native",
-                "symbol": symbol,
-                "side": side,
-                "quantity": quantity,
-                "entry_price": entry_price,
-                "stop_loss": stop_loss_price,
-                "take_profit": take_profit_price,
-                "breakeven_enabled": enable_breakeven,
-                **response
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to place OCO bracket order: {str(e)}")
-            # Fall back to hybrid on any exception
-            logger.info("Falling back to hybrid approach due to exception")
-            return await self._stop_bracket_hybrid(
+            # Use TopStepXAdapter for bracket order placement
+            result = await self.broker_adapter.place_oco_bracket_with_stop_entry(
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
                 entry_price=entry_price,
                 stop_loss_price=stop_loss_price,
                 take_profit_price=take_profit_price,
-                account_id=account_id,
-                enable_breakeven=enable_breakeven
+                account_id=target_account,
+                enable_breakeven=enable_breakeven,
+                strategy_name=strategy_name
             )
+            
+            # Convert OrderResponse to dict for backward compatibility
+            if result.success:
+                return {
+                    "success": True,
+                    "orderId": result.order_id,
+                    "message": result.message,
+                    **({"raw_response": result.raw_response} if result.raw_response else {})
+                }
+            else:
+                return {"error": result.error}
+            
+        except Exception as e:
+            logger.error(f"Failed to place OCO bracket with stop entry: {str(e)}")
+            return {"error": str(e)}
     
     async def _stop_bracket_hybrid(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float,
@@ -5698,8 +4620,26 @@ class TopStepXTradingBot:
                     logger.debug(f"SDK error traceback: {traceback.format_exc()}")
                     return {"error": f"SDK trailing stop failed: {sdk_err}"}
 
-            # SDK-only: no fallback to REST
-            return {"error": "SDK trailing stop unavailable. Ensure USE_PROJECTX_SDK=1 and SDK is installed."}
+            # Fallback to adapter if SDK unavailable
+            logger.info("SDK unavailable, using adapter for trailing stop order")
+            result = await self.broker_adapter.place_trailing_stop_order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                trail_amount=trail_amount,
+                account_id=target_account
+            )
+            
+            # Convert OrderResponse to dict for backward compatibility
+            if result.success:
+                return {
+                    "success": True,
+                    "orderId": result.order_id,
+                    "message": result.message,
+                    **({"raw_response": result.raw_response} if result.raw_response else {})
+                }
+            else:
+                return {"error": result.error}
             
         except Exception as e:
             logger.error(f"Failed to place trailing stop order: {str(e)}")
@@ -6615,553 +5555,64 @@ class TopStepXTradingBot:
         else:
             return None
     
-    async def get_historical_data(self, symbol: str, timeframe: str = "1m", 
-                                 limit: int = 100, start_time: datetime = None, 
-                                 end_time: datetime = None) -> List[Dict]:
+    async def get_historical_data(self, symbol: str, timeframe: str = "1m",
+                                  limit: int = 100, start_time: datetime = None,
+                                  end_time: datetime = None) -> List[Dict]:
         """
-        Get historical price data for a symbol using direct REST API.
-        
-        Per TopStepX API documentation: https://gateway.docs.projectx.com/docs/api-reference/market-data/retrieve-bars/
-        
-        Supported Timeframes (API Units):
-        - Seconds: 1s, 5s, 10s, 15s, 30s (unit=1)
-        - Minutes: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m (unit=2)
-        - Hours: 1h, 2h, 3h, 4h, 6h, 8h, 12h (unit=3)
-        - Days: 1d, 2d, 3d (unit=4)
-        - Weeks: 1w, 2w (unit=5)
-        - Months: 1M, 3M, 6M (unit=6)
-        
-        Args:
-            symbol: Trading symbol (e.g., "MNQ", "MES")
-            timeframe: Timeframe (e.g., "1s", "5m", "15m", "1h", "4h", "1d", "1w", "1M")
-            limit: Number of bars to return (max 20,000 per API docs) - ignored if start_time provided
-            start_time: Optional start datetime (UTC) - if provided, gets all bars from start to end
-            end_time: Optional end datetime (UTC) - defaults to last market close time
-            
-        Returns:
-            List[Dict]: Historical data with keys: timestamp, open, high, low, close, volume
+        Get historical price data for a symbol.
+
+        This is now a thin wrapper around the canonical implementation in
+        `TopStepXAdapter.get_historical_data`, so ALL paths (CLI, dashboard,
+        strategies) share one source of truth for historical bar logic.
         """
         try:
             logger.info(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
-            
-            # Determine end_time first (needed for aggregation decision)
-            from datetime import datetime, timedelta, timezone
-            if end_time is None:
-                end_time = datetime.now(timezone.utc)
-                logger.info(f"Using current time as end time: {end_time}")
-            elif end_time.tzinfo is None:
-                end_time = end_time.replace(tzinfo=timezone.utc)
-            
-            # STRATEGY: Determine if we should use 1m aggregation BEFORE checking cache
-            # This ensures we bypass stale cache for aggregated timeframes
-            use_aggregation = False
-            source_timeframe = timeframe
-            
-            # Check if we should use 1m aggregation for this timeframe
-            target_seconds = self._parse_timeframe_to_seconds(timeframe)
-            if target_seconds is None:
-                logger.error(f"Invalid timeframe: {timeframe}")
-                return []
-            
-            # For timeframes > 1m, fetch 1m data and aggregate (bypass cache for target timeframe)
-            # For timeframes < 1m, use API directly
-            if target_seconds > 60:  # Greater than 1 minute
-                use_aggregation = True
-                source_timeframe = "1m"
-                logger.info(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
-            
-            # Ensure contract cache is populated before getting contract ID
-            # This ensures we use the current active contract, not expired hardcoded ones
-            try:
-                # Try to get contract ID - this will raise ValueError if cache is empty or symbol not found
-                contract_id = self._get_contract_id(symbol)
-            except ValueError:
-                # Contract cache is empty or symbol not found - fetch contracts
-                logger.info("Contract cache empty or symbol not found, fetching contracts to ensure correct contract ID...")
-                try:
-                    contracts = await self.get_available_contracts(use_cache=False)
-                    logger.info(f"Fetched {len(contracts)} contracts from API")
-                    # Now try again to get contract ID
-                    contract_id = self._get_contract_id(symbol)
-                except Exception as e:
-                    error_msg = f"Failed to fetch contracts or get contract ID for {symbol}: {e}"
-                    logger.error(f"❌ {error_msg}")
-                    return []
-            
-            # For small limits (1-5 bars) on short timeframes, bypass cache or use very short TTL
-            # This ensures real-time monitoring gets fresh data
-            # For sub-1-minute timeframes, ALWAYS bypass cache to get fresh data up to current time
-            use_fresh_data = False
-            short_timeframes = ['1s', '5s', '10s', '15s', '30s', '1m', '2m', '3m', '5m', '10m', '15m']
-            sub_minute_timeframes = ['1s', '5s', '10s', '15s', '30s']
-            
-            # Sub-1-minute timeframes always need fresh data to show current time
-            if timeframe in sub_minute_timeframes:
-                use_fresh_data = True
-                logger.info(f"📊 Sub-1-minute timeframe ({timeframe}) - bypassing cache to get fresh data up to current time")
-            elif limit <= 5 and timeframe in short_timeframes:
-                use_fresh_data = True
-                logger.debug(f"Small limit ({limit}) on short timeframe ({timeframe}) - fetching fresh data")
-            
-            # In date range mode, always bypass cache to ensure we get the exact date range requested
-            if start_time is not None:
-                use_fresh_data = True
-                logger.info("Date range mode detected - bypassing cache")
-            
-            # If using aggregation, bypass cache for target timeframe (we'll check 1m cache instead)
-            if use_aggregation:
-                use_fresh_data = True
-                logger.info(f"📊 Aggregation mode: bypassing {timeframe} cache, will check 1m cache or fetch fresh 1m data")
-            
-            # If end_time is recent (within last 24 hours), bypass cache to get fresh data
-            # This ensures charts always show up-to-date data when requesting current time
-            if end_time is not None:
-                time_since_end = (datetime.now(timezone.utc) - end_time).total_seconds()
-                # If end_time is within last 24 hours, bypass cache to ensure fresh data
-                if time_since_end < 86400:  # 24 hours in seconds
-                    use_fresh_data = True
-                    logger.info(f"Recent end_time requested (within 24h) - bypassing cache to get fresh data")
-            
-            # PHASE 1: Check PostgreSQL database cache first (persistent, fast)
-            # If using aggregation, check 1m cache instead of target timeframe cache
-            cache_timeframe = source_timeframe if use_aggregation else timeframe
-            
-            if not use_fresh_data and self.db:
-                try:
-                    # Check cache coverage for the source timeframe (1m if aggregating)
-                    coverage = self.db.get_cache_coverage(symbol, cache_timeframe)
-                    if coverage['cached']:
-                        logger.debug(f"📊 DB Cache coverage for {cache_timeframe}: {coverage['bar_count']} bars "
-                                   f"({coverage['oldest_bar']} to {coverage['newest_bar']})")
-                        
-                        # Try to get bars from database (use source timeframe for aggregation)
-                        cached_bars = self.db.get_cached_bars(symbol, cache_timeframe, 
-                                                             start_time=start_time,
-                                                             end_time=end_time,
-                                                             limit=limit * 2)  # Get extra for filtering
-                        
-                        if cached_bars and len(cached_bars) >= limit:
-                            # Verify cached bars actually cover the requested end_time
-                            # If end_time is provided, check if newest cached bar is close enough
-                            if end_time is not None and cached_bars:
-                                newest_bar = cached_bars[-1]
-                                newest_timestamp_str = newest_bar.get('timestamp') or newest_bar.get('time')
-                                
-                                try:
-                                    if isinstance(newest_timestamp_str, str):
-                                        # Parse ISO format timestamp
-                                        ts_str = newest_timestamp_str.replace('Z', '+00:00')
-                                        newest_dt = datetime.fromisoformat(ts_str)
-                                    elif isinstance(newest_timestamp_str, datetime):
-                                        newest_dt = newest_timestamp_str
-                                    else:
-                                        raise ValueError(f"Invalid timestamp type: {type(newest_timestamp_str)}")
-                                    
-                                    if newest_dt.tzinfo is None:
-                                        newest_dt = newest_dt.replace(tzinfo=timezone.utc)
-                                    
-                                    # Check if cached data is too old compared to requested end_time
-                                    time_gap = (end_time - newest_dt).total_seconds()
-                                    if time_gap > 3600:  # More than 1 hour gap
-                                        logger.warning(f"⚠️  Cached data too old: newest={newest_dt}, requested={end_time}, gap={time_gap/3600:.1f}h - bypassing cache")
-                                        use_fresh_data = True
-                                    else:
-                                        logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe} (newest: {newest_dt})")
-                                        metrics_tracker = get_metrics_tracker(db=self.db)
-                                        metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                        return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
-                                except Exception as parse_err:
-                                    logger.debug(f"Could not parse cached bar timestamp, using cache anyway: {parse_err}")
-                                    # If using aggregation, aggregate the cached 1m bars
-                                    if use_aggregation and cache_timeframe == "1m":
-                                        logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol}, aggregating to {timeframe}...")
-                                        aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
-                                        logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
-                                        result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
-                                        metrics_tracker = get_metrics_tracker(db=self.db)
-                                        metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
-                                        return result
-                                    else:
-                                        logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
-                                        metrics_tracker = get_metrics_tracker(db=self.db)
-                                        metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                        return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
-                            else:
-                                # No end_time specified - check if cached data is recent (within last hour)
-                                if cached_bars:
-                                    newest_bar = cached_bars[-1]
-                                    newest_timestamp_str = newest_bar.get('timestamp') or newest_bar.get('time')
-                                    try:
-                                        if isinstance(newest_timestamp_str, str):
-                                            ts_str = newest_timestamp_str.replace('Z', '+00:00')
-                                            newest_dt = datetime.fromisoformat(ts_str)
-                                        elif isinstance(newest_timestamp_str, datetime):
-                                            newest_dt = newest_timestamp_str
-                                        else:
-                                            newest_dt = None
-                                        
-                                        if newest_dt:
-                                            if newest_dt.tzinfo is None:
-                                                newest_dt = newest_dt.replace(tzinfo=timezone.utc)
-                                            # Check if cached data is recent (within last hour)
-                                            time_gap = (datetime.now(timezone.utc) - newest_dt).total_seconds()
-                                            if time_gap > 3600:  # More than 1 hour old
-                                                logger.warning(f"⚠️  Cached data too old: newest={newest_dt}, gap={time_gap/3600:.1f}h - bypassing cache")
-                                                use_fresh_data = True
-                                            else:
-                                                # Cache is fresh - if using aggregation, aggregate the cached 1m bars
-                                                if use_aggregation and cache_timeframe == "1m":
-                                                    logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol} (newest: {newest_dt}), aggregating to {timeframe}...")
-                                                    aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
-                                                    logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
-                                                    result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
-                                                    metrics_tracker = get_metrics_tracker(db=self.db)
-                                                    metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
-                                                    return result
-                                                else:
-                                                    logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe} (newest: {newest_dt})")
-                                                    metrics_tracker = get_metrics_tracker(db=self.db)
-                                                    metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                                    return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
-                                        else:
-                                            # Can't parse timestamp - if using aggregation, aggregate anyway
-                                            if use_aggregation and cache_timeframe == "1m":
-                                                logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol}, aggregating to {timeframe}...")
-                                                aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
-                                                logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
-                                                result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
-                                                metrics_tracker = get_metrics_tracker(db=self.db)
-                                                metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
-                                                return result
-                                            else:
-                                                logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
-                                                metrics_tracker = get_metrics_tracker(db=self.db)
-                                                metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                                return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
-                                    except Exception as parse_err:
-                                        logger.debug(f"Could not parse cached bar timestamp: {parse_err}")
-                                        # If using aggregation, try to aggregate anyway
-                                        if use_aggregation and cache_timeframe == "1m":
-                                            logger.info(f"✅ DB Cache HIT: {len(cached_bars)} 1m bars for {symbol}, aggregating to {timeframe}...")
-                                            aggregated_bars = self._aggregate_bars(cached_bars, timeframe)
-                                            logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars")
-                                            result = aggregated_bars[-limit:] if len(aggregated_bars) > limit else aggregated_bars
-                                            metrics_tracker = get_metrics_tracker(db=self.db)
-                                            metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}_aggregated")
-                                            return result
-                                        else:
-                                            logger.info(f"✅ DB Cache HIT: {len(cached_bars)} bars for {symbol} {timeframe}")
-                                            metrics_tracker = get_metrics_tracker(db=self.db)
-                                            metrics_tracker.record_cache_hit(f"historical_{symbol}_{timeframe}")
-                                            return cached_bars[-limit:] if len(cached_bars) > limit else cached_bars
-                                else:
-                                    # No cached bars
-                                    logger.debug(f"📉 DB Cache empty for {symbol} {cache_timeframe}")
-                        else:
-                            logger.debug(f"📉 DB Cache PARTIAL: Only {len(cached_bars) if cached_bars else 0} bars "
-                                       f"(need {limit}), will fetch from API")
-                except Exception as db_err:
-                    logger.debug(f"DB cache check failed (will use API): {db_err}")
-            
-            # PHASE 2: Check in-memory cache (legacy, fast but not persistent)
-            if not use_fresh_data:
-                cache_key = self._get_cache_key(symbol, timeframe)
-                cached_data = self._load_from_cache(cache_key, max_age_minutes=None)
-                if cached_data is not None and len(cached_data) >= limit:
-                    logger.info(f"✅ Memory Cache HIT: {len(cached_data)} bars")
-                    # Record cache hit
-                    metrics_tracker = get_metrics_tracker(db=self.db)
-                    metrics_tracker.record_cache_hit(f"memory_{symbol}_{timeframe}")
-                    return cached_data[-limit:] if len(cached_data) > limit else cached_data
+
+            # Delegate to adapter (canonical implementation)
+            bars = await self.broker_adapter.get_historical_data(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                start_time=start_time,
+                end_time=end_time,
+            )
+
+            # Convert Bar objects to normalized dicts for backward compatibility.
+            # IMPORTANT: We do NOT pass through raw_data here, because the legacy
+            # printing layer expects keys: timestamp/time/open/high/low/close/volume.
+            result: List[Dict] = []
+            for bar in bars:
+                result.append(
+                    {
+                        "timestamp": bar.timestamp.isoformat() if bar.timestamp else None,
+                        "time": bar.timestamp.isoformat() if bar.timestamp else None,
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.volume,
+                        "symbol": getattr(bar, "symbol", None) or symbol,
+                    }
+                )
+
+            if result:
+                # Debug: log last bar vs current time to help diagnose stale data
+                from datetime import datetime, timezone as _tz
+
+                last_ts = result[-1].get("timestamp") or result[-1].get("time")
+                logger.info(f"📊 get_historical_data last bar timestamp (ISO) = {last_ts}")
+                logger.info(f"📊 get_historical_data now UTC                    = {datetime.now(_tz.utc)}")
+
+                logger.info(f"✅ Retrieved {len(result)} bars from adapter (canonical implementation)")
             else:
-                cache_key = self._get_cache_key(symbol, timeframe)
-            
-            # PHASE 3: Cache miss - will fetch from API
-            if self.db:
-                logger.debug(f"💾 DB Cache MISS: Fetching from API")
-                metrics_tracker = get_metrics_tracker(db=self.db)
-                metrics_tracker.record_cache_miss(f"historical_{symbol}_{timeframe}")
-            
-            # Ensure we have a valid JWT token
-            if not await self._ensure_valid_token():
-                logger.error("Failed to authenticate - cannot fetch historical data")
-                return []
-            
-            # Log token status for debugging
-            if self.token_expiry:
-                time_remaining = (self.token_expiry - datetime.now(timezone.utc)).total_seconds() / 60
-                logger.info(f"Token valid - expires in {time_remaining:.1f} minutes")
-            
-            # If using aggregation, calculate how many 1m bars we need
-            if use_aggregation:
-                # Calculate how many 1m bars we need for the target timeframe
-                bars_needed = (target_seconds // 60) * limit * 2  # Extra buffer for gaps
-                original_limit = limit
-                limit = min(bars_needed, 20000)  # Cap at API limit
-                logger.info(f"📊 Need {limit} 1m bars to create {original_limit} {timeframe} bars")
-            
-            # Parse timeframe to API format (for source timeframe)
-            # Supports: 1s, 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w, etc.
-            unit, unit_number, time_delta_func = self._parse_timeframe(source_timeframe)
-            
-            if unit is None:
-                logger.error(f"Invalid source timeframe: {source_timeframe}")
-                return []
-            
-            # Contract ID already obtained above (with error handling)
-            logger.info(f"Using contract ID: {contract_id} for symbol {symbol}")
-            
-            # Calculate time range for the request
-            from datetime import datetime, timedelta, timezone
-            
-            # Determine end time: use provided end_time, or current time for real-time data
-            if end_time is None:
-                end_time = datetime.now(timezone.utc)
-                logger.info(f"Using current time as end time: {end_time}")
-            elif end_time.tzinfo is None:
-                # Assume UTC if no timezone provided
-                end_time = end_time.replace(tzinfo=timezone.utc)
-            
-            # Determine start time based on mode
-            if start_time is not None:
-                # Date range mode - use provided start time
-                if start_time.tzinfo is None:
-                    start_time = start_time.replace(tzinfo=timezone.utc)
-                # Request maximum bars for date range queries
-                api_limit = 20000
-                lookback_days = (end_time - start_time).total_seconds() / 86400
-                logger.info(f"Date range mode: {start_time} to {end_time} ({lookback_days:.1f} days)")
-            else:
-                # Bar count mode - calculate start time from end time
-                # Request more data than needed to account for market closures/gaps
-                # For sub-15m timeframes, use much larger multiplier to ensure we capture trading hours
-                # Markets are only open ~23 hours/day (futures), ~6.5 hours/day (stocks)
-                if timeframe in ['1s', '5s', '10s', '15s', '30s']:
-                    # For seconds: go back at least 3-5 days worth of data
-                    lookback_bars = max(limit * 20, 2000)  # At least 2000 bars worth of time
-                elif timeframe in ['1m', '2m', '3m', '5m', '10m']:
-                    # For sub-15m minutes: go back enough to capture at least 2-3 trading days
-                    lookback_bars = max(limit * 15, 1500)  # At least 1500 bars worth of time
-                else:
-                    # For 15m and above, use standard multiplier
-                    lookback_bars = max(limit * 3, limit + 100)
-                
-                start_time = end_time - time_delta_func(lookback_bars)
-                lookback_days = (end_time - start_time).total_seconds() / 86400
-                api_limit = limit * 3  # Request extra to handle gaps
-                logger.info(f"Bar count mode: {lookback_bars} bars = {lookback_days:.1f} days")
-            
-            # Format timestamps for API (ISO 8601)
-            start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S")
-            end_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"  # Milliseconds + Z
-            
-            # Prepare API request
-            bars_request = {
-                "contractId": contract_id,
-                "live": False,
-                "startTime": start_str,
-                "endTime": end_str,
-                "unit": unit,  # 0=Second, 1=Tick, 2=Minute, 3=Day, 4=Week
-                "unitNumber": unit_number,
-                "limit": api_limit,  # Request limit based on mode (bar count or date range)
-                "includePartialBar": True  # Include current incomplete bar for real-time monitoring
-            }
-            
-            # Set headers with JWT token
-            headers = {
-                "Authorization": f"Bearer {self.session_token}",
-                "Content-Type": "application/json",
-                "accept": "text/plain"
-            }
-            
-            # Make API call
-            logger.info(f"Requesting bars: {start_str} to {end_str}")
-            logger.info(f"API Request: {bars_request}")
-            response = self._make_curl_request("POST", "/api/History/retrieveBars", 
-                                              data=bars_request, headers=headers)
-            
-            # Check for errors
-            if isinstance(response, dict) and "error" in response:
-                logger.error(f"API error: {response['error']}")
-                return []
-            
-            # Parse response - API may return dict with 'bars' key or direct array
-            bars_data = None
-            if isinstance(response, list):
-                bars_data = response
-                logger.debug(f"API returned list with {len(response)} items")
-            elif isinstance(response, dict):
-                # Log full response for debugging
-                logger.info(f"API response: success={response.get('success')}, errorCode={response.get('errorCode')}, bars count={len(response.get('bars', []))}")
-                
-                # Check for API error response (success=False, errorCode set)
-                # Note: errorCode=0 means success, errorCode>0 means error
-                if response.get('success') == False or (response.get('errorCode') and response.get('errorCode') != 0):
-                    error_code = response.get('errorCode', 'Unknown')
-                    error_msg = response.get('errorMessage', 'No error message')
-                    logger.error(f"API returned error: Code {error_code}, Message: {error_msg}")
-                    logger.error(f"Timeframe requested: {timeframe}")
-                    logger.error("Check API documentation: https://gateway.docs.projectx.com/docs/api-reference/market-data/retrieve-bars/")
-                    return []
-                
-                # Try common response formats for successful responses
-                # Check for key existence to handle empty lists correctly
-                if 'bars' in response:
-                    bars_data = response['bars']
-                elif 'data' in response:
-                    bars_data = response['data']
-                elif 'candles' in response:
-                    bars_data = response['candles']
-                else:
-                    bars_data = None
-                
-                if bars_data is None:
-                    logger.error(f"Unexpected dict response format. Keys: {list(response.keys())}")
-                    logger.error(f"Full response (first 500 chars): {str(response)[:500]}")
-                    return []
-                logger.debug(f"API returned dict, extracted '{[k for k,v in response.items() if v == bars_data][0]}' with {len(bars_data)} items")
-            else:
-                logger.error(f"Unexpected response type: {type(response)}")
-                return []
-            
-            if not bars_data:
-                logger.warning("API returned empty bars data")
-                return []
-            
-            # Convert API response to our standard format
-            parsed_bars: List[Dict] = []
-            for i, bar in enumerate(bars_data):
-                # Debug: log first bar to see actual field names and values (only with -v flag)
-                if i == 0:
-                    logger.debug(f"Sample bar keys: {list(bar.keys())}")
-                    logger.debug(f"Sample bar data: {bar}")
-                    logger.debug(f"Timestamp field 't' value: {bar.get('t')} (type: {type(bar.get('t'))})")
-                
-                # API returns single-letter keys: t, o, h, l, c, v
-                # Also check for full names as fallback
-                timestamp_val = bar.get("t") or bar.get("time") or bar.get("timestamp") or bar.get("Time") or bar.get("Timestamp")
-                
-                # Parse and convert to local timezone
-                timestamp_local = ""
-                if timestamp_val:
-                    try:
-                        # Try parsing as ISO string first
-                        if isinstance(timestamp_val, str):
-                            dt_utc = datetime.fromisoformat(timestamp_val.replace("Z", "+00:00"))
-                        # Try parsing as Unix timestamp (seconds since epoch)
-                        elif isinstance(timestamp_val, (int, float)):
-                            # Could be seconds or milliseconds
-                            if timestamp_val > 10000000000:  # Milliseconds
-                                dt_utc = datetime.fromtimestamp(timestamp_val / 1000, tz=timezone.utc)
-                            else:  # Seconds
-                                dt_utc = datetime.fromtimestamp(timestamp_val, tz=timezone.utc)
-                        else:
-                            logger.warning(f"Unknown timestamp type: {type(timestamp_val)}, value: {timestamp_val}")
-                            timestamp_local = str(timestamp_val)
-                            dt_utc = None
-                        
-                        if dt_utc:
-                            local_tz = datetime.now().astimezone().tzinfo
-                            dt_local = dt_utc.astimezone(local_tz)
-                            timestamp_local = dt_local.isoformat()
-                    except Exception as e:
-                        logger.debug(f"Failed to parse timestamp '{timestamp_val}': {e}")
-                        timestamp_local = str(timestamp_val) if timestamp_val else ""
-                else:
-                    logger.warning(f"No timestamp found in bar data. Bar keys: {list(bar.keys())}")
-                
-                # Handle case-insensitive field names
-                # API uses single-letter keys (t, o, h, l, c, v), but check full names as fallback
-                def get_field(field_names):
-                    """Get field value trying multiple name variations."""
-                    for name in field_names:
-                        val = bar.get(name)
-                        if val is not None:
-                            return val
-                    return 0
-                
-                parsed_bar = {
-                    "timestamp": timestamp_local,
-                    "time": timestamp_local,
-                    "open": float(get_field(["o", "open", "Open", "O"])),
-                    "high": float(get_field(["h", "high", "High", "H"])),
-                    "low": float(get_field(["l", "low", "Low", "L"])),
-                    "close": float(get_field(["c", "close", "Close", "C"])),
-                    "volume": int(get_field(["v", "volume", "Volume", "V", "vol", "Vol"]))
-                }
-                parsed_bars.append(parsed_bar)
-            
-            # Sort by timestamp
-            parsed_bars.sort(key=lambda b: b.get("timestamp", ""))
-            
-            # Store original limit for final result
-            original_limit = limit
-            
-            # Store 1m source bars before aggregation (for caching)
-            source_1m_bars = None
-            if use_aggregation and source_timeframe == "1m":
-                source_1m_bars = parsed_bars.copy()  # Save before aggregation
-            
-            # If we're using aggregation strategy, aggregate 1m bars to target timeframe
-            if use_aggregation and source_timeframe == "1m":
-                logger.info(f"📊 Aggregating {len(parsed_bars)} 1m bars into {timeframe} bars...")
-                parsed_bars = self._aggregate_bars(parsed_bars, timeframe)
-                logger.info(f"✅ Aggregated to {len(parsed_bars)} {timeframe} bars")
-            
-            # Filter based on mode (after aggregation)
-            if start_time is not None:
-                # Date range mode - filter to exact date range
-                from datetime import datetime
-                result_bars = []
-                for bar in parsed_bars:
-                    bar_time_str = bar.get("timestamp", "")
-                    try:
-                        # Parse bar timestamp (ISO format)
-                        bar_time = datetime.fromisoformat(bar_time_str.replace('Z', '+00:00'))
-                        # Filter to bars within the requested range
-                        if start_time <= bar_time <= end_time:
-                            result_bars.append(bar)
-                    except:
-                        # If we can't parse timestamp, include the bar
-                        result_bars.append(bar)
-                logger.info(f"Date range filter: {len(result_bars)} bars between {start_time} and {end_time}")
-            else:
-                # Bar count mode - take the most recent N bars (use original limit)
-                result_bars = parsed_bars[-original_limit:] if len(parsed_bars) > original_limit else parsed_bars
-            
-            logger.debug(f"[REST API] Found {len(result_bars)} historical bars")
-            
-            # Save to in-memory cache for future use (legacy)
-            # Use original timeframe for cache key, not source timeframe
-            original_cache_key = self._get_cache_key(symbol, timeframe)
-            if parsed_bars:
-                self._save_to_cache(original_cache_key, result_bars)  # Cache aggregated bars
-            
-            # Save to PostgreSQL database cache (persistent, survives restarts)
-            # Save both 1m source data and aggregated timeframe data
-            if parsed_bars and self.db:
-                try:
-                    # Save aggregated bars for the requested timeframe
-                    cached_count = self.db.cache_historical_bars(symbol, timeframe, result_bars)
-                    if cached_count > 0:
-                        logger.info(f"💾 Saved {cached_count} bars to database cache for {symbol} {timeframe}")
-                    
-                    # Also save 1m source data if we used aggregation (for future use)
-                    if use_aggregation and source_timeframe == "1m" and source_1m_bars:
-                        try:
-                            source_cached = self.db.cache_historical_bars(symbol, "1m", source_1m_bars)
-                            if source_cached > 0:
-                                logger.debug(f"💾 Also cached {source_cached} 1m source bars for future aggregation")
-                        except Exception as e:
-                            logger.debug(f"Failed to cache 1m source data: {e}")
-                except Exception as db_err:
-                    logger.debug(f"Failed to cache to database (non-critical): {db_err}")
-            
-            return result_bars
-            
+                logger.warning("get_historical_data: adapter returned no bars")
+
+            return result
+
         except Exception as e:
-            logger.error(f"Failed to fetch historical data: {str(e)}")
+            logger.error(f"Failed to fetch historical data via adapter: {e}")
             import traceback
+
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             return []
     
@@ -7440,6 +5891,63 @@ class TopStepXTradingBot:
             
             # Step 10: Trading interface
             print(f"\n🎯 Ready to trade on account: {selected_account['name']}")
+            print("\n" + "="*70)
+            print("📋 QUICK REFERENCE - Most Useful Commands")
+            print("="*70)
+            print("📊 Market Data:")
+            print("   quote <symbol>              - Get real-time market quote")
+            print("   depth <symbol>              - Get market depth (order book)")
+            print("   history <symbol> [tf] [n]   - Get historical bars (e.g., history MNQ 5m 100)")
+            print("   contracts                   - List all available trading contracts")
+            print()
+            print("💰 Account & Risk:")
+            print("   account_info                - Detailed account information")
+            print("   account_state               - Real-time account state (balance, PnL)")
+            print("   compliance                   - Check compliance status (DLL, MLL, drawdown)")
+            print("   risk                        - Show current risk metrics and limits")
+            print("   trades [start] [end]        - List trades with FIFO consolidation")
+            print()
+            print("📈 Trading Orders:")
+            print("   trade <sym> <side> <qty>    - Place market order (e.g., trade MNQ BUY 1)")
+            print("   limit <sym> <side> <qty> <price> - Place limit order")
+            print("   bracket <sym> <side> <qty> <stop_ticks> <tp_ticks> - Bracket order")
+            print("   stop_bracket <sym> <side> <qty> <entry> <stop> <tp> - Stop entry bracket")
+            print("   stop_buy <sym> <qty> <price> - Stop buy order")
+            print("   stop_sell <sym> <qty> <price> - Stop sell order")
+            print("   trail <sym> <side> <qty> <trail> - Trailing stop order")
+            print()
+            print("📦 Position Management:")
+            print("   positions                   - Show all open positions")
+            print("   orders                      - Show all open orders")
+            print("   close <pos_id> [qty]        - Close position (entire or partial)")
+            print("   cancel <order_id>           - Cancel an order")
+            print("   modify <order_id> <qty> [price] - Modify order")
+            print("   modify_stop <pos_id> <price> - Modify stop loss")
+            print("   modify_tp <pos_id> <price>  - Modify take profit")
+            print("   flatten                     - Close all positions and cancel all orders")
+            print()
+            print("🔄 Monitoring & Automation:")
+            print("   monitor                     - Monitor position changes, adjust brackets")
+            print("   bracket_monitor             - Monitor bracket positions, manage orders")
+            print("   auto_fills                  - Enable automatic fill checking")
+            print("   check_fills                 - Manually check for filled orders")
+            print()
+            print("🎯 Strategy Management:")
+            print("   strategies list             - List all available strategies")
+            print("   strategies status           - Show all strategies status")
+            print("   strategies start <name>    - Start a specific strategy")
+            print("   strategies stop <name>     - Stop a specific strategy")
+            print()
+            print("⚙️  System:")
+            print("   accounts                    - List all trading accounts")
+            print("   switch_account [id]         - Switch to different account")
+            print("   metrics                     - Show performance metrics and system stats")
+            print("   help                        - Show detailed help for all commands")
+            print("   quit                        - Exit trading interface")
+            print("="*70)
+            print("💡 Use ↑/↓ arrows for command history, Tab for completion")
+            print("💡 Type 'help' for detailed information on any command")
+            print("="*70)
             try:
                 await self.trading_interface()
             finally:
@@ -7791,106 +6299,218 @@ class TopStepXTradingBot:
                         else:
                             print(f"❌ Invalid selection: {choice}")
                 elif command_lower == "help":
-                    print("\n" + "="*50)
-                    print("TRADING INTERFACE HELP")
-                    print("="*50)
-                    print("Commands:")
-                    print("  trade <symbol> <side> <quantity>")
-                    print("    Example: trade MNQ BUY 1")
-                    print("    Places a market order")
+                    print("\n" + "="*70)
+                    print("TRADING INTERFACE - COMPLETE COMMAND REFERENCE")
+                    print("="*70)
                     print()
-                    print("  limit <symbol> <side> <quantity> <price>")
-                    print("    Example: limit MNQ BUY 1 19500.50")
-                    print("    Places a limit order at specified price")
-                    print()
-                    print("  bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks>")
-                    print("    Example: bracket MNQ BUY 1 80 80")
-                    print("    Places a bracket order with stop loss and take profit")
-                    print()
-                    print("  native_bracket <symbol> <side> <quantity> <stop_price> <profit_price>")
-                    print("    Example: native_bracket MNQ BUY 1 19400.00 19600.00")
-                    print("    Places a native TopStepX bracket order with linked stop/take profit")
-                    print()
-                    print("  stop_bracket <symbol> <side> <quantity> <entry_price> <stop_price> <profit_price>")
-                    print("    Example: stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00")
-                    print("    Places a stop entry order with stop loss and take profit prices defined")
-                    print()
-                    print("  stop_buy <symbol> <quantity> <stop_price>")
-                    print("    Example: stop_buy MNQ 1 25900.00")
-                    print("    Places a stop buy order (triggers market buy when price reaches stop_price)")
-                    print()
-                    print("  stop_sell <symbol> <quantity> <stop_price>")
-                    print("    Example: stop_sell MNQ 1 25900.00")
-                    print("    Places a stop sell order (triggers market sell when price reaches stop_price)")
-                    print()
-                    print("  stop <symbol> <side> <quantity> <price>")
-                    print("    Example: stop MNQ BUY 1 19400.00")
-                    print("    Places a stop order (legacy command, use stop_buy/stop_sell)")
-                    print()
-                    print("  trail <symbol> <side> <quantity> <trail_amount>")
-                    print("    Example: trail MNQ BUY 1 25.00")
-                    print("    Places a trailing stop order (uses SDK native trailing stop)")
-                    print()
-                    print("  positions")
-                    print("    Shows all open positions")
-                    print()
-                    print("  orders")
-                    print("    Shows all open orders")
-                    print()
-                    print("  close <position_id> [quantity]")
-                    print("    Example: close 12345 1")
-                    print("    Closes a position (entire or partial)")
-                    print()
-                    print("  cancel <order_id>")
-                    print("    Example: cancel 12345")
-                    print("    Cancels an order")
-                    print()
-                    print("  modify <order_id> <new_quantity> [new_price]")
-                    print("    Example: modify 12345 2 19500.00")
-                    print("    Modifies an existing order")
-                    print()
-                    print("  modify_stop <position_id> <new_stop_price>")
-                    print("    Example: modify_stop 425682864 25800.00")
-                    print("    Modifies the stop loss order attached to a position")
-                    print()
-                    print("  modify_tp <position_id> <new_tp_price>")
-                    print("    Example: modify_tp 425682864 26100.00")
-                    print("    Modifies the take profit order attached to a position")
-                    print()
+                    print("📊 MARKET DATA COMMANDS:")
                     print("  quote <symbol>")
+                    print("    Get real-time market quote (bid, ask, last, volume)")
                     print("    Example: quote MNQ")
-                    print("    Gets real-time market quote")
                     print()
                     print("  depth <symbol>")
+                    print("    Get market depth (order book) with bids and asks")
                     print("    Example: depth MNQ")
-                    print("    Gets market depth (order book)")
                     print()
-                    print("  history <symbol> [timeframe] [limit]")
-                    print("    Example: history MNQ 1m 50")
-                    print("    Gets historical price data")
+                    print("  history <symbol> [timeframe] [limit] [raw] [csv]")
+                    print("    Get historical price data (bars)")
+                    print("    Timeframes: 1s, 5s, 10s, 15s, 30s, 1m, 2m, 3m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 1d")
+                    print("    Examples: history MNQ 5m 100")
+                    print("              history MNQ 1m 50 raw    (tab-separated output)")
+                    print("              history MNQ 5m 100 csv (export to CSV file)")
                     print()
-                    print("  monitor")
-                    print("    Monitors position changes and automatically adjusts bracket orders")
-                    print("    Use this after adding/subtracting contracts to existing positions")
-                    print()
-                    print("  flatten")
-                    print("    Closes all positions and cancels all orders")
-                    print("    Requires confirmation by typing 'FLATTEN'")
-                    print()
-                    print("  accounts")
-                    print("    Lists all your trading accounts")
+                    print("  chart [symbol] [timeframe] [limit]")
+                    print("    Open interactive chart window GUI")
+                    print("    Example: chart MNQ 5m 100")
                     print()
                     print("  contracts")
-                    print("    Lists all available trading contracts")
+                    print("    List all available trading contracts with details")
                     print()
+                    print()
+                    print("💰 ACCOUNT & RISK COMMANDS:")
+                    print("  account_info")
+                    print("    Get detailed account information (balance, equity, margin, etc.)")
+                    print()
+                    print("  account_state")
+                    print("    Show real-time account state (balance, PnL, positions summary)")
+                    print()
+                    print("  compliance")
+                    print("    Check account compliance status (DLL, MLL, trailing drawdown)")
+                    print()
+                    print("  risk")
+                    print("    Show current risk metrics and limits")
+                    print()
+                    print("  drawdown (also: max_loss)")
+                    print("    Show max loss limit and drawdown information")
+                    print()
+                    print("  trades [start_date] [end_date]")
+                    print("    List trades with FIFO consolidation and statistics")
+                    print("    Example: trades 2025-12-01 2025-12-04")
+                    print()
+                    print("  accounts")
+                    print("    List all your trading accounts")
+                    print()
+                    print("  switch_account [account_id]")
+                    print("    Switch to a different account without restarting")
+                    print("    Example: switch_account 12694476")
+                    print()
+                    print("  metrics")
+                    print("    Show performance metrics and system stats (API calls, cache, memory, CPU)")
+                    print()
+                    print()
+                    print("📈 TRADING ORDER COMMANDS:")
+                    print("  trade <symbol> <side> <quantity>")
+                    print("    Place a market order")
+                    print("    Example: trade MNQ BUY 1")
+                    print()
+                    print("  limit <symbol> <side> <quantity> <price>")
+                    print("    Place a limit order at specified price")
+                    print("    Example: limit MNQ BUY 1 19500.50")
+                    print()
+                    print("  bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks>")
+                    print("    Place a bracket order with stop loss and take profit (in ticks)")
+                    print("    Example: bracket MNQ BUY 1 80 80")
+                    print()
+                    print("  native_bracket <symbol> <side> <quantity> <stop_price> <profit_price>")
+                    print("    Place a native TopStepX bracket order with linked stop/take profit")
+                    print("    Example: native_bracket MNQ BUY 1 19400.00 19600.00")
+                    print()
+                    print("  stop_bracket <symbol> <side> <quantity> <entry_price> <stop_price> <profit_price>")
+                    print("    Place a stop entry order with stop loss and take profit prices defined")
+                    print("    Example: stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00")
+                    print()
+                    print("  stop_buy <symbol> <quantity> <stop_price>")
+                    print("    Place a stop buy order (triggers market buy when price reaches stop_price)")
+                    print("    Example: stop_buy MNQ 1 25900.00")
+                    print()
+                    print("  stop_sell <symbol> <quantity> <stop_price>")
+                    print("    Place a stop sell order (triggers market sell when price reaches stop_price)")
+                    print("    Example: stop_sell MNQ 1 25900.00")
+                    print()
+                    print("  stop <symbol> <side> <quantity> <price>")
+                    print("    Place a stop order (legacy command, use stop_buy/stop_sell)")
+                    print("    Example: stop MNQ BUY 1 19400.00")
+                    print()
+                    print("  trail <symbol> <side> <quantity> <trail_amount>")
+                    print("    Place a trailing stop order")
+                    print("    Example: trail MNQ BUY 1 25.00")
+                    print()
+                    print()
+                    print("📦 POSITION MANAGEMENT COMMANDS:")
+                    print("  positions")
+                    print("    Show all open positions with P&L, entry price, current price")
+                    print()
+                    print("  orders")
+                    print("    Show all open orders with status and details")
+                    print()
+                    print("  close <position_id> [quantity]")
+                    print("    Close a position (entire or partial)")
+                    print("    Example: close 425682864 1")
+                    print()
+                    print("  cancel <order_id>")
+                    print("    Cancel an order")
+                    print("    Example: cancel 12345")
+                    print()
+                    print("  modify <order_id> <new_quantity> [new_price]")
+                    print("    Modify an existing order")
+                    print("    Example: modify 12345 2 19500.00")
+                    print()
+                    print("  modify_stop <position_id> <new_stop_price>")
+                    print("    Modify the stop loss order attached to a position")
+                    print("    Example: modify_stop 425682864 25800.00")
+                    print()
+                    print("  modify_tp <position_id> <new_tp_price>")
+                    print("    Modify the take profit order attached to a position")
+                    print("    Example: modify_tp 425682864 26100.00")
+                    print()
+                    print("  flatten")
+                    print("    Close all positions and cancel all orders")
+                    print("    Requires confirmation by typing 'FLATTEN'")
+                    print()
+                    print()
+                    print("🔄 MONITORING & AUTOMATION COMMANDS:")
+                    print("  monitor")
+                    print("    Monitor position changes and automatically adjust bracket orders")
+                    print("    Use this after adding/subtracting contracts to existing positions")
+                    print()
+                    print("  bracket_monitor")
+                    print("    Monitor bracket positions and manage orders")
+                    print()
+                    print("  activate_monitor")
+                    print("    Manually activate monitoring for testing")
+                    print()
+                    print("  deactivate_monitor")
+                    print("    Manually deactivate monitoring")
+                    print()
+                    print("  check_fills")
+                    print("    Manually check for filled orders and send Discord notifications")
+                    print()
+                    print("  test_fills")
+                    print("    Test fill checking with detailed output")
+                    print()
+                    print("  auto_fills")
+                    print("    Enable automatic fill checking every 30 seconds")
+                    print()
+                    print("  stop_auto_fills")
+                    print("    Disable automatic fill checking")
+                    print()
+                    print("  clear_notifications")
+                    print("    Clear notification cache to re-check all orders")
+                    print()
+                    print()
+                    print("🎯 STRATEGY MANAGEMENT COMMANDS:")
+                    print("  strategies list (or: strategies)")
+                    print("    List all available strategies")
+                    print()
+                    print("  strategies status")
+                    print("    Show status of all strategies")
+                    print()
+                    print("  strategies start <name> [symbols]")
+                    print("    Start a specific strategy")
+                    print("    Example: strategies start overnight_range MNQ MES")
+                    print()
+                    print("  strategies stop <name>")
+                    print("    Stop a specific strategy")
+                    print("    Example: strategies stop overnight_range")
+                    print()
+                    print("  strategies start_all")
+                    print("    Start all enabled strategies")
+                    print()
+                    print("  strategies stop_all")
+                    print("    Stop all strategies")
+                    print()
+                    print("  strategy_start [symbols]")
+                    print("    Start overnight range breakout strategy (legacy command)")
+                    print()
+                    print("  strategy_stop")
+                    print("    Stop the overnight strategy (legacy command)")
+                    print()
+                    print("  strategy_status")
+                    print("    Show overnight strategy status and configuration (legacy command)")
+                    print()
+                    print("  strategy_test <symbol>")
+                    print("    Test strategy components (ATR, ranges, orders) (legacy command)")
+                    print()
+                    print("  strategy_execute [symbols]")
+                    print("    Manually trigger market open sequence for testing (legacy command)")
+                    print()
+                    print()
+                    print("⚙️  SYSTEM COMMANDS:")
                     print("  help")
-                    print("    Shows this help message")
+                    print("    Show this help message")
                     print()
-                    print("  quit")
-                    print("    Exits the trading interface")
-                    print("="*50)
-                    print("💡 Use ↑/↓ arrows for command history, Tab for completion")
-                    print("="*50)
+                    print("  quit (or: q)")
+                    print("    Exit trading interface")
+                    print()
+                    print("="*70)
+                    print("💡 TIPS:")
+                    print("   - Use ↑/↓ arrows to navigate command history")
+                    print("   - Use Tab key for command completion")
+                    print("   - All commands are case-insensitive")
+                    print("   - Symbol names are automatically converted to uppercase")
+                    print("   - Use 'raw' flag with history for fast tab-separated output")
+                    print("   - Use 'csv' flag with history to export data to CSV file")
+                    print("="*70)
                 elif command_lower.startswith("trade "):
                     parts = command.split()
                     if len(parts) != 4:
@@ -9632,22 +8252,30 @@ class TopStepXTradingBot:
                                 entry_time = trade.get('entry_time', 'N/A')
                                 exit_time = trade.get('exit_time', 'N/A')
                                 
-                                # Format timestamps
-                                if isinstance(entry_time, str) and entry_time != 'N/A':
+                                # Format timestamps - handle both datetime objects and strings
+                                if entry_time and entry_time != 'N/A':
                                     try:
                                         from datetime import datetime
-                                        dt = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
-                                        entry_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                                    except:
-                                        pass
+                                        if isinstance(entry_time, datetime):
+                                            entry_time = entry_time.strftime('%Y-%m-%d %H:%M:%S')
+                                        elif isinstance(entry_time, str):
+                                            dt = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
+                                            entry_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                    except Exception as e:
+                                        logger.debug(f"Could not format entry_time: {e}")
+                                        entry_time = str(entry_time) if entry_time else 'N/A'
                                 
-                                if isinstance(exit_time, str) and exit_time != 'N/A':
+                                if exit_time and exit_time != 'N/A':
                                     try:
                                         from datetime import datetime
-                                        dt = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
-                                        exit_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                                    except:
-                                        pass
+                                        if isinstance(exit_time, datetime):
+                                            exit_time = exit_time.strftime('%Y-%m-%d %H:%M:%S')
+                                        elif isinstance(exit_time, str):
+                                            dt = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
+                                            exit_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                                    except Exception as e:
+                                        logger.debug(f"Could not format exit_time: {e}")
+                                        exit_time = str(exit_time) if exit_time else 'N/A'
                                 
                                 # Color code P&L (green for positive, red for negative)
                                 pnl_str = f"${pnl:>11.2f}"

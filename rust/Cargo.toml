@@ -1,0 +1,50 @@
+[package]
+name = "trading_bot_rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "trading_bot_rust"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Python bindings
+pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
+pyo3-asyncio = { version = "0.20", features = ["tokio-runtime"] }
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "order_execution_bench"
+harness = false
+
