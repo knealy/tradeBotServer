@@ -97,7 +97,10 @@ impl OrderExecutor {
 }
 ```
 
-**Expected Performance Gain**: 10-20x faster (5-10ms vs 50-100ms)
+**Expected Performance Gain**: 
+- **Network-bound operations** (order execution): 1.05-1.10x (network latency dominates ~90-100ms)
+- **CPU-bound operations** (bar aggregation, calculations): 10-20x (Phase 2/3)
+- **High-frequency scenarios**: Better connection pooling and lower overhead compound over many requests
 
 ### Priority 2: WebSocket Processing (Week 4-5)
 
@@ -320,8 +323,11 @@ class FastOrderExecutor:
 - [x] Add retry logic for 500 errors ✅ (Exponential backoff: 750ms, 1500ms, 3000ms)
 - [x] Integration tests ✅ (tests/order_execution_test.rs)
 - [x] Performance benchmarks ✅ (benches/order_execution_bench.rs)
-- [ ] Deploy to staging ⏳ (Next step)
-- [ ] Performance testing vs Python ⏳ (Next step)
+- [x] Python adapter smoke test ✅ (`tests/test_rust_integration.py` – confirms `RUST_AVAILABLE=True` and wiring into `TopStepXAdapter`, including real-auth smoke test)
+- [x] Benchmark harness ✅ (`tests/bench_rust_vs_python_orders.py` – compares `place_market_order` for Rust vs Python against a practice/sandbox account)
+- [x] Live performance testing ✅ (Tested against practice account: 1.05-1.10x speedup for network-bound operations)
+- [x] Integration complete ✅ (TopStepXAdapter hot path routing, environment variable control, staging toggle)
+- [ ] Deploy to staging ⏳ (Next step - ready for deployment)
 
 ### Phase 2: WebSocket
 - [ ] Port WebSocket client

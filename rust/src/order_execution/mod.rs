@@ -8,10 +8,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use reqwest::Client;
-use chrono::{DateTime, Utc};
+// DateTime and Utc not currently used, but may be needed for future features
+// use chrono::{DateTime, Utc};
 use thiserror::Error;
 
 /// Order execution errors
@@ -102,7 +102,7 @@ pub struct OrderExecutor {
     base_url: String,
     client: Arc<Client>,
     session_token: Arc<RwLock<Option<String>>>,
-    contract_cache: Arc<RwLock<HashMap<String, i64>>>,
+    contract_cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 #[pymethods]
@@ -127,52 +127,44 @@ impl OrderExecutor {
         })
     }
 
-    /// Set authentication token
+    /// Set authentication token (synchronous, no Tokio runtime required)
     fn set_token(&self, token: String) {
-        let token_arc = self.session_token.clone();
-        tokio::spawn(async move {
-            *token_arc.write().await = Some(token);
-        });
+        if let Ok(mut guard) = self.session_token.write() {
+            *guard = Some(token);
+        }
     }
 
     /// Get current token
     fn get_token(&self) -> PyResult<Option<String>> {
-        let token_arc = self.session_token.clone();
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-        
-        rt.block_on(async {
-            Ok(token_arc.read().await.clone())
-        })
+        match self.session_token.read() {
+            Ok(guard) => Ok(guard.clone()),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire session_token lock",
+            )),
+        }
     }
 
     /// Set contract ID for a symbol (for caching)
-    fn set_contract_id(&self, symbol: String, contract_id: i64) -> PyResult<()> {
-        let cache = self.contract_cache.clone();
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-        
-        rt.block_on(async {
-            cache.write().await.insert(symbol.to_uppercase(), contract_id);
-            Ok(())
-        })
+    fn set_contract_id(&self, symbol: String, contract_id: String) -> PyResult<()> {
+        match self.contract_cache.write() {
+            Ok(mut cache) => {
+                cache.insert(symbol.to_uppercase(), contract_id);
+                Ok(())
+            }
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire contract_cache lock",
+            )),
+        }
     }
 
     /// Get contract ID from cache
-    fn get_contract_id(&self, symbol: String) -> PyResult<Option<i64>> {
-        let cache = self.contract_cache.clone();
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to create runtime: {}", e)
-            ))?;
-        
-        rt.block_on(async {
-            Ok(cache.read().await.get(&symbol.to_uppercase()).copied())
-        })
+    fn get_contract_id(&self, symbol: String) -> PyResult<Option<String>> {
+        match self.contract_cache.read() {
+            Ok(cache) => Ok(cache.get(&symbol.to_uppercase()).cloned()),
+            Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire contract_cache lock",
+            )),
+        }
     }
 
     /// Place a market order (async)
@@ -263,7 +255,7 @@ struct AsyncOrderExecutor {
     base_url: String,
     client: Arc<Client>,
     session_token: Arc<RwLock<Option<String>>>,
-    contract_cache: Arc<RwLock<HashMap<String, i64>>>,
+    contract_cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl AsyncOrderExecutor {
@@ -344,17 +336,31 @@ impl AsyncOrderExecutor {
         }
 
         // Get token
-        let token = self.session_token.read().await.clone()
+        let token = self
+            .session_token
+            .read()
+            .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire session_token lock",
+            ))?
+            .clone()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Authentication token required. Call set_token() first."
+                "Authentication token required. Call set_token() first.",
             ))?;
 
         // Get contract ID from cache or return error
-        let contract_id = self.contract_cache.read().await
+        let contract_id = self
+            .contract_cache
+            .read()
+            .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire contract_cache lock",
+            ))?
             .get(&symbol.to_uppercase())
-            .copied()
+            .cloned()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Contract ID not found for symbol: {}. Call set_contract_id() first.", symbol)
+                format!(
+                    "Contract ID not found for symbol: {}. Call set_contract_id() first.",
+                    symbol
+                ),
             ))?;
 
         // Convert side to numeric
@@ -443,10 +449,14 @@ impl AsyncOrderExecutor {
             }
         }
 
-        // Check success field
+        // Check success field - some TopStepX endpoints return success=false explicitly
         let success = response_json.get("success")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or_else(|| {
+                // If no success field, check HTTP status code
+                // 200-299 typically means success even without explicit success field
+                status.is_success()
+            });
 
         if !success {
             let error_code = response_json.get("errorCode")
@@ -466,19 +476,44 @@ impl AsyncOrderExecutor {
             });
         }
 
-        // Extract order ID
+        // Extract order ID (can be string or number)
         let order_id = response_json.get("orderId")
             .or_else(|| response_json.get("id"))
             .or_else(|| response_json.get("data").and_then(|d| d.get("orderId")))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .and_then(|v| {
+                // Handle both string and numeric order IDs
+                if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else if let Some(n) = v.as_u64() {
+                    Some(n.to_string())
+                } else if let Some(n) = v.as_i64() {
+                    Some(n.to_string())
+                } else {
+                    None
+                }
+            });
 
         if order_id.is_none() {
+            // Log the full response for debugging - this helps identify the actual response structure
+            let response_str = serde_json::to_string_pretty(&response_json)
+                .unwrap_or_else(|_| "failed to serialize".to_string());
+            tracing::warn!(
+                "Order API call succeeded (HTTP {}) but no order ID found in response.\n\
+                Response structure:\n{}",
+                status,
+                response_str
+            );
+            
+            // Check if maybe the order was placed but ID is in an unexpected location
+            // Some APIs return the order ID in nested structures
             return Ok(OrderResponse {
                 success: false,
                 order_id: None,
                 message: None,
-                error: Some("Order rejected: No order ID returned".to_string()),
+                error: Some(format!(
+                    "Order rejected: No order ID returned. HTTP status: {}. Check raw_response for details.",
+                    status
+                )),
                 raw_response: Some(response_json),
             });
         }
@@ -499,9 +534,15 @@ impl AsyncOrderExecutor {
         quantity: Option<u32>,
     ) -> PyResult<OrderResponse> {
         // Get token
-        let token = self.session_token.read().await.clone()
+        let token = self
+            .session_token
+            .read()
+            .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire session_token lock",
+            ))?
+            .clone()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Authentication token required. Call set_token() first."
+                "Authentication token required. Call set_token() first.",
             ))?;
 
         // Build request body
@@ -563,9 +604,15 @@ impl AsyncOrderExecutor {
         order_id: String,
     ) -> PyResult<OrderResponse> {
         // Get token
-        let token = self.session_token.read().await.clone()
+        let token = self
+            .session_token
+            .read()
+            .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "Failed to acquire session_token lock",
+            ))?
+            .clone()
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Authentication token required. Call set_token() first."
+                "Authentication token required. Call set_token() first.",
             ))?;
 
         // Build request body

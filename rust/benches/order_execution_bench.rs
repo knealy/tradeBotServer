@@ -29,7 +29,7 @@ fn benchmark_contract_cache(c: &mut Criterion) {
         Python::with_gil(|py| {
             let executor = OrderExecutor::new("https://api.topstepx.com".to_string());
             b.iter(|| {
-                executor.set_contract_id(black_box("MNQ".to_string()), black_box(12345));
+                executor.set_contract_id(black_box("MNQ".to_string()), black_box("CON.F.US.MNQ.Z25".to_string()));
                 executor.get_contract_id(black_box("MNQ".to_string()))
             })
         })

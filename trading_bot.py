@@ -343,11 +343,24 @@ class TopStepXTradingBot:
         logger.debug("✅ RiskManager initialized")
         
         # Initialize TopStepXAdapter (broker-specific implementation)
+        #
+        # Rust hot path routing:
+        # - By default, TopStepXAdapter auto-enables Rust if the trading_bot_rust
+        #   module is installed (RUST_AVAILABLE = True).
+        # - To force-enable/disable Rust (e.g., in staging), use env var:
+        #     TOPSTEPX_USE_RUST=true|false
+        use_rust_env = os.getenv("TOPSTEPX_USE_RUST")
+        if use_rust_env is None:
+            use_rust_flag = None  # auto-detect
+        else:
+            use_rust_flag = use_rust_env.strip().lower() in ("1", "true", "yes", "on")
+
         self.broker_adapter = TopStepXAdapter(
             auth_manager=self.auth_manager,
             contract_manager=self.contract_manager,
             rate_limiter=self._rate_limiter,
-            base_url=self.base_url
+            base_url=self.base_url,
+            use_rust=use_rust_flag,
         )
         logger.debug("✅ TopStepXAdapter initialized")
         

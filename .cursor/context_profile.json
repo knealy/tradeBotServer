@@ -429,7 +429,11 @@
       "Retry intervals < 1 second without backoff",
       "Overriding methods without calling super()",
       "Polling too frequently (< 5 seconds)",
-      "Logging the same error repeatedly"
+      "Logging the same error repeatedly",
+      "Using tokio::sync::RwLock for synchronous Python-bound methods",
+      "Using cargo build for PyO3 projects (use maturin instead)",
+      "Expecting 10-20x speedup for network-bound operations",
+      "Hardcoding contract IDs as integers (TopStepX uses strings like 'CON.F.US.MNQ.Z25')"
     ],
     "prefer": [
       "Use _ensure_valid_token() for token management",
@@ -441,7 +445,13 @@
       "Use appropriate polling intervals (15s+)",
       "Detect and handle specific error codes specially",
       "Log JSON payloads for debugging order issues",
-      "Add 0.75s delay before retrying failed requests"
+      "Add 0.75s delay before retrying failed requests",
+      "Use std::sync::RwLock for synchronous Python-bound methods (set_token, get_token, etc.)",
+      "Use maturin develop --release for building PyO3 projects",
+      "Use PyResult<&'a PyAny> with explicit lifetimes for pyo3-asyncio async methods",
+      "Handle both string and numeric order IDs in API responses",
+      "Use string contract IDs (TopStepX format: 'CON.F.US.MNQ.Z25')",
+      "Expect 1.05-1.10x speedup for network-bound operations, 10-20x for CPU-bound"
     ]
   },
   
@@ -533,6 +543,37 @@
         "CORS configuration",
         "Route registration"
       ]
+    },
+    "rust/src/order_execution/mod.rs": {
+      "critical_patterns": [
+        "Use std::sync::RwLock for synchronous Python-bound methods (set_token, get_token, set_contract_id, get_contract_id)",
+        "Use tokio::sync::RwLock only for async operations (place_market_order_async, etc.)",
+        "PyO3 async methods must return PyResult<&'a PyAny> with explicit lifetime",
+        "Contract IDs are strings (HashMap<String, String>), not integers",
+        "Order IDs from API can be string or number - handle both with .as_str(), .as_u64(), .as_i64()",
+        "Use pyo3_asyncio::tokio::future_into_py() to bridge Rust async to Python async"
+      ],
+      "common_issues": [
+        "Tokio runtime panic if using tokio::sync::RwLock in synchronous methods",
+        "Type mismatch if contract_cache uses i64 instead of String",
+        "Order ID extraction fails if only checking .as_str() (API may return numbers)",
+        "Linker errors on macOS if using cargo build instead of maturin"
+      ],
+      "build_tool": "maturin develop --release (not cargo build)",
+      "python_integration": "TopStepXAdapter automatically uses Rust when RUST_AVAILABLE=True and use_rust=True"
+    },
+    "brokers/topstepx_adapter.py": {
+      "rust_integration": {
+        "enabled_by": "RUST_AVAILABLE flag (set when trading_bot_rust module imports successfully)",
+        "toggle": "use_rust parameter in __init__ (None=auto, True=force, False=disable)",
+        "env_control": "TOPSTEPX_USE_RUST=true|false (read by trading_bot.py, passed to adapter)",
+        "hot_path_methods": [
+          "place_market_order() - tries Rust first, falls back to Python",
+          "modify_order() - tries Rust first, falls back to Python",
+          "cancel_order() - tries Rust first, falls back to Python"
+        ],
+        "contract_id_handling": "Pass string contract IDs directly to Rust (no int() conversion needed)"
+      }
     }
   },
   
@@ -682,19 +723,83 @@
         "docs/RUST_IMPLEMENTATION_STATUS.md"
       ],
       "impact": "Rust infrastructure 90% complete. Once compilation blocker resolved, can proceed with modify/cancel methods, integration tests, and performance benchmarks. Foundation is solid."
+    },
+    {
+      "date": "2025-12-05",
+      "issue": "Rust Phase 1: PyO3 async return type conversion - compilation blocker resolved",
+      "fix": "✅ RESOLVED! Fixed PyO3 async return types by using PyResult<&'a PyAny> with explicit lifetime parameters. Changed Python-bound async methods to use lifetime-bound return types. Changed order_response_to_py to return PyResult<Py<PyAny>> using .into_py(py). All compilation errors resolved.",
+      "files": [
+        "rust/src/order_execution/mod.rs"
+      ],
+      "impact": "Rust order execution module now compiles successfully. Ready for integration."
+    },
+    {
+      "date": "2025-12-05",
+      "issue": "Rust Phase 1: Tokio runtime panic - 'no reactor running' when calling set_token()",
+      "fix": "✅ RESOLVED! Replaced tokio::sync::RwLock with std::sync::RwLock for synchronous setters (set_token, get_token, set_contract_id, get_contract_id). These methods are called from Python and don't need async runtime. Only async operations (place_market_order_async, etc.) use tokio runtime via pyo3-asyncio.",
+      "files": [
+        "rust/src/order_execution/mod.rs"
+      ],
+      "impact": "Rust executor can now be used from Python without Tokio runtime errors. Synchronous methods work correctly."
+    },
+    {
+      "date": "2025-12-05",
+      "issue": "Rust Phase 1: Contract ID type mismatch - TopStepX uses string IDs like 'CON.F.US.MNQ.Z25' but Rust expected i64",
+      "fix": "✅ RESOLVED! Changed contract_cache from HashMap<String, i64> to HashMap<String, String>. Updated set_contract_id() and get_contract_id() to accept/return String. Updated Python adapter to pass string contract IDs directly without int() conversion. Updated test files to use string contract IDs.",
+      "files": [
+        "rust/src/order_execution/mod.rs",
+        "brokers/topstepx_adapter.py",
+        "tests/test_rust_integration.py",
+        "rust/benches/order_execution_bench.rs"
+      ],
+      "impact": "Rust executor now correctly handles TopStepX string contract IDs. No more type conversion errors."
+    },
+    {
+      "date": "2025-12-05",
+      "issue": "Rust Phase 1: Order ID extraction from API response - only handled string IDs, not numeric",
+      "fix": "✅ RESOLVED! Enhanced order ID extraction to handle both string and numeric order IDs. Added support for v.as_u64() and v.as_i64() in addition to v.as_str(). Added better error logging with full response structure when order ID is missing.",
+      "files": [
+        "rust/src/order_execution/mod.rs"
+      ],
+      "impact": "Rust executor now correctly extracts order IDs regardless of API response format (string or number)."
+    },
+    {
+      "date": "2025-12-05",
+      "issue": "Rust Phase 1: Build tool - cargo build fails with linker errors on macOS",
+      "fix": "✅ RESOLVED! Switched from cargo build to maturin develop --release. maturin is the recommended build tool for PyO3 projects and handles Python symbol linking automatically. Created pyproject.toml, build.sh, and install.sh scripts. Updated all documentation to use maturin.",
+      "files": [
+        "rust/pyproject.toml",
+        "rust/build.sh",
+        "rust/install.sh",
+        "docs/BUILD_SOLUTION.md",
+        "docs/RUST_PHASE1_QUICKSTART.md"
+      ],
+      "impact": "Rust module builds and installs successfully on macOS. maturin handles all Python linking automatically."
+    },
+    {
+      "date": "2025-12-05",
+      "issue": "Rust Phase 1: Performance benchmark shows only 1.07x speedup - much less than expected 10-20x",
+      "fix": "✅ EXPECTED BEHAVIOR! Network-bound operations (order execution) show minimal speedup because API round-trip time (~90-100ms) dominates total latency. Code execution overhead is microseconds. Updated documentation and benchmark to explain: (1) Network-bound operations: 1.05-1.10x speedup expected, (2) CPU-bound operations (Phase 2/3): 10-20x speedup expected for bar aggregation/calculations, (3) Real benefits: Better connection pooling, lower memory, foundation for optimizations.",
+      "files": [
+        "tests/bench_rust_vs_python_orders.py",
+        "docs/RUST_MIGRATION_PLAN.md",
+        "docs/RUST_IMPLEMENTATION_STATUS.md"
+      ],
+      "impact": "Realistic performance expectations set. Rust's real benefits will show in Phase 2 (CPU-bound market data aggregation)."
     }
   ],
   
   "migration_readiness": {
-    "current_phase": "Phase 1 (Rust Infrastructure) - 90% Complete, Compilation Blocker",
+    "current_phase": "Phase 1 (Rust Order Execution) - ✅ COMPLETE (December 5, 2025)",
     "baseline_metrics_established": true,
     "test_suite_ready": true,
     "performance_targets": {
-      "order_execution": "< 5ms (currently 100-150ms)",
-      "order_modification": "< 3ms (currently 30-50ms)",
-      "websocket_processing": "< 1ms (currently 5-10ms)",
-      "data_aggregation": "10x faster (currently ~500ms)",
-      "strategy_execution": "< 10ms (currently 50-100ms)"
+      "order_execution": "Network-bound: ~90-100ms (API round-trip dominates, 1.05-1.10x Rust speedup)",
+      "order_modification": "Network-bound: Similar profile to order execution",
+      "order_cancellation": "Network-bound: Similar profile to order execution",
+      "websocket_processing": "< 1ms (currently 5-10ms) - Phase 2",
+      "data_aggregation": "10x faster target (currently ~500ms) - Phase 2, CPU-bound",
+      "strategy_execution": "< 10ms (currently 50-100ms) - Phase 3"
     },
     "migration_priorities": [
       {
@@ -748,9 +853,9 @@
       },
       {
         "task": "Python-Rust interop setup",
-        "status": "in_progress",
+        "status": "completed",
         "priority": "high",
-        "details": "⚠️ PyO3 and pyo3-asyncio configured. Order execution module 90% complete with full place_market_order implementation. BLOCKER: PyO3 async return type conversion issue (PyObject to Py<PyAny>) preventing compilation. See docs/RUST_IMPLEMENTATION_STATUS.md for details."
+        "details": "✅ PyO3 and pyo3-asyncio configured. Order execution module 100% complete: place_market_order, modify_order, cancel_order all implemented with async support. All compilation errors resolved. Integration with TopStepXAdapter complete. Live benchmark created and tested against practice account."
       },
       {
         "task": "Documentation cleanup",
