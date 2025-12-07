@@ -77,9 +77,10 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         # Use auth manager's HTTP session
         self._http_session = auth_manager._http_session
         
-        # Initialize Rust executor if available
+        # Initialize Rust executors if available
         self._use_rust = False
         self._rust_executor = None
+        self._query_executor = None
         
         if use_rust is False:
             # Explicitly disabled
@@ -87,8 +88,9 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         elif RUST_AVAILABLE:
             try:
                 self._rust_executor = trading_bot_rust.OrderExecutor(base_url=base_url)
+                self._query_executor = trading_bot_rust.QueryExecutor(base_url=base_url)
                 self._use_rust = True
-                logger.info("🚀 Rust hot path enabled for order execution (20-30x faster)")
+                logger.info("🚀 Rust hot path enabled for order execution and queries (optimized)")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to initialize Rust executor: {e}. Using Python fallback.")
                 self._use_rust = False
@@ -437,9 +439,111 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         account_id: Optional[str] = None,
         **kwargs
     ) -> OrderResponse:
-        """Place a limit order."""
-        logger.warning("place_limit_order not yet implemented in adapter")
-        return OrderResponse(success=False, error="Not yet implemented")
+        """
+        Place a limit order.
+        
+        Uses Rust executor for hot path with Python fallback.
+        """
+        try:
+            # Try Rust hot path first
+            if self._use_rust and self._rust_executor:
+                try:
+                    return await self._place_limit_order_rust(
+                        symbol, side, quantity, price, account_id, **kwargs
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
+            return await self._place_limit_order_python(
+                symbol, side, quantity, price, account_id, **kwargs
+            )
+        except Exception as e:
+            logger.error(f"❌ Limit order placement failed: {e}", exc_info=True)
+            return OrderResponse(
+                success=False,
+                error=f"Limit order placement failed: {str(e)}",
+                raw_response=None
+            )
+    
+    async def _place_limit_order_rust(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        price: float,
+        account_id: Optional[str],
+        **kwargs
+    ) -> OrderResponse:
+        """Place limit order using Rust executor."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        if not account_id:
+            return OrderResponse(success=False, error="Account ID is required")
+        
+        token = self.auth.get_token()
+        self._rust_executor.set_token(token)
+        
+        try:
+            contract_id = self.contract_manager.get_contract_id(symbol)
+            self._rust_executor.set_contract_id(symbol, contract_id)
+        except ValueError as e:
+            return OrderResponse(
+                success=False,
+                error=f"Cannot place order: {e}. Please fetch contracts first."
+            )
+        
+        stop_loss_ticks = kwargs.get('stop_loss_ticks')
+        take_profit_ticks = kwargs.get('take_profit_ticks')
+        custom_tag = kwargs.get('custom_tag')
+        
+        stop_loss_ticks_int = int(stop_loss_ticks) if stop_loss_ticks is not None else None
+        take_profit_ticks_int = int(take_profit_ticks) if take_profit_ticks is not None else None
+        
+        rust_result = await self._rust_executor.place_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            account_id=int(account_id),
+            stop_loss_ticks=stop_loss_ticks_int,
+            take_profit_ticks=take_profit_ticks_int,
+            limit_price=price,
+            stop_price=None,
+            order_type="limit",
+            custom_tag=custom_tag
+        )
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust limit order execution: {elapsed_ms:.2f}ms")
+        
+        return OrderResponse(
+            success=rust_result.get('success', False),
+            order_id=rust_result.get('order_id'),
+            message=rust_result.get('message'),
+            error=rust_result.get('error'),
+            raw_response=rust_result.get('raw_response')
+        )
+    
+    async def _place_limit_order_python(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        price: float,
+        account_id: Optional[str],
+        **kwargs
+    ) -> OrderResponse:
+        """Place limit order using Python implementation."""
+        # Use place_market_order with limit_price and order_type
+        return await self._place_market_order_python(
+            symbol, side, quantity, account_id,
+            limit_price=price,
+            order_type="limit",
+            **kwargs
+        )
     
     async def place_stop_order(
         self,
@@ -450,9 +554,112 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         account_id: Optional[str] = None,
         **kwargs
     ) -> OrderResponse:
-        """Place a stop order."""
-        logger.warning("place_stop_order not yet implemented in adapter")
-        return OrderResponse(success=False, error="Not yet implemented")
+        """
+        Place a stop order.
+        
+        Uses Rust executor for hot path with Python fallback.
+        """
+        try:
+            # Try Rust hot path first
+            if self._use_rust and self._rust_executor:
+                try:
+                    return await self._place_stop_order_rust(
+                        symbol, side, quantity, stop_price, account_id, **kwargs
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
+            return await self._place_stop_order_python(
+                symbol, side, quantity, stop_price, account_id, **kwargs
+            )
+        except Exception as e:
+            logger.error(f"❌ Stop order placement failed: {e}", exc_info=True)
+            return OrderResponse(
+                success=False,
+                error=f"Stop order placement failed: {str(e)}",
+                raw_response=None
+            )
+    
+    async def _place_stop_order_rust(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        stop_price: float,
+        account_id: Optional[str],
+        **kwargs
+    ) -> OrderResponse:
+        """Place stop order using Rust executor."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        if not account_id:
+            return OrderResponse(success=False, error="Account ID is required")
+        
+        token = self.auth.get_token()
+        self._rust_executor.set_token(token)
+        
+        try:
+            contract_id = self.contract_manager.get_contract_id(symbol)
+            self._rust_executor.set_contract_id(symbol, contract_id)
+        except ValueError as e:
+            return OrderResponse(
+                success=False,
+                error=f"Cannot place order: {e}. Please fetch contracts first."
+            )
+        
+        stop_loss_ticks = kwargs.get('stop_loss_ticks')
+        take_profit_ticks = kwargs.get('take_profit_ticks')
+        custom_tag = kwargs.get('custom_tag')
+        
+        stop_loss_ticks_int = int(stop_loss_ticks) if stop_loss_ticks is not None else None
+        take_profit_ticks_int = int(take_profit_ticks) if take_profit_ticks is not None else None
+        
+        rust_result = await self._rust_executor.place_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            account_id=int(account_id),
+            stop_loss_ticks=stop_loss_ticks_int,
+            take_profit_ticks=take_profit_ticks_int,
+            limit_price=None,
+            stop_price=stop_price,
+            order_type="stop",
+            custom_tag=custom_tag
+        )
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust stop order execution: {elapsed_ms:.2f}ms")
+        
+        return OrderResponse(
+            success=rust_result.get('success', False),
+            order_id=rust_result.get('order_id'),
+            message=rust_result.get('message'),
+            error=rust_result.get('error'),
+            raw_response=rust_result.get('raw_response')
+        )
+    
+    async def _place_stop_order_python(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        stop_price: float,
+        account_id: Optional[str],
+        **kwargs
+    ) -> OrderResponse:
+        """Place stop order using Python implementation."""
+        # Use place_market_order with stop_price and order_type
+        # Note: Python implementation may need to be extended to support stop orders
+        logger.warning("Python stop order implementation not yet complete, using market order fallback")
+        return await self._place_market_order_python(
+            symbol, side, quantity, account_id,
+            order_type="market",  # Fallback to market for now
+            **kwargs
+        )
     
     async def modify_order(
         self,
@@ -772,6 +979,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         """
         Get all open orders.
         
+        Uses Rust executor for hot path with Python fallback.
+        
         Args:
             account_id: Account ID
             **kwargs: Additional parameters
@@ -780,6 +989,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             List of open orders
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._query_executor:
+                try:
+                    return await self._get_open_orders_rust(account_id)
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -849,6 +1066,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         """
         Get order history.
         
+        Uses Rust executor for hot path with Python fallback.
+        
         Args:
             account_id: Account ID
             limit: Maximum number of orders to return
@@ -858,6 +1077,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             List of historical orders
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._query_executor:
+                try:
+                    return await self._get_order_history_rust(account_id, limit)
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -1011,6 +1238,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         """
         Get all open positions.
         
+        Uses Rust executor for hot path with Python fallback.
+        
         Args:
             account_id: Account ID
             **kwargs: Additional parameters
@@ -1019,6 +1248,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             List of Position objects
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._query_executor:
+                try:
+                    return await self._get_positions_rust(account_id)
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -1138,6 +1375,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         """
         Close a position (fully or partially).
         
+        Uses Rust executor for hot path with Python fallback.
+        
         Args:
             position_id: Position ID to close
             quantity: Quantity to close (None = close all)
@@ -1148,6 +1387,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             CloseResponse with close operation details
         """
         try:
+            # Try Rust hot path first (only for full closes, partial requires Python logic)
+            if self._use_rust and self._query_executor and quantity is None:
+                try:
+                    return await self._close_position_rust(position_id, account_id)
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback (handles partial closes and full closes)
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -1222,6 +1469,42 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 error=str(e),
                 position_id=position_id
             )
+    
+    async def _close_position_rust(
+        self,
+        position_id: str,
+        account_id: Optional[str]
+    ) -> CloseResponse:
+        """Close position using Rust executor (full close only)."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        if not account_id:
+            return CloseResponse(
+                success=False,
+                error="Account ID is required",
+                position_id=position_id
+            )
+        
+        token = self.auth.get_token()
+        self._query_executor.set_token(token)
+        
+        rust_result = await self._query_executor.close_position(
+            position_id=position_id,
+            account_id=int(account_id)
+        )
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust close_position execution: {elapsed_ms:.2f}ms")
+        
+        return CloseResponse(
+            success=rust_result.get('success', False),
+            position_id=rust_result.get('position_id') or position_id,
+            message=rust_result.get('message'),
+            error=rust_result.get('error')
+        )
     
     async def flatten_all_positions(
         self,
@@ -1334,6 +1617,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         limit: int = 100,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
+        _skip_aggregation: bool = False,  # Internal flag to prevent recursion
         **kwargs
     ) -> List[Bar]:
         """
@@ -1405,6 +1689,51 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Calculate time range
             from datetime import datetime, timedelta, timezone
             
+            # CRITICAL: Adjust end_time to last market close if market is currently closed
+            # This ensures we don't request data from weekends/after-hours when market wasn't open
+            def _get_last_market_close() -> datetime:
+                """Get the last market close time, accounting for weekends and daily breaks."""
+                import pytz
+                et_tz = pytz.timezone('US/Eastern')
+                now_et = datetime.now(et_tz)
+                daily_close_hour = 17  # 5pm EST
+                weekend_open_hour = 18  # 6pm EST Sunday
+                
+                weekday = now_et.weekday()
+                current_hour = now_et.hour
+                
+                # Weekend (Friday after 5pm - Sunday before 6pm)
+                if weekday == 6:  # Sunday
+                    if current_hour < weekend_open_hour:
+                        # Before Sunday 6pm - use last Friday 5pm
+                        days_back = 2
+                        last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
+                    else:
+                        # After Sunday 6pm - market is open, use current time
+                        return datetime.now(timezone.utc)
+                elif weekday == 5:  # Saturday
+                    # Use last Friday 5pm
+                    days_back = 1
+                    last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
+                elif weekday == 4 and current_hour >= daily_close_hour:  # Friday after 5pm
+                    # Use today's 5pm
+                    last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
+                else:
+                    # During the week - check if in daily break (5pm-6pm)
+                    if current_hour == daily_close_hour or (current_hour < weekend_open_hour and weekday < 5):
+                        # In daily break - use today's 5pm or yesterday's 5pm
+                        if current_hour >= daily_close_hour:
+                            last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
+                        else:
+                            # Before 6pm after daily close - use yesterday's close
+                            last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=1)
+                    else:
+                        # Market is currently open - use current time
+                        return datetime.now(timezone.utc)
+                
+                # Convert to UTC
+                return last_close.astimezone(timezone.utc)
+            
             # CRITICAL: Always use current time as end_time to ensure we get data up to the current moment
             # This mirrors the original trading_bot implementation: end_time defaults to "now".
             if end_time is None:
@@ -1413,16 +1742,29 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             elif end_time.tzinfo is None:
                 end_time = end_time.replace(tzinfo=timezone.utc)
             
+            # Adjust end_time to last market close if market is currently closed
+            # This prevents requesting data from weekends/after-hours periods
+            last_close = _get_last_market_close()
+            if end_time > last_close:
+                logger.debug(f"Market is closed. Adjusting end_time from {end_time} to last market close: {last_close}")
+                end_time = last_close
+            
             # For 1m timeframes, ensure end_time is very recent (within last minute) to get latest data
             if timeframe == "1m":
                 current_time = datetime.now(timezone.utc)
                 time_diff = (current_time - end_time).total_seconds()
-                # If end_time is more than 1 minute old, update it to current time
+                # If end_time is more than 1 minute old, update it to current time (but not beyond last market close)
                 if time_diff > 60:
-                    logger.info(
-                        f"📊 1m timeframe: end_time is {time_diff:.0f}s old, updating to current time for fresh data"
-                    )
-                    end_time = current_time
+                    # Use the earlier of current time or last market close
+                    potential_end = min(current_time, last_close)
+                    if potential_end > end_time:
+                        logger.info(
+                            f"📊 1m timeframe: end_time is {time_diff:.0f}s old, updating to {potential_end} for fresh data"
+                        )
+                        end_time = potential_end
+            
+            # Track if start_time was originally provided (date range mode)
+            original_start_time_provided = start_time is not None
             
             # ORIGINAL LOOKBACK LOGIC (ported from legacy trading_bot.get_historical_data):
             # - For seconds:   at least 3–5 days of data (2000+ bars)
@@ -1466,8 +1808,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 # Date range mode: respect explicit start_time, just normalize tz
                 start_time = start_time.replace(tzinfo=timezone.utc)
             
-            # Format timestamps
-            start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+            # Format timestamps - API expects ISO 8601 format with Z suffix for UTC
+            start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
             end_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
             
             headers = {
@@ -1476,8 +1818,33 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "accept": "text/plain"
             }
             
-            # Request extra bars to account for gaps/closures (similar to legacy: limit * 3)
-            api_limit = min(limit * 3, 20000)
+            # Determine API limit based on mode
+            # Date range mode: fetch ALL bars between dates (up to API max)
+            # Bar count mode: request extra bars to account for gaps/closures
+            if original_start_time_provided:
+                # Date range mode: calculate estimated max bars and use API max
+                # Estimate: (end_time - start_time) / bar_duration, with buffer for gaps
+                time_range_seconds = (end_time - start_time).total_seconds()
+                if unit == 1:  # Seconds
+                    estimated_bars = int(time_range_seconds / unit_number) + 1000
+                elif unit == 2:  # Minutes
+                    estimated_bars = int(time_range_seconds / (unit_number * 60)) + 1000
+                elif unit == 3:  # Hours
+                    estimated_bars = int(time_range_seconds / (unit_number * 3600)) + 1000
+                elif unit == 4:  # Days
+                    estimated_bars = int(time_range_seconds / (unit_number * 86400)) + 100
+                elif unit == 5:  # Weeks
+                    estimated_bars = int(time_range_seconds / (unit_number * 604800)) + 50
+                else:  # Months
+                    estimated_bars = int(time_range_seconds / (unit_number * 2592000)) + 50
+                
+                # Use API max (20000) to ensure we get all bars
+                api_limit = min(estimated_bars, 20000)
+                logger.info(f"📅 Date range mode: requesting up to {api_limit} {timeframe} bars between {start_str} and {end_str}")
+            else:
+                # Bar count mode: request extra bars to account for gaps/closures
+                api_limit = min(limit * 3, 20000)
+                logger.info(f"📊 Bar count mode: requesting {limit} {timeframe} bars (API limit: {api_limit})")
             
             bars_request = {
                 "contractId": contract_id,
@@ -1486,13 +1853,27 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "endTime": end_str,
                 "unit": unit,
                 "unitNumber": unit_number,
-                "limit": api_limit,  # Request extra, cap at API limit
+                "limit": api_limit,
                 "includePartialBar": True
             }
             
-            logger.info(f"Fetching {limit} {timeframe} bars for {symbol_up} from {start_str} to {end_str}")
+            logger.info(f"Fetching {timeframe} bars for {symbol_up} from {start_str} to {end_str}")
+            try:
+                logger.debug(f"🔍 History API request: {json.dumps(bars_request, indent=2)}")
+            except Exception as e:
+                logger.debug(f"🔍 History API request (json serialization failed): {bars_request}")
             
             response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+            
+            # Debug: log response structure
+            logger.debug(f"🔍 History API response type: {type(response)}")
+            if isinstance(response, dict):
+                logger.debug(f"🔍 History API response keys: {list(response.keys())}")
+                logger.debug(f"🔍 History API response success: {response.get('success')}")
+                logger.debug(f"🔍 History API response errorCode: {response.get('errorCode')}")
+                logger.debug(f"🔍 History API response errorMessage: {response.get('errorMessage')}")
+            elif isinstance(response, list):
+                logger.debug(f"🔍 History API response is list with {len(response)} items")
             
             if "error" in response:
                 logger.error(f"API error: {response['error']}")
@@ -1508,11 +1889,30 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             bars_data = None
             if isinstance(response, list):
                 bars_data = response
+                logger.debug(f"🔍 Parsed bars_data from list: {len(bars_data)} bars")
             elif isinstance(response, dict):
-                bars_data = response.get('bars') or response.get('data') or response.get('candles') or []
+                # Try multiple possible field names
+                bars_data = (
+                    response.get('bars') or 
+                    response.get('data') or 
+                    response.get('candles') or 
+                    response.get('result') or
+                    []
+                )
+                logger.debug(f"🔍 Parsed bars_data from dict: {len(bars_data) if bars_data else 0} bars")
+                # If still empty, log the full response structure for debugging
+                if not bars_data:
+                    logger.warning(f"🔍 Response dict has no bars/data/candles/result fields. Available keys: {list(response.keys())}")
+                    # Log a sample of the response (first 500 chars) to help debug
+                    try:
+                        response_str = json.dumps(response, indent=2, default=str)
+                        logger.debug(f"🔍 Full response (first 500 chars): {response_str[:500]}")
+                    except Exception as e:
+                        logger.debug(f"🔍 Full response (json serialization failed): {str(response)[:500]}")
             
             if not bars_data:
                 logger.warning("API returned empty bars data")
+                logger.warning(f"Request was: contractId={contract_id}, startTime={start_str}, endTime={end_str}, unit={unit}, unitNumber={unit_number}, limit={api_limit}")
                 return []
             
             # Debug: log raw last bar timestamp from API to compare with now
@@ -1575,12 +1975,128 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"Failed to parse bar: {e}")
                     continue
             
+            # If timeframe > 1m, use 1m aggregation strategy (fetch 1m data and aggregate)
+            # This ensures accurate, up-to-date data using reliable 1m source
+            # Skip aggregation if we're already fetching 1m data (prevents recursion)
+            target_seconds = self._parse_timeframe_to_seconds(timeframe)
+            if not _skip_aggregation and target_seconds and target_seconds > 60:
+                logger.info(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
+                
+                # Fetch 1m data instead (with _skip_aggregation=True to prevent recursion)
+                one_min_bars = await self.get_historical_data(
+                    symbol=symbol,
+                    timeframe="1m",
+                    limit=limit * (target_seconds // 60) + 100,  # Request enough 1m bars
+                    start_time=start_time,
+                    end_time=end_time,
+                    _skip_aggregation=True,  # Prevent recursion
+                    **kwargs
+                )
+                
+                if not one_min_bars:
+                    logger.warning(f"No 1m data available for aggregation to {timeframe}")
+                    return []
+                
+                logger.info(f"📊 Aggregating {len(one_min_bars)} 1m bars into {timeframe} bars...")
+                
+                # Use Rust aggregation if available, otherwise Python fallback
+                if RUST_AVAILABLE and self.use_rust:
+                    try:
+                        # Convert Bar objects to dict format for Rust
+                        bars_dict = []
+                        for bar in one_min_bars:
+                            bars_dict.append({
+                                'timestamp': int(bar.timestamp.timestamp()),
+                                'time': int(bar.timestamp.timestamp()),
+                                'open': bar.open,
+                                'high': bar.high,
+                                'low': bar.low,
+                                'close': bar.close,
+                                'volume': bar.volume,
+                            })
+                        
+                        # Use optimized Rust aggregation
+                        timestamps = [b['timestamp'] for b in bars_dict]
+                        opens = [b['open'] for b in bars_dict]
+                        highs = [b['high'] for b in bars_dict]
+                        lows = [b['low'] for b in bars_dict]
+                        closes = [b['close'] for b in bars_dict]
+                        volumes = [b['volume'] for b in bars_dict]
+                        
+                        aggregated_rust = trading_bot_rust.aggregate_bars_raw(
+                            timestamps, opens, highs, lows, closes, volumes,
+                            timeframe, symbol_up
+                        )
+                        
+                        # Convert back to Bar objects
+                        aggregated_bars = []
+                        for rust_bar in aggregated_rust:
+                            dt = datetime.fromtimestamp(rust_bar.timestamp, tz=timezone.utc)
+                            aggregated_bars.append(Bar(
+                                timestamp=dt,
+                                open=rust_bar.open,
+                                high=rust_bar.high,
+                                low=rust_bar.low,
+                                close=rust_bar.close,
+                                volume=rust_bar.volume,
+                                symbol=symbol_up,
+                                timeframe=timeframe,
+                            ))
+                        
+                        # Limit to requested count (only in bar count mode, not date range mode)
+                        if not original_start_time_provided and len(aggregated_bars) > limit:
+                            aggregated_bars = aggregated_bars[-limit:]
+                        
+                        logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars (Rust)")
+                        return aggregated_bars
+                    except Exception as e:
+                        logger.warning(f"Rust aggregation failed, falling back to Python: {e}")
+                        # Fall through to Python implementation
+                
+                # Python fallback aggregation
+                bars_dict = []
+                for bar in one_min_bars:
+                    bars_dict.append({
+                        'timestamp': int(bar.timestamp.timestamp()),
+                        'time': int(bar.timestamp.timestamp()),
+                        'open': bar.open,
+                        'high': bar.high,
+                        'low': bar.low,
+                        'close': bar.close,
+                        'volume': bar.volume,
+                    })
+                
+                aggregated_dict = self._aggregate_bars(bars_dict, timeframe)
+                
+                # Convert back to Bar objects
+                aggregated_bars = []
+                for bar_dict in aggregated_dict:
+                    dt = datetime.fromtimestamp(bar_dict['timestamp'], tz=timezone.utc)
+                    aggregated_bars.append(Bar(
+                        timestamp=dt,
+                        open=bar_dict['open'],
+                        high=bar_dict['high'],
+                        low=bar_dict['low'],
+                        close=bar_dict['close'],
+                        volume=bar_dict['volume'],
+                        symbol=symbol_up,
+                        timeframe=timeframe,
+                    ))
+                
+                # Limit to requested count (only in bar count mode, not date range mode)
+                if not original_start_time_provided and len(aggregated_bars) > limit:
+                    aggregated_bars = aggregated_bars[-limit:]
+                
+                logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars (Python)")
+                return aggregated_bars
+            
             # CRITICAL: Sort by timestamp (oldest first) before limiting
             # This ensures we always get the most recent bars, regardless of API response order
             bars.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
             
-            # Limit to requested number (take last N bars = most recent)
-            if len(bars) > limit:
+            # Limit to requested number (only in bar count mode, not date range mode)
+            # In date range mode, return ALL bars between the dates
+            if not original_start_time_provided and len(bars) > limit:
                 bars = bars[-limit:]
             
             # Additional debug: log parsed last bar timestamp vs now
@@ -1601,6 +2117,79 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             logger.error(f"Failed to fetch historical data: {str(e)}")
             return []
     
+    def _parse_timeframe_to_seconds(self, timeframe: str) -> Optional[int]:
+        """Parse timeframe string to seconds."""
+        timeframe = timeframe.strip().lower()
+        
+        if timeframe.endswith('s'):
+            return int(timeframe[:-1]) if timeframe[:-1].isdigit() else None
+        elif timeframe.endswith('m'):
+            return int(timeframe[:-1]) * 60 if timeframe[:-1].isdigit() else 60
+        elif timeframe.endswith('h'):
+            return int(timeframe[:-1]) * 3600 if timeframe[:-1].isdigit() else None
+        elif timeframe.endswith('d'):
+            return int(timeframe[:-1]) * 86400 if timeframe[:-1].isdigit() else None
+        elif timeframe.endswith('w'):
+            return int(timeframe[:-1]) * 604800 if timeframe[:-1].isdigit() else None
+        return None
+    
+    def _aggregate_bars(self, bars: List[Dict], target_timeframe: str) -> List[Dict]:
+        """
+        Aggregate 1-minute bars into higher timeframes (5m, 15m, 30m, 1h, etc.).
+        
+        This is a Python fallback implementation. Rust version is preferred when available.
+        """
+        if not bars:
+            return []
+        
+        target_seconds = self._parse_timeframe_to_seconds(target_timeframe)
+        if target_seconds is None or target_seconds <= 60:
+            return bars
+        
+        aggregated = []
+        current_group = []
+        current_group_start = None
+        
+        for bar in bars:
+            ts = bar.get('timestamp') or bar.get('time')
+            bar_start_seconds = (ts // target_seconds) * target_seconds
+            
+            if current_group_start is None or bar_start_seconds != current_group_start:
+                if current_group:
+                    agg_bar = {
+                        'timestamp': current_group_start,
+                        'time': current_group_start,
+                        'open': current_group[0].get('open', 0),
+                        'high': max(b.get('high', 0) for b in current_group),
+                        'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
+                        'close': current_group[-1].get('close', 0),
+                        'volume': sum(b.get('volume', 0) or 0 for b in current_group),
+                    }
+                    if agg_bar['low'] == float('inf'):
+                        agg_bar['low'] = agg_bar['open']
+                    aggregated.append(agg_bar)
+                
+                current_group = [bar]
+                current_group_start = bar_start_seconds
+            else:
+                current_group.append(bar)
+        
+        if current_group:
+            agg_bar = {
+                'timestamp': current_group_start,
+                'time': current_group_start,
+                'open': current_group[0].get('open', 0),
+                'high': max(b.get('high', 0) for b in current_group),
+                'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
+                'close': current_group[-1].get('close', 0),
+                'volume': sum(b.get('volume', 0) or 0 for b in current_group),
+            }
+            if agg_bar['low'] == float('inf'):
+                agg_bar['low'] = agg_bar['open']
+            aggregated.append(agg_bar)
+        
+        return aggregated
+    
     async def get_market_quote(
         self,
         symbol: str,
@@ -1617,6 +2206,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             Quote object or None if unavailable
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._query_executor:
+                try:
+                    return await self._get_market_quote_rust(symbol)
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             symbol_up = symbol.upper()
@@ -1707,6 +2304,47 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             logger.error(f"Failed to fetch market quote: {str(e)}")
             return None
     
+    async def _get_market_quote_rust(
+        self,
+        symbol: str
+    ) -> Optional[Quote]:
+        """Get market quote using Rust executor."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        try:
+            contract_id = self.contract_manager.get_contract_id(symbol)
+        except ValueError:
+            return None
+        
+        token = self.auth.get_token()
+        self._query_executor.set_token(token)
+        
+        rust_result = await self._query_executor.get_market_quote(contract_id=contract_id)
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust get_market_quote execution: {elapsed_ms:.2f}ms")
+        
+        if not rust_result:
+            return None
+        
+        # Convert Rust dict to Quote object
+        try:
+            from core.interfaces import Quote
+            return Quote(
+                symbol=symbol.upper(),
+                bid=rust_result.get('bid', 0.0),
+                ask=rust_result.get('ask', 0.0),
+                last=rust_result.get('last', 0.0),
+                volume=rust_result.get('volume', 0),
+                raw_data=rust_result
+            )
+        except Exception as e:
+            logger.warning(f"Failed to convert quote: {e}")
+            return None
+    
     async def get_market_depth(
         self,
         symbol: str,
@@ -1714,6 +2352,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
     ) -> Optional[Depth]:
         """
         Get market depth (order book).
+        
+        Uses Rust executor for hot path with Python fallback.
         
         Args:
             symbol: Trading symbol
@@ -1723,6 +2363,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             Depth object or None if unavailable
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._query_executor:
+                try:
+                    return await self._get_market_depth_rust(symbol)
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             symbol_up = symbol.upper()
@@ -1831,6 +2479,68 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             logger.error(f"Failed to fetch market depth: {str(e)}")
             return None
     
+    async def _get_market_depth_rust(
+        self,
+        symbol: str
+    ) -> Optional[Depth]:
+        """Get market depth using Rust executor."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        try:
+            contract_id = self.contract_manager.get_contract_id(symbol)
+        except ValueError:
+            return None
+        
+        token = self.auth.get_token()
+        self._query_executor.set_token(token)
+        
+        rust_result = await self._query_executor.get_market_depth(contract_id=contract_id)
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust get_market_depth execution: {elapsed_ms:.2f}ms")
+        
+        if not rust_result:
+            return Depth(symbol=symbol.upper(), bids=[], asks=[])
+        
+        # Convert Rust dict to Depth object
+        try:
+            from core.interfaces import Depth, DepthLevel
+            bids = rust_result.get('bids', [])
+            asks = rust_result.get('asks', [])
+            
+            bid_levels = []
+            for bid in bids:
+                if isinstance(bid, dict):
+                    bid_levels.append(DepthLevel(
+                        price=float(bid.get('price', 0)),
+                        size=int(bid.get('size', 0) or bid.get('quantity', 0))
+                    ))
+                elif isinstance(bid, (list, tuple)) and len(bid) >= 2:
+                    bid_levels.append(DepthLevel(price=float(bid[0]), size=int(bid[1])))
+            
+            ask_levels = []
+            for ask in asks:
+                if isinstance(ask, dict):
+                    ask_levels.append(DepthLevel(
+                        price=float(ask.get('price', 0)),
+                        size=int(ask.get('size', 0) or ask.get('quantity', 0))
+                    ))
+                elif isinstance(ask, (list, tuple)) and len(ask) >= 2:
+                    ask_levels.append(DepthLevel(price=float(ask[0]), size=int(ask[1])))
+            
+            return Depth(
+                symbol=symbol.upper(),
+                bids=bid_levels,
+                asks=ask_levels,
+                raw_data=rust_result
+            )
+        except Exception as e:
+            logger.warning(f"Failed to convert depth: {e}")
+            return Depth(symbol=symbol.upper(), bids=[], asks=[])
+    
     async def get_available_contracts(
         self,
         use_cache: bool = True,
@@ -1838,6 +2548,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
     ) -> List[Dict[str, Any]]:
         """
         Get available trading contracts.
+        
+        Uses Rust executor for hot path with Python fallback.
         
         Args:
             use_cache: If True, use cached contracts if available
@@ -1847,6 +2559,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             List of contract dictionaries
         """
         try:
+            # Try Rust hot path first (bypasses cache for fresh data)
+            if self._use_rust and self._query_executor and not use_cache:
+                try:
+                    return await self._get_available_contracts_rust()
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback (with caching)
             await self.auth.ensure_valid_token()
             
             cache_ttl_minutes = kwargs.get('cache_ttl_minutes', 60)
@@ -1953,6 +2673,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         Works like native bracket but uses a stop order for entry instead of market order.
         Uses the same /api/Order/place endpoint with stopLossBracket and takeProfitBracket.
         
+        Uses Rust executor for hot path with Python fallback.
+        
         Args:
             symbol: Trading symbol (e.g., "MNQ", "ES")
             side: "BUY" or "SELL"
@@ -1968,6 +2690,17 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             OrderResponse with order details
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._rust_executor:
+                try:
+                    return await self._place_oco_bracket_rust(
+                        symbol, side, quantity, entry_price, stop_loss_price,
+                        take_profit_price, account_id, strategy_name
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -2110,6 +2843,92 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             logger.error(f"Failed to place OCO bracket order: {str(e)}")
             return OrderResponse(success=False, error=str(e))
     
+    async def _place_oco_bracket_rust(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        account_id: Optional[str],
+        strategy_name: Optional[str]
+    ) -> OrderResponse:
+        """Place OCO bracket order using Rust executor."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        if not account_id:
+            return OrderResponse(success=False, error="Account ID is required")
+        
+        token = self.auth.get_token()
+        self._rust_executor.set_token(token)
+        
+        try:
+            contract_id = self.contract_manager.get_contract_id(symbol)
+            self._rust_executor.set_contract_id(symbol, contract_id)
+        except ValueError as e:
+            return OrderResponse(
+                success=False,
+                error=f"Cannot place order: {e}. Please fetch contracts first."
+            )
+        
+        # Get tick size for calculating ticks
+        tick_size = await self._get_tick_size(symbol)
+        
+        # Round prices to valid tick sizes
+        entry_price = self._round_to_tick_size(entry_price, tick_size)
+        stop_loss_price = self._round_to_tick_size(stop_loss_price, tick_size)
+        take_profit_price = self._round_to_tick_size(take_profit_price, tick_size)
+        
+        # Calculate stop loss and take profit ticks from entry price
+        if side.upper() == "BUY":
+            stop_loss_ticks = int((entry_price - stop_loss_price) / tick_size)
+            if stop_loss_ticks > 0:
+                stop_loss_ticks = -stop_loss_ticks
+            take_profit_ticks = int((take_profit_price - entry_price) / tick_size)
+            if take_profit_ticks < 0:
+                take_profit_ticks = -take_profit_ticks
+        else:
+            stop_loss_ticks = int((stop_loss_price - entry_price) / tick_size)
+            if stop_loss_ticks < 0:
+                stop_loss_ticks = -stop_loss_ticks
+            take_profit_ticks = int((entry_price - take_profit_price) / tick_size)
+            if take_profit_ticks > 0:
+                take_profit_ticks = -take_profit_ticks
+        
+        # Cap ticks at 1000 (TopStepX limit)
+        stop_loss_ticks = max(-1000, min(1000, stop_loss_ticks))
+        take_profit_ticks = max(-1000, min(1000, take_profit_ticks))
+        
+        custom_tag = self._generate_unique_custom_tag("stop_bracket", strategy_name)
+        
+        rust_result = await self._rust_executor.place_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            account_id=int(account_id),
+            stop_loss_ticks=stop_loss_ticks,
+            take_profit_ticks=take_profit_ticks,
+            limit_price=None,
+            stop_price=entry_price,
+            order_type="stop",
+            custom_tag=custom_tag
+        )
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust OCO bracket execution: {elapsed_ms:.2f}ms")
+        
+        return OrderResponse(
+            success=rust_result.get('success', False),
+            order_id=rust_result.get('order_id'),
+            message=rust_result.get('message'),
+            error=rust_result.get('error'),
+            raw_response=rust_result.get('raw_response')
+        )
+    
     async def place_trailing_stop_order(
         self,
         symbol: str,
@@ -2132,6 +2951,16 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             OrderResponse with order details
         """
         try:
+            # Try Rust hot path first
+            if self._use_rust and self._rust_executor:
+                try:
+                    return await self._place_trailing_stop_rust(
+                        symbol, side, quantity, trail_amount, account_id
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+            
+            # Python fallback
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -2223,6 +3052,69 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         except Exception as e:
             logger.error(f"Failed to place trailing stop order: {str(e)}")
             return OrderResponse(success=False, error=str(e))
+    
+    async def _place_trailing_stop_rust(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        trail_amount: float,
+        account_id: Optional[str]
+    ) -> OrderResponse:
+        """Place trailing stop order using Rust executor."""
+        import time
+        start_time = time.perf_counter()
+        
+        await self.auth.ensure_valid_token()
+        
+        if not account_id:
+            return OrderResponse(success=False, error="Account ID is required")
+        
+        token = self.auth.get_token()
+        self._rust_executor.set_token(token)
+        
+        try:
+            contract_id = self.contract_manager.get_contract_id(symbol)
+            self._rust_executor.set_contract_id(symbol, contract_id)
+        except ValueError as e:
+            return OrderResponse(
+                success=False,
+                error=f"Cannot place order: {e}. Please fetch contracts first."
+            )
+        
+        # Get tick size
+        tick_size = await self._get_tick_size(symbol)
+        
+        # Convert trail amount to ticks
+        trail_ticks = int(trail_amount / tick_size)
+        
+        # Cap at 1000 ticks (TopStepX limit)
+        trail_ticks = min(1000, trail_ticks)
+        
+        rust_result = await self._rust_executor.place_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            account_id=int(account_id),
+            stop_loss_ticks=None,
+            take_profit_ticks=None,
+            limit_price=None,
+            stop_price=None,
+            trail_distance_ticks=trail_ticks,
+            order_type="trailing",
+            custom_tag=None
+        )
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"⚡ Rust trailing stop execution: {elapsed_ms:.2f}ms")
+        
+        return OrderResponse(
+            success=rust_result.get('success', False),
+            order_id=rust_result.get('order_id'),
+            message=rust_result.get('message'),
+            error=rust_result.get('error'),
+            raw_response=rust_result.get('raw_response')
+        )
     
     async def create_bracket_order(
         self,

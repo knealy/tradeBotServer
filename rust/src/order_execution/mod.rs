@@ -109,10 +109,15 @@ pub struct OrderExecutor {
 impl OrderExecutor {
     #[new]
     fn new(base_url: String) -> PyResult<Self> {
-        // Create HTTP client with connection pooling
+        // Create HTTP client with optimizations for network-bound operations:
+        // - Connection pooling (increased pool size for better reuse)
+        // - TCP_NODELAY for lower latency (disable Nagle's algorithm)
+        // - Keep-alive connections (default enabled)
+        // - HTTP/2 automatically used when server supports it
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .pool_max_idle_per_host(10)
+            .tcp_nodelay(true) // Disable Nagle's algorithm for lower latency
+            .pool_max_idle_per_host(20) // Increase connection pool for better reuse
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .build()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -167,9 +172,22 @@ impl OrderExecutor {
         }
     }
 
-    /// Place a market order (async)
-    #[pyo3(signature = (symbol, side, quantity, account_id, *, stop_loss_ticks=None, take_profit_ticks=None, limit_price=None, order_type=None, custom_tag=None))]
-    fn place_market_order<'a>(
+    /// Place an order (supports market, limit, stop, stop-limit, trailing stop)
+    /// 
+    /// Args:
+    ///     symbol: Trading symbol
+    ///     side: "BUY" or "SELL"
+    ///     quantity: Number of contracts
+    ///     account_id: Account ID
+    ///     stop_loss_ticks: Optional stop loss in ticks
+    ///     take_profit_ticks: Optional take profit in ticks
+    ///     limit_price: Optional limit price (required for limit orders)
+    ///     stop_price: Optional stop price (required for stop orders)
+    ///     trail_distance_ticks: Optional trail distance in ticks (required for trailing stop)
+    ///     order_type: "market", "limit", "stop", "stop-limit", or "trailing" (default: "market")
+    ///     custom_tag: Optional custom tag
+    #[pyo3(signature = (symbol, side, quantity, account_id, *, stop_loss_ticks=None, take_profit_ticks=None, limit_price=None, stop_price=None, trail_distance_ticks=None, order_type=None, custom_tag=None))]
+    fn place_order<'a>(
         &self,
         py: Python<'a>,
         symbol: String,
@@ -179,6 +197,8 @@ impl OrderExecutor {
         stop_loss_ticks: Option<i32>,
         take_profit_ticks: Option<i32>,
         limit_price: Option<f64>,
+        stop_price: Option<f64>,
+        trail_distance_ticks: Option<i32>,
         order_type: Option<String>,
         custom_tag: Option<String>,
     ) -> PyResult<&'a PyAny> {
@@ -188,7 +208,7 @@ impl OrderExecutor {
         let order_type_clone = order_type.unwrap_or_else(|| "market".to_string());
         
         pyo3_asyncio::tokio::future_into_py(py, async move {
-            let result = executor.place_market_order_async(
+            let result = executor.place_order_async(
                 symbol_clone,
                 side_clone,
                 quantity,
@@ -196,6 +216,8 @@ impl OrderExecutor {
                 stop_loss_ticks,
                 take_profit_ticks,
                 limit_price,
+                stop_price,
+                trail_distance_ticks,
                 order_type_clone,
                 custom_tag,
             ).await?;
@@ -286,7 +308,8 @@ impl AsyncOrderExecutor {
         }
     }
 
-    async fn place_market_order_async(
+    /// Place order (supports all order types)
+    async fn place_order_async(
         &self,
         symbol: String,
         side: String,
@@ -295,11 +318,13 @@ impl AsyncOrderExecutor {
         stop_loss_ticks: Option<i32>,
         take_profit_ticks: Option<i32>,
         limit_price: Option<f64>,
+        stop_price: Option<f64>,
+        trail_distance_ticks: Option<i32>,
         order_type: String,
         custom_tag: Option<String>,
     ) -> PyResult<OrderResponse> {
         // Use retry logic
-        self.retry_on_500(|| self.place_market_order_internal(
+        self.retry_on_500(|| self.place_order_internal(
             symbol.clone(),
             side.clone(),
             quantity,
@@ -307,12 +332,15 @@ impl AsyncOrderExecutor {
             stop_loss_ticks,
             take_profit_ticks,
             limit_price,
+            stop_price,
+            trail_distance_ticks,
             order_type.clone(),
             custom_tag.clone(),
         ), 3).await
     }
 
-    async fn place_market_order_internal(
+    /// Internal order placement (supports all order types)
+    async fn place_order_internal(
         &self,
         symbol: String,
         side: String,
@@ -321,6 +349,8 @@ impl AsyncOrderExecutor {
         stop_loss_ticks: Option<i32>,
         take_profit_ticks: Option<i32>,
         limit_price: Option<f64>,
+        stop_price: Option<f64>,
+        trail_distance_ticks: Option<i32>,
         order_type: String,
         custom_tag: Option<String>,
     ) -> PyResult<OrderResponse> {
@@ -366,11 +396,53 @@ impl AsyncOrderExecutor {
         // Convert side to numeric
         let side_value = if side.to_uppercase() == "BUY" { 0 } else { 1 };
         
-        // Determine order type
-        let order_type_value = match order_type.to_lowercase().as_str() {
+        // Determine order type (TopStepX API types: 1=Limit, 2=Market, 3=Stop-Limit, 4=Stop, 5=Trailing Stop)
+        let order_type_lower = order_type.to_lowercase();
+        let order_type_value = match order_type_lower.as_str() {
             "limit" => 1,
-            _ => 2, // Market order
+            "stop" => 4,
+            "stop-limit" | "stoplimit" => 3,
+            "trailing" | "trailing-stop" | "trailingstop" => 5,
+            "market" | _ => 2, // Default to market
         };
+
+        // Validate required parameters based on order type
+        if order_type_value == 1 && limit_price.is_none() {
+            return Ok(OrderResponse {
+                success: false,
+                order_id: None,
+                message: None,
+                error: Some("Limit price is required for limit orders".to_string()),
+                raw_response: None,
+            });
+        }
+        if order_type_value == 4 && stop_price.is_none() {
+            return Ok(OrderResponse {
+                success: false,
+                order_id: None,
+                message: None,
+                error: Some("Stop price is required for stop orders".to_string()),
+                raw_response: None,
+            });
+        }
+        if order_type_value == 3 && (limit_price.is_none() || stop_price.is_none()) {
+            return Ok(OrderResponse {
+                success: false,
+                order_id: None,
+                message: None,
+                error: Some("Both limit price and stop price are required for stop-limit orders".to_string()),
+                raw_response: None,
+            });
+        }
+        if order_type_value == 5 && trail_distance_ticks.is_none() {
+            return Ok(OrderResponse {
+                success: false,
+                order_id: None,
+                message: None,
+                error: Some("Trail distance ticks is required for trailing stop orders".to_string()),
+                raw_response: None,
+            });
+        }
 
         // Build order data
         let mut order_data = serde_json::json!({
@@ -381,10 +453,24 @@ impl AsyncOrderExecutor {
             "size": quantity,
         });
 
-        // Add limit price if provided
+        // Add limit price if provided (for limit and stop-limit orders)
         if let Some(price) = limit_price {
             order_data["limitPrice"] = serde_json::Value::Number(
                 serde_json::Number::from_f64(price).unwrap()
+            );
+        }
+
+        // Add stop price if provided (for stop and stop-limit orders)
+        if let Some(price) = stop_price {
+            order_data["stopPrice"] = serde_json::Value::Number(
+                serde_json::Number::from_f64(price).unwrap()
+            );
+        }
+
+        // Add trail distance if provided (for trailing stop orders)
+        if let Some(trail_ticks) = trail_distance_ticks {
+            order_data["trailDistance"] = serde_json::Value::Number(
+                serde_json::Number::from(trail_ticks)
             );
         }
 

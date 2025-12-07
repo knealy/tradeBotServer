@@ -6,6 +6,7 @@
 
 pub mod order_execution;
 pub mod market_data;
+pub mod query;
 pub mod websocket;
 pub mod strategy_engine;
 pub mod database;
@@ -18,7 +19,10 @@ fn trading_bot_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<order_execution::OrderExecutor>()?;
     m.add_class::<market_data::BarAggregator>()?;
     m.add_class::<market_data::Bar>()?;
+    m.add_class::<query::QueryExecutor>()?;
     m.add_function(wrap_pyfunction!(market_data::aggregate_bars, m)?)?;
+    m.add_function(wrap_pyfunction!(market_data::aggregate_bars_raw, m)?)?;
+    m.add_function(wrap_pyfunction!(market_data::parse_timeframe, m)?)?;
     Ok(())
 }
 
