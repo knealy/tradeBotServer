@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mnq 5m Chart</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .header {
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: #ffffff;
+        }
+        .header .info {
+            margin-top: 5px;
+            color: #888;
+            font-size: 14px;
+        }
+        #chart-container {
+            width: 100%;
+            height: 600px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .controls {
+            margin-top: 20px;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 8px;
+        }
+        .controls button {
+            background: #2962ff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+        .controls button:hover {
+            background: #1e53e5;
+        }
+        .controls button.active {
+            background: #26a69a;
+        }
+        .controls button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 10px;
+            color: #888;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>mnq 5m Chart</h1>
+            <div class="info">
+                100 bars | Last updated: 2025-12-07 16:47:18
+            </div>
+        </div>
+        <div id="chart-container"></div>
+        <div class="controls">
+            <button onclick="refreshChart()">Refresh Data</button>
+            <button onclick="exportData()">Export CSV</button>
+            <button id="realtimeBtn" onclick="toggleRealtime()">Start Real-Time</button>
+            
+            <div class="status" id="status">Chart loaded</div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let candlestickSeries = null;
+        let volumeSeries = null;
+        let chartData = [{"time": 1764942000, "open": 25626.5, "high": 25637.0, "low": 25606.5, "close": 25614.5, "volume": 13780}, {"time": 1764942300, "open": 25614.75, "high": 25616.25, "low": 25582.5, "close": 25587.5, "volume": 17722}, {"time": 1764942600, "open": 25588.0, "high": 25621.75, "low": 25579.0, "close": 25621.0, "volume": 14615}, {"time": 1764942900, "open": 25620.75, "high": 25627.0, "low": 25606.75, "close": 25614.25, "volume": 11713}, {"time": 1764943200, "open": 25614.5, "high": 25631.5, "low": 25611.25, "close": 25629.0, "volume": 10250}, {"time": 1764943500, "open": 25629.5, "high": 25644.0, "low": 25625.25, "close": 25638.75, "volume": 6756}, {"time": 1764943800, "open": 25639.0, "high": 25652.5, "low": 25638.0, "close": 25652.5, "volume": 5760}, {"time": 1764944100, "open": 25652.25, "high": 25656.5, "low": 25643.0, "close": 25648.75, "volume": 7792}, {"time": 1764944400, "open": 25648.5, "high": 25656.5, "low": 25645.0, "close": 25648.25, "volume": 5179}, {"time": 1764944700, "open": 25648.5, "high": 25684.25, "low": 25648.5, "close": 25680.0, "volume": 11881}, {"time": 1764945000, "open": 25679.75, "high": 25777.0, "low": 25676.5, "close": 25757.75, "volume": 62621}, {"time": 1764945300, "open": 25758.25, "high": 25777.75, "low": 25730.0, "close": 25731.25, "volume": 36086}, {"time": 1764945600, "open": 25731.25, "high": 25741.25, "low": 25660.5, "close": 25708.75, "volume": 51097}, {"time": 1764945900, "open": 25709.0, "high": 25753.5, "low": 25707.0, "close": 25753.0, "volume": 36276}, {"time": 1764946200, "open": 25752.75, "high": 25803.25, "low": 25741.0, "close": 25794.75, "volume": 34972}, {"time": 1764946500, "open": 25795.0, "high": 25800.75, "low": 25766.5, "close": 25791.0, "volume": 27425}, {"time": 1764946800, "open": 25791.0, "high": 25818.5, "low": 25767.0, "close": 25812.25, "volume": 40114}, {"time": 1764947100, "open": 25812.25, "high": 25838.0, "low": 25810.0, "close": 25830.0, "volume": 33271}, {"time": 1764947400, "open": 25830.0, "high": 25860.75, "low": 25829.5, "close": 25858.0, "volume": 27993}, {"time": 1764947700, "open": 25858.25, "high": 25867.75, "low": 25838.25, "close": 25840.25, "volume": 23286}, {"time": 1764948000, "open": 25840.75, "high": 25859.0, "low": 25828.5, "close": 25856.25, "volume": 23339}, {"time": 1764948300, "open": 25856.25, "high": 25856.5, "low": 25827.0, "close": 25837.0, "volume": 17543}, {"time": 1764948600, "open": 25837.0, "high": 25861.75, "low": 25835.25, "close": 25855.0, "volume": 20163}, {"time": 1764948900, "open": 25855.5, "high": 25858.25, "low": 25829.5, "close": 25838.25, "volume": 16380}, {"time": 1764949200, "open": 25838.75, "high": 25841.75, "low": 25809.0, "close": 25820.0, "volume": 22588}, {"time": 1764949500, "open": 25820.0, "high": 25832.75, "low": 25793.75, "close": 25821.5, "volume": 30811}, {"time": 1764949800, "open": 25821.75, "high": 25821.75, "low": 25756.0, "close": 25768.0, "volume": 41038}, {"time": 1764950100, "open": 25767.5, "high": 25767.75, "low": 25716.5, "close": 25743.25, "volume": 48033}, {"time": 1764950400, "open": 25743.0, "high": 25767.0, "low": 25734.5, "close": 25741.25, "volume": 31636}, {"time": 1764950700, "open": 25741.0, "high": 25759.0, "low": 25723.5, "close": 25731.25, "volume": 21890}, {"time": 1764951000, "open": 25731.75, "high": 25738.5, "low": 25706.0, "close": 25706.5, "volume": 25097}, {"time": 1764951300, "open": 25706.5, "high": 25711.25, "low": 25683.25, "close": 25696.5, "volume": 38968}, {"time": 1764951600, "open": 25696.5, "high": 25734.25, "low": 25683.5, "close": 25714.5, "volume": 29372}, {"time": 1764951900, "open": 25714.25, "high": 25741.25, "low": 25693.25, "close": 25698.0, "volume": 25429}, {"time": 1764952200, "open": 25698.25, "high": 25698.25, "low": 25651.0, "close": 25677.5, "volume": 39249}, {"time": 1764952500, "open": 25677.25, "high": 25696.75, "low": 25666.25, "close": 25685.25, "volume": 19872}, {"time": 1764952800, "open": 25685.0, "high": 25704.75, "low": 25670.75, "close": 25690.25, "volume": 18609}, {"time": 1764953100, "open": 25689.75, "high": 25709.5, "low": 25679.0, "close": 25705.25, "volume": 21955}, {"time": 1764953400, "open": 25705.25, "high": 25738.25, "low": 25692.5, "close": 25736.0, "volume": 18275}, {"time": 1764953700, "open": 25735.75, "high": 25761.5, "low": 25727.25, "close": 25729.75, "volume": 20548}, {"time": 1764954000, "open": 25729.75, "high": 25738.5, "low": 25702.5, "close": 25718.0, "volume": 25694}, {"time": 1764954300, "open": 25717.75, "high": 25731.25, "low": 25710.0, "close": 25721.75, "volume": 15004}, {"time": 1764954600, "open": 25721.25, "high": 25722.75, "low": 25691.75, "close": 25697.0, "volume": 15045}, {"time": 1764954900, "open": 25697.0, "high": 25708.0, "low": 25692.0, "close": 25698.25, "volume": 9990}, {"time": 1764955200, "open": 25698.0, "high": 25709.25, "low": 25688.5, "close": 25705.75, "volume": 11235}, {"time": 1764955500, "open": 25705.75, "high": 25711.5, "low": 25692.5, "close": 25695.25, "volume": 9741}, {"time": 1764955800, "open": 25694.75, "high": 25700.5, "low": 25682.25, "close": 25684.0, "volume": 12094}, {"time": 1764956100, "open": 25683.75, "high": 25698.0, "low": 25665.0, "close": 25696.25, "volume": 19908}, {"time": 1764956400, "open": 25696.5, "high": 25699.0, "low": 25680.25, "close": 25695.0, "volume": 11927}, {"time": 1764956700, "open": 25694.5, "high": 25712.0, "low": 25687.0, "close": 25700.25, "volume": 12332}, {"time": 1764957000, "open": 25700.0, "high": 25740.5, "low": 25696.5, "close": 25735.25, "volume": 16801}, {"time": 1764957300, "open": 25735.75, "high": 25738.5, "low": 25719.25, "close": 25730.0, "volume": 11876}, {"time": 1764957600, "open": 25730.0, "high": 25735.0, "low": 25718.5, "close": 25729.0, "volume": 8926}, {"time": 1764957900, "open": 25729.0, "high": 25739.25, "low": 25724.25, "close": 25738.25, "volume": 9543}, {"time": 1764958200, "open": 25738.25, "high": 25739.0, "low": 25722.75, "close": 25725.0, "volume": 7321}, {"time": 1764958500, "open": 25725.25, "high": 25729.75, "low": 25714.25, "close": 25722.75, "volume": 11850}, {"time": 1764958800, "open": 25722.5, "high": 25724.0, "low": 25699.75, "close": 25718.25, "volume": 15404}, {"time": 1764959100, "open": 25717.75, "high": 25747.75, "low": 25713.75, "close": 25744.0, "volume": 12943}, {"time": 1764959400, "open": 25744.25, "high": 25758.5, "low": 25739.75, "close": 25752.75, "volume": 14079}, {"time": 1764959700, "open": 25753.75, "high": 25757.0, "low": 25740.5, "close": 25751.25, "volume": 9321}, {"time": 1764960000, "open": 25752.25, "high": 25752.75, "low": 25722.75, "close": 25735.25, "volume": 11806}, {"time": 1764960300, "open": 25735.25, "high": 25738.75, "low": 25724.75, "close": 25737.5, "volume": 7102}, {"time": 1764960600, "open": 25737.25, "high": 25740.25, "low": 25720.25, "close": 25734.0, "volume": 8794}, {"time": 1764960900, "open": 25733.75, "high": 25736.0, "low": 25724.5, "close": 25727.0, "volume": 5281}, {"time": 1764961200, "open": 25727.25, "high": 25730.5, "low": 25715.0, "close": 25720.5, "volume": 10650}, {"time": 1764961500, "open": 25720.5, "high": 25729.75, "low": 25713.75, "close": 25726.5, "volume": 7729}, {"time": 1764961800, "open": 25726.5, "high": 25741.5, "low": 25722.25, "close": 25738.5, "volume": 8112}, {"time": 1764962100, "open": 25739.0, "high": 25741.0, "low": 25707.5, "close": 25718.5, "volume": 11521}, {"time": 1764962400, "open": 25718.5, "high": 25727.25, "low": 25706.5, "close": 25713.25, "volume": 9385}, {"time": 1764962700, "open": 25713.25, "high": 25733.5, "low": 25709.25, "close": 25722.0, "volume": 9716}, {"time": 1764963000, "open": 25723.0, "high": 25729.25, "low": 25709.25, "close": 25723.25, "volume": 8724}, {"time": 1764963300, "open": 25723.0, "high": 25725.25, "low": 25712.75, "close": 25725.25, "volume": 6423}, {"time": 1764963600, "open": 25725.0, "high": 25728.5, "low": 25705.5, "close": 25712.5, "volume": 7913}, {"time": 1764963900, "open": 25712.25, "high": 25712.75, "low": 25702.75, "close": 25711.75, "volume": 6166}, {"time": 1764964200, "open": 25710.75, "high": 25731.0, "low": 25709.5, "close": 25728.5, "volume": 10465}, {"time": 1764964500, "open": 25728.5, "high": 25743.75, "low": 25725.0, "close": 25737.5, "volume": 9733}, {"time": 1764964800, "open": 25737.75, "high": 25740.25, "low": 25723.0, "close": 25727.0, "volume": 8485}, {"time": 1764965100, "open": 25726.5, "high": 25731.25, "low": 25719.5, "close": 25721.25, "volume": 6549}, {"time": 1764965400, "open": 25721.5, "high": 25726.5, "low": 25711.5, "close": 25724.0, "volume": 9735}, {"time": 1764965700, "open": 25724.0, "high": 25739.5, "low": 25723.0, "close": 25736.75, "volume": 7120}, {"time": 1764966000, "open": 25736.75, "high": 25737.25, "low": 25720.5, "close": 25725.25, "volume": 6782}, {"time": 1764966300, "open": 25725.5, "high": 25726.5, "low": 25714.5, "close": 25725.5, "volume": 6632}, {"time": 1764966600, "open": 25725.5, "high": 25727.75, "low": 25712.75, "close": 25726.25, "volume": 7718}, {"time": 1764966900, "open": 25726.0, "high": 25726.25, "low": 25715.25, "close": 25716.5, "volume": 4852}, {"time": 1764967200, "open": 25716.25, "high": 25723.0, "low": 25707.25, "close": 25722.0, "volume": 8444}, {"time": 1764967500, "open": 25722.0, "high": 25722.75, "low": 25687.0, "close": 25693.0, "volume": 14313}, {"time": 1764967800, "open": 25692.5, "high": 25722.0, "low": 25677.75, "close": 25707.25, "volume": 26032}, {"time": 1764968100, "open": 25707.25, "high": 25740.0, "low": 25706.75, "close": 25726.0, "volume": 23788}, {"time": 1764968400, "open": 25725.75, "high": 25739.75, "low": 25723.25, "close": 25735.5, "volume": 11776}, {"time": 1764968700, "open": 25735.5, "high": 25743.75, "low": 25733.5, "close": 25736.75, "volume": 3735}, {"time": 1764969000, "open": 25736.25, "high": 25739.75, "low": 25729.25, "close": 25733.75, "volume": 3058}, {"time": 1764969300, "open": 25734.0, "high": 25738.5, "low": 25729.75, "close": 25734.0, "volume": 1416}, {"time": 1764969600, "open": 25734.75, "high": 25737.75, "low": 25734.5, "close": 25735.0, "volume": 1010}, {"time": 1764969900, "open": 25735.25, "high": 25737.5, "low": 25732.0, "close": 25732.0, "volume": 1175}, {"time": 1764970200, "open": 25732.0, "high": 25736.0, "low": 25730.25, "close": 25732.25, "volume": 1431}, {"time": 1764970500, "open": 25732.25, "high": 25740.25, "low": 25731.75, "close": 25739.0, "volume": 1316}, {"time": 1764970800, "open": 25738.75, "high": 25739.25, "low": 25735.5, "close": 25736.0, "volume": 1074}, {"time": 1764971100, "open": 25736.25, "high": 25741.25, "low": 25735.25, "close": 25736.75, "volume": 1395}, {"time": 1764971400, "open": 25737.0, "high": 25738.5, "low": 25733.5, "close": 25737.0, "volume": 1081}, {"time": 1764971700, "open": 25736.25, "high": 25738.25, "low": 25732.25, "close": 25735.0, "volume": 1303}];
+        let realtimeActive = false;
+        let backtestActive = false;
+        let backtestIndex = 0;
+        let backtestInterval = null;
+        let realtimeInterval = null;
+        let serverPort = null;
+        const backtestSpeed = 1.0;
+        const symbol = 'mnq';
+        const timeframe = '5m';
+        
+        // Calculate interval based on timeframe (in seconds)
+        function getTimeframeSeconds(tf) {
+            const match = tf.match(/(\d+)([mhd])/);
+            if (!match) return 60;
+            const value = parseInt(match[1]);
+            const unit = match[2];
+            if (unit === 'm') return value * 60;
+            if (unit === 'h') return value * 3600;
+            if (unit === 'd') return value * 86400;
+            return 60;
+        }
+        
+        const timeframeSeconds = getTimeframeSeconds(timeframe);
+        const backtestIntervalMs = (timeframeSeconds * 1000) / backtestSpeed;
+        
+        function showError(message) {
+            const statusEl = document.getElementById('status');
+            if (statusEl) {
+                statusEl.textContent = 'Error: ' + message;
+                statusEl.style.color = '#ef5350';
+            }
+            console.error(message);
+        }
+        
+        function updateStatus(message) {
+            const statusEl = document.getElementById('status');
+            if (statusEl) {
+                statusEl.textContent = message;
+                statusEl.style.color = '#888';
+            }
+        }
+        
+        // Initialize chart after library loads
+        function initChart() {
+            try {
+                // Check if library loaded
+                if (typeof LightweightCharts === 'undefined') {
+                    showError('TradingView library failed to load');
+                    return;
+                }
+                
+                if (!chartData || chartData.length === 0) {
+                    showError('No chart data available');
+                    return;
+                }
+                
+                // Get chart container
+                const chartContainer = document.getElementById('chart-container');
+                if (!chartContainer) {
+                    showError('Chart container not found');
+                    return;
+                }
+                
+                // Create chart
+                chart = LightweightCharts.createChart(chartContainer, {
+                    layout: {
+                        background: { color: '#1a1a1a' },
+                        textColor: '#d1d5db',
+                    },
+                    grid: {
+                        vertLines: { color: '#2a2a2a' },
+                        horzLines: { color: '#2a2a2a' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: '#2a2a2a',
+                    },
+                    timeScale: {
+                        borderColor: '#2a2a2a',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                    width: chartContainer.clientWidth,
+                    height: 600,
+                });
+                
+                // Create candlestick series
+                if (typeof chart.addCandlestickSeries !== 'function') {
+                    showError('addCandlestickSeries not available');
+                    console.error('Available methods:', Object.getOwnPropertyNames(chart));
+                    return;
+                }
+                
+                candlestickSeries = chart.addCandlestickSeries({
+                    upColor: '#26a69a',
+                    downColor: '#ef5350',
+                    borderVisible: false,
+                    wickUpColor: '#26a69a',
+                    wickDownColor: '#ef5350',
+                });
+                
+                // Create volume series
+                volumeSeries = chart.addHistogramSeries({
+                    color: '#26a69a',
+                    priceFormat: {
+                        type: 'volume',
+                    },
+                    priceScaleId: 'volume',
+                    scaleMargins: {
+                        top: 0.8,
+                        bottom: 0,
+                    },
+                });
+                
+                // Set up volume price scale
+                chart.priceScale('volume').applyOptions({
+                    scaleMargins: {
+                        top: 0.8,
+                        bottom: 0,
+                    },
+                });
+                
+                // Prepare initial data (only if not in backtest mode)
+                if (!backtestActive) {
+                    const candlestickData = chartData.map(bar => ({
+                        time: bar.time,
+                        open: parseFloat(bar.open),
+                        high: parseFloat(bar.high),
+                        low: parseFloat(bar.low),
+                        close: parseFloat(bar.close),
+                    }));
+                    
+                    const volumeData = chartData.map(bar => ({
+                        time: bar.time,
+                        value: parseInt(bar.volume) || 0,
+                        color: parseFloat(bar.close) >= parseFloat(bar.open) ? '#26a69a80' : '#ef535080',
+                    }));
+                    
+                    // Set data
+                    candlestickSeries.setData(candlestickData);
+                    volumeSeries.setData(volumeData);
+                    
+                    // Fit content
+                    chart.timeScale().fitContent();
+                }
+                
+                updateStatus('Chart ready - ' + chartData.length + ' bars loaded');
+                
+                // Auto-start if modes are enabled
+                if (realtimeActive && serverPort) {
+                    setTimeout(() => toggleRealtime(), 500);
+                }
+                if (backtestActive) {
+                    // Don't auto-start backtest, let user click button
+                    updateStatus('Chart ready - Click "Start Backtest" to begin replay');
+                }
+            } catch (error) {
+                showError('Chart error: ' + error.message);
+                console.error('Full error:', error);
+            }
+        }
+        
+        // Real-time update function
+        async function updateRealtime() {
+            if (!serverPort) {
+                updateStatus('Real-time server not available');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/quote`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                
+                if (data.latest_bar) {
+                    const bar = data.latest_bar;
+                    const lastBar = chartData[chartData.length - 1];
+                    
+                    // Check if this is a new bar or update to current bar
+                    if (bar.time === lastBar.time) {
+                        // Update current bar
+                        lastBar.high = Math.max(lastBar.high, bar.close);
+                        lastBar.low = Math.min(lastBar.low, bar.close);
+                        lastBar.close = bar.close;
+                        lastBar.volume = bar.volume;
+                        
+                        // Update chart
+                        candlestickSeries.update({
+                            time: bar.time,
+                            open: lastBar.open,
+                            high: lastBar.high,
+                            low: lastBar.low,
+                            close: lastBar.close,
+                        });
+                        
+                        volumeSeries.update({
+                            time: bar.time,
+                            value: bar.volume,
+                            color: bar.close >= lastBar.open ? '#26a69a80' : '#ef535080',
+                        });
+                    } else if (bar.time > lastBar.time) {
+                        // New bar
+                        chartData.push(bar);
+                        candlestickSeries.update({
+                            time: bar.time,
+                            open: bar.open,
+                            high: bar.high,
+                            low: bar.low,
+                            close: bar.close,
+                        });
+                        
+                        volumeSeries.update({
+                            time: bar.time,
+                            value: bar.volume,
+                            color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
+                        });
+                    }
+                    
+                    updateStatus(`Real-time: ${data.quote.last || data.quote.bid || 'N/A'} | ${new Date().toLocaleTimeString()}`);
+                }
+            } catch (error) {
+                console.error('Real-time update error:', error);
+                updateStatus('Real-time update failed: ' + error.message);
+            }
+        }
+        
+        // Toggle real-time updates
+        function toggleRealtime() {
+            const btn = document.getElementById('realtimeBtn');
+            if (!btn) return;
+            
+            if (realtimeActive) {
+                // Stop
+                if (realtimeInterval) {
+                    clearInterval(realtimeInterval);
+                    realtimeInterval = null;
+                }
+                realtimeActive = false;
+                btn.textContent = 'Start Real-Time';
+                btn.classList.remove('active');
+                updateStatus('Real-time updates stopped');
+            } else {
+                // Start
+                if (!serverPort) {
+                    showError('Real-time server not available. Start chart with --realtime flag.');
+                    return;
+                }
+                realtimeActive = true;
+                btn.textContent = 'Stop Real-Time';
+                btn.classList.add('active');
+                updateRealtime(); // Immediate update
+                realtimeInterval = setInterval(updateRealtime, 1000); // Update every second
+                updateStatus('Real-time updates started');
+            }
+        }
+        
+        // Backtesting function
+        function playBacktestBar() {
+            if (backtestIndex >= chartData.length) {
+                // Finished
+                toggleBacktest();
+                updateStatus('Backtest complete');
+                return;
+            }
+            
+            const bar = chartData[backtestIndex];
+            
+            // Get current data
+            const currentData = candlestickSeries.data();
+            const lastBar = currentData.length > 0 ? currentData[currentData.length - 1] : null;
+            
+            // Check if this bar already exists (same time)
+            if (lastBar && lastBar.time === bar.time) {
+                // Update existing bar
+                candlestickSeries.update({
+                    time: bar.time,
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                });
+                
+                volumeSeries.update({
+                    time: bar.time,
+                    value: bar.volume,
+                    color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
+                });
+            } else {
+                // Add new bar
+                candlestickSeries.update({
+                    time: bar.time,
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                });
+                
+                volumeSeries.update({
+                    time: bar.time,
+                    value: bar.volume,
+                    color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
+                });
+            }
+            
+            const date = new Date(bar.time * 1000);
+            updateStatus(`Backtest: ${backtestIndex + 1}/${chartData.length} | ${date.toLocaleString()}`);
+            
+            backtestIndex++;
+        }
+        
+        // Toggle backtesting
+        function toggleBacktest() {
+            const btn = document.getElementById('backtestBtn');
+            if (!btn) return;
+            
+            if (backtestActive) {
+                // Stop
+                if (backtestInterval) {
+                    clearInterval(backtestInterval);
+                    backtestInterval = null;
+                }
+                backtestActive = false;
+                btn.textContent = 'Start Backtest';
+                btn.classList.remove('active');
+                updateStatus('Backtest stopped');
+            } else {
+                // Start
+                backtestActive = true;
+                backtestIndex = 0;
+                btn.textContent = 'Stop Backtest';
+                btn.classList.add('active');
+                
+                // Clear existing data and start fresh
+                candlestickSeries.setData([]);
+                volumeSeries.setData([]);
+                
+                playBacktestBar(); // Play first bar immediately
+                backtestInterval = setInterval(playBacktestBar, backtestIntervalMs);
+                updateStatus('Backtest started');
+            }
+        }
+        
+        // Wait for DOM and library
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                setTimeout(initChart, 200);
+            });
+        } else {
+            setTimeout(initChart, 200);
+        }
+        
+        window.addEventListener('load', function() {
+            if (!chart) {
+                setTimeout(initChart, 200);
+            }
+        });
+        
+        // Refresh chart
+        function refreshChart() {
+            updateStatus('Refresh not available. Re-run chart command to update.');
+        }
+        
+        // Export data to CSV
+        function exportData() {
+            try {
+                const csv = [
+                    ['Time', 'Open', 'High', 'Low', 'Close', 'Volume'].join(','),
+                    ...chartData.map(bar => {
+                        const date = new Date(bar.time * 1000);
+                        return [
+                            date.toISOString(),
+                            bar.open,
+                            bar.high,
+                            bar.low,
+                            bar.close,
+                            bar.volume
+                        ].join(',');
+                    })
+                ].join('\n');
+                
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'mnq_5m_20251207_164718.csv';
+                a.click();
+                window.URL.revokeObjectURL(url);
+                updateStatus('CSV exported');
+            } catch (error) {
+                showError('Export error: ' + error.message);
+            }
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (chart && chartContainer) {
+                chart.applyOptions({ width: chartContainer.clientWidth });
+            }
+        });
+    </script>
+</body>
+</html>

@@ -505,7 +505,9 @@
         "Use _ensure_valid_token() not authenticate()",
         "Remove None from JSON payloads before sending",
         "Contracts must be fetched before use - no hardcoded fallbacks",
-        "Always use timezone-aware datetimes for arithmetic operations"
+        "Always use timezone-aware datetimes for arithmetic operations",
+        "Date range mode: When start_time is provided, fetch ALL bars (up to 20,000), don't limit to 'limit' parameter",
+        "Market hours: Adjust end_time to last market close when market is closed (weekends/after-hours)"
       ],
       "migration_notes": {
         "rust_migration_priority": "High - 9,568 lines, needs refactoring before migration",
@@ -570,9 +572,21 @@
         "hot_path_methods": [
           "place_market_order() - tries Rust first, falls back to Python",
           "modify_order() - tries Rust first, falls back to Python",
-          "cancel_order() - tries Rust first, falls back to Python"
+          "cancel_order() - tries Rust first, falls back to Python",
+          "get_open_orders() - tries Rust first, falls back to Python",
+          "get_order_history() - tries Rust first, falls back to Python",
+          "get_positions() - tries Rust first, falls back to Python",
+          "close_position() - tries Rust first, falls back to Python",
+          "get_market_quote() - tries Rust first, falls back to Python",
+          "get_market_depth() - tries Rust first, falls back to Python",
+          "get_available_contracts() - tries Rust first, falls back to Python"
         ],
         "contract_id_handling": "Pass string contract IDs directly to Rust (no int() conversion needed)"
+      },
+      "historical_data": {
+        "date_range_mode": "When start_time is explicitly provided, fetch ALL bars between dates (up to 20,000), don't limit to 'limit' parameter",
+        "market_hours_logic": "Adjusts end_time to last market close when market is closed (weekends/after-hours) to prevent requesting data from periods when market wasn't open",
+        "bar_count_mode": "When start_time is None, calculates lookback based on limit and timeframe, requests extra bars (limit * 3) to account for gaps/closures"
       }
     }
   },
@@ -786,6 +800,147 @@
         "docs/RUST_IMPLEMENTATION_STATUS.md"
       ],
       "impact": "Realistic performance expectations set. Rust's real benefits will show in Phase 2 (CPU-bound market data aggregation)."
+    },
+    {
+      "date": "2025-12-07",
+      "issue": "History command date range mode only fetches 20 bars instead of all bars between dates",
+      "fix": "✅ FIXED! Enhanced get_historical_data() to detect date range mode (when start_time is explicitly provided). In date range mode: (1) Calculates estimated max bars based on time range and timeframe, (2) Uses API max (20,000) to ensure all bars are fetched, (3) Skips limit capping - returns ALL bars between dates. Also fixed market hours logic to adjust end_time to last market close when market is closed (weekends/after-hours), preventing requests for data when market wasn't open.",
+      "files": [
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "Date range mode now correctly fetches all valid bars between specified dates, excluding market closure periods. Market hours logic ensures accurate data requests."
+    },
+    {
+      "date": "2025-12-07",
+      "issue": "History command fails on weekends - requests data from periods when market was closed",
+      "fix": "✅ FIXED! Added _get_last_market_close() helper function that adjusts end_time to last market close when market is currently closed. Handles: (1) Weekends (Saturday, Sunday before 6pm EST) → uses last Friday 5pm EST, (2) Friday after 5pm EST → uses today's 5pm EST, (3) Daily break (5pm-6pm EST) → uses today's 5pm EST, (4) Market open → uses current time. This ensures start_time calculation looks back from valid market close time, not from weekend/after-hours periods.",
+      "files": [
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "History command now correctly handles weekends and after-hours, only requesting data from periods when market was actually open."
+    },
+    {
+      "date": "2025-12-08",
+      "issue": "History command returns empty bars on weekends - start_time calculation includes closed periods even after end_time adjustment",
+      "fix": "✅ FIXED! Enhanced start_time calculation to ensure it never falls on weekends or outside market hours. Added logic to: (1) Detect if start_time is on weekend (Saturday/Sunday) and adjust to last Friday 9:30 AM EST, (2) Detect if start_time is before market open (9:30 AM) or after market close (5:00 PM) and adjust to market open of that day (or previous trading day if after close on Monday). This ensures both start_time and end_time are always within market hours, preventing empty API responses.",
+      "files": [
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "History command now correctly calculates time ranges that only include market-open periods, preventing empty API responses on weekends.",
+      "lessons_learned": [
+        "When calculating start_time from end_time, always ensure start_time is within market hours (9:30 AM - 5:00 PM EST, Mon-Fri)",
+        "Check both weekday (weekend detection) and hour (before/after market hours) when validating start_time",
+        "Adjust start_time to market open (9:30 AM) if it falls outside market hours, not just to end_time",
+        "If start_time is after market close on Monday, use last Friday's market open (not Monday's open)"
+      ]
+    },
+    {
+      "date": "2025-12-08",
+      "issue": "Chart dropdown menu not populating with contracts - JavaScript sending literal '{symbol}' string instead of actual symbol value",
+      "fix": "✅ FIXED! Root cause: HTML template used {('''...'''} (raw string) instead of {(f'''...'''} (f-string), so {symbol} was not replaced by Python's f-string interpolation. Fix: (1) Changed {(''' to {(f''' to enable f-string interpolation in the trading panel HTML section. (2) Changed JavaScript fallback from '{symbol}' to symbol (variable reference). (3) Added symbol.upper() to ensure consistent casing. (4) Added better logging to handle_get_contracts(). Contract dropdown now populates correctly after running 'contracts' CLI command.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Chart dropdown now correctly displays symbol value and populates with all available contracts. Contracts must be fetched via CLI 'contracts' command before opening chart.",
+      "lessons_learned": [
+        "Python f-strings: {('''...'''} is a raw string where {variable} is NOT replaced. Use {(f'''...'''} for f-string interpolation",
+        "In JavaScript within f-strings: use {{...}} for JavaScript braces, {variable} for Python variables",
+        "Contract cache must be populated before chart can display symbol dropdown",
+        "URL-encoded %7Bsymbol%7D indicates literal '{symbol}' string instead of variable value",
+        "Always check if template strings are using f-string prefix when variables should be interpolated"
+      ]
+    },
+    {
+      "date": "2025-12-08",
+      "issue": "Real-time chart showing time gaps, incorrect volume, and positions API 500 errors",
+      "fix": "✅ FIXED! Three issues resolved: (1) **Time gaps**: Changed timestamp calculation from `int(current_time.timestamp())` to `int(current_time.timestamp() // 60 * 60)` to round down to minute boundary, preventing sub-minute timing differences from creating gaps. (2) **Volume**: Changed from using total daily volume to calculating volume delta between updates. Track last known volume in cache and add delta to current bar. Initialize new bars with volume delta from last bar. (3) **Positions 500 error**: Changed status from 500 to 200 with empty array when positions fetch fails, added detailed logging. This keeps chart functional even if positions endpoint has issues.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Real-time chart now displays continuous bars without gaps, accurate per-bar volume, and gracefully handles position fetch errors without breaking the chart.",
+      "lessons_learned": [
+        "For bar aggregation, always round timestamps to bar boundary (e.g., minute boundary for 1m bars) to prevent gaps",
+        "Volume from quotes is total daily volume, not bar volume - must calculate delta between updates",
+        "API endpoints should return 200 with empty data instead of 500 errors when possible to keep UI functional",
+        "Cache both bar data and last known volume for accurate delta calculations",
+        "Use `timestamp // 60 * 60` to round down to minute boundary (or `// period * period` for other periods)"
+      ]
+    },
+    {
+      "date": "2025-12-08",
+      "issue": "Chart not showing current bars during Sunday evening session - showing stale Friday data instead of live Sunday 6pm+ data",
+      "fix": "✅ FIXED! Two issues: (1) Extended 'ensure recent data' logic to all short timeframes (30s, 1m-10m), not just 1m. (2) **CRITICAL**: Fixed _get_last_market_close() to correctly handle Sunday evening session. Original code checked `weekday == 6` (Sunday) but at 00:55 Monday morning EST, weekday is 0 (Monday), yet it's still the Sunday evening trading session (which runs Sunday 6pm - Monday 5pm EST). New logic: Market is open if (Sunday 6pm+) OR (Monday before 5pm) OR (Tue-Thu except 5-6pm) OR (Friday before 5pm). Returns current time when market is open, last close when market is closed.",
+      "files": [
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "Charts now correctly show live data during Sunday evening sessions and all trading hours. Critical fix for 24/5 futures market hours.",
+      "lessons_learned": [
+        "Futures markets trade Sunday 6pm - Friday 5pm EST (24/5 with daily breaks)",
+        "Sunday evening session continues into Monday morning (until Monday 5pm EST)",
+        "Python weekday(): 0=Monday, 6=Sunday. At 00:55 Monday EST, it's still Sunday evening session",
+        "Don't just check weekday - check both weekday AND hour to determine if market is open",
+        "Market hours logic must account for sessions that span midnight (Sunday 6pm → Monday 5pm)",
+        "Always return current time when market is open, not a past close time"
+      ]
+    },
+    {
+      "date": "2025-12-08",
+      "issue": "Chart x-axis times 5 hours ahead of actual time - timezone issue causing price bar discrepancies",
+      "fix": "✅ FIXED! When converting Bar objects to dictionaries for chart display, the code used `bar.timestamp.isoformat()` to create a string. Problem: If bar.timestamp is timezone-naive (no tzinfo), isoformat() produces a string without timezone info (e.g., '2025-12-08T05:00:00'). When parsed back with fromisoformat(), it creates a naive datetime, and .timestamp() treats it as local time (EST) instead of UTC, adding 5 hours. Solution: Convert timestamps directly to Unix seconds when creating dict, checking if naive and assuming UTC if so: `int(bar.timestamp.replace(tzinfo=tz.utc).timestamp()) if bar.timestamp.tzinfo is None else int(bar.timestamp.timestamp())`. This skips string serialization entirely.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Chart now displays correct times in UTC. Bars align properly without timezone-induced price discrepancies.",
+      "lessons_learned": [
+        "Never serialize datetime to ISO string and back when working with timestamps - convert directly to Unix seconds",
+        "If datetime is naive (no tzinfo), calling .timestamp() assumes local timezone, not UTC",
+        "Always check if datetime.tzinfo is None before calling .timestamp() - add UTC if naive",
+        "For charts expecting Unix timestamps, convert directly: int(dt.timestamp()), don't use isoformat()",
+        "Timezone-naive datetimes are dangerous - they're interpreted as local time, causing 5-hour shifts (EST offset)"
+      ]
+    },
+    {
+      "date": "2025-12-08",
+      "issue": "Chart still displaying times in UTC (5 hours ahead) instead of local time, and get_positions() AttributeError",
+      "fix": "✅ FIXED! Two issues: (1) **Time display**: TradingView Lightweight Charts displays timestamps in UTC by default. Added localization.timeFormatter to convert UTC timestamps to local time for display using JavaScript's Date.toLocaleTimeString(). This shows times in user's local timezone (EST) while keeping data in UTC. (2) **get_positions error**: Changed from trading_bot.get_positions() to trading_bot.get_open_positions() - that's the correct method name in TopStepXTradingBot.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Chart now displays times in local timezone (EST) making it easier to read. Position fetching works correctly.",
+      "lessons_learned": [
+        "TradingView Lightweight Charts displays times in UTC by default - must add localization.timeFormatter",
+        "Store data in UTC, display in local time using JavaScript Date.toLocaleTimeString()",
+        "Always verify method names when using objects - get_positions() vs get_open_positions()",
+        "Chart library formatters run in browser timezone, automatically handling DST and local offsets",
+        "Use toLocaleTimeString() with options for consistent time formatting across browsers"
+      ]
+    },
+    {
+      "date": "2025-12-07",
+      "issue": "Chart HTML errors: chartContainer undefined in resize handler, CORS errors in real-time mode, timestamp attribute error",
+      "fix": "✅ FIXED! (1) Moved chartContainer to global scope (let chartContainer = null) so resize handler can access it. (2) Added CORS headers to HTTP server responses (Access-Control-Allow-Origin: *) and OPTIONS handler for preflight requests. (3) Enhanced handle_quote() to handle both Bar objects (hasattr check) and dicts (get() method) for timestamp extraction. Added fallback timestamp calculation if timestamp is missing.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Chart HTML now works correctly in both real-time and backtest modes. CORS errors resolved, scope errors fixed, timestamp handling robust."
+    },
+    {
+      "date": "2025-12-07",
+      "issue": "Chart backtest mode: Blank canvas despite data being loaded correctly - bars not rendering",
+      "fix": "✅ FIXED! Multiple issues resolved: (1) Double chart initialization - added guard to prevent initChart() from running twice. (2) Backtest auto-starting after 'Load All Bars' - added testModeActive flag to prevent toggleBacktest() from interfering. (3) Time scale range incorrect - setVisibleRange() was being called but fitContent() was overriding it. Fixed by: removing fitContent() calls, using requestAnimationFrame to ensure setData() completes before setVisibleRange(), ensuring all times are numbers with Number(bar.time), sorting data chronologically. (4) Price axis not auto-scaling - added autoScale: true to rightPriceScale config and explicit priceScale().applyOptions({autoScale: true}) after setData(). (5) First bar zoom issue - changed initial visible range from 1 bar to ~50 bars for better context.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Chart now renders all bars correctly in backtest mode. Users can see full data with 'Load All Bars (Test)' button. Backtest can be controlled independently with speed dropdown (1x-500x).",
+      "lessons_learned": [
+        "TradingView Lightweight Charts: setVisibleRange() must be called AFTER setData() completes (use requestAnimationFrame)",
+        "fitContent() can override setVisibleRange() - don't call both, prefer setVisibleRange() for explicit control",
+        "Price axis auto-scaling must be enabled explicitly (autoScale: true in config AND applyOptions)",
+        "Chart initialization can happen multiple times - add guards to prevent double init",
+        "Data must be sorted chronologically and times must be numbers (not strings)",
+        "Test mode flag prevents backtest from interfering with manual data loading",
+        "Initial zoom should show ~50 bars, not just 1 bar (too zoomed in)"
+      ]
     }
   ],
   
