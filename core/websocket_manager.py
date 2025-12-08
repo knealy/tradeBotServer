@@ -185,78 +185,17 @@ class WebSocketManager:
                 logger.warning("⚠️  SignalR Market Hub disconnected")
                 with self._lock:
                     self._connected = False
-                # Schedule reconnection attempt for network interruptions
-                # Use create_task if loop is running, otherwise schedule in thread
-                if self._event_loop and self._event_loop.is_running():
-                    self._event_loop.create_task(self._handle_network_interruption_and_reconnect())
-                else:
-                    def run_in_thread():
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        try:
-                            new_loop.run_until_complete(self._handle_network_interruption_and_reconnect())
-                        except Exception as e:
-                            logger.debug(f"Error reconnecting in thread: {e}")
-                        finally:
-                            new_loop.close()
-                    thread = threading.Thread(target=run_in_thread, daemon=True)
-                    thread.start()
             
             def on_error(err):
                 try:
                     error_text = str(err)
-                    error_type = type(err).__name__
-                    
-                    # Handle network interruptions (sleep mode, network down, etc.)
-                    if (
-                        isinstance(err, OSError) or
-                        "Network is down" in error_text or
-                        "Errno 50" in error_text or
-                        "Connection closed" in error_text or
-                        "Connection reset" in error_text or
-                        "Broken pipe" in error_text or
-                        error_type == "OSError"
-                    ):
-                        logger.warning(f"SignalR network interruption detected: {error_text}")
-                        logger.info("Will attempt to reconnect when network is restored...")
-                        # Schedule reconnection with exponential backoff
-                        if self._event_loop and self._event_loop.is_running():
-                            self._event_loop.create_task(self._handle_network_interruption_and_reconnect())
-                        else:
-                            def run_in_thread():
-                                new_loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(new_loop)
-                                try:
-                                    new_loop.run_until_complete(self._handle_network_interruption_and_reconnect())
-                                except Exception as e:
-                                    logger.debug(f"Error reconnecting in thread: {e}")
-                                finally:
-                                    new_loop.close()
-                            thread = threading.Thread(target=run_in_thread, daemon=True)
-                            thread.start()
-                        return
-                    
                     # Handle authentication errors - try to refresh token and reconnect
                     if "401" in error_text or "403" in error_text or "Unauthorized" in error_text or "Forbidden" in error_text:
                         logger.warning(f"SignalR authentication error (401/403): {error_text}")
                         logger.info("Attempting to refresh token and reconnect...")
                         # Schedule token refresh and reconnection
-                        if self._event_loop and self._event_loop.is_running():
-                            asyncio.create_task(self._handle_auth_error_and_reconnect())
-                        else:
-                            def run_in_thread():
-                                new_loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(new_loop)
-                                try:
-                                    new_loop.run_until_complete(self._handle_auth_error_and_reconnect())
-                                except Exception as e:
-                                    logger.debug(f"Error reconnecting in thread: {e}")
-                                finally:
-                                    new_loop.close()
-                            thread = threading.Thread(target=run_in_thread, daemon=True)
-                            thread.start()
+                        asyncio.create_task(self._handle_auth_error_and_reconnect())
                         return
-                    
                     logger.error(f"SignalR Market Hub error: {error_text}")
                 except Exception:
                     logger.error(f"SignalR Market Hub error: {err}")
@@ -395,72 +334,6 @@ class WebSocketManager:
                     logger.error(f"Retry failed: {retry_error}")
             return False
     
-    async def _handle_network_interruption_and_reconnect(self):
-        """Handle network interruptions (sleep mode, network down) with exponential backoff."""
-        try:
-            # Don't reconnect if we're already connected
-            with self._lock:
-                if self._connected:
-                    return
-            
-            # Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
-            max_attempts = 10
-            base_delay = 2
-            
-            for attempt in range(max_attempts):
-                delay = min(base_delay * (2 ** attempt), 30)  # Cap at 30 seconds
-                
-                logger.info(f"Attempting to reconnect SignalR (attempt {attempt + 1}/{max_attempts}) after {delay}s delay...")
-                await asyncio.sleep(delay)
-                
-                # Check if network is available by trying to refresh token
-                try:
-                    await self.auth_manager.ensure_valid_token()
-                except Exception as e:
-                    logger.debug(f"Network not ready yet (attempt {attempt + 1}): {e}")
-                    continue
-                
-                # Stop old connection if it exists
-                if self._hub:
-                    try:
-                        self._hub.stop()
-                    except:
-                        pass
-                    self._hub = None
-                
-                with self._lock:
-                    self._connected = False
-                
-                # Try to reconnect
-                try:
-                    success = await self.start()
-                    if success:
-                        logger.info(f"✅ SignalR reconnected successfully after network interruption (attempt {attempt + 1})")
-                        # Re-subscribe to all symbols
-                        await self._resubscribe_all_symbols()
-                        return
-                    else:
-                        logger.debug(f"Reconnection attempt {attempt + 1} failed, will retry...")
-                except Exception as e:
-                    logger.debug(f"Reconnection attempt {attempt + 1} error: {e}")
-                    continue
-            
-            logger.warning(f"⚠️  SignalR reconnection failed after {max_attempts} attempts")
-        except Exception as e:
-            logger.error(f"Error during network interruption recovery: {e}")
-    
-    async def _resubscribe_all_symbols(self):
-        """Re-subscribe to all previously subscribed symbols after reconnection."""
-        with self._lock:
-            symbols_to_resubscribe = list(self._subscribed_symbols)
-            # Clear and re-add to pending to ensure they get subscribed
-            self._subscribed_symbols.clear()
-            self._pending_symbols.update(symbols_to_resubscribe)
-        
-        # Flush pending subscriptions
-        await self._flush_pending_subscriptions()
-        logger.info(f"Re-subscribed to {len(symbols_to_resubscribe)} symbols after reconnection")
-    
     async def _handle_auth_error_and_reconnect(self):
         """Handle authentication error by refreshing token and reconnecting."""
         try:
@@ -486,8 +359,6 @@ class WebSocketManager:
             success = await self.start()
             if success:
                 logger.info("✅ SignalR reconnected successfully after token refresh")
-                # Re-subscribe to all symbols
-                await self._resubscribe_all_symbols()
             else:
                 logger.warning("⚠️  SignalR reconnection failed after token refresh")
         except Exception as e:

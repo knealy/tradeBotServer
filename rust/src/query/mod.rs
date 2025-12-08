@@ -2,17 +2,14 @@
 //!
 //! High-performance query operations for orders, positions, and market data.
 //! Optimized for network-bound operations with connection pooling and HTTP/2.
-//! Includes response caching for 50-90% faster repeated queries.
-
-mod cache;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 use reqwest::Client;
-use chrono::Utc;
-use crate::query::cache::{QueryCache, ttl};
+use chrono::{DateTime, Utc};
 
 /// Query executor for TopStepX API
 #[pyclass]
@@ -20,7 +17,6 @@ pub struct QueryExecutor {
     base_url: String,
     client: Client,
     session_token: Arc<RwLock<Option<String>>>,
-    cache: Arc<QueryCache>,
 }
 
 impl QueryExecutor {
@@ -29,7 +25,6 @@ impl QueryExecutor {
             base_url: self.base_url.clone(),
             client: self.client.clone(),
             session_token: self.session_token.clone(),
-            cache: self.cache.clone(),
         }
     }
 }
@@ -57,7 +52,6 @@ impl QueryExecutor {
             base_url,
             client,
             session_token: Arc::new(RwLock::new(None)),
-            cache: Arc::new(QueryCache::new()),
         })
     }
 
@@ -295,13 +289,6 @@ impl QueryExecutor {
             .filter(|o| o.get("status").and_then(|s| s.as_u64()) == Some(1))
             .collect();
 
-        // Cache the result
-        if !open_orders.is_empty() {
-            let open_orders_value = Value::Array(open_orders.clone());
-            let cache_key = format!("open_orders:{}", account_id);
-            self.cache.set(cache_key, open_orders_value, ttl::OPEN_ORDERS);
-        }
-
         Ok(open_orders)
     }
 
@@ -310,15 +297,6 @@ impl QueryExecutor {
         account_id: u64,
         limit: u32,
     ) -> PyResult<Vec<Value>> {
-        // Check cache first (moderate TTL for order history)
-        let cache_key = format!("order_history:{}:{}", account_id, limit);
-        if let Some(cached) = self.cache.get(&cache_key) {
-            if let Some(array) = cached.as_array() {
-                return Ok(array.clone());
-            }
-        }
-
-        let cache_key_clone = cache_key.clone(); // Clone for use in closure
         let token = self.session_token.read()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Failed to acquire session_token lock"
@@ -368,29 +346,13 @@ impl QueryExecutor {
             .unwrap_or_default();
 
         // Limit results
-        let limited: Vec<Value> = orders.into_iter().take(limit as usize).collect();
-
-        // Cache the result
-        if !limited.is_empty() {
-            let orders_value = Value::Array(limited.clone());
-            self.cache.set(cache_key_clone, orders_value, ttl::ORDER_HISTORY);
-        }
-
-        Ok(limited)
+        Ok(orders.into_iter().take(limit as usize).collect())
     }
 
     async fn get_positions_async(
         &self,
         account_id: u64,
     ) -> PyResult<Vec<Value>> {
-        // Check cache first (short TTL for positions)
-        let cache_key = format!("positions:{}", account_id);
-        if let Some(cached) = self.cache.get(&cache_key) {
-            if let Some(array) = cached.as_array() {
-                return Ok(array.clone());
-            }
-        }
-
         let token = self.session_token.read()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Failed to acquire session_token lock"
@@ -430,12 +392,6 @@ impl QueryExecutor {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-
-        // Cache the result
-        if !positions.is_empty() {
-            let positions_value = Value::Array(positions.clone());
-            self.cache.set(cache_key, positions_value, ttl::POSITIONS);
-        }
 
         Ok(positions)
     }
@@ -504,12 +460,6 @@ impl QueryExecutor {
         &self,
         contract_id: String,
     ) -> PyResult<Option<Value>> {
-        // Check cache first
-        let cache_key = format!("quote:{}", contract_id);
-        if let Some(cached) = self.cache.get(&cache_key) {
-            return Ok(Some(cached));
-        }
-
         let token = self.session_token.read()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Failed to acquire session_token lock"
@@ -539,11 +489,6 @@ impl QueryExecutor {
                 format!("Failed to parse response: {}", e)
             ))?;
 
-        // Cache the result
-        if let Some(quote) = response_json.as_object() {
-            self.cache.set(cache_key, response_json.clone(), ttl::QUOTE);
-        }
-
         Ok(Some(response_json))
     }
 
@@ -551,12 +496,6 @@ impl QueryExecutor {
         &self,
         contract_id: String,
     ) -> PyResult<Option<Value>> {
-        // Check cache first
-        let cache_key = format!("depth:{}", contract_id);
-        if let Some(cached) = self.cache.get(&cache_key) {
-            return Ok(Some(cached));
-        }
-
         let token = self.session_token.read()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Failed to acquire session_token lock"
@@ -585,8 +524,6 @@ impl QueryExecutor {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.json::<Value>().await {
                         if json.get("error").is_none() {
-                            // Cache the result
-                            self.cache.set(cache_key, json.clone(), ttl::DEPTH);
                             return Ok(Some(json));
                         }
                     }
@@ -600,14 +537,6 @@ impl QueryExecutor {
     async fn get_available_contracts_async(
         &self,
     ) -> PyResult<Vec<Value>> {
-        // Check cache first
-        let cache_key = "contracts:available".to_string();
-        if let Some(cached) = self.cache.get(&cache_key) {
-            if let Some(array) = cached.as_array() {
-                return Ok(array.clone());
-            }
-        }
-
         let token = self.session_token.read()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Failed to acquire session_token lock"
@@ -649,12 +578,6 @@ impl QueryExecutor {
                 .cloned()
                 .unwrap_or_default()
         };
-
-        // Cache the result if we got contracts
-        if !contracts.is_empty() {
-            let contracts_value = Value::Array(contracts.clone());
-            self.cache.set(cache_key, contracts_value, ttl::CONTRACTS);
-        }
 
         Ok(contracts)
     }
