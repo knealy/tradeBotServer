@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 TopStepX Broker Adapter - Implements broker interfaces for TopStepX API.
 
@@ -1692,47 +1693,59 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # CRITICAL: Adjust end_time to last market close if market is currently closed
             # This ensures we don't request data from weekends/after-hours when market wasn't open
             def _get_last_market_close() -> datetime:
-                """Get the last market close time, accounting for weekends and daily breaks."""
+                """Get the last market close time, accounting for weekends and daily breaks.
+                
+                Futures market hours (EST):
+                - Sunday 6pm - Friday 5pm (with daily break 5pm-6pm Mon-Thu)
+                - Closed: Friday 5pm - Sunday 6pm
+                """
                 import pytz
                 et_tz = pytz.timezone('US/Eastern')
                 now_et = datetime.now(et_tz)
                 daily_close_hour = 17  # 5pm EST
                 weekend_open_hour = 18  # 6pm EST Sunday
                 
-                weekday = now_et.weekday()
+                weekday = now_et.weekday()  # 0=Monday, 1=Tuesday, ..., 6=Sunday
                 current_hour = now_et.hour
                 
-                # Weekend (Friday after 5pm - Sunday before 6pm)
-                if weekday == 6:  # Sunday
-                    if current_hour < weekend_open_hour:
-                        # Before Sunday 6pm - use last Friday 5pm
-                        days_back = 2
-                        last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
-                    else:
-                        # After Sunday 6pm - market is open, use current time
+                # Check if market is currently open (Sunday 6pm - Friday 5pm, excluding daily breaks)
+                # Sunday 6pm onwards (including Monday morning before 5pm)
+                if weekday == 6 and current_hour >= weekend_open_hour:
+                    # Sunday evening session - market is open
+                    return datetime.now(timezone.utc)
+                # Monday morning (before daily close at 5pm) - still in Sunday evening session
+                elif weekday == 0 and current_hour < daily_close_hour:
+                    # Market is open (Sunday evening session continues until Monday 5pm)
+                    return datetime.now(timezone.utc)
+                # Monday-Thursday: market open except during daily break (5pm-6pm)
+                elif weekday in [0, 1, 2, 3]:  # Monday-Thursday
+                    if current_hour >= weekend_open_hour or current_hour < daily_close_hour:
+                        # Market is open (after 6pm or before 5pm)
                         return datetime.now(timezone.utc)
-                elif weekday == 5:  # Saturday
-                    # Use last Friday 5pm
-                    days_back = 1
-                    last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
-                elif weekday == 4 and current_hour >= daily_close_hour:  # Friday after 5pm
-                    # Use today's 5pm
+                    else:
+                        # Daily break (5pm-6pm) - use today's 5pm
+                        last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
+                        return last_close.astimezone(timezone.utc)
+                # Friday: market open until 5pm
+                elif weekday == 4 and current_hour < daily_close_hour:
+                    # Friday before 5pm - market is open
+                    return datetime.now(timezone.utc)
+                # Friday after 5pm - market closed
+                elif weekday == 4 and current_hour >= daily_close_hour:
                     last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
+                    return last_close.astimezone(timezone.utc)
+                # Saturday or Sunday before 6pm - market closed, use last Friday 5pm
+                elif weekday == 5 or (weekday == 6 and current_hour < weekend_open_hour):
+                    # Calculate days back to Friday
+                    if weekday == 5:  # Saturday
+                        days_back = 1
+                    else:  # Sunday before 6pm
+                        days_back = 2
+                    last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=days_back)
+                    return last_close.astimezone(timezone.utc)
                 else:
-                    # During the week - check if in daily break (5pm-6pm)
-                    if current_hour == daily_close_hour or (current_hour < weekend_open_hour and weekday < 5):
-                        # In daily break - use today's 5pm or yesterday's 5pm
-                        if current_hour >= daily_close_hour:
-                            last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0)
-                        else:
-                            # Before 6pm after daily close - use yesterday's close
-                            last_close = now_et.replace(hour=daily_close_hour, minute=0, second=0, microsecond=0) - timedelta(days=1)
-                    else:
-                        # Market is currently open - use current time
-                        return datetime.now(timezone.utc)
-                
-                # Convert to UTC
-                return last_close.astimezone(timezone.utc)
+                    # Fallback: use current time
+                    return datetime.now(timezone.utc)
             
             # CRITICAL: Always use current time as end_time to ensure we get data up to the current moment
             # This mirrors the original trading_bot implementation: end_time defaults to "now".
@@ -1748,18 +1761,31 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if end_time > last_close:
                 logger.debug(f"Market is closed. Adjusting end_time from {end_time} to last market close: {last_close}")
                 end_time = last_close
+            elif end_time < last_close:
+                # If end_time is before last_close, it's in the past - that's fine, use it as-is
+                logger.debug(f"end_time {end_time} is before last market close {last_close} - using as-is")
             
-            # For 1m timeframes, ensure end_time is very recent (within last minute) to get latest data
-            if timeframe == "1m":
+            # For short timeframes (seconds, 1-10m), ensure end_time is very recent to get latest data
+            # This is especially important when market is closed to get data up to last close
+            timeframe_lower = timeframe.lower()
+            if timeframe_lower.endswith("s") or timeframe_lower in ["1m", "2m", "3m", "5m", "10m"]:
                 current_time = datetime.now(timezone.utc)
                 time_diff = (current_time - end_time).total_seconds()
-                # If end_time is more than 1 minute old, update it to current time (but not beyond last market close)
-                if time_diff > 60:
+                # Get the threshold based on timeframe
+                if timeframe_lower.endswith("s"):
+                    threshold = max(int(timeframe_lower[:-1]) * 2, 60)  # At least 1 minute for seconds
+                elif timeframe_lower in ["1m", "2m"]:
+                    threshold = 120  # 2 minutes
+                else:
+                    threshold = 600  # 10 minutes for 5m/10m
+                
+                # If end_time is older than threshold, update it
+                if time_diff > threshold:
                     # Use the earlier of current time or last market close
                     potential_end = min(current_time, last_close)
                     if potential_end > end_time:
                         logger.info(
-                            f"📊 1m timeframe: end_time is {time_diff:.0f}s old, updating to {potential_end} for fresh data"
+                            f"📊 {timeframe} timeframe: end_time is {time_diff:.0f}s old, updating to {potential_end} for fresh data"
                         )
                         end_time = potential_end
             
@@ -1799,6 +1825,43 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     lookback_bars = max(limit * 3, limit + 100)
                 
                 start_time = end_time - (delta_per_bar * lookback_bars)
+                
+                # Ensure start_time doesn't go into weekend/closed periods
+                # The end_time has already been adjusted to last market close, so we need to ensure
+                # start_time is also within market hours (9:30 AM - 5:00 PM EST, Mon-Fri)
+                import pytz
+                et_tz = pytz.timezone('US/Eastern')
+                start_et = start_time.astimezone(et_tz)
+                
+                # If start_time is on weekend (Saturday=5, Sunday=6), adjust to last Friday 9:30 AM
+                start_weekday = start_et.weekday()
+                if start_weekday >= 5:  # Saturday or Sunday
+                    days_back = start_weekday - 4  # 1 for Saturday, 2 for Sunday
+                    friday_open = (start_et - timedelta(days=days_back)).replace(hour=9, minute=30, second=0, microsecond=0)
+                    friday_open_utc = friday_open.astimezone(timezone.utc)
+                    logger.debug(f"start_time is on weekend, adjusting from {start_time} to {friday_open_utc} (last Friday market open)")
+                    start_time = friday_open_utc
+                    start_et = start_time.astimezone(et_tz)  # Recalculate after adjustment
+                
+                # If start_time is before market open (9:30 AM) or after market close (5:00 PM)
+                start_hour = start_et.hour
+                if start_hour < 9 or (start_hour == 9 and start_et.minute < 30) or start_hour >= 17:
+                    # Adjust to market open of that day (or previous trading day if after close)
+                    if start_hour >= 17:
+                        # After market close - use today's market open, or previous day if it's Monday
+                        if start_et.weekday() == 0:  # Monday
+                            # Use last Friday's market open
+                            market_open = (start_et - timedelta(days=3)).replace(hour=9, minute=30, second=0, microsecond=0)
+                        else:
+                            # Use today's market open
+                            market_open = start_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                    else:
+                        # Before market open - use today's market open
+                        market_open = start_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                    market_open_utc = market_open.astimezone(timezone.utc)
+                    logger.debug(f"start_time is outside market hours, adjusting from {start_time} to {market_open_utc}")
+                    start_time = market_open_utc
+                
                 lookback_days = (end_time - start_time).total_seconds() / 86400
                 logger.info(
                     f"Bar count mode: {lookback_bars} bars worth of time = {lookback_days:.1f} days "
@@ -1879,6 +1942,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.error(f"API error: {response['error']}")
                 return []
             
+            # Check for errors first
             if response.get('success') == False or (response.get('errorCode') and response.get('errorCode') != 0):
                 error_code = response.get('errorCode', 'Unknown')
                 error_msg = response.get('errorMessage', 'No error message')
@@ -1891,17 +1955,25 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 bars_data = response
                 logger.debug(f"🔍 Parsed bars_data from list: {len(bars_data)} bars")
             elif isinstance(response, dict):
-                # Try multiple possible field names
-                bars_data = (
-                    response.get('bars') or 
-                    response.get('data') or 
-                    response.get('candles') or 
-                    response.get('result') or
-                    []
-                )
-                logger.debug(f"🔍 Parsed bars_data from dict: {len(bars_data) if bars_data else 0} bars")
-                # If still empty, log the full response structure for debugging
-                if not bars_data:
+                # Try multiple possible field names - check if key exists, not just if value is truthy
+                # (empty lists are falsy but valid)
+                if 'bars' in response:
+                    bars_data = response['bars']
+                    if isinstance(bars_data, list):
+                        logger.debug(f"🔍 Found 'bars' key with {len(bars_data)} bars")
+                    else:
+                        logger.debug(f"🔍 Found 'bars' key but it's not a list, type: {type(bars_data)}")
+                elif 'data' in response:
+                    bars_data = response['data']
+                    logger.debug(f"🔍 Found 'data' key with {len(bars_data) if isinstance(bars_data, list) else 'non-list'} value")
+                elif 'candles' in response:
+                    bars_data = response['candles']
+                    logger.debug(f"🔍 Found 'candles' key")
+                elif 'result' in response:
+                    bars_data = response['result']
+                    logger.debug(f"🔍 Found 'result' key")
+                else:
+                    bars_data = []
                     logger.warning(f"🔍 Response dict has no bars/data/candles/result fields. Available keys: {list(response.keys())}")
                     # Log a sample of the response (first 500 chars) to help debug
                     try:
@@ -1909,11 +1981,80 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         logger.debug(f"🔍 Full response (first 500 chars): {response_str[:500]}")
                     except Exception as e:
                         logger.debug(f"🔍 Full response (json serialization failed): {str(response)[:500]}")
+                
+                # Ensure bars_data is a list
+                if bars_data is None:
+                    bars_data = []
+                elif not isinstance(bars_data, list):
+                    logger.warning(f"🔍 bars_data is not a list, type: {type(bars_data)}, value: {bars_data}")
+                    bars_data = []
+                
+                logger.debug(f"🔍 Parsed bars_data from dict: {len(bars_data)} bars")
+                
+                # If bars is empty, log the full response for debugging
+                if not bars_data and isinstance(response, dict):
+                    logger.warning(f"🔍 Empty bars array. Full response: success={response.get('success')}, errorCode={response.get('errorCode')}, errorMessage={response.get('errorMessage')}")
+                    try:
+                        response_str = json.dumps(response, indent=2, default=str)
+                        logger.debug(f"🔍 Full response structure: {response_str[:1000]}")
+                    except Exception as e:
+                        logger.debug(f"🔍 Full response (json serialization failed): {str(response)[:1000]}")
             
             if not bars_data:
                 logger.warning("API returned empty bars data")
                 logger.warning(f"Request was: contractId={contract_id}, startTime={start_str}, endTime={end_str}, unit={unit}, unitNumber={unit_number}, limit={api_limit}")
-                return []
+                
+                # If we got an empty response and we're in bar count mode, try adjusting the time range
+                # to avoid weekends/closed periods
+                if not original_start_time_provided and isinstance(response, dict) and response.get('success') != False:
+                    logger.info("🔄 Empty response in bar count mode - trying to adjust time range to avoid closed periods")
+                    # Try going back further to ensure we hit market-open periods
+                    # For weekends, go back to last Friday's market open
+                    import pytz
+                    et_tz = pytz.timezone('US/Eastern')
+                    now_et = datetime.now(et_tz)
+                    weekday = now_et.weekday()
+                    
+                    # If it's weekend, adjust start_time to last Friday's market open (9:30 AM EST)
+                    if weekday >= 5:  # Saturday or Sunday
+                        # Go back to last Friday 9:30 AM EST
+                        days_back = weekday - 4  # 1 for Saturday, 2 for Sunday
+                        friday_open = (now_et - timedelta(days=days_back)).replace(hour=9, minute=30, second=0, microsecond=0)
+                        friday_open_utc = friday_open.astimezone(timezone.utc)
+                        
+                        # Recalculate start_time from Friday open instead of current time
+                        if start_time < friday_open_utc:
+                            logger.info(f"🔄 Adjusting start_time from {start_time} to {friday_open_utc} (last Friday market open)")
+                            start_time = friday_open_utc
+                            start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                            
+                            # Retry the request with adjusted time range
+                            bars_request = {
+                                "contractId": contract_id,
+                                "live": False,
+                                "startTime": start_str,
+                                "endTime": end_str,
+                                "unit": unit,
+                                "unitNumber": unit_number,
+                                "limit": api_limit,
+                                "includePartialBar": True
+                            }
+                            
+                            logger.info(f"🔄 Retrying with adjusted time range: startTime={start_str}, endTime={end_str}")
+                            response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+                            
+                            # Re-parse the response
+                            if isinstance(response, dict) and 'bars' in response:
+                                bars_data = response['bars']
+                                if isinstance(bars_data, list) and bars_data:
+                                    logger.info(f"✅ Retry successful: got {len(bars_data)} bars")
+                                else:
+                                    logger.warning("🔄 Retry still returned empty bars")
+                            else:
+                                logger.warning("🔄 Retry failed or returned unexpected format")
+                
+                if not bars_data:
+                    return []
             
             # Debug: log raw last bar timestamp from API to compare with now
             try:
@@ -2000,7 +2141,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.info(f"📊 Aggregating {len(one_min_bars)} 1m bars into {timeframe} bars...")
                 
                 # Use Rust aggregation if available, otherwise Python fallback
-                if RUST_AVAILABLE and self.use_rust:
+                if RUST_AVAILABLE and self._use_rust:
                     try:
                         # Convert Bar objects to dict format for Rust
                         bars_dict = []

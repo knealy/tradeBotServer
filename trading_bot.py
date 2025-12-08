@@ -7712,23 +7712,79 @@ class TopStepXTradingBot:
                                     print(f"     ${price:.2f} x {size}")
                 
                 elif command_lower.startswith("chart"):
-                    # Open chart window GUI
+                    # Open chart in browser using TradingView Lightweight Charts
+                    # Usage: chart <symbol> [timeframe] [limit] [--realtime] [--backtest start_date end_date [--speed N]]
                     parts = command.split()
                     symbol = parts[1] if len(parts) > 1 else "MNQ"
-                    timeframe = parts[2] if len(parts) > 2 else "5m"
-                    limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 100
+                    timeframe = parts[2] if len(parts) > 2 and not parts[2].startswith('--') else "5m"
+                    
+                    # Parse flags
+                    realtime = '--realtime' in parts
+                    backtest = '--backtest' in parts
+                    backtest_start = None
+                    backtest_end = None
+                    backtest_speed = 1.0
+                    limit = 100
+                    
+                    if backtest:
+                        try:
+                            backtest_idx = parts.index('--backtest')
+                            if len(parts) > backtest_idx + 2:
+                                backtest_start = parts[backtest_idx + 1]
+                                backtest_end = parts[backtest_idx + 2]
+                            else:
+                                print("❌ Backtest mode requires start and end dates")
+                                print("   Usage: chart MNQ 5m --backtest 2025-12-01 2025-12-07 [--speed 2.0]")
+                                continue
+                        except (ValueError, IndexError):
+                            print("❌ Invalid backtest dates")
+                            continue
+                    
+                    if '--speed' in parts:
+                        try:
+                            speed_idx = parts.index('--speed')
+                            if len(parts) > speed_idx + 1:
+                                backtest_speed = float(parts[speed_idx + 1])
+                        except (ValueError, IndexError):
+                            pass
+                    
+                    # Parse limit (if not in backtest mode)
+                    if not backtest:
+                        for i, part in enumerate(parts):
+                            if part.isdigit() and i > 0 and not parts[i-1].startswith('--'):
+                                limit = int(part)
+                                break
                     
                     try:
-                        from gui.chart_window import open_chart_window
-                        print(f"📊 Opening chart window for {symbol} {timeframe} ({limit} bars)...")
-                        print("💡 Close the chart window to return to terminal")
-                        window = open_chart_window(self, symbol, timeframe, limit)
-                        window.run()
-                    except ImportError as e:
-                        print(f"❌ GUI module not available: {e}")
-                        print("   Install matplotlib: pip install matplotlib")
+                        from gui.chart_html import open_chart_html_async
+                        mode_str = ""
+                        if realtime:
+                            mode_str = " (Real-Time Mode)"
+                        elif backtest:
+                            mode_str = f" (Backtest Mode: {backtest_start} to {backtest_end}, {backtest_speed}x speed)"
+                        
+                        print(f"📊 Generating chart for {symbol} {timeframe} ({limit} bars){mode_str}...")
+                        html_path = await open_chart_html_async(
+                            self, 
+                            symbol, 
+                            timeframe, 
+                            limit,
+                            realtime=realtime,
+                            backtest=backtest,
+                            backtest_start=backtest_start,
+                            backtest_end=backtest_end,
+                            backtest_speed=backtest_speed
+                        )
+                        print(f"✅ Chart opened in browser: {html_path}")
+                        print("💡 Chart is saved locally - you can open it anytime or share it")
+                        if realtime:
+                            print("🔄 Real-time updates are active - chart will update automatically")
+                        elif backtest:
+                            print("▶️  Backtest mode - click 'Start Backtest' button to begin replay")
                     except Exception as e:
-                        print(f"❌ Error opening chart window: {e}")
+                        print(f"❌ Error generating chart: {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 elif command_lower.startswith("history "):
                     parts = command.split()
