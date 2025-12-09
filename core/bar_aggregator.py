@@ -292,8 +292,79 @@ class BarAggregator:
         bar_end = self._get_bar_end_time(builder.bar_start, timeframe)
         return current_time >= bar_end
     
+    def _get_daily_bar_start_time(self, timestamp: datetime) -> datetime:
+        """
+        Get the start time for a daily bar based on EST market hours.
+        
+        Rules:
+        - Every day opens at 18:00 ET (6pm) the previous day
+        - Every day closes at 17:00 ET (5pm) that day
+        
+        Examples:
+        - Monday bar: Sunday 18:00 ET to Monday 17:00 ET
+        - Tuesday bar: Monday 18:00 ET to Tuesday 17:00 ET
+        - Wednesday bar: Tuesday 18:00 ET to Wednesday 17:00 ET
+        - Thursday bar: Wednesday 18:00 ET to Thursday 17:00 ET
+        - Friday bar: Thursday 18:00 ET to Friday 17:00 ET
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            # Fallback if pytz not available
+            et_tz = timezone(timedelta(hours=-5))  # EST offset (approximate)
+        
+        # Convert to EST
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp_et = timestamp.astimezone(et_tz)
+        
+        hour = timestamp_et.hour
+        
+        # Calculate daily bar start - simplified logic
+        # If before 17:00 (5pm), we're still in today's bar (which started yesterday 18:00)
+        # If at or after 17:00 (5pm), we're in tomorrow's bar (which starts today 18:00)
+        if hour < 17:
+            # Before 17:00 - still in today's bar, which started yesterday 18:00
+            days_back = 1
+            bar_start_et = (timestamp_et - timedelta(days=days_back)).replace(hour=18, minute=0, second=0, microsecond=0)
+        else:
+            # At or after 17:00 - this is tomorrow's bar, which starts today 18:00
+            bar_start_et = timestamp_et.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        # Convert back to UTC
+        return bar_start_et.astimezone(timezone.utc)
+    
+    def _get_daily_bar_end_time(self, bar_start: datetime) -> datetime:
+        """
+        Get the end time for a daily bar based on EST market hours.
+        
+        Rules:
+        - Daily bars end at 17:00 ET (5pm) the next day
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            et_tz = timezone(timedelta(hours=-5))
+        
+        # Convert to EST
+        if bar_start.tzinfo is None:
+            bar_start = bar_start.replace(tzinfo=timezone.utc)
+        bar_start_et = bar_start.astimezone(et_tz)
+        
+        # All daily bars end at 17:00 ET the next day
+        bar_end_et = (bar_start_et + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+        
+        # Convert back to UTC
+        return bar_end_et.astimezone(timezone.utc)
+    
     def _get_bar_start_time(self, timestamp: datetime, timeframe: str) -> datetime:
         """Get the start time for a bar given a timestamp and timeframe."""
+        # Special handling for daily bars
+        if timeframe.endswith('d'):
+            return self._get_daily_bar_start_time(timestamp)
+        
         # Parse timeframe (e.g., '5m' -> 5 minutes)
         if timeframe.endswith('m'):
             minutes = int(timeframe[:-1])
@@ -303,9 +374,6 @@ class BarAggregator:
         elif timeframe.endswith('h'):
             hours = int(timeframe[:-1])
             bar_seconds = hours * 3600
-        elif timeframe.endswith('d'):
-            days = int(timeframe[:-1])
-            bar_seconds = days * 86400
         else:
             # Default to 1 minute if unknown timeframe
             bar_seconds = 60
@@ -315,6 +383,10 @@ class BarAggregator:
     
     def _get_bar_end_time(self, bar_start: datetime, timeframe: str) -> datetime:
         """Get the end time for a bar."""
+        # Special handling for daily bars
+        if timeframe.endswith('d'):
+            return self._get_daily_bar_end_time(bar_start)
+        
         if timeframe.endswith('m'):
             minutes = int(timeframe[:-1])
             return bar_start + timedelta(minutes=minutes)
@@ -324,9 +396,6 @@ class BarAggregator:
         elif timeframe.endswith('h'):
             hours = int(timeframe[:-1])
             return bar_start + timedelta(hours=hours)
-        elif timeframe.endswith('d'):
-            days = int(timeframe[:-1])
-            return bar_start + timedelta(days=days)
         else:
             return bar_start + timedelta(minutes=1)
     

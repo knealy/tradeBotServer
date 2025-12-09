@@ -32,6 +32,12 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     
     app = web.Application()
     
+    # Reduce aiohttp access log verbosity (only log warnings/errors, not every request)
+    import logging
+    import os
+    if os.getenv("ACCESS_LOG_VERBOSE", "false").lower() not in ("1", "true", "yes", "on"):
+        logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    
     # Cache for latest bar to avoid rate limiting
     _latest_bar_cache = {}
     _last_bar_fetch_time = {}
@@ -148,23 +154,237 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             enable_bracket = data.get('enable_bracket', False)
             
             # Place order via trading bot
-            if order_type == 'market':
-                result = await trading_bot.place_market_order(
-                    symbol=order_symbol,
-                    side=side,
-                    quantity=quantity,
-                    stop_loss_ticks=None,  # Will use prices if provided
-                    take_profit_ticks=None,
-                    order_type='market'
-                )
+            # Check if this is a bracket order (either order_type is 'bracket' or enable_bracket is True with prices)
+            # Distinguish between bracket order type (uses ticks) vs orders with bracket enabled (uses prices)
+            is_bracket_order_type = (order_type == 'bracket')
+            has_bracket_enabled = (enable_bracket and stop_loss_price and take_profit_price)
+            
+            if is_bracket_order_type:
+                # Standalone bracket order - expects ticks, not prices
+                # Convert prices to ticks if provided
+                try:
+                    quote = await trading_bot.get_market_quote(order_symbol)
+                    if quote and 'last' in quote:
+                        current_price = float(quote['last'])
+                        tick_size = await trading_bot._get_tick_size(order_symbol)
+                        
+                        # Convert prices to ticks
+                        if side.upper() == 'BUY':
+                            stop_loss_ticks = int((current_price - float(stop_loss_price)) / tick_size) if stop_loss_price else None
+                            take_profit_ticks = int((float(take_profit_price) - current_price) / tick_size) if take_profit_price else None
+                            # Ensure correct signs: BUY stop loss should be negative, TP positive
+                            if stop_loss_ticks and stop_loss_ticks > 0:
+                                stop_loss_ticks = -stop_loss_ticks
+                            if take_profit_ticks and take_profit_ticks < 0:
+                                take_profit_ticks = -take_profit_ticks
+                        else:  # SELL
+                            stop_loss_ticks = int((float(stop_loss_price) - current_price) / tick_size) if stop_loss_price else None
+                            take_profit_ticks = int((current_price - float(take_profit_price)) / tick_size) if take_profit_price else None
+                            # Ensure correct signs: SELL stop loss should be positive, TP negative
+                            if stop_loss_ticks and stop_loss_ticks < 0:
+                                stop_loss_ticks = -stop_loss_ticks
+                            if take_profit_ticks and take_profit_ticks > 0:
+                                take_profit_ticks = -take_profit_ticks
+                        
+                        if not stop_loss_ticks or not take_profit_ticks:
+                            result = {'error': 'Bracket orders require stop loss and take profit values'}
+                        else:
+                            # Use create_bracket_order with ticks
+                            result = await trading_bot.create_bracket_order(
+                                symbol=order_symbol,
+                                side=side,
+                                quantity=quantity,
+                                stop_loss_ticks=stop_loss_ticks,
+                                take_profit_ticks=take_profit_ticks
+                            )
+                    else:
+                        result = {'error': 'Could not get market price for bracket order'}
+                except Exception as e:
+                    logger.error(f"Error creating bracket order: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    result = {'error': f'Failed to create bracket order: {str(e)}'}
+            elif has_bracket_enabled:
+                # Order with bracket enabled - use prices directly
+                if order_type == 'market':
+                    # Market order with brackets - use prices
+                    if not stop_loss_price or not take_profit_price:
+                        result = {'error': 'Bracket orders require stop loss and take profit prices'}
+                    else:
+                        # Validate prices are positive (absolute prices, not relative)
+                        if float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
+                            result = {'error': 'Stop loss and take profit must be positive absolute prices'}
+                        else:
+                            try:
+                                result = await trading_bot.create_bracket_order(
+                                    symbol=order_symbol,
+                                    side=side,
+                                    quantity=quantity,
+                                    stop_loss_price=float(stop_loss_price),
+                                    take_profit_price=float(take_profit_price)
+                                )
+                            except Exception as e:
+                                logger.error(f"Error creating market order with brackets: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                                result = {'error': f'Failed to create market order with brackets: {str(e)}'}
+                elif order_type == 'stop' and enable_bracket:
+                    # Stop order with brackets - use stop_price as entry, convert prices to ticks
+                    if not stop_loss_price or not take_profit_price or not stop_price:
+                        result = {'error': 'Stop bracket orders require stop price, stop loss price, and take profit price'}
+                    else:
+                        # Validate prices are positive (absolute prices, not relative)
+                        if float(stop_price) <= 0 or float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
+                            result = {'error': 'Stop price, stop loss, and take profit must be positive absolute prices'}
+                        else:
+                            try:
+                                # Use stop_price as entry price, pass prices to place_oco_bracket_with_stop_entry
+                                # It will convert prices to ticks using stop_price as entry
+                                result = await trading_bot.place_oco_bracket_with_stop_entry(
+                                    symbol=order_symbol,
+                                    side=side,
+                                    quantity=quantity,
+                                    entry_price=float(stop_price),
+                                    stop_loss_price=float(stop_loss_price),
+                                    take_profit_price=float(take_profit_price)
+                                )
+                            except Exception as e:
+                                logger.error(f"Error placing stop bracket order: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                                result = {'error': f'Failed to place stop bracket order: {str(e)}'}
+                elif order_type == 'limit' and enable_bracket:
+                    # Limit order with brackets - use limit_price as entry price, convert prices to ticks
+                    if not stop_loss_price or not take_profit_price:
+                        result = {'error': 'Limit orders with brackets require stop loss and take profit prices'}
+                    else:
+                        # Validate prices are positive (absolute prices, not relative)
+                        if float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
+                            result = {'error': 'Stop loss and take profit must be positive absolute prices'}
+                        else:
+                            try:
+                                # Use limit_price as entry price for tick calculation
+                                entry_price = float(limit_price)
+                                tick_size = await trading_bot._get_tick_size(order_symbol)
+                                
+                                # Calculate ticks from prices using limit_price as entry
+                                if side.upper() == 'BUY':
+                                    # BUY limit: stop loss below entry, TP above entry
+                                    stop_loss_ticks = int((entry_price - float(stop_loss_price)) / tick_size)
+                                    take_profit_ticks = int((float(take_profit_price) - entry_price) / tick_size)
+                                    # Ensure correct signs
+                                    if stop_loss_ticks > 0:
+                                        stop_loss_ticks = -stop_loss_ticks
+                                    if take_profit_ticks < 0:
+                                        take_profit_ticks = -take_profit_ticks
+                                else:  # SELL
+                                    # SELL limit: stop loss above entry, TP below entry
+                                    stop_loss_ticks = int((float(stop_loss_price) - entry_price) / tick_size)
+                                    take_profit_ticks = int((entry_price - float(take_profit_price)) / tick_size)
+                                    # Ensure correct signs
+                                    if stop_loss_ticks < 0:
+                                        stop_loss_ticks = -stop_loss_ticks
+                                    if take_profit_ticks > 0:
+                                        take_profit_ticks = -take_profit_ticks
+                                
+                                result = await trading_bot.place_market_order(
+                                    symbol=order_symbol,
+                                    side=side,
+                                    quantity=quantity,
+                                    order_type='limit',
+                                    limit_price=limit_price,
+                                    stop_loss_ticks=stop_loss_ticks,
+                                    take_profit_ticks=take_profit_ticks
+                                )
+                            except Exception as e:
+                                logger.error(f"Error placing limit order with brackets: {e}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                                result = {'error': f'Failed to place limit order with brackets: {str(e)}'}
+                else:
+                    result = {'error': 'Bracket orders require stop loss and take profit prices'}
+            elif order_type == 'market':
+                # Market order - if brackets enabled, use prices (handled above in has_bracket_enabled)
+                if enable_bracket and stop_loss_price and take_profit_price:
+                    # This should have been handled in the has_bracket_enabled block above
+                    # But if we reach here, validate and use create_bracket_order
+                    if float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
+                        result = {'error': 'Stop loss and take profit must be positive absolute prices'}
+                    else:
+                        try:
+                            result = await trading_bot.create_bracket_order(
+                                symbol=order_symbol,
+                                side=side,
+                                quantity=quantity,
+                                stop_loss_price=float(stop_loss_price),
+                                take_profit_price=float(take_profit_price)
+                            )
+                        except Exception as e:
+                            logger.error(f"Error placing market order with brackets: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                            result = {'error': f'Failed to place market order with brackets: {str(e)}'}
+                else:
+                    result = await trading_bot.place_market_order(
+                        symbol=order_symbol,
+                        side=side,
+                        quantity=quantity,
+                        order_type='market'
+                    )
             elif order_type == 'limit':
-                result = await trading_bot.place_market_order(
-                    symbol=order_symbol,
-                    side=side,
-                    quantity=quantity,
-                    order_type='limit',
-                    limit_price=limit_price
-                )
+                # Limit order - if brackets enabled, use limit_price as entry, convert prices to ticks
+                if enable_bracket and stop_loss_price and take_profit_price:
+                    # Validate prices are positive (absolute prices, not relative)
+                    if float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
+                        result = {'error': 'Stop loss and take profit must be positive absolute prices'}
+                    else:
+                        try:
+                            # Use limit_price as entry price for tick calculation
+                            entry_price = float(limit_price)
+                            tick_size = await trading_bot._get_tick_size(order_symbol)
+                            
+                            # Calculate ticks from prices using limit_price as entry
+                            if side.upper() == 'BUY':
+                                # BUY limit: stop loss below entry, TP above entry
+                                stop_loss_ticks = int((entry_price - float(stop_loss_price)) / tick_size)
+                                take_profit_ticks = int((float(take_profit_price) - entry_price) / tick_size)
+                                # Ensure correct signs
+                                if stop_loss_ticks > 0:
+                                    stop_loss_ticks = -stop_loss_ticks
+                                if take_profit_ticks < 0:
+                                    take_profit_ticks = -take_profit_ticks
+                            else:  # SELL
+                                # SELL limit: stop loss above entry, TP below entry
+                                stop_loss_ticks = int((float(stop_loss_price) - entry_price) / tick_size)
+                                take_profit_ticks = int((entry_price - float(take_profit_price)) / tick_size)
+                                # Ensure correct signs
+                                if stop_loss_ticks < 0:
+                                    stop_loss_ticks = -stop_loss_ticks
+                                if take_profit_ticks > 0:
+                                    take_profit_ticks = -take_profit_ticks
+                            
+                            result = await trading_bot.place_market_order(
+                                symbol=order_symbol,
+                                side=side,
+                                quantity=quantity,
+                                order_type='limit',
+                                limit_price=limit_price,
+                                stop_loss_ticks=stop_loss_ticks,
+                                take_profit_ticks=take_profit_ticks
+                            )
+                        except Exception as e:
+                            logger.error(f"Error placing limit order with brackets: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                            result = {'error': f'Failed to place limit order with brackets: {str(e)}'}
+                else:
+                    result = await trading_bot.place_market_order(
+                        symbol=order_symbol,
+                        side=side,
+                        quantity=quantity,
+                        order_type='limit',
+                        limit_price=limit_price
+                    )
             elif order_type == 'stop':
                 if enable_bracket and stop_loss_price and take_profit_price:
                     result = await trading_bot.place_oco_bracket_with_stop_entry(
@@ -197,12 +417,161 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             return response
     
     async def handle_get_positions(request):
-        """Handle position requests."""
+        """Handle position requests - canonicalize to match TradingChart.tsx format."""
         try:
-            # Use get_open_positions() - that's the correct method name
+            # Use get_open_positions() - same method as CLI, returns List[Dict]
             positions = await trading_bot.get_open_positions()
             logger.debug(f"✅ Fetched {len(positions) if positions else 0} positions for chart")
-            response = web.json_response({'positions': positions or []})
+            
+            def extract_symbol_from_contract(contract_str):
+                """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
+                if not contract_str:
+                    return None
+                parts = str(contract_str).split('.')
+                # ContractManager uses parts[-2] for contractId like "CON.F.US.MNQ.Z25"
+                # For symbolId like "F.US.MNQ", we want parts[-1]
+                if len(parts) >= 2:
+                    # Try parts[-2] first (for contractId format like "CON.F.US.MNQ.Z25")
+                    if len(parts) >= 4:
+                        candidate = parts[-2]
+                        if candidate.isalpha() and candidate.isupper():
+                            return candidate
+                    # Fallback to parts[-1] (for symbolId format like "F.US.MNQ")
+                    candidate = parts[-1]
+                    if candidate.isalpha() and candidate.isupper():
+                        return candidate
+                return None
+            
+            positions_list = []
+            for pos in positions or []:
+                if isinstance(pos, dict):
+                    pos_dict = pos.copy()
+                    
+                    # Extract symbol from contractId/symbolId if missing
+                    symbol = pos_dict.get('symbol')
+                    if not symbol:
+                        contract_id = pos_dict.get('contractId') or pos_dict.get('contract_id')
+                        symbol_id = pos_dict.get('symbolId') or pos_dict.get('symbol_id')
+                        symbol = extract_symbol_from_contract(symbol_id) or extract_symbol_from_contract(contract_id)
+                        if symbol:
+                            pos_dict['symbol'] = symbol
+                    
+                    # Set side from type if missing (1 = LONG, 2 = SHORT in TopStepX)
+                    side = pos_dict.get('side')
+                    pos_type = pos_dict.get('type')
+                    if not isinstance(side, str):
+                        if pos_type == 1:
+                            side = 'LONG'
+                        elif pos_type == 2:
+                            side = 'SHORT'
+                        else:
+                            side = 'LONG'  # Default
+                        pos_dict['side'] = side
+                    
+                    # Set entry_price from averagePrice if missing
+                    entry_price = pos_dict.get('entry_price') or pos_dict.get('entryPrice')
+                    if not entry_price:
+                        entry_price = pos_dict.get('averagePrice')
+                    if entry_price is not None:
+                        pos_dict['entry_price'] = float(entry_price)
+                        pos_dict['entryPrice'] = float(entry_price)
+                    
+                    # Ensure quantity/size
+                    quantity = pos_dict.get('quantity') or pos_dict.get('size') or 0
+                    pos_dict['quantity'] = quantity
+                    pos_dict['size'] = quantity
+                    
+                    # Fetch linked orders to get stopLoss/takeProfit if not already present
+                    # Only use linked orders that are explicitly bracket-linked (not standalone orders)
+                    if not pos_dict.get('stopLoss') and not pos_dict.get('stop_loss'):
+                        try:
+                            pos_id = pos_dict.get('id') or pos_dict.get('position_id')
+                            if pos_id:
+                                linked_orders = await trading_bot.get_linked_orders(pos_id)
+                                if linked_orders and not isinstance(linked_orders, dict):
+                                    # Extract stop loss and take profit from linked orders
+                                    # Only process orders that are explicitly bracket-linked (have AutoBracket tag)
+                                    for order in linked_orders:
+                                        custom_tag = order.get('customTag', '') or ''
+                                        # Only process bracket-linked orders
+                                        if 'AutoBracket' not in custom_tag:
+                                            continue  # Skip standalone orders
+                                        
+                                        order_type = order.get('type', 0)
+                                        order_side = order.get('side', 0)
+                                        pos_side_val = 0 if side == 'LONG' else 1
+                                        
+                                        # For LONG positions: stop loss is SELL stop (type 4) with -SL tag, TP is SELL limit (type 1) with -TP tag
+                                        # For SHORT positions: stop loss is BUY stop (type 4) with -SL tag, TP is BUY limit (type 1) with -TP tag
+                                        if pos_side_val == 0:  # LONG
+                                            if order_side == 1:  # SELL
+                                                if order_type == 4 and ('-SL' in custom_tag or 'SL' in custom_tag):  # Stop loss
+                                                    stop_price = order.get('stopPrice') or order.get('limitPrice')
+                                                    if stop_price:
+                                                        pos_dict['stopLoss'] = float(stop_price)
+                                                        pos_dict['stop_loss'] = float(stop_price)
+                                                elif order_type == 1 and ('-TP' in custom_tag or 'TP' in custom_tag):  # Take profit
+                                                    tp_price = order.get('limitPrice')
+                                                    if tp_price:
+                                                        pos_dict['takeProfit'] = float(tp_price)
+                                                        pos_dict['take_profit'] = float(tp_price)
+                                        elif pos_side_val == 1:  # SHORT
+                                            if order_side == 0:  # BUY
+                                                if order_type == 4 and ('-SL' in custom_tag or 'SL' in custom_tag):  # Stop loss
+                                                    stop_price = order.get('stopPrice') or order.get('limitPrice')
+                                                    if stop_price:
+                                                        pos_dict['stopLoss'] = float(stop_price)
+                                                        pos_dict['stop_loss'] = float(stop_price)
+                                                elif order_type == 1 and ('-TP' in custom_tag or 'TP' in custom_tag):  # Take profit
+                                                    tp_price = order.get('limitPrice')
+                                                    if tp_price:
+                                                        pos_dict['takeProfit'] = float(tp_price)
+                                                        pos_dict['take_profit'] = float(tp_price)
+                        except Exception as e:
+                            logger.debug(f"Could not fetch linked orders for position enrichment: {e}")
+                    
+                    # Ensure all field aliases exist
+                    if 'entryPrice' not in pos_dict and 'entry_price' in pos_dict:
+                        pos_dict['entryPrice'] = pos_dict['entry_price']
+                    if 'entry_price' not in pos_dict and 'entryPrice' in pos_dict:
+                        pos_dict['entry_price'] = pos_dict['entryPrice']
+                    if 'stopLoss' not in pos_dict and 'stop_loss' in pos_dict:
+                        pos_dict['stopLoss'] = pos_dict['stop_loss']
+                    if 'stop_loss' not in pos_dict and 'stopLoss' in pos_dict:
+                        pos_dict['stop_loss'] = pos_dict['stopLoss']
+                    if 'takeProfit' not in pos_dict and 'take_profit' in pos_dict:
+                        pos_dict['takeProfit'] = pos_dict['take_profit']
+                    if 'take_profit' not in pos_dict and 'takeProfit' in pos_dict:
+                        pos_dict['take_profit'] = pos_dict['takeProfit']
+                    
+                    positions_list.append(pos_dict)
+                else:
+                    # Fallback: Convert Position object to dict (shouldn't happen with current implementation)
+                    pos_dict = {
+                        'position_id': getattr(pos, 'position_id', None),
+                        'id': getattr(pos, 'position_id', None),
+                        'symbol': getattr(pos, 'symbol', None),
+                        'side': getattr(pos, 'side', None),
+                        'quantity': getattr(pos, 'quantity', 0),
+                        'entryPrice': getattr(pos, 'entry_price', None),
+                        'entry_price': getattr(pos, 'entry_price', None),
+                        'currentPrice': getattr(pos, 'current_price', None),
+                        'current_price': getattr(pos, 'current_price', None),
+                        'stopLoss': getattr(pos, 'stop_loss', None),
+                        'stop_loss': getattr(pos, 'stop_loss', None),
+                        'takeProfit': getattr(pos, 'take_profit', None),
+                        'take_profit': getattr(pos, 'take_profit', None),
+                        'unrealizedPnl': getattr(pos, 'unrealized_pnl', None),
+                        'unrealized_pnl': getattr(pos, 'unrealized_pnl', None),
+                        'account_id': getattr(pos, 'account_id', None),
+                        'contractId': getattr(pos, 'contract_id', None),
+                        'contract_id': getattr(pos, 'contract_id', None),
+                    }
+                    if hasattr(pos, 'raw_data') and pos.raw_data:
+                        pos_dict.update(pos.raw_data)
+                    positions_list.append(pos_dict)
+            
+            response = web.json_response({'positions': positions_list})
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
@@ -211,6 +580,119 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             logger.error(traceback.format_exc())
             # Return empty positions array instead of 500 error to keep chart functional
             response = web.json_response({'error': str(e), 'positions': []}, status=200)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_get_orders(request):
+        """Handle order requests - canonicalize to match TradingChart.tsx format."""
+        try:
+            # Get account ID from query or use default
+            account_id = request.query.get('account_id')
+            orders = await trading_bot.get_open_orders(account_id=account_id)
+            logger.debug(f"✅ Fetched {len(orders) if orders else 0} orders for chart")
+            
+            def extract_symbol_from_contract(contract_str):
+                """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
+                if not contract_str:
+                    return None
+                parts = str(contract_str).split('.')
+                # ContractManager uses parts[-2] for contractId like "CON.F.US.MNQ.Z25"
+                # For symbolId like "F.US.MNQ", we want parts[-1]
+                if len(parts) >= 2:
+                    # Try parts[-2] first (for contractId format like "CON.F.US.MNQ.Z25")
+                    if len(parts) >= 4:
+                        candidate = parts[-2]
+                        if candidate.isalpha() and candidate.isupper():
+                            return candidate
+                    # Fallback to parts[-1] (for symbolId format like "F.US.MNQ")
+                    candidate = parts[-1]
+                    if candidate.isalpha() and candidate.isupper():
+                        return candidate
+                return None
+            
+            orders_list = []
+            for order in orders or []:
+                if isinstance(order, dict):
+                    order_dict = order.copy()
+                    
+                    # Extract symbol from contractId/symbolId if missing
+                    symbol = order_dict.get('symbol')
+                    if not symbol:
+                        contract_id = order_dict.get('contractId') or order_dict.get('contract_id')
+                        symbol_id = order_dict.get('symbolId') or order_dict.get('symbol_id')
+                        symbol = extract_symbol_from_contract(symbol_id) or extract_symbol_from_contract(contract_id)
+                        if symbol:
+                            order_dict['symbol'] = symbol
+                    
+                    # Convert side: 0 = BUY, 1 = SELL (TopStepX numeric)
+                    side = order_dict.get('side')
+                    if not isinstance(side, str):
+                        side = 'BUY' if (side == 0 or side is None) else 'SELL'
+                        order_dict['side'] = side
+                    
+                    # Convert status: 1 = OPEN/PENDING (TopStepX numeric)
+                    status = order_dict.get('status')
+                    if isinstance(status, int):
+                        if status == 1:
+                            order_dict['status'] = 'PENDING'  # Also accept 'OPEN' for filtering
+                        elif status == 0:
+                            order_dict['status'] = 'PENDING'
+                    elif isinstance(status, str) and status.upper() == 'OPEN':
+                        order_dict['status'] = 'PENDING'  # Normalize to PENDING
+                    
+                    # Set price and stop_price from limitPrice/stopPrice
+                    # For LIMIT orders: use limitPrice as price
+                    # For STOP orders: use stopPrice as stop_price, and also set price if limitPrice exists
+                    order_type_num = order_dict.get('type', 0)
+                    limit_price = order_dict.get('limitPrice') or order_dict.get('limit_price')
+                    stop_price = order_dict.get('stopPrice') or order_dict.get('stop_price')
+                    
+                    # Set price field (for LIMIT orders or orders with limitPrice)
+                    if limit_price is not None:
+                        order_dict['price'] = float(limit_price)
+                        if 'limitPrice' not in order_dict:
+                            order_dict['limitPrice'] = float(limit_price)
+                    
+                    # Set stop_price field (for STOP orders)
+                    if stop_price is not None:
+                        order_dict['stop_price'] = float(stop_price)
+                        if 'stopPrice' not in order_dict:
+                            order_dict['stopPrice'] = float(stop_price)
+                    
+                    # For STOP orders, also set price from stopPrice if no limitPrice
+                    if order_type_num == 4 and stop_price is not None and order_dict.get('price') is None:
+                        order_dict['price'] = float(stop_price)
+                    
+                    # Ensure quantity
+                    quantity = order_dict.get('quantity') or order_dict.get('size') or 0
+                    order_dict['quantity'] = quantity
+                    
+                    orders_list.append(order_dict)
+                else:
+                    # Fallback: Convert order object to dict
+                    orders_list.append({
+                        'id': getattr(order, 'id', None),
+                        'symbol': getattr(order, 'symbol', None),
+                        'side': getattr(order, 'side', None),
+                        'quantity': getattr(order, 'quantity', None),
+                        'type': getattr(order, 'type', None),
+                        'status': getattr(order, 'status', None),
+                        'price': getattr(order, 'price', None),
+                        'limitPrice': getattr(order, 'limit_price', None),
+                        'limit_price': getattr(order, 'limit_price', None),
+                        'stopPrice': getattr(order, 'stop_price', None),
+                        'stop_price': getattr(order, 'stop_price', None),
+                        'contractId': getattr(order, 'contract_id', None),
+                    })
+            
+            response = web.json_response({'orders': orders_list})
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"❌ Error fetching orders for chart: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e), 'orders': []}, status=200)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
     
@@ -321,6 +803,8 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     app.router.add_options('/api/chart/order', handle_options)
     app.router.add_get('/api/chart/positions', handle_get_positions)
     app.router.add_options('/api/chart/positions', handle_options)
+    app.router.add_get('/api/chart/orders', handle_get_orders)
+    app.router.add_options('/api/chart/orders', handle_options)
     app.router.add_get('/api/chart/contracts', handle_get_contracts)
     app.router.add_options('/api/chart/contracts', handle_options)
     app.router.add_get('/api/chart/reload', handle_reload_data)
@@ -475,6 +959,50 @@ def generate_chart_html(
             color: #888;
             font-size: 12px;
         }}
+        .toast {{
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #2a2a2a;
+            color: #ffffff;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            min-width: 300px;
+            max-width: 500px;
+            border-left: 4px solid #2962ff;
+            animation: slideIn 0.3s ease-out;
+        }}
+        .toast.success {{
+            border-left-color: #26a69a;
+        }}
+        .toast.error {{
+            border-left-color: #ef5350;
+        }}
+        .toast.warning {{
+            border-left-color: #ffa726;
+        }}
+        @keyframes slideIn {{
+            from {{
+                transform: translateX(400px);
+                opacity: 0;
+            }}
+            to {{
+                transform: translateX(0);
+                opacity: 1;
+            }}
+        }}
+        .toast-title {{
+            font-weight: bold;
+            margin-bottom: 4px;
+            font-size: 14px;
+        }}
+        .toast-message {{
+            font-size: 12px;
+            color: #d1d5db;
+            line-height: 1.4;
+        }}
     </style>
 </head>
 <body>
@@ -505,6 +1033,7 @@ def generate_chart_html(
                     <option value="market" selected>Market</option>
                     <option value="limit">Limit</option>
                     <option value="stop">Stop</option>
+                    <option value="bracket">Bracket</option>
                 </select>
                 <input type="number" id="quantityInput" value="1" min="1" placeholder="Qty" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 60px;">
                 <input type="number" id="limitPriceInput" step="0.25" placeholder="Limit" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 80px; display: none;">
@@ -523,6 +1052,7 @@ def generate_chart_html(
         <div class="controls">
             <button onclick="refreshChart()">Refresh Data</button>
             <button onclick="exportData()">Export CSV</button>
+            <button onclick="updatePositionLines(); updateOrderLines();" style="background: #26a69a; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Refresh Lines</button>
             {'<button id="realtimeBtn" onclick="toggleRealtime()">Start Real-Time</button>' if not backtest else ''}
             {'<div style="display: inline-block; margin-left: 10px;">Refresh: <select id="refreshRateSelect" onchange="updateRefreshRate()" style="background: #2a2a2a; color: #d1d5db; border: 1px solid #444; padding: 5px;"><option value="1" selected>1x/sec</option><option value="3">3x/sec</option><option value="6">6x/sec</option><option value="12">12x/sec</option></select></div>' if not backtest else ''}
             {'<button id="backtestBtn" onclick="toggleBacktest()">Start Backtest</button>' if backtest else ''}
@@ -539,9 +1069,12 @@ def generate_chart_html(
         let candlestickSeries = null;
         let volumeSeries = null;
         let chartContainer = null; // Global scope for resize handler
-        let entryLineSeries = null; // Entry price line
-        let stopLossLineSeries = null; // Stop loss line
-        let takeProfitLineSeries = null; // Take profit line
+        let positionPriceLines = []; // Position price lines (entry, stop loss, take profit)
+        let orderPriceLines = []; // Order price lines (limit/stop orders)
+        let lastPositionUpdate = 0; // Throttle position updates (max once per 5 seconds)
+        let lastOrderUpdate = 0; // Throttle order updates (max once per 5 seconds)
+        const POSITION_UPDATE_INTERVAL = 3000; // 3 seconds (reduced for faster updates)
+        const ORDER_UPDATE_INTERVAL = 3000; // 3 seconds (reduced for faster updates)
         let chartData = {json.dumps(chart_data)};
         let realtimeActive = {'true' if realtime else 'false'};
         let backtestMode = {'true' if backtest else 'false'}; // Mode enabled, not necessarily running
@@ -582,12 +1115,33 @@ def generate_chart_html(
         const timeframeSeconds = getTimeframeSeconds(timeframe);
         const backtestIntervalMs = (timeframeSeconds * 1000) / backtestSpeed;
         
+        function showToast(title, message, type = 'info') {{
+            // Remove existing toasts
+            const existingToasts = document.querySelectorAll('.toast');
+            existingToasts.forEach(toast => toast.remove());
+            
+            const toast = document.createElement('div');
+            toast.className = `toast ${{type}}`;
+            toast.innerHTML = `
+                <div class="toast-title">${{title}}</div>
+                <div class="toast-message">${{message}}</div>
+            `;
+            document.body.appendChild(toast);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {{
+                toast.style.animation = 'slideIn 0.3s ease-out reverse';
+                setTimeout(() => toast.remove(), 300);
+            }}, 5000);
+        }}
+        
         function showError(message) {{
             const statusEl = document.getElementById('status');
             if (statusEl) {{
                 statusEl.textContent = 'Error: ' + message;
                 statusEl.style.color = '#ef5350';
             }}
+            showToast('Error', message, 'error');
             console.error(message);
         }}
         
@@ -772,6 +1326,18 @@ def generate_chart_html(
                     loadContracts();
                     updateOrderType(); // Initialize order type visibility
                     updateBracket(); // Initialize bracket visibility
+                    
+                    // Initialize position/order lines after chart is ready
+                    setTimeout(async () => {{
+                        console.log('Chart initialized, updating position/order lines...');
+                        lastPositionUpdate = 0; // Reset throttle to force update
+                        lastOrderUpdate = 0; // Reset throttle to force update
+                        await updatePositionLines();
+                        await updateOrderLines();
+                        
+                        // Note: Position/order lines are now event-based only (refresh on order placement/fill)
+                        // No periodic refresh interval - lines update when orders are placed or filled
+                    }}, 1500);
                 }}
                 
                 // Auto-start real-time if enabled (start immediately)
@@ -802,6 +1368,17 @@ def generate_chart_html(
                     throw new Error(`HTTP ${{response.status}}`);
                 }}
                 const data = await response.json();
+                
+                // Update position and order lines periodically (throttled)
+                const now = Date.now();
+                if (now - lastPositionUpdate > POSITION_UPDATE_INTERVAL) {{
+                    lastPositionUpdate = now;
+                    updatePositionLines().catch(err => console.debug('Position update error:', err));
+                }}
+                if (now - lastOrderUpdate > ORDER_UPDATE_INTERVAL) {{
+                    lastOrderUpdate = now;
+                    updateOrderLines().catch(err => console.debug('Order update error:', err));
+                }}
                 
                 if (data.latest_bar) {{
                     const bar = data.latest_bar;
@@ -866,6 +1443,8 @@ def generate_chart_html(
                     clearInterval(realtimeInterval);
                     realtimeInterval = null;
                 }}
+                // Note: positionOrderRefreshInterval continues running even when real-time is stopped
+                // This ensures lines update when positions/orders are closed
                 realtimeActive = false;
                 btn.textContent = 'Start Real-Time';
                 btn.classList.remove('active');
@@ -1380,7 +1959,8 @@ def generate_chart_html(
                     showError('Stop price required for stop orders');
                     return;
                 }}
-                if (enableBracket && (!stopLossPrice || !takeProfitPrice)) {{
+                // Validate bracket prices - check both enableBracket checkbox and orderType === 'bracket'
+                if ((enableBracket || orderType === 'bracket') && (!stopLossPrice || !takeProfitPrice)) {{
                     showError('Stop loss and take profit prices required for bracket orders');
                     return;
                 }}
@@ -1416,13 +1996,59 @@ def generate_chart_html(
                 if (result.error) {{
                     showError(`Order failed: ${{result.error}}`);
                 }} else {{
+                    const orderId = result.get?.('order_id') || result.order_id || result.id || 'N/A';
+                    const orderTypeDisplay = orderType === 'bracket' ? 'Bracket' : orderType.charAt(0).toUpperCase() + orderType.slice(1);
                     updateStatus(`✅ Order placed successfully!`);
-                    // Update position lines
+                    showToast('Order Placed', `${{side}} ${{orderTypeDisplay}} order placed successfully${{orderId !== 'N/A' ? ' (ID: ' + orderId + ')' : ''}}`, 'success');
+                    // Update position lines and order lines (force update, ignore throttle)
+                    lastPositionUpdate = 0; // Reset throttle to force update
+                    lastOrderUpdate = 0; // Reset throttle to force update
                     await updatePositionLines();
+                    await updateOrderLines();
                 }}
             }} catch (error) {{
                 showError(`Order error: ${{error.message}}`);
                 console.error('Order placement error:', error);
+            }}
+        }}
+        
+        // Pre-fill prices with last traded price
+        async function prefillPrices() {{
+            if (!serverPort) return;
+            
+            try {{
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                const response = await fetch(`http://127.0.0.1:${{serverPort}}/api/chart/quote?symbol=${{currentSymbol}}`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const quote = data.quote;
+                if (!quote) return;
+                
+                const lastPrice = parseFloat(quote.last || quote.lastPrice || quote.bid || quote.ask || 0);
+                if (!lastPrice || lastPrice === 0) return;
+                
+                // Pre-fill all price inputs with last traded price
+                const limitInput = document.getElementById('limitPriceInput');
+                const stopInput = document.getElementById('stopPriceInput');
+                const stopLossInput = document.getElementById('stopLossPriceInput');
+                const takeProfitInput = document.getElementById('takeProfitPriceInput');
+                
+                // Only pre-fill if field is visible and empty
+                if (limitInput && limitInput.style.display !== 'none' && !limitInput.value) {{
+                    limitInput.value = lastPrice.toFixed(2);
+                }}
+                if (stopInput && stopInput.style.display !== 'none' && !stopInput.value) {{
+                    stopInput.value = lastPrice.toFixed(2);
+                }}
+                if (stopLossInput && stopLossInput.style.display !== 'none' && !stopLossInput.value) {{
+                    stopLossInput.value = lastPrice.toFixed(2);
+                }}
+                if (takeProfitInput && takeProfitInput.style.display !== 'none' && !takeProfitInput.value) {{
+                    takeProfitInput.value = lastPrice.toFixed(2);
+                }}
+            }} catch (error) {{
+                console.debug('Failed to pre-fill prices:', error);
             }}
         }}
         
@@ -1431,18 +2057,28 @@ def generate_chart_html(
             const orderType = document.getElementById('orderTypeSelect').value;
             const limitInput = document.getElementById('limitPriceInput');
             const stopInput = document.getElementById('stopPriceInput');
+            const bracketCheck = document.getElementById('enableBracketCheck');
             
             if (orderType === 'limit') {{
                 limitInput.style.display = 'inline-block';
                 stopInput.style.display = 'none';
+                bracketCheck.disabled = false;
             }} else if (orderType === 'stop') {{
                 limitInput.style.display = 'none';
                 stopInput.style.display = 'inline-block';
+                bracketCheck.disabled = false;
+            }} else if (orderType === 'bracket') {{
+                limitInput.style.display = 'none';
+                stopInput.style.display = 'none';
+                bracketCheck.checked = true;
+                bracketCheck.disabled = true; // Bracket type always has brackets enabled
             }} else {{
                 limitInput.style.display = 'none';
                 stopInput.style.display = 'none';
+                bracketCheck.disabled = false;
             }}
             updateBracket(); // Also update bracket visibility
+            prefillPrices(); // Pre-fill prices when order type changes
         }}
         
         // Update bracket UI visibility
@@ -1458,6 +2094,7 @@ def generate_chart_html(
                 slInput.style.display = 'none';
                 tpInput.style.display = 'none';
             }}
+            prefillPrices(); // Pre-fill prices when bracket visibility changes
         }}
         
         // Load available contracts and populate symbol dropdown
@@ -1514,10 +2151,31 @@ def generate_chart_html(
                 }}
                 
                 console.log('Contracts loaded:', symbols.length, 'symbols');
+                // Pre-fill prices after contracts are loaded
+                prefillPrices();
             }} catch (error) {{
                 console.error('Error loading contracts:', error);
                 updateStatus('Failed to load contracts: ' + error.message);
             }}
+        }}
+        
+        // Pre-fill prices when symbol changes
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', function() {{
+                const symbolSelect = document.getElementById('symbolSelect');
+                if (symbolSelect) {{
+                    symbolSelect.addEventListener('change', prefillPrices);
+                }}
+                // Initial pre-fill after a short delay
+                setTimeout(prefillPrices, 1000);
+            }});
+        }} else {{
+            // DOM already loaded
+            const symbolSelect = document.getElementById('symbolSelect');
+            if (symbolSelect) {{
+                symbolSelect.addEventListener('change', prefillPrices);
+            }}
+            setTimeout(prefillPrices, 1000);
         }}
         
         // Reload chart data for new symbol/timeframe
@@ -1576,6 +2234,17 @@ def generate_chart_html(
                 // Fit content to show all bars
                 chart.timeScale().fitContent();
                 
+                // Update position and order lines after chart is initialized
+                setTimeout(async () => {{
+                    console.log('Initializing position/order lines after chart load...');
+                    lastPositionUpdate = 0; // Reset throttle to force update
+                    lastOrderUpdate = 0; // Reset throttle to force update
+                    await updatePositionLines();
+                    await updateOrderLines();
+                    
+                    // Note: Position/order lines are event-based only (refresh on order placement/fill)
+                }}, 1000);
+                
                 updateStatus(`✅ Chart updated: ${{data.bars.length}} bars`);
             }} catch (error) {{
                 showError(`Error reloading chart: ${{error.message}}`);
@@ -1593,83 +2262,353 @@ def generate_chart_html(
             reloadChartData();
         }}
         
-        // Update position lines on chart
+        // Update position lines on chart (using price lines like TradingChart.tsx)
         async function updatePositionLines() {{
-            if (!serverPort || !chart) return;
+            if (!serverPort || !chart || !candlestickSeries) {{
+                console.log('updatePositionLines: Missing requirements', {{
+                    serverPort: !!serverPort,
+                    chart: !!chart,
+                    candlestickSeries: !!candlestickSeries
+                }});
+                return;
+            }}
+            
+            // Throttle updates to prevent rate limiting
+            const now = Date.now();
+            if (now - lastPositionUpdate < POSITION_UPDATE_INTERVAL) {{
+                console.debug('updatePositionLines: Throttled');
+                return; // Skip if called too soon
+            }}
+            lastPositionUpdate = now;
             
             try {{
+                // Remove existing position price lines
+                positionPriceLines.forEach(line => {{
+                    try {{
+                        candlestickSeries.removePriceLine(line);
+                    }} catch (e) {{
+                        console.debug('Error removing position price line:', e);
+                    }}
+                }});
+                positionPriceLines = [];
+                
+                console.log('Fetching positions from server...');
                 const response = await fetch(`http://127.0.0.1:${{serverPort}}/api/chart/positions`);
+                if (!response.ok) {{
+                    console.error('Failed to fetch positions:', response.status, response.statusText);
+                    return;
+                }}
                 const data = await response.json();
                 const positions = data.positions || [];
+                console.log('📋 Raw positions from API:', positions.length, positions);
                 
-                // Find position for current symbol
-                const currentSymbol = document.getElementById('symbolSelect').value;
-                const position = positions.find(p => p.symbol === currentSymbol || p.contractId?.includes(currentSymbol));
+                // Find position for current symbol (exact match like TradingChart.tsx)
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                console.log('🔍 Looking for position with symbol:', currentSymbol);
+                console.log('📊 Available positions:', positions.map(p => ({{
+                    id: p.id,
+                    symbol: p.symbol,
+                    side: p.side,
+                    quantity: p.quantity,
+                    entry_price: p.entry_price,
+                    contractId: p.contractId
+                }})));
                 
-                if (!position || !position.quantity || position.quantity === 0) {{
-                    // No position - clear lines
-                    if (entryLineSeries) entryLineSeries.setData([]);
-                    if (stopLossLineSeries) stopLossLineSeries.setData([]);
-                    if (takeProfitLineSeries) takeProfitLineSeries.setData([]);
+                // Simple exact match like TradingChart.tsx: pos.symbol === symbol
+                const position = positions.find(p => {{
+                    const posSymbol = p.symbol;
+                    const matchesSymbol = posSymbol && posSymbol.toUpperCase() === currentSymbol.toUpperCase();
+                    const hasQuantity = (p.quantity || p.size || 0) !== 0;
+                    
+                    if (matchesSymbol && hasQuantity) {{
+                        console.log('Found matching position:', p);
+                        return true;
+                    }}
+                    return false;
+                }});
+                
+                if (!position) {{
+                    console.log('No position found for symbol:', currentSymbol, 'Available positions:', positions.map(p => ({{
+                        symbol: p.symbol,
+                        contractId: p.contractId,
+                        contract_id: p.contract_id,
+                        quantity: p.quantity,
+                        size: p.size
+                    }})));
                     return;
                 }}
                 
-                // Get current price range for line placement
-                const timeRange = chart.timeScale().getVisibleRange();
-                if (!timeRange) return;
+                console.log('Processing position:', position);
                 
-                const entryPrice = parseFloat(position.entryPrice || position.averagePrice || 0);
-                const stopLoss = parseFloat(position.stopLoss || 0);
-                const takeProfit = parseFloat(position.takeProfit || 0);
-                const quantity = parseFloat(position.quantity || 0);
+                // Extract values exactly like TradingChart.tsx
+                const entryPrice = Number(position.entry_price || position.entryPrice || 0);
+                if (!entryPrice || !isFinite(entryPrice)) {{
+                    console.warn('Entry price is invalid:', entryPrice, 'Position:', position);
+                    return;
+                }}
                 
-                // Create or get line series
-                if (!entryLineSeries) {{
-                    entryLineSeries = chart.addLineSeries({{
-                        color: quantity > 0 ? '#26a69a' : '#ef5350',
+                const isLong = position.side === 'LONG';
+                const quantity = Number(position.quantity ?? position.size ?? 0);
+                
+                console.log('Position values:', {{
+                    entryPrice,
+                    quantity,
+                    isLong,
+                    side: position.side
+                }});
+                
+                // Extract stop loss and take profit if available
+                const stopLoss = position.stop_loss || position.stopLoss;
+                const takeProfit = position.take_profit || position.takeProfit;
+                
+                // Add entry price line (exactly like TradingChart.tsx)
+                try {{
+                    console.log('Creating entry price line at:', entryPrice);
+                    const entryLine = candlestickSeries.createPriceLine({{
+                        price: entryPrice,
+                        color: isLong ? '#26A69A' : '#EF5350',
                         lineWidth: 2,
                         lineStyle: LightweightCharts.LineStyle.Solid,
-                        title: 'Entry'
+                        axisLabelVisible: true,
+                        title: `${{position.side}} ${{quantity}}@${{entryPrice.toFixed(2)}}`
                     }});
-                }}
-                if (!stopLossLineSeries && stopLoss > 0) {{
-                    stopLossLineSeries = chart.addLineSeries({{
-                        color: '#ef5350',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        title: 'Stop Loss'
-                    }});
-                }}
-                if (!takeProfitLineSeries && takeProfit > 0) {{
-                    takeProfitLineSeries = chart.addLineSeries({{
-                        color: '#26a69a',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        title: 'Take Profit'
-                    }});
+                    positionPriceLines.push(entryLine);
+                    console.log('✅ Entry price line created successfully');
+                }} catch (error) {{
+                    console.error('❌ Error creating entry price line:', error);
                 }}
                 
-                // Set line data (horizontal lines across visible time range)
-                if (entryPrice > 0) {{
-                    entryLineSeries.setData([
-                        {{ time: timeRange.from, value: entryPrice }},
-                        {{ time: timeRange.to, value: entryPrice }}
-                    ]);
+                // Add stop loss price line if available
+                if (stopLoss && Number(stopLoss) > 0) {{
+                    try {{
+                        const stopLine = candlestickSeries.createPriceLine({{
+                            price: Number(stopLoss),
+                            color: '#EF5350',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Dashed,
+                            axisLabelVisible: true,
+                            title: `Stop Loss: ${{Number(stopLoss).toFixed(2)}}`
+                        }});
+                        positionPriceLines.push(stopLine);
+                        console.log('✅ Stop loss line created at:', stopLoss);
+                    }} catch (error) {{
+                        console.error('❌ Error creating stop loss price line:', error);
+                    }}
                 }}
-                if (stopLoss > 0 && stopLossLineSeries) {{
-                    stopLossLineSeries.setData([
-                        {{ time: timeRange.from, value: stopLoss }},
-                        {{ time: timeRange.to, value: stopLoss }}
-                    ]);
-                }}
-                if (takeProfit > 0 && takeProfitLineSeries) {{
-                    takeProfitLineSeries.setData([
-                        {{ time: timeRange.from, value: takeProfit }},
-                        {{ time: timeRange.to, value: takeProfit }}
-                    ]);
+                
+                // Add take profit price line if available
+                if (takeProfit && Number(takeProfit) > 0) {{
+                    try {{
+                        const tpLine = candlestickSeries.createPriceLine({{
+                            price: Number(takeProfit),
+                            color: '#26A69A',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Dashed,
+                            axisLabelVisible: true,
+                            title: `Take Profit: ${{Number(takeProfit).toFixed(2)}}`
+                        }});
+                        positionPriceLines.push(tpLine);
+                        console.log('✅ Take profit line created at:', takeProfit);
+                    }} catch (error) {{
+                        console.error('❌ Error creating take profit price line:', error);
+                    }}
                 }}
             }} catch (error) {{
                 console.error('Error updating position lines:', error);
+            }}
+        }}
+        
+        // Update order lines on chart
+        async function updateOrderLines() {{
+            if (!serverPort || !chart || !candlestickSeries) return;
+            
+            // Throttle updates to prevent rate limiting
+            const now = Date.now();
+            if (now - lastOrderUpdate < ORDER_UPDATE_INTERVAL) {{
+                return; // Skip if called too soon
+            }}
+            lastOrderUpdate = now;
+            
+            try {{
+                // Remove existing order price lines
+                orderPriceLines.forEach(line => {{
+                    try {{
+                        candlestickSeries.removePriceLine(line);
+                    }} catch (e) {{
+                        console.debug('Error removing order price line:', e);
+                    }}
+                }});
+                orderPriceLines = [];
+                
+                // Fetch open orders
+                const response = await fetch(`http://127.0.0.1:${{serverPort}}/api/chart/orders`);
+                if (!response.ok) {{
+                    console.debug('Failed to fetch orders:', response.status);
+                    return;
+                }}
+                
+                const data = await response.json();
+                const orders = data.orders || [];
+                
+                console.log('📋 Raw orders from API:', orders.length, orders);
+                
+                // Find orders for current symbol (exactly like TradingChart.tsx)
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                console.log('🔍 Filtering orders for symbol:', currentSymbol);
+                
+                const relevantOrders = orders.filter(o => {{
+                    // Extract symbol from multiple possible fields
+                    const orderSymbol = o.symbol || o.contractId?.split('.')?.[2] || o.symbolId?.split('.')?.[2] || '';
+                    const matchesSymbol = orderSymbol && orderSymbol.toUpperCase() === currentSymbol.toUpperCase();
+                    
+                    // Accept PENDING, OPEN, or status 1 (all mean open/pending)
+                    // Also accept numeric status 1 or string '1'
+                    const status = o.status;
+                    const isPending = status === 'PENDING' || 
+                                    status === 'OPEN' || 
+                                    status === 'Open' || 
+                                    status === 1 || 
+                                    status === '1' ||
+                                    String(status).toUpperCase() === 'OPEN' ||
+                                    String(status).toUpperCase() === 'PENDING';
+                    
+                    // Check for any price field (price, stop_price, limitPrice, stopPrice)
+                    // Also check for null/undefined explicitly
+                    const price = o.price;
+                    const stop_price = o.stop_price;
+                    const limitPrice = o.limitPrice || o.limit_price;
+                    const stopPrice = o.stopPrice;
+                    const hasPrice = (price != null && price !== 0 && price !== '0') || 
+                                   (stop_price != null && stop_price !== 0 && stop_price !== '0') || 
+                                   (limitPrice != null && limitPrice !== 0 && limitPrice !== '0') || 
+                                   (stopPrice != null && stopPrice !== 0 && stopPrice !== '0');
+                    
+                    const shouldInclude = matchesSymbol && isPending && hasPrice;
+                    
+                    if (!shouldInclude) {{
+                        console.warn('❌ Filtered out order:', {{
+                            id: o.id,
+                            symbol: orderSymbol,
+                            currentSymbol: currentSymbol,
+                            matchesSymbol,
+                            status: status,
+                            isPending,
+                            price: price,
+                            stop_price: stop_price,
+                            limitPrice: limitPrice,
+                            stopPrice: stopPrice,
+                            hasPrice,
+                            fullOrder: o
+                        }});
+                    }} else {{
+                        console.log('✅ Including order:', {{
+                            id: o.id,
+                            symbol: orderSymbol,
+                            side: o.side,
+                            type: o.type,
+                            price: price || stop_price || limitPrice || stopPrice
+                        }});
+                    }}
+                    return shouldInclude;
+                }});
+                
+                console.log('📊 Relevant orders for', currentSymbol, ':', relevantOrders.length, 'out of', orders.length);
+                console.log('📋 Relevant orders details:', relevantOrders.map(o => ({{
+                    id: o.id,
+                    symbol: o.symbol,
+                    side: o.side,
+                    type: o.type,
+                    status: o.status,
+                    price: o.price,
+                    stop_price: o.stop_price,
+                    limitPrice: o.limitPrice,
+                    stopPrice: o.stopPrice
+                }})));
+                
+                // Add price lines for each order (exactly like TradingChart.tsx)
+                relevantOrders.forEach(order => {{
+                    // Use stopPrice/stop_price for STOP orders, price/limitPrice for LIMIT orders
+                    const orderTypeNum = order.type;
+                    let orderPrice = null;
+                    
+                    console.log('🔍 Processing order:', {{
+                        id: order.id,
+                        type: orderTypeNum,
+                        price: order.price,
+                        stop_price: order.stop_price,
+                        limitPrice: order.limitPrice,
+                        stopPrice: order.stopPrice
+                    }});
+                    
+                    if (orderTypeNum === 4 || orderTypeNum === 'STOP' || order.type === 'STOP') {{
+                        // STOP order - use stopPrice/stop_price first
+                        orderPrice = order.stopPrice || order.stop_price || order.price || order.limitPrice || order.limit_price;
+                    }} else {{
+                        // LIMIT or other order - use price/limitPrice first
+                        orderPrice = order.price || order.limitPrice || order.limit_price || order.stopPrice || order.stop_price;
+                    }}
+                    
+                    // Convert to number and validate
+                    const priceNum = Number(orderPrice);
+                    if (!orderPrice || priceNum === 0 || !isFinite(priceNum) || isNaN(priceNum)) {{
+                        console.warn('❌ Skipping order with no valid price:', {{
+                            id: order.id,
+                            orderPrice: orderPrice,
+                            priceNum: priceNum,
+                            order: order
+                        }});
+                        return;
+                    }}
+                    
+                    console.log('✅ Order has valid price:', {{
+                        id: order.id,
+                        orderPrice: priceNum,
+                        type: orderTypeNum
+                    }});
+                    
+                    const isLongOrder = order.side === 'BUY';
+                    // Convert numeric order type to string (1=LIMIT, 4=STOP, etc.)
+                    let orderType = order.type;
+                    if (typeof orderType === 'number') {{
+                        orderType = orderType == 1 ? 'LIMIT' : orderType == 4 ? 'STOP' : 'ORDER';
+                    }} else {{
+                        orderType = orderType || 'LIMIT';
+                    }}
+                    const isStopOrder = orderType === 'STOP' || order.stop_price || order.stopPrice;
+                    
+                    try {{
+                        // Use the validated numeric price
+                        const finalPrice = priceNum;
+                        console.log('🎨 Creating order price line at:', finalPrice, 'Type:', orderType);
+                        
+                        // Ensure quantity is a number and format label correctly
+                        const qty = Number(order.quantity || order.size || 1);
+                        // orderType is already converted to string above, so just use it directly
+                        const label = `${{order.side}} ${{qty}} ${{orderType}}`;
+                        console.log('📝 Order label:', label, 'qty:', qty, 'orderType:', orderType, 'price:', finalPrice);
+                        
+                        const priceLine = candlestickSeries.createPriceLine({{
+                            price: finalPrice,
+                            color: isLongOrder ? '#10B981' : '#F59E0B',
+                            lineWidth: 2,
+                            lineStyle: isStopOrder ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+                            axisLabelVisible: true,
+                            title: label
+                        }});
+                        orderPriceLines.push(priceLine);
+                        console.log('✅ Order price line created successfully:', {{
+                            id: order.id,
+                            price: finalPrice,
+                            label: label,
+                            side: order.side,
+                            type: orderType
+                        }});
+                    }} catch (error) {{
+                        console.error('❌ Error creating order price line:', error, 'Order:', order);
+                    }}
+                }});
+            }} catch (error) {{
+                console.error('Error updating order lines:', error);
             }}
         }}
         

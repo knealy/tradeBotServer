@@ -3928,10 +3928,17 @@ class TopStepXTradingBot:
                         linked_orders.append(order)
                         logger.info(f"Found stop order: {order.get('id')} type: {order_type}")
                     elif order_type == 1:  # Limit orders that might be take profit
-                        side = order.get('side', -1)
-                        if side == 1:  # SELL side limit order is likely take profit
+                        # Only consider it a take profit if it's actually linked via customTag
+                        # OR if it's in the correct direction relative to position entry price
+                        custom_tag = order.get('customTag', '') or ''
+                        if "AutoBracket" in custom_tag and ("-TP" in custom_tag or "TP" in custom_tag):
                             linked_orders.append(order)
-                            logger.info(f"Found take profit order: {order.get('id')} type: {order_type}")
+                            logger.info(f"Found take profit order (via bracket tag): {order.get('id')} type: {order_type}")
+                        else:
+                            # Only link if we can verify it's actually a TP by checking position entry price
+                            # This requires position data, so we'll be conservative and only link if explicitly tagged
+                            # For now, skip linking standalone limit orders unless they're bracket-linked
+                            pass
             
             logger.info(f"Found {len(linked_orders)} linked orders for position {position_id}")
             return linked_orders
@@ -5503,16 +5510,27 @@ class TopStepXTradingBot:
                 ts = ts.replace(tzinfo=timezone.utc)
             
             # Calculate which target timeframe bar this belongs to
-            bar_start_seconds = int(ts.timestamp()) // target_seconds * target_seconds
-            bar_start = datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
+            # Special handling for daily bars
+            if target_timeframe.endswith('d'):
+                bar_start = self._get_daily_bar_start_time(ts)
+                # For daily bars, use the trading day's date for display (next day if starts at 18:00)
+                bar_start = self._get_daily_bar_display_date(bar_start)
+            else:
+                bar_start_seconds = int(ts.timestamp()) // target_seconds * target_seconds
+                bar_start = datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
             
             # Start new group if needed
             if current_group_start is None or bar_start != current_group_start:
                 # Finalize previous group
                 if current_group:
+                    # For daily bars, convert to display date (trading day's date)
+                    display_timestamp = current_group_start
+                    if target_timeframe.endswith('d'):
+                        display_timestamp = self._get_daily_bar_display_date(current_group_start)
+                    
                     agg_bar = {
-                        'timestamp': current_group_start.isoformat(),
-                        'time': current_group_start.isoformat(),
+                        'timestamp': display_timestamp.isoformat(),
+                        'time': display_timestamp.isoformat(),
                         'open': current_group[0].get('open', 0),
                         'high': max(b.get('high', 0) for b in current_group),
                         'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
@@ -5533,9 +5551,14 @@ class TopStepXTradingBot:
         
         # Finalize last group
         if current_group:
+            # For daily bars, convert to display date (trading day's date)
+            display_timestamp = current_group_start
+            if target_timeframe.endswith('d'):
+                display_timestamp = self._get_daily_bar_display_date(current_group_start)
+            
             agg_bar = {
-                'timestamp': current_group_start.isoformat(),
-                'time': current_group_start.isoformat(),
+                'timestamp': display_timestamp.isoformat(),
+                'time': display_timestamp.isoformat(),
                 'open': current_group[0].get('open', 0),
                 'high': max(b.get('high', 0) for b in current_group),
                 'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
@@ -5546,7 +5569,132 @@ class TopStepXTradingBot:
                 agg_bar['low'] = agg_bar['open']
             aggregated.append(agg_bar)
         
+        # Filter out Saturday bars for daily timeframes (market is closed on Saturday)
+        if target_timeframe.endswith('d'):
+            try:
+                import pytz
+                et_tz = pytz.timezone('US/Eastern')
+            except ImportError:
+                et_tz = timezone(timedelta(hours=-5))
+            
+            filtered = []
+            for bar in aggregated:
+                # Get timestamp from bar
+                ts_str = bar.get('timestamp') or bar.get('time')
+                if isinstance(ts_str, str):
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    except:
+                        continue
+                elif isinstance(ts_str, datetime):
+                    ts = ts_str
+                else:
+                    continue
+                
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                
+                # Convert to ET to check weekday (to match display date logic)
+                ts_et = ts.astimezone(et_tz)
+                # Skip Saturday bars (weekday 5)
+                if ts_et.weekday() != 5:
+                    filtered.append(bar)
+            aggregated = filtered
+        
         return aggregated
+    
+    def _get_daily_bar_start_time(self, timestamp: datetime) -> datetime:
+        """
+        Get the start time for a daily bar based on EST market hours.
+        
+        Rules:
+        - Every day opens at 18:00 ET (6pm) the previous day
+        - Every day closes at 17:00 ET (5pm) that day
+        
+        Examples:
+        - Monday bar: Sunday 18:00 ET to Monday 17:00 ET
+        - Tuesday bar: Monday 18:00 ET to Tuesday 17:00 ET
+        - Wednesday bar: Tuesday 18:00 ET to Wednesday 17:00 ET
+        - Thursday bar: Wednesday 18:00 ET to Thursday 17:00 ET
+        - Friday bar: Thursday 18:00 ET to Friday 17:00 ET
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            # Fallback if pytz not available
+            et_tz = timezone(timedelta(hours=-5))  # EST offset (approximate)
+        
+        # Convert to EST
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp_et = timestamp.astimezone(et_tz)
+        
+        hour = timestamp_et.hour
+        
+        # Calculate daily bar start - simplified logic
+        # If before 17:00 (5pm), we're still in today's bar (which started yesterday 18:00)
+        # If at or after 17:00 (5pm), we're in tomorrow's bar (which starts today 18:00)
+        if hour < 17:
+            # Before 17:00 - still in today's bar, which started yesterday 18:00
+            days_back = 1
+            bar_start_et = (timestamp_et - timedelta(days=days_back)).replace(hour=18, minute=0, second=0, microsecond=0)
+        else:
+            # At or after 17:00 - this is tomorrow's bar, which starts today 18:00
+            bar_start_et = timestamp_et.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        # Convert back to UTC
+        return bar_start_et.astimezone(timezone.utc)
+    
+    def _get_daily_bar_display_date(self, bar_start_timestamp: datetime) -> datetime:
+        """
+        Get the display date for a daily bar.
+        
+        For daily bars, the timestamp shows the start time (18:00 ET previous day),
+        but we want to display it with the trading day's date.
+        
+        Examples:
+        - Bar starting Sunday 18:00 ET should display as Monday's date
+        - Bar starting Monday 18:00 ET should display as Tuesday's date
+        - Bar starting Tuesday 18:00 ET should display as Wednesday's date
+        - Bar starting Wednesday 18:00 ET should display as Thursday's date
+        - Bar starting Thursday 18:00 ET should display as Friday's date
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            et_tz = timezone(timedelta(hours=-5))
+        
+        # Convert to EST
+        if bar_start_timestamp.tzinfo is None:
+            bar_start_timestamp = bar_start_timestamp.replace(tzinfo=timezone.utc)
+        bar_start_et = bar_start_timestamp.astimezone(et_tz)
+        
+        weekday = bar_start_et.weekday()  # 0=Monday, 1=Tuesday, ..., 6=Sunday
+        hour = bar_start_et.hour
+        
+        # If the bar starts at 18:00 ET, it represents the NEXT trading day
+        if hour == 18:
+            if weekday == 6:  # Sunday 18:00 -> Monday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 0:  # Monday 18:00 -> Tuesday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 1:  # Tuesday 18:00 -> Wednesday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 2:  # Wednesday 18:00 -> Thursday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 3:  # Thursday 18:00 -> Friday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            else:
+                # Shouldn't happen, but fallback
+                display_date_et = bar_start_et
+        else:
+            # Not a standard daily bar start time, use as-is
+            display_date_et = bar_start_et
+        
+        # Convert back to UTC
+        return display_date_et.astimezone(timezone.utc)
     
     def _parse_timeframe_to_seconds(self, timeframe: str) -> Optional[int]:
         """Parse timeframe string to seconds."""

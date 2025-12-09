@@ -272,7 +272,24 @@ impl QueryExecutor {
                 format!("HTTP request failed: {}", e)
             ))?;
 
-        let response_json: Value = response.json().await
+        // Check response status before parsing
+        let status = response.status();
+        if !status.is_success() {
+            // Return empty list for non-success status codes (e.g., 429 rate limit)
+            return Ok(vec![]);
+        }
+
+        // Check if response body is empty
+        let response_text = response.text().await
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to read response: {}", e)
+            ))?;
+
+        if response_text.trim().is_empty() {
+            return Ok(vec![]);
+        }
+
+        let response_json: Value = serde_json::from_str(&response_text)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 format!("Failed to parse response: {}", e)
             ))?;
@@ -417,7 +434,24 @@ impl QueryExecutor {
                 format!("HTTP request failed: {}", e)
             ))?;
 
-        let response_json: Value = response.json().await
+        // Check response status before parsing
+        let status = response.status();
+        if !status.is_success() {
+            // Return empty list for non-success status codes (e.g., 429 rate limit)
+            return Ok(vec![]);
+        }
+
+        // Check if response body is empty
+        let response_text = response.text().await
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Failed to read response: {}", e)
+            ))?;
+
+        if response_text.trim().is_empty() {
+            return Ok(vec![]);
+        }
+
+        let response_json: Value = serde_json::from_str(&response_text)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 format!("Failed to parse response: {}", e)
             ))?;

@@ -10,8 +10,8 @@ import os
 import json
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
+from datetime import datetime, timedelta, timezone
 
 from core.interfaces import (
     OrderInterface,
@@ -77,6 +77,13 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         # Use auth manager's HTTP session
         self._http_session = auth_manager._http_session
+        
+        # Historical data cache to prevent duplicate requests
+        # Key: (symbol, timeframe, limit, start_time_str, end_time_str)
+        # Value: (bars, timestamp)
+        self._historical_cache: Dict[Tuple[str, str, int, Optional[str], Optional[str]], Tuple[List[Bar], float]] = {}
+        self._cache_lock = asyncio.Lock()
+        self._cache_ttl_seconds = 5  # Cache for 5 seconds to prevent duplicate requests
         
         # Initialize Rust executors if available
         self._use_rust = False
@@ -1058,6 +1065,42 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             logger.error(f"Failed to fetch orders: {str(e)}")
             return []
     
+    async def _get_open_orders_rust(self, account_id: Optional[str] = None) -> list:
+        """
+        Get open orders using Rust QueryExecutor.
+        
+        Args:
+            account_id: Account ID (required)
+            
+        Returns:
+            List of order dictionaries
+        """
+        if not self._query_executor:
+            raise RuntimeError("Rust QueryExecutor not available")
+        
+        if not account_id:
+            raise ValueError("Account ID is required")
+        
+        # Set token if needed
+        token = self.auth.get_token()
+        if token:
+            self._query_executor.set_token(token)
+        
+        # Call Rust method
+        orders_py = await self._query_executor.get_open_orders(int(account_id))
+        
+        # Convert Python list to list of dicts
+        orders = []
+        if isinstance(orders_py, list):
+            for order in orders_py:
+                if isinstance(order, dict):
+                    orders.append(order)
+        
+        # Filter strictly to OPEN orders (status == 1)
+        open_only = [o for o in orders if o.get("status") == 1]
+        logger.info(f"Found {len(open_only)} open orders via Rust (from {len(orders)} total)")
+        return open_only
+    
     async def get_order_history(
         self,
         account_id: Optional[str] = None,
@@ -1306,6 +1349,44 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         except Exception as e:
             logger.error(f"Failed to fetch positions: {str(e)}")
             return []
+    
+    async def _get_positions_rust(self, account_id: Optional[str] = None) -> List[Position]:
+        """
+        Get open positions using Rust QueryExecutor.
+        
+        Args:
+            account_id: Account ID (required)
+            
+        Returns:
+            List of Position objects
+        """
+        if not self._query_executor:
+            raise RuntimeError("Rust QueryExecutor not available")
+        
+        if not account_id:
+            raise ValueError("Account ID is required")
+        
+        # Set token if needed
+        token = self.auth.get_token()
+        if token:
+            self._query_executor.set_token(token)
+        
+        # Call Rust method
+        positions_py = await self._query_executor.get_positions(int(account_id))
+        
+        # Convert Python list of dicts to Position objects
+        positions = []
+        if isinstance(positions_py, list):
+            for pos_dict in positions_py:
+                try:
+                    if isinstance(pos_dict, dict):
+                        position = self._convert_position_dict_to_object(pos_dict)
+                        positions.append(position)
+                except Exception as e:
+                    logger.warning(f"Failed to convert position from Rust: {e}")
+                    continue
+        
+        return positions
     
     # Alias for backward compatibility
     async def get_open_positions(
@@ -1619,10 +1700,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         _skip_aggregation: bool = False,  # Internal flag to prevent recursion
+        _use_cache: bool = True,  # Enable caching to prevent duplicate requests
         **kwargs
     ) -> List[Bar]:
         """
-        Get historical bar data.
+        Get historical bar data with caching to prevent duplicate requests.
         
         Args:
             symbol: Trading symbol
@@ -1630,6 +1712,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             limit: Maximum number of bars
             start_time: Start time (optional)
             end_time: End time (optional)
+            _skip_aggregation: Internal flag to prevent recursion
+            _use_cache: Whether to use cache (default: True)
             **kwargs: Additional parameters
             
         Returns:
@@ -1638,6 +1722,109 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         try:
             await self.auth.ensure_valid_token()
             
+            symbol_up = symbol.upper()
+            
+            # Check cache first (only for non-aggregation calls to avoid recursion issues)
+            cache_key = None
+            if _use_cache and not _skip_aggregation:
+                import time
+                cache_key = (
+                    symbol_up,
+                    timeframe,
+                    limit,
+                    start_time.isoformat() if start_time else None,
+                    end_time.isoformat() if end_time else None
+                )
+                
+                async with self._cache_lock:
+                    if cache_key in self._historical_cache:
+                        cached_bars, cache_timestamp = self._historical_cache[cache_key]
+                        age = time.time() - cache_timestamp
+                        if age < self._cache_ttl_seconds:
+                            logger.debug(f"📦 Cache HIT for {symbol_up} {timeframe} {limit} bars (age: {age:.1f}s)")
+                            return cached_bars
+                        else:
+                            # Cache expired, remove it
+                            del self._historical_cache[cache_key]
+                            logger.debug(f"📦 Cache EXPIRED for {symbol_up} {timeframe} {limit} bars (age: {age:.1f}s)")
+                    
+                    # Check if there's a pending request for the same key (prevent duplicate requests)
+                    if cache_key in self._pending_requests:
+                        # Wait for the pending request to complete
+                        logger.debug(f"⏳ Waiting for pending request for {symbol_up} {timeframe} {limit} bars")
+                        try:
+                            return await self._pending_requests[cache_key]
+                        except Exception as e:
+                            logger.warning(f"Pending request failed: {e}")
+                            # Fall through to make new request
+                            if cache_key in self._pending_requests:
+                                del self._pending_requests[cache_key]
+            
+            # Create a wrapper function that will be called to fetch data
+            async def _fetch_data() -> List[Bar]:
+                """Internal function to fetch data - will be cached or awaited if pending."""
+                return await self._fetch_historical_data_impl(
+                    symbol_up, timeframe, limit, start_time, end_time, _skip_aggregation, **kwargs
+                )
+            
+            # If caching enabled, create task and track it
+            if _use_cache and not _skip_aggregation and cache_key:
+                async with self._cache_lock:
+                    if cache_key not in self._pending_requests:
+                        # Create new request task
+                        request_task = asyncio.create_task(_fetch_data())
+                        self._pending_requests[cache_key] = request_task
+                    else:
+                        # Use existing pending request
+                        request_task = self._pending_requests[cache_key]
+                
+                # Wait for the request to complete
+                bars = await request_task
+                
+                # Store in cache and clean up
+                import time
+                async with self._cache_lock:
+                    self._historical_cache[cache_key] = (bars, time.time())
+                    if cache_key in self._pending_requests:
+                        del self._pending_requests[cache_key]
+                    # Clean up old cache entries (keep last 100)
+                    if len(self._historical_cache) > 100:
+                        sorted_entries = sorted(
+                            self._historical_cache.items(),
+                            key=lambda x: x[1][1]  # Sort by timestamp
+                        )
+                        for key in sorted_entries[:len(sorted_entries) - 100]:
+                            del self._historical_cache[key[0]]
+                
+                return bars
+            else:
+                # No caching - fetch directly
+                return await _fetch_data()
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch historical data: {str(e)}")
+            # Clean up pending request on error
+            if _use_cache and not _skip_aggregation and cache_key:
+                async with self._cache_lock:
+                    if cache_key in self._pending_requests:
+                        del self._pending_requests[cache_key]
+            return []
+    
+    async def _fetch_historical_data_impl(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        limit: int = 100,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        _skip_aggregation: bool = False,
+        **kwargs
+    ) -> List[Bar]:
+        """
+        Internal implementation to fetch historical data.
+        This contains the actual API call logic.
+        """
+        try:
             symbol_up = symbol.upper()
             
             # Get contract ID
@@ -1863,7 +2050,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     start_time = market_open_utc
                 
                 lookback_days = (end_time - start_time).total_seconds() / 86400
-                logger.info(
+                logger.debug(
                     f"Bar count mode: {lookback_bars} bars worth of time = {lookback_days:.1f} days "
                     f"for {symbol_up} {timeframe}"
                 )
@@ -1903,11 +2090,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 
                 # Use API max (20000) to ensure we get all bars
                 api_limit = min(estimated_bars, 20000)
-                logger.info(f"📅 Date range mode: requesting up to {api_limit} {timeframe} bars between {start_str} and {end_str}")
+                logger.debug(f"📅 Date range mode: requesting up to {api_limit} {timeframe} bars between {start_str} and {end_str}")
             else:
                 # Bar count mode: request extra bars to account for gaps/closures
                 api_limit = min(limit * 3, 20000)
-                logger.info(f"📊 Bar count mode: requesting {limit} {timeframe} bars (API limit: {api_limit})")
+                logger.debug(f"📊 Bar count mode: requesting {limit} {timeframe} bars (API limit: {api_limit})")
             
             bars_request = {
                 "contractId": contract_id,
@@ -1920,7 +2107,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "includePartialBar": True
             }
             
-            logger.info(f"Fetching {timeframe} bars for {symbol_up} from {start_str} to {end_str}")
+            logger.debug(f"Fetching {timeframe} bars for {symbol_up} from {start_str} to {end_str}")
             try:
                 logger.debug(f"🔍 History API request: {json.dumps(bars_request, indent=2)}")
             except Exception as e:
@@ -2070,8 +2257,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         or last.get("Time")
                         or last.get("Timestamp")
                     )
-                logger.info(f"🔍 History API raw last bar timestamp field (t/time/timestamp) = {last_raw}")
-                logger.info(f"🔍 History API now UTC                                    = {datetime.now(_tz.utc)}")
+                logger.debug(f"🔍 History API raw last bar timestamp field (t/time/timestamp) = {last_raw}")
+                logger.debug(f"🔍 History API now UTC                                    = {datetime.now(_tz.utc)}")
             except Exception as dbg_err:
                 logger.debug(f"Failed to log raw last bar timestamp: {dbg_err}")
 
@@ -2121,7 +2308,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Skip aggregation if we're already fetching 1m data (prevents recursion)
             target_seconds = self._parse_timeframe_to_seconds(timeframe)
             if not _skip_aggregation and target_seconds and target_seconds > 60:
-                logger.info(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
+                logger.debug(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
                 
                 # Fetch 1m data instead (with _skip_aggregation=True to prevent recursion)
                 one_min_bars = await self.get_historical_data(
@@ -2138,7 +2325,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"No 1m data available for aggregation to {timeframe}")
                     return []
                 
-                logger.info(f"📊 Aggregating {len(one_min_bars)} 1m bars into {timeframe} bars...")
+                logger.debug(f"📊 Aggregating {len(one_min_bars)} 1m bars into {timeframe} bars...")
                 
                 # Use Rust aggregation if available, otherwise Python fallback
                 if RUST_AVAILABLE and self._use_rust:
@@ -2173,6 +2360,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         aggregated_bars = []
                         for rust_bar in aggregated_rust:
                             dt = datetime.fromtimestamp(rust_bar.timestamp, tz=timezone.utc)
+                            # Adjust timestamp for daily bars to use correct market hours
+                            if timeframe.endswith('d'):
+                                bar_start = self._get_daily_bar_start_time(dt)
+                                # For display, use the trading day's date (next day if starts at 18:00)
+                                dt = self._get_daily_bar_display_date(bar_start)
                             aggregated_bars.append(Bar(
                                 timestamp=dt,
                                 open=rust_bar.open,
@@ -2184,11 +2376,37 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                                 timeframe=timeframe,
                             ))
                         
+                        # Filter out Saturday bars for daily timeframes (market is closed on Saturday)
+                        if timeframe.endswith('d'):
+                            try:
+                                import pytz
+                                et_tz = pytz.timezone('US/Eastern')
+                            except ImportError:
+                                et_tz = timezone(timedelta(hours=-5))
+                            
+                            filtered_bars = []
+                            for bar in aggregated_bars:
+                                if bar.timestamp:
+                                    # Convert to ET to check weekday
+                                    if bar.timestamp.tzinfo is None:
+                                        bar_et = bar.timestamp.replace(tzinfo=timezone.utc).astimezone(et_tz)
+                                    else:
+                                        bar_et = bar.timestamp.astimezone(et_tz)
+                                    # Skip Saturday (weekday 5)
+                                    if bar_et.weekday() == 5:
+                                        logger.debug(f"Filtering out Saturday bar from Rust aggregation: {bar.timestamp} (ET: {bar_et})")
+                                    else:
+                                        filtered_bars.append(bar)
+                                else:
+                                    filtered_bars.append(bar)
+                            aggregated_bars = filtered_bars
+                            logger.debug(f"Filtered daily bars from Rust aggregation: {len(aggregated_bars)} bars remaining after removing Saturday bars")
+                        
                         # Limit to requested count (only in bar count mode, not date range mode)
                         if not original_start_time_provided and len(aggregated_bars) > limit:
                             aggregated_bars = aggregated_bars[-limit:]
                         
-                        logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars (Rust)")
+                        logger.debug(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars (Rust)")
                         return aggregated_bars
                     except Exception as e:
                         logger.warning(f"Rust aggregation failed, falling back to Python: {e}")
@@ -2213,6 +2431,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 aggregated_bars = []
                 for bar_dict in aggregated_dict:
                     dt = datetime.fromtimestamp(bar_dict['timestamp'], tz=timezone.utc)
+                    # Adjust timestamp for daily bars to use correct market hours
+                    if timeframe.endswith('d'):
+                        bar_start = self._get_daily_bar_start_time(dt)
+                        # For display, use the trading day's date (next day if starts at 18:00)
+                        dt = self._get_daily_bar_display_date(bar_start)
                     aggregated_bars.append(Bar(
                         timestamp=dt,
                         open=bar_dict['open'],
@@ -2224,12 +2447,94 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         timeframe=timeframe,
                     ))
                 
+                # Filter out Saturday bars for daily timeframes (market is closed on Saturday)
+                if timeframe.endswith('d'):
+                    try:
+                        import pytz
+                        et_tz = pytz.timezone('US/Eastern')
+                    except ImportError:
+                        et_tz = timezone(timedelta(hours=-5))
+                    
+                    filtered_bars = []
+                    for bar in aggregated_bars:
+                        if bar.timestamp:
+                            # Convert to ET to check weekday
+                            if bar.timestamp.tzinfo is None:
+                                bar_et = bar.timestamp.replace(tzinfo=timezone.utc).astimezone(et_tz)
+                            else:
+                                bar_et = bar.timestamp.astimezone(et_tz)
+                            # Skip Saturday (weekday 5)
+                            if bar_et.weekday() == 5:
+                                logger.debug(f"Filtering out Saturday bar from Python aggregation: {bar.timestamp} (ET: {bar_et})")
+                            else:
+                                filtered_bars.append(bar)
+                        else:
+                            filtered_bars.append(bar)
+                    aggregated_bars = filtered_bars
+                    logger.debug(f"Filtered daily bars from Python aggregation: {len(aggregated_bars)} bars remaining after removing Saturday bars")
+                
                 # Limit to requested count (only in bar count mode, not date range mode)
                 if not original_start_time_provided and len(aggregated_bars) > limit:
                     aggregated_bars = aggregated_bars[-limit:]
                 
-                logger.info(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars (Python)")
+                logger.debug(f"✅ Aggregated to {len(aggregated_bars)} {timeframe} bars (Python)")
                 return aggregated_bars
+            
+            # Adjust timestamps for daily bars from API to use correct market hours
+            if timeframe.endswith('d'):
+                for bar in bars:
+                    if bar.timestamp:
+                        # Get the correct start time
+                        bar_start = self._get_daily_bar_start_time(bar.timestamp)
+                        # For display, use the trading day's date (next day if starts at 18:00)
+                        bar.timestamp = self._get_daily_bar_display_date(bar_start)
+                
+                # Deduplicate daily bars with the same display timestamp
+                # Group by display timestamp and merge bars
+                bars_by_date = {}
+                for bar in bars:
+                    if bar.timestamp:
+                        display_key = int(bar.timestamp.timestamp())
+                        if display_key not in bars_by_date:
+                            bars_by_date[display_key] = bar
+                        else:
+                            # Merge bars with same display date (take the one with more volume or later data)
+                            existing = bars_by_date[display_key]
+                            # Use the bar with higher volume, or if equal, the one with later timestamp
+                            if bar.volume > existing.volume or (bar.volume == existing.volume and bar.timestamp > existing.timestamp):
+                                bars_by_date[display_key] = bar
+                
+                # Convert back to list
+                bars = list(bars_by_date.values())
+                
+                # Filter out Saturday bars (market is closed on Saturday)
+                # Saturday is weekday 5 (0=Monday, 1=Tuesday, ..., 5=Saturday, 6=Sunday)
+                # Check weekday in ET timezone to match display date logic
+                try:
+                    import pytz
+                    et_tz = pytz.timezone('US/Eastern')
+                except ImportError:
+                    et_tz = timezone(timedelta(hours=-5))
+                
+                filtered_bars = []
+                for bar in bars:
+                    if bar.timestamp:
+                        # Convert to ET to check weekday
+                        if bar.timestamp.tzinfo is None:
+                            bar_et = bar.timestamp.replace(tzinfo=timezone.utc).astimezone(et_tz)
+                        else:
+                            bar_et = bar.timestamp.astimezone(et_tz)
+                        # Skip Saturday (weekday 5)
+                        weekday = bar_et.weekday()
+                        if weekday == 5:
+                            logger.info(f"🗑️  Filtering out Saturday bar: {bar.timestamp} (ET: {bar_et}, weekday={weekday})")
+                        else:
+                            filtered_bars.append(bar)
+                    else:
+                        filtered_bars.append(bar)
+                bars = filtered_bars
+                if len(bars) < len(bars_by_date):
+                    logger.info(f"✅ Filtered daily bars: {len(bars)} bars remaining after removing {len(bars_by_date) - len(bars)} Saturday bars")
             
             # CRITICAL: Sort by timestamp (oldest first) before limiting
             # This ensures we always get the most recent bars, regardless of API response order
@@ -2246,17 +2551,115 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     from datetime import timezone as _tz
 
                     last_bar_ts = bars[-1].timestamp
-                    logger.info(f"🔍 Parsed last bar timestamp UTC = {last_bar_ts}")
-                    logger.info(f"🔍 Adapter now UTC               = {datetime.now(_tz.utc)}")
+                    logger.debug(f"🔍 Parsed last bar timestamp UTC = {last_bar_ts}")
+                    logger.debug(f"🔍 Adapter now UTC               = {datetime.now(_tz.utc)}")
                 except Exception as dbg_err:
                     logger.debug(f"Failed to log parsed last bar timestamp: {dbg_err}")
 
-            logger.info(f"✅ Retrieved {len(bars)} {timeframe} bars for {symbol_up}")
+            logger.debug(f"✅ Retrieved {len(bars)} {timeframe} bars for {symbol_up}")
             return bars
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch historical data (impl): {str(e)}")
+            return []
             
         except Exception as e:
             logger.error(f"Failed to fetch historical data: {str(e)}")
             return []
+    
+    def _get_daily_bar_start_time(self, timestamp: datetime) -> datetime:
+        """
+        Get the start time for a daily bar based on EST market hours.
+        
+        Rules:
+        - Every day opens at 18:00 ET (6pm) the previous day
+        - Every day closes at 17:00 ET (5pm) that day
+        
+        Examples:
+        - Monday bar: Sunday 18:00 ET to Monday 17:00 ET
+        - Tuesday bar: Monday 18:00 ET to Tuesday 17:00 ET
+        - Wednesday bar: Tuesday 18:00 ET to Wednesday 17:00 ET
+        - Thursday bar: Wednesday 18:00 ET to Thursday 17:00 ET
+        - Friday bar: Thursday 18:00 ET to Friday 17:00 ET
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            # Fallback if pytz not available
+            et_tz = timezone(timedelta(hours=-5))  # EST offset (approximate)
+        
+        # Convert to EST
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp_et = timestamp.astimezone(et_tz)
+        
+        weekday = timestamp_et.weekday()  # 0=Monday, 1=Tuesday, ..., 6=Sunday
+        hour = timestamp_et.hour
+        
+        # Calculate daily bar start - simplified logic
+        # If before 17:00 (5pm), we're still in today's bar (which started yesterday 18:00)
+        # If at or after 17:00 (5pm), we're in tomorrow's bar (which starts today 18:00)
+        if hour < 17:
+            # Before 17:00 - still in today's bar, which started yesterday 18:00
+            days_back = 1
+            bar_start_et = (timestamp_et - timedelta(days=days_back)).replace(hour=18, minute=0, second=0, microsecond=0)
+        else:
+            # At or after 17:00 - this is tomorrow's bar, which starts today 18:00
+            bar_start_et = timestamp_et.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        # Convert back to UTC
+        return bar_start_et.astimezone(timezone.utc)
+    
+    def _get_daily_bar_display_date(self, bar_start_timestamp: datetime) -> datetime:
+        """
+        Get the display date for a daily bar.
+        
+        For daily bars, the timestamp shows the start time (18:00 ET previous day),
+        but we want to display it with the trading day's date.
+        
+        Examples:
+        - Bar starting Sunday 18:00 ET should display as Monday's date
+        - Bar starting Monday 18:00 ET should display as Tuesday's date
+        - Bar starting Tuesday 18:00 ET should display as Wednesday's date
+        - Bar starting Wednesday 18:00 ET should display as Thursday's date
+        - Bar starting Thursday 18:00 ET should display as Friday's date
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            et_tz = timezone(timedelta(hours=-5))
+        
+        # Convert to EST
+        if bar_start_timestamp.tzinfo is None:
+            bar_start_timestamp = bar_start_timestamp.replace(tzinfo=timezone.utc)
+        bar_start_et = bar_start_timestamp.astimezone(et_tz)
+        
+        weekday = bar_start_et.weekday()  # 0=Monday, 1=Tuesday, ..., 6=Sunday
+        hour = bar_start_et.hour
+        
+        # If the bar starts at 18:00 ET, it represents the NEXT trading day
+        if hour == 18:
+            if weekday == 6:  # Sunday 18:00 -> Monday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 0:  # Monday 18:00 -> Tuesday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 1:  # Tuesday 18:00 -> Wednesday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 2:  # Wednesday 18:00 -> Thursday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            elif weekday == 3:  # Thursday 18:00 -> Friday's bar
+                display_date_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+            else:
+                # Shouldn't happen, but fallback
+                display_date_et = bar_start_et
+        else:
+            # Not a standard daily bar start time, use as-is
+            display_date_et = bar_start_et
+        
+        # Convert back to UTC
+        return display_date_et.astimezone(timezone.utc)
     
     def _parse_timeframe_to_seconds(self, timeframe: str) -> Optional[int]:
         """Parse timeframe string to seconds."""
@@ -2293,7 +2696,13 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         for bar in bars:
             ts = bar.get('timestamp') or bar.get('time')
-            bar_start_seconds = (ts // target_seconds) * target_seconds
+            # Special handling for daily bars
+            if target_timeframe.endswith('d'):
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                bar_start_dt = self._get_daily_bar_start_time(dt)
+                bar_start_seconds = int(bar_start_dt.timestamp())
+            else:
+                bar_start_seconds = (ts // target_seconds) * target_seconds
             
             if current_group_start is None or bar_start_seconds != current_group_start:
                 if current_group:
@@ -2347,13 +2756,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             Quote object or None if unavailable
         """
         try:
-            # Try Rust hot path first
-            if self._use_rust and self._query_executor:
-                try:
-                    return await self._get_market_quote_rust(symbol)
-                except Exception as e:
-                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
-            
+            # Skip Rust for quotes - SignalR quotes are more reliable and real-time
+            # Rust REST API endpoint returns 404, so we use Python fallback which can access bars
             # Python fallback
             await self.auth.ensure_valid_token()
             
@@ -2372,42 +2776,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "Authorization": f"Bearer {self.auth.get_token()}"
             }
             
-            # Try REST quote endpoint
-            # Try different symbol identifier formats
-            from core.market_data import ContractManager
-            symbol_variants = [symbol_up]
-            if '.' in contract_id:
-                parts = contract_id.split('.')
-                if len(parts) >= 4:
-                    symbol_variants.append(parts[-2])  # Extract symbol from contract ID
-            
-            quote_resp = None
-            for variant in symbol_variants:
-                try:
-                    path = f"/api/MarketData/quote/{variant}"
-                    resp = self._make_request("GET", path, headers=headers)
-                    if resp and "error" not in resp:
-                        quote_resp = resp
-                        break
-                except Exception:
-                    continue
-            
-            if quote_resp and "error" not in quote_resp:
-                bid = quote_resp.get("bid") or quote_resp.get("bestBid")
-                ask = quote_resp.get("ask") or quote_resp.get("bestAsk")
-                last = quote_resp.get("last") or quote_resp.get("lastPrice") or quote_resp.get("price")
-                volume = quote_resp.get("volume") or quote_resp.get("totalVolume")
-                
-                if any(v is not None for v in (bid, ask, last)):
-                    return Quote(
-                        symbol=symbol_up,
-                        bid=float(bid) if bid is not None else None,
-                        ask=float(ask) if ask is not None else None,
-                        last=float(last) if last is not None else None,
-                        volume=int(volume) if volume is not None else None,
-                        raw_data=quote_resp
-                    )
-            
+            # Skip REST quote endpoint - it returns 404 and isn't reliable
+            # Go straight to bars fallback which is more reliable
             # Fallback to recent bars for last price
             from datetime import datetime, timezone, timedelta
             now = datetime.now(timezone.utc)
@@ -2455,31 +2825,81 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         await self.auth.ensure_valid_token()
         
+        symbol_up = symbol.upper()
+        
         try:
-            contract_id = self.contract_manager.get_contract_id(symbol)
+            contract_id = self.contract_manager.get_contract_id(symbol_up)
         except ValueError:
             return None
         
         token = self.auth.get_token()
         self._query_executor.set_token(token)
         
-        rust_result = await self._query_executor.get_market_quote(contract_id=contract_id)
+        # Try symbol variants like Python fallback does
+        # Try symbol first (e.g., "MNQ"), then contract_id
+        symbol_variants = [symbol_up]
+        if '.' in contract_id:
+            parts = contract_id.split('.')
+            if len(parts) >= 4:
+                symbol_variants.append(parts[-2])  # Extract symbol from contract ID
+        symbol_variants.append(contract_id)  # Try contract_id last
+        
+        rust_result = None
+        last_error = None
+        for variant in symbol_variants:
+            try:
+                rust_result = await self._query_executor.get_market_quote(contract_id=variant)
+                # Check if we got a valid quote with at least one price field
+                if rust_result and isinstance(rust_result, dict):
+                    bid = rust_result.get('bid') or rust_result.get('bestBid')
+                    ask = rust_result.get('ask') or rust_result.get('bestAsk')
+                    last = rust_result.get('last') or rust_result.get('lastPrice') or rust_result.get('price')
+                    if bid is not None or ask is not None or last is not None:
+                        # Found valid quote, break
+                        logger.debug(f"Rust quote succeeded for variant: {variant}")
+                        break
+                    else:
+                        logger.debug(f"Rust quote returned empty data for variant: {variant}, result: {rust_result}")
+                        rust_result = None
+                elif rust_result is None:
+                    logger.debug(f"Rust quote returned None for variant: {variant}")
+                else:
+                    logger.debug(f"Rust quote returned unexpected type for variant: {variant}, type: {type(rust_result)}")
+                    rust_result = None
+            except Exception as e:
+                last_error = e
+                logger.debug(f"Rust quote attempt failed for {variant}: {e}")
+                rust_result = None
+                continue
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info(f"⚡ Rust get_market_quote execution: {elapsed_ms:.2f}ms")
         
         if not rust_result:
+            if last_error:
+                logger.warning(f"Rust get_market_quote failed for all variants, last error: {last_error}")
+            else:
+                logger.warning(f"Rust get_market_quote returned None/empty for all variants: {symbol_variants}")
             return None
         
-        # Convert Rust dict to Quote object
+        # Convert Rust dict to Quote object - handle different field names like Python fallback
         try:
             from core.interfaces import Quote
+            bid = rust_result.get('bid') or rust_result.get('bestBid')
+            ask = rust_result.get('ask') or rust_result.get('bestAsk')
+            last = rust_result.get('last') or rust_result.get('lastPrice') or rust_result.get('price')
+            volume = rust_result.get('volume') or rust_result.get('totalVolume')
+            
+            # Only return if we have at least one price field
+            if not any(v is not None for v in (bid, ask, last)):
+                return None
+            
             return Quote(
-                symbol=symbol.upper(),
-                bid=rust_result.get('bid', 0.0),
-                ask=rust_result.get('ask', 0.0),
-                last=rust_result.get('last', 0.0),
-                volume=rust_result.get('volume', 0),
+                symbol=symbol_up,
+                bid=float(bid) if bid is not None else None,
+                ask=float(ask) if ask is not None else None,
+                last=float(last) if last is not None else None,
+                volume=int(volume) if volume is not None else None,
                 raw_data=rust_result
             )
         except Exception as e:
@@ -2737,60 +3157,56 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 headers=headers
             )
             
-            if "error" in response or not response:
-                # Return cached data if available
-                if use_cache:
-                    cache = self.contract_manager.get_contract_cache()
-                    if cache:
-                        logger.warning(f"API error, returning stale cached contracts ({len(cache['contracts'])} contracts)")
-                        return cache['contracts'].copy()
+            if isinstance(response, dict) and response.get("error"):
+                logger.error(f"API error: {response['error']}")
                 return []
             
-            # Check API success field
-            if isinstance(response, dict) and response.get('success') == False:
-                error_code = response.get('errorCode', 'Unknown')
-                error_msg = response.get('errorMessage', 'No error message')
-                logger.error(f"API returned error: Code {error_code}, Message: {error_msg}")
-                # Try cached data
-                if use_cache:
-                    cache = self.contract_manager.get_contract_cache()
-                    if cache:
-                        logger.warning(f"Using stale cached contracts due to API error")
-                        return cache['contracts'].copy()
+            contracts = response if isinstance(response, list) else response.get("contracts", [])
+            
+            if not contracts:
+                logger.warning("No contracts returned from API")
                 return []
             
-            # Parse contracts from response
-            if isinstance(response, list):
-                contracts = response
-            elif isinstance(response, dict):
-                contracts = (
-                    response.get("contracts") or
-                    response.get("data") or
-                    response.get("result") or
-                    response.get("items") or
-                    []
-                )
-            else:
-                logger.warning(f"Unexpected contracts response type: {type(response)}")
-                contracts = []
+            # Update contract cache
+            self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
             
-            # Cache the contracts
-            if use_cache:
-                self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
-                logger.info(f"✅ Cached {len(contracts)} contracts for {cache_ttl_minutes} minutes")
-            
-            logger.info(f"Found {len(contracts)} available contracts")
+            logger.info(f"✅ Retrieved {len(contracts)} available contracts")
             return contracts
             
         except Exception as e:
-            logger.error(f"Failed to fetch contracts: {str(e)}")
-            # Return cached data if available
-            if use_cache:
-                cache = self.contract_manager.get_contract_cache()
-                if cache:
-                    logger.warning(f"Exception during fetch, returning stale cached contracts ({len(cache['contracts'])} contracts)")
-                    return cache['contracts'].copy()
+            logger.error(f"Failed to fetch available contracts: {str(e)}")
             return []
+    
+    async def _get_available_contracts_rust(self) -> List[Dict[str, Any]]:
+        """
+        Get available contracts using Rust QueryExecutor.
+        
+        Returns:
+            List of contract dictionaries
+        """
+        if not self._query_executor:
+            raise RuntimeError("Rust QueryExecutor not available")
+        
+        # Set token if needed
+        token = self.auth.get_token()
+        if token:
+            self._query_executor.set_token(token)
+        
+        # Call Rust method
+        contracts_py = await self._query_executor.get_available_contracts()
+        
+        # Convert Python list of dicts to proper format
+        contracts = []
+        if isinstance(contracts_py, list):
+            for contract in contracts_py:
+                if isinstance(contract, dict):
+                    contracts.append(dict(contract))
+        
+        # Update contract cache
+        if contracts:
+            self.contract_manager.set_contract_cache(contracts, 60)
+        
+        return contracts
     
     # ============================================================================
     # ADVANCED ORDER METHODS
@@ -2850,8 +3266,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if side.upper() not in ["BUY", "SELL"]:
                 return OrderResponse(success=False, error="Side must be 'BUY' or 'SELL'")
             
-            logger.info(f"Placing OCO bracket with stop entry: {side} {quantity} {symbol}")
-            logger.info(f"  Entry (stop): ${entry_price:.2f}, SL: ${stop_loss_price:.2f}, TP: ${take_profit_price:.2f}")
+            logger.debug(f"Placing OCO bracket with stop entry: {side} {quantity} {symbol}")
+            logger.debug(f"  Entry (stop): ${entry_price:.2f}, SL: ${stop_loss_price:.2f}, TP: ${take_profit_price:.2f}")
+            
+            # Validate prices are positive (absolute prices, not relative)
+            if entry_price <= 0 or stop_loss_price <= 0 or take_profit_price <= 0:
+                error_msg = f"All prices must be positive absolute prices. Got: entry={entry_price}, SL={stop_loss_price}, TP={take_profit_price}"
+                logger.error(f"❌ {error_msg}")
+                return OrderResponse(success=False, error=error_msg)
             
             # Get contract ID
             try:
@@ -2869,36 +3291,56 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             stop_loss_price = self._round_to_tick_size(stop_loss_price, tick_size)
             take_profit_price = self._round_to_tick_size(take_profit_price, tick_size)
             
-            logger.info(f"Rounded prices: Entry=${entry_price:.2f}, SL=${stop_loss_price:.2f}, TP=${take_profit_price:.2f} (tick_size={tick_size})")
+            logger.debug(f"Rounded prices: Entry=${entry_price:.2f}, SL=${stop_loss_price:.2f}, TP=${take_profit_price:.2f} (tick_size={tick_size})")
             
             # Convert side to numeric value
             side_value = 0 if side.upper() == "BUY" else 1
             
-            # Calculate stop loss ticks from entry price
+            # Calculate stop loss ticks from entry price (stop_price)
             if side.upper() == "BUY":
+                # BUY stop: stop loss must be below entry
+                if stop_loss_price >= entry_price:
+                    error_msg = f"Stop loss price ({stop_loss_price}) must be below entry price ({entry_price}) for BUY stop orders"
+                    logger.error(f"❌ {error_msg}")
+                    return OrderResponse(success=False, error=error_msg)
                 price_diff = entry_price - stop_loss_price
                 stop_loss_ticks = int(price_diff / tick_size)
                 if stop_loss_ticks > 0:
                     stop_loss_ticks = -stop_loss_ticks
-            else:
+            else:  # SELL
+                # SELL stop: stop loss must be above entry
+                if stop_loss_price <= entry_price:
+                    error_msg = f"Stop loss price ({stop_loss_price}) must be above entry price ({entry_price}) for SELL stop orders"
+                    logger.error(f"❌ {error_msg}")
+                    return OrderResponse(success=False, error=error_msg)
                 price_diff = stop_loss_price - entry_price
                 stop_loss_ticks = int(price_diff / tick_size)
                 if stop_loss_ticks < 0:
                     stop_loss_ticks = -stop_loss_ticks
             
-            # Calculate take profit ticks from entry price
+            # Calculate take profit ticks from entry price (stop_price)
             if side.upper() == "BUY":
+                # BUY stop: take profit must be above entry
+                if take_profit_price <= entry_price:
+                    error_msg = f"Take profit price ({take_profit_price}) must be above entry price ({entry_price}) for BUY stop orders"
+                    logger.error(f"❌ {error_msg}")
+                    return OrderResponse(success=False, error=error_msg)
                 price_diff = take_profit_price - entry_price
                 take_profit_ticks = int(price_diff / tick_size)
                 if take_profit_ticks < 0:
                     take_profit_ticks = -take_profit_ticks
-            else:
+            else:  # SELL
+                # SELL stop: take profit must be below entry
+                if take_profit_price >= entry_price:
+                    error_msg = f"Take profit price ({take_profit_price}) must be below entry price ({entry_price}) for SELL stop orders"
+                    logger.error(f"❌ {error_msg}")
+                    return OrderResponse(success=False, error=error_msg)
                 price_diff = entry_price - take_profit_price
                 take_profit_ticks = int(price_diff / tick_size)
                 if take_profit_ticks > 0:
                     take_profit_ticks = -take_profit_ticks
             
-            logger.info(f"Stop Loss: {stop_loss_ticks} ticks, Take Profit: {take_profit_ticks} ticks")
+            logger.debug(f"Stop Loss: {stop_loss_ticks} ticks, Take Profit: {take_profit_ticks} ticks")
             
             # Validate tick values (TopStepX has limits)
             if abs(stop_loss_ticks) > 1000:
@@ -3311,39 +3753,90 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             # Get tick size
             tick_size = await self._get_tick_size(symbol)
-            logger.info(f"Bracket context: contract={contract_id}, tick_size={tick_size}")
+            logger.debug(f"Bracket context: contract={contract_id}, tick_size={tick_size}")
             
             # Calculate stop loss ticks from entry price if price provided
             if stop_loss_price is not None and stop_loss_ticks is None:
                 try:
                     # Get current market price as entry price
                     quote = await self.get_market_quote(symbol)
-                    if "error" in quote or not (quote.get("bid") or quote.get("ask") or quote.get("last")):
+                    # Check if quote is None or has error - handle both Quote object and dict cases
+                    if quote is None:
+                        logger.error(f"get_market_quote returned None for {symbol}")
                         return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
                     
-                    if side.upper() == "BUY":
-                        entry_price = float(quote.get("ask") or quote.get("last"))
+                    # Handle Quote object (from adapter) or dict (from trading_bot)
+                    from core.interfaces import Quote
+                    if isinstance(quote, Quote):
+                        # Quote object - access attributes directly
+                        if not (quote.bid or quote.ask or quote.last):
+                            logger.error(f"get_market_quote returned invalid Quote object: {quote}")
+                            return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
+                        if side.upper() == "BUY":
+                            entry_price = float(quote.ask or quote.last or 0)
+                        else:
+                            entry_price = float(quote.bid or quote.last or 0)
+                    elif isinstance(quote, dict):
+                        # Dict format - check for errors and access with .get()
+                        if "error" in quote:
+                            logger.error(f"get_market_quote returned error: {quote.get('error')}")
+                            return OrderResponse(success=False, error=f"Could not get market price for {symbol}: {quote.get('error')}")
+                        if not (quote.get("bid") or quote.get("ask") or quote.get("last")):
+                            logger.error(f"get_market_quote returned invalid data: {quote}")
+                            return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
+                        if side.upper() == "BUY":
+                            entry_price = float(quote.get("ask") or quote.get("last") or 0)
+                        else:
+                            entry_price = float(quote.get("bid") or quote.get("last") or 0)
                     else:
-                        entry_price = float(quote.get("bid") or quote.get("last"))
+                        logger.error(f"get_market_quote returned unexpected type: {type(quote)}")
+                        return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
                     
-                    logger.info(f"Using current market price as entry: ${entry_price}")
+                    logger.info(f"Using current market price as entry: ${entry_price:.2f}")
                     
+                    # Validate stop_loss_price is a positive absolute price (not relative)
+                    if stop_loss_price <= 0:
+                        logger.error(f"Invalid stop_loss_price: {stop_loss_price}. Must be a positive absolute price.")
+                        return OrderResponse(success=False, error=f"Stop loss price must be a positive absolute price, got: {stop_loss_price}")
+                    
+                    # Calculate stop loss ticks - must match TopStepX convention:
+                    # BUY (long): stop loss is BELOW entry, ticks must be NEGATIVE
+                    # SELL (short): stop loss is ABOVE entry, ticks must be POSITIVE
                     if side.upper() == "BUY":
-                        price_diff = entry_price - stop_loss_price
+                        # For long: stop loss below entry
+                        if stop_loss_price >= entry_price:
+                            logger.error(f"Invalid stop loss price for BUY: {stop_loss_price} >= entry {entry_price}. Stop loss must be below entry.")
+                            return OrderResponse(success=False, error=f"Stop loss price ({stop_loss_price}) must be below entry price ({entry_price}) for BUY orders")
+                        price_diff = entry_price - stop_loss_price  # Should be positive (entry > stop)
                         stop_loss_ticks = int(price_diff / tick_size)
+                        # Ensure negative for long positions
                         if stop_loss_ticks > 0:
                             stop_loss_ticks = -stop_loss_ticks
-                    else:
-                        price_diff = stop_loss_price - entry_price
+                    else:  # SELL
+                        # For short: stop loss above entry
+                        if stop_loss_price <= entry_price:
+                            logger.error(f"Invalid stop loss price for SELL: {stop_loss_price} <= entry {entry_price}. Stop loss must be above entry.")
+                            return OrderResponse(success=False, error=f"Stop loss price ({stop_loss_price}) must be above entry price ({entry_price}) for SELL orders")
+                        price_diff = stop_loss_price - entry_price  # Should be positive (stop > entry)
                         stop_loss_ticks = int(price_diff / tick_size)
+                        # Ensure positive for short positions
                         if stop_loss_ticks < 0:
                             stop_loss_ticks = -stop_loss_ticks
                     
-                    logger.info(f"Stop Loss Calculation: Entry=${entry_price}, Target=${stop_loss_price}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks} (tick_size={tick_size})")
+                    logger.debug(f"Stop Loss Calculation: Entry=${entry_price:.2f}, Target=${stop_loss_price:.2f}, Diff=${price_diff:.2f}, Ticks={stop_loss_ticks} (tick_size={tick_size})")
                     
+                    # Validate sign based on side
+                    if side.upper() == "BUY" and stop_loss_ticks > 0:
+                        logger.warning(f"Stop loss ticks should be negative for BUY orders, correcting {stop_loss_ticks} to {-stop_loss_ticks}")
+                        stop_loss_ticks = -stop_loss_ticks
+                    elif side.upper() == "SELL" and stop_loss_ticks < 0:
+                        logger.warning(f"Stop loss ticks should be positive for SELL orders, correcting {stop_loss_ticks} to {-stop_loss_ticks}")
+                        stop_loss_ticks = -stop_loss_ticks
+                    
+                    # Validate and cap at 1000 ticks (preserve sign)
                     if abs(stop_loss_ticks) > 1000:
-                        logger.warning(f"Stop loss ticks ({stop_loss_ticks}) exceeds 1000 limit, capping at 1000")
-                        stop_loss_ticks = 1000 if stop_loss_ticks > 0 else -1000
+                        logger.warning(f"Stop loss ticks ({stop_loss_ticks}) exceeds 1000 limit, capping at {'-1000' if stop_loss_ticks < 0 else '1000'}")
+                        stop_loss_ticks = -1000 if stop_loss_ticks < 0 else 1000
                 except Exception as e:
                     logger.error(f"Failed to calculate stop loss ticks: {e}")
                     return OrderResponse(success=False, error=f"Failed to calculate stop loss ticks: {e}")
@@ -3352,30 +3845,74 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if take_profit_price is not None and take_profit_ticks is None:
                 try:
                     quote = await self.get_market_quote(symbol)
-                    if "error" in quote or not (quote.get("bid") or quote.get("ask") or quote.get("last")):
+                    # Check if quote is None or has error - handle both Quote object and dict cases
+                    if quote is None:
                         return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
                     
-                    if side.upper() == "BUY":
-                        entry_price = float(quote.get("ask") or quote.get("last"))
+                    # Handle Quote object (from adapter) or dict (from trading_bot)
+                    from core.interfaces import Quote
+                    if isinstance(quote, Quote):
+                        # Quote object - access attributes directly
+                        if not (quote.bid or quote.ask or quote.last):
+                            return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
+                        if side.upper() == "BUY":
+                            entry_price = float(quote.ask or quote.last or 0)
+                        else:
+                            entry_price = float(quote.bid or quote.last or 0)
+                    elif isinstance(quote, dict):
+                        # Dict format - check for errors and access with .get()
+                        if "error" in quote or not (quote.get("bid") or quote.get("ask") or quote.get("last")):
+                            return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
+                        if side.upper() == "BUY":
+                            entry_price = float(quote.get("ask") or quote.get("last") or 0)
+                        else:
+                            entry_price = float(quote.get("bid") or quote.get("last") or 0)
                     else:
-                        entry_price = float(quote.get("bid") or quote.get("last"))
+                        return OrderResponse(success=False, error=f"Could not get market price for {symbol}. Market data is required for bracket orders.")
                     
+                    # Calculate take profit ticks - must match TopStepX convention:
+                    # BUY (long): take profit is ABOVE entry, ticks must be POSITIVE
+                    # SELL (short): take profit is BELOW entry, ticks must be NEGATIVE
                     if side.upper() == "BUY":
-                        price_diff = take_profit_price - entry_price
+                        # For long: take profit above entry
+                        if take_profit_price <= entry_price:
+                            logger.error(f"Invalid take profit price for BUY: {take_profit_price} <= entry {entry_price}. Take profit must be above entry.")
+                            return OrderResponse(success=False, error=f"Take profit price ({take_profit_price}) must be above entry price ({entry_price}) for BUY orders")
+                        price_diff = take_profit_price - entry_price  # Should be positive (profit > entry)
                         take_profit_ticks = int(price_diff / tick_size)
+                        # Ensure positive for long positions
                         if take_profit_ticks < 0:
                             take_profit_ticks = -take_profit_ticks
-                    else:
-                        price_diff = entry_price - take_profit_price
+                    else:  # SELL
+                        # For short: take profit below entry
+                        if take_profit_price >= entry_price:
+                            logger.error(f"Invalid take profit price for SELL: {take_profit_price} >= entry {entry_price}. Take profit must be below entry.")
+                            return OrderResponse(success=False, error=f"Take profit price ({take_profit_price}) must be below entry price ({entry_price}) for SELL orders")
+                        price_diff = entry_price - take_profit_price  # Should be positive (entry > profit)
                         take_profit_ticks = int(price_diff / tick_size)
+                        # Ensure negative for short positions
                         if take_profit_ticks > 0:
                             take_profit_ticks = -take_profit_ticks
                     
-                    logger.info(f"Take Profit Calculation: Entry=${entry_price}, Target=${take_profit_price}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks} (tick_size={tick_size})")
+                    # Validate take_profit_price is a positive absolute price (not relative)
+                    if take_profit_price <= 0:
+                        logger.error(f"Invalid take_profit_price: {take_profit_price}. Must be a positive absolute price.")
+                        return OrderResponse(success=False, error=f"Take profit price must be a positive absolute price, got: {take_profit_price}")
                     
+                    logger.debug(f"Take Profit Calculation: Entry=${entry_price:.2f}, Target=${take_profit_price:.2f}, Diff=${price_diff:.2f}, Ticks={take_profit_ticks} (tick_size={tick_size})")
+                    
+                    # Validate sign based on side
+                    if side.upper() == "BUY" and take_profit_ticks < 0:
+                        logger.warning(f"Take profit ticks should be positive for BUY orders, correcting {take_profit_ticks} to {-take_profit_ticks}")
+                        take_profit_ticks = -take_profit_ticks
+                    elif side.upper() == "SELL" and take_profit_ticks > 0:
+                        logger.warning(f"Take profit ticks should be negative for SELL orders, correcting {take_profit_ticks} to {-take_profit_ticks}")
+                        take_profit_ticks = -take_profit_ticks
+                    
+                    # Validate and cap at 1000 ticks (preserve sign)
                     if abs(take_profit_ticks) > 1000:
-                        logger.warning(f"Take profit ticks ({take_profit_ticks}) exceeds 1000 limit, capping at 1000")
-                        take_profit_ticks = 1000 if take_profit_ticks > 0 else -1000
+                        logger.warning(f"Take profit ticks ({take_profit_ticks}) exceeds 1000 limit, capping at {'-1000' if take_profit_ticks < 0 else '1000'}")
+                        take_profit_ticks = -1000 if take_profit_ticks < 0 else 1000
                 except Exception as e:
                     logger.error(f"Failed to calculate take profit ticks: {e}")
                     return OrderResponse(success=False, error=f"Failed to calculate take profit ticks: {e}")
@@ -3402,7 +3939,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     "size": quantity,
                     "reduceOnly": True
                 }
-                logger.info(f"Added stop loss bracket: {stop_loss_ticks} ticks, size: {quantity}, reduceOnly: True")
+                logger.debug(f"Added stop loss bracket: {stop_loss_ticks} ticks, size: {quantity}, reduceOnly: True")
             
             if take_profit_ticks is not None:
                 order_data["takeProfitBracket"] = {
@@ -3411,7 +3948,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     "size": quantity,
                     "reduceOnly": True
                 }
-                logger.info(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
+                logger.debug(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
             
             # Make API call
             headers = {
