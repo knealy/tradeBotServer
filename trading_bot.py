@@ -52,6 +52,8 @@ from core.account_tracker import AccountTracker
 from strategies.overnight_range_strategy import OvernightRangeStrategy
 from strategies.mean_reversion_strategy import MeanReversionStrategy
 from strategies.trend_following_strategy import TrendFollowingStrategy
+from strategies.simple_momentum_strategy import SimpleMomentumStrategy
+from strategies.simple_candle_strategy import SimpleCandleStrategy
 from strategies.strategy_manager import StrategyManager
 from infrastructure.performance_metrics import get_metrics_tracker
 from infrastructure.database import get_database
@@ -288,6 +290,8 @@ class TopStepXTradingBot:
         self.strategy_manager.register_strategy("overnight_range", OvernightRangeStrategy)
         self.strategy_manager.register_strategy("mean_reversion", MeanReversionStrategy)
         self.strategy_manager.register_strategy("trend_following", TrendFollowingStrategy)
+        self.strategy_manager.register_strategy("simple_momentum", SimpleMomentumStrategy)
+        self.strategy_manager.register_strategy("simple_candle", SimpleCandleStrategy)
         logger.debug("Strategies registered with manager")
         
         # Load strategies from environment configuration
@@ -4318,11 +4322,15 @@ class TopStepXTradingBot:
                     **({"raw_response": result.raw_response} if result.raw_response else {})
                 }
             else:
-                return {"error": result.error}
+                error_msg = result.error or "Unknown error"
+                logger.error(f"Stop bracket order failed: {error_msg}")
+                return {"success": False, "error": error_msg}
             
         except Exception as e:
             logger.error(f"Failed to place OCO bracket with stop entry: {str(e)}")
-            return {"error": str(e)}
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"success": False, "error": str(e)}
     
     async def _stop_bracket_hybrid(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float,
@@ -5959,10 +5967,11 @@ class TopStepXTradingBot:
             print("🤖 TopStepX Trading Bot - Real API Version")
             print("="*50)
             
-            # Step 1: Authenticate (must be first - required for all other operations)
+            # Step 1: Ensure valid token (checks expiration and refreshes if needed)
+            # This uses JWT token refresh mechanism during startup (before account selection)
             _total_start = _t.time()
             _auth_start = _t.time()
-            if not await self.authenticate():
+            if not await self._ensure_valid_token():
                 print("❌ Authentication failed. Please check your API key.")
                 return
             _auth_ms = int((_t.time() - _auth_start) * 1000)
@@ -6127,6 +6136,164 @@ class TopStepXTradingBot:
                     await sdk_adapter.shutdown_historical_client_cache()
                 except Exception:
                     pass
+    
+    async def run_non_interactive(
+        self,
+        account_select: Optional[str] = None,
+        command: Optional[str] = None,
+        disable_strategy: Optional[str] = None
+    ):
+        """
+        Run bot in non-interactive mode for CLI/script usage.
+        
+        Args:
+            account_select: Account selection (index like "1" or account ID)
+            command: Command to execute (e.g., "stop_bracket mnq buy 1 25000 24980 25020")
+            disable_strategy: Comma-separated strategy names to disable
+        """
+        import time as _t
+        from core.cli_command_parser import CLICommandParser
+        
+        try:
+            print("🤖 TopStepX Trading Bot - Non-Interactive Mode")
+            print("="*50)
+            
+            # Step 1: Ensure valid token (with refresh)
+            _auth_start = _t.time()
+            if not await self._ensure_valid_token():
+                print("❌ Authentication failed. Please check your API key.")
+                return
+            _auth_ms = int((_t.time() - _auth_start) * 1000)
+            print(f"✅ Authentication successful! ({_auth_ms} ms)")
+            
+            # Step 2: Get accounts
+            accounts = await self.list_accounts()
+            if not accounts:
+                print("❌ No active accounts found.")
+                return
+            
+            # Step 3: Select account
+            selected_account = None
+            if account_select:
+                try:
+                    # Try as index first
+                    if account_select.isdigit():
+                        idx = int(account_select) - 1  # Convert to 0-based
+                        if 0 <= idx < len(accounts):
+                            selected_account = accounts[idx]
+                            print(f"✅ Selected account by index {account_select}: {selected_account['name']}")
+                        else:
+                            print(f"❌ Invalid account index: {account_select} (available: 1-{len(accounts)})")
+                            return
+                    else:
+                        # Try as account ID
+                        for acc in accounts:
+                            if str(acc.get('id')) == account_select or acc.get('name') == account_select:
+                                selected_account = acc
+                                print(f"✅ Selected account by ID/name: {selected_account['name']}")
+                                break
+                        if not selected_account:
+                            print(f"❌ Account not found: {account_select}")
+                            return
+                except Exception as e:
+                    print(f"❌ Error selecting account: {e}")
+                    return
+            else:
+                # Auto-select first account
+                selected_account = accounts[0]
+                print(f"✅ Auto-selected account: {selected_account['name']}")
+            
+            self.selected_account = selected_account
+            
+            # Step 3.5: Fetch contracts in parallel (needed for trading commands)
+            print("📋 Fetching available contracts...")
+            try:
+                await self.get_available_contracts(use_cache=True)
+                print("✅ Contracts loaded")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to fetch contracts: {e}")
+                print(f"⚠️  Warning: Contract fetch failed (some commands may not work): {e}")
+            
+            # Step 4: Disable strategies if requested
+            if disable_strategy:
+                strategy_names = [s.strip() for s in disable_strategy.split(',')]
+                account_id = selected_account.get('id') if isinstance(selected_account, dict) else selected_account
+                
+                if hasattr(self, 'db') and self.db:
+                    from datetime import datetime, timezone
+                    print(f"📋 Disabling strategies: {', '.join(strategy_names)}")
+                    for name in strategy_names:
+                        result = self.db.save_strategy_state(
+                            account_id=str(account_id),
+                            strategy_name=name,
+                            enabled=False,
+                            last_stopped=datetime.now(timezone.utc)
+                        )
+                        if result:
+                            print(f"✅ Disabled strategy: {name}")
+                        else:
+                            print(f"❌ Failed to disable strategy: {name}")
+                else:
+                    print("⚠️  Database not available - cannot disable strategies")
+            
+            # Step 5: Execute command if provided
+            if command:
+                print(f"\n📤 Executing command: {command}")
+                parser = CLICommandParser(self)
+                result = await parser.execute_command(command)
+                
+                if result.get('success'):
+                    print("✅ Command executed successfully")
+                    if result.get('result'):
+                        # Pretty print result
+                        import json
+                        result_data = result['result']
+                        print(json.dumps(result_data, indent=2, default=str))
+                        
+                        # Check if we need to keep running (e.g., for realtime charts)
+                        if result_data.get('keep_running'):
+                            print(f"\n{result_data.get('message', 'Bot will keep running...')}")
+                            print("Press Ctrl+C to stop the bot and close the chart server.\n")
+                            
+                            # Keep the bot running until interrupted
+                            try:
+                                import signal
+                                import asyncio
+                                
+                                # Set up signal handler for graceful shutdown
+                                def signal_handler(sig, frame):
+                                    print("\n\n🛑 Shutting down...")
+                                    raise KeyboardInterrupt
+                                
+                                signal.signal(signal.SIGINT, signal_handler)
+                                signal.signal(signal.SIGTERM, signal_handler)
+                                
+                                # Keep event loop running
+                                while True:
+                                    await asyncio.sleep(1)
+                            except KeyboardInterrupt:
+                                print("\n👋 Bot stopped by user")
+                                # Cleanup chart server if needed
+                                from gui.chart_html import _chart_server
+                                if _chart_server:
+                                    try:
+                                        await _chart_server.cleanup()
+                                        print("✅ Chart server stopped")
+                                    except Exception as e:
+                                        logger.debug(f"Chart server cleanup: {e}")
+                else:
+                    print(f"❌ Command failed: {result.get('error', 'Unknown error')}")
+                    if result.get('available_commands'):
+                        print(f"Available commands: {', '.join(result['available_commands'])}")
+            else:
+                print("\n✅ Bot initialized successfully (no command specified)")
+                print("💡 Use --command='COMMAND' to execute a command")
+            
+        except Exception as e:
+            logger.error(f"Non-interactive execution failed: {str(e)}")
+            print(f"❌ Execution failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def _setup_readline(self):
         """
@@ -8546,6 +8713,14 @@ def main():
     parser = argparse.ArgumentParser(description='TopStepX Trading Bot - Real API Version')
     parser.add_argument('-v', '--verbose', action='store_true', 
                        help='Enable verbose/debug logging')
+    parser.add_argument('--account_select', type=str, default=None,
+                       help='Select account by index (1, 2, 3...) or ID. Example: --account_select=1')
+    parser.add_argument('--command', type=str, default=None,
+                       help='Execute command non-interactively. Example: --command="stop_bracket mnq buy 1 25000 24980 25020"')
+    parser.add_argument('--non_interactive', action='store_true',
+                       help='Run in non-interactive mode (for scripts)')
+    parser.add_argument('--disable_strategy', type=str, default=None,
+                       help='Disable strategies (comma-separated). Example: --disable_strategy=mean_reversion,trend_following')
     args = parser.parse_args()
     
     # Reconfigure logging if verbose mode is enabled
@@ -8603,11 +8778,21 @@ def main():
     bot = TopStepXTradingBot(api_key=api_key, username=username)
     
     try:
-        asyncio.run(bot.run())
+        # Handle non-interactive mode with CLI commands
+        if args.command or args.non_interactive or args.account_select or args.disable_strategy:
+            asyncio.run(bot.run_non_interactive(
+                account_select=args.account_select,
+                command=args.command,
+                disable_strategy=args.disable_strategy
+            ))
+        else:
+            # Interactive mode
+            asyncio.run(bot.run())
     except KeyboardInterrupt:
         print("\n\n👋 Bot stopped by user.")
     except Exception as e:
         print(f"\n❌ Unexpected error: {str(e)}")
+        logger.exception("Unexpected error in main")
 
 if __name__ == "__main__":
     main()

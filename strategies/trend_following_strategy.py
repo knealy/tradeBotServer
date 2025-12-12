@@ -321,10 +321,45 @@ class TrendFollowingStrategy(BaseStrategy):
                 account_id=self.trading_bot.selected_account if isinstance(self.trading_bot.selected_account, str) else self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else None,
                 strategy_name=self.config.name  # Add strategy name for tracking
             )
-            
-            if result and 'order' in result:
-                order_id = result['order'].get('orderId')
+
+            # Fix: Check for 'success' and 'orderId' at top level (not 'order' key)
+            if result and result.get('success') and result.get('orderId'):
+                order_id = result.get('orderId')
                 logger.info(f"✅ Trend following order placed: {side} {position_size} {symbol} (Order ID: {order_id})")
+                
+                # Verify order was actually placed in TopStepX
+                try:
+                    account_id = self.trading_bot.selected_account if isinstance(self.trading_bot.selected_account, str) else self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else None
+                    if account_id:
+                        # Check open orders first
+                        open_orders = await self.trading_bot.get_open_orders(account_id=account_id)
+                        order_found = False
+                        
+                        if isinstance(open_orders, list):
+                            for order in open_orders:
+                                if str(order.get('id')) == str(order_id) or str(order.get('orderId')) == str(order_id):
+                                    logger.info(f"✅ Order {order_id} verified in TopStepX open orders")
+                                    order_found = True
+                                    break
+                        
+                        # If not in open orders, check if it was filled immediately
+                        if not order_found:
+                            logger.debug(f"Order {order_id} not in open orders, checking if filled immediately...")
+                            recent_orders = await self.trading_bot.get_order_history(account_id=account_id, limit=10)
+                            if isinstance(recent_orders, list):
+                                for order in recent_orders:
+                                    if str(order.get('id')) == str(order_id) or str(order.get('orderId')) == str(order_id):
+                                        logger.info(f"✅ Order {order_id} verified in TopStepX (immediate fill)")
+                                        order_found = True
+                                        break
+                        
+                        if not order_found:
+                            logger.warning(f"⚠️  Order {order_id} not found in TopStepX - may have failed silently")
+                    else:
+                        logger.warning("⚠️  Cannot verify order - no account ID available")
+                except Exception as verify_err:
+                    logger.warning(f"⚠️  Could not verify order placement: {verify_err}")
+                    # Don't fail the order, just log the warning
                 
                 # Track position
                 self.active_positions[symbol] = {
@@ -343,7 +378,10 @@ class TrendFollowingStrategy(BaseStrategy):
                 
                 return True
             else:
-                logger.error(f"❌ Failed to place trend following order for {symbol}")
+                error_msg = result.get('error', 'Unknown error') if isinstance(result, dict) else str(result)
+                logger.error(f"❌ Failed to place trend following order for {symbol}: {error_msg}")
+                if isinstance(result, dict) and result.get('raw_response'):
+                    logger.debug(f"Full API response: {result.get('raw_response')}")
                 return False
             
         except Exception as e:

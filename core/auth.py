@@ -377,9 +377,12 @@ class AuthManager:
             logger.error(f"Authentication failed: {str(e)}")
             return False
     
-    async def ensure_valid_token(self) -> bool:
+    async def ensure_valid_token(self, force_refresh: bool = False) -> bool:
         """
         Ensure we have a valid token, refreshing if necessary.
+        
+        Args:
+            force_refresh: If True, force token refresh even if token appears valid
         
         Returns:
             True if token is valid
@@ -387,10 +390,13 @@ class AuthManager:
         Raises:
             AuthenticationError: If token refresh fails
         """
-        if not self._is_token_expired():
+        if not force_refresh and not self._is_token_expired():
             return True
         
-        logger.info("Token expired or missing, authenticating...")
+        if force_refresh:
+            logger.info("Force refreshing token...")
+        else:
+            logger.info("Token expired or missing, authenticating...")
         return await self.authenticate()
     
     def get_token(self) -> Optional[str]:

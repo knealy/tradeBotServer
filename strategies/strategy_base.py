@@ -301,21 +301,31 @@ class BaseStrategy(ABC):
         
         start_hour, start_min = map(int, self.config.trading_start_time.split(':'))
         end_hour, end_min = map(int, self.config.trading_end_time.split(':'))
-        no_trade_start_h, no_trade_start_m = map(int, self.config.no_trade_start.split(':'))
-        no_trade_end_h, no_trade_end_m = map(int, self.config.no_trade_end.split(':'))
+        
+        # Handle empty no_trade_start/end (means no restriction)
+        if self.config.no_trade_start and self.config.no_trade_start.strip():
+            no_trade_start_h, no_trade_start_m = map(int, self.config.no_trade_start.split(':'))
+            no_trade_start = no_trade_start_h * 60 + no_trade_start_m
+        else:
+            no_trade_start = -1  # Disabled
+        
+        if self.config.no_trade_end and self.config.no_trade_end.strip():
+            no_trade_end_h, no_trade_end_m = map(int, self.config.no_trade_end.split(':'))
+            no_trade_end = no_trade_end_h * 60 + no_trade_end_m
+        else:
+            no_trade_end = -1  # Disabled
         
         start_time = start_hour * 60 + start_min
         end_time = end_hour * 60 + end_min
-        no_trade_start = no_trade_start_h * 60 + no_trade_start_m
-        no_trade_end = no_trade_end_h * 60 + no_trade_end_m
         
         # Check if in trading window
         if not (start_time <= current_time <= end_time):
             return False
         
-        # Check if in no-trade window
-        if no_trade_start <= current_time <= no_trade_end:
-            return False
+        # Check if in no-trade window (only if configured)
+        if no_trade_start >= 0 and no_trade_end >= 0:
+            if no_trade_start <= current_time <= no_trade_end:
+                return False
         
         return True
     

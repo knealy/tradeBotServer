@@ -136,10 +136,18 @@ class DatabaseManager:
         return params
     
     def _initialize_pool(self):
-        """Create connection pool for efficient database access."""
+        """Create connection pool for efficient database access.
+        
+        Tries connections in order:
+        1. Railway DATABASE_URL (if available)
+        2. Local PostgreSQL (postgresql://postgres:postgres@localhost:5432/trading_bot)
+        3. Falls back to memory-only mode if both fail
+        """
         if not psycopg2:
             logger.warning("⚠️  psycopg2 not available - database features will be disabled")
             return
+        
+        # Try Railway database first
         try:
             params = self._get_connection_params()
             
@@ -150,10 +158,80 @@ class DatabaseManager:
                 **params
             )
             
+            # Test the connection (don't close it - just check it's alive)
+            test_conn = self.pool.getconn()
+            try:
+                # Quick health check without closing
+                test_conn.isolation_level  # Access property to verify connection is alive
+            except (psycopg2.InterfaceError, psycopg2.OperationalError):
+                # Connection is dead, close it and don't return to pool
+                try:
+                    test_conn.close()
+                except:
+                    pass
+                raise Exception("Connection test failed - connection is dead")
+            # Return connection to pool (don't close it)
+            self.pool.putconn(test_conn)
+            
             logger.info("✅ Database connection pool created")
+            return
         except Exception as e:
-            logger.error(f"❌ Failed to create database pool: {e}")
-            raise
+            logger.warning(f"⚠️  Failed to connect to primary database: {e}")
+            logger.info("🔄 Attempting fallback to local PostgreSQL...")
+        
+        # Fallback to local PostgreSQL
+        try:
+            local_params = {
+                'host': 'localhost',
+                'port': 5432,
+                'database': 'trading_bot',
+                'user': 'postgres',
+                'password': 'postgres'
+            }
+            
+            # Override with environment variables if set
+            if os.getenv('POSTGRES_HOST'):
+                local_params['host'] = os.getenv('POSTGRES_HOST')
+            if os.getenv('POSTGRES_PORT'):
+                local_params['port'] = int(os.getenv('POSTGRES_PORT'))
+            if os.getenv('POSTGRES_DB'):
+                local_params['database'] = os.getenv('POSTGRES_DB')
+            if os.getenv('POSTGRES_USER'):
+                local_params['user'] = os.getenv('POSTGRES_USER')
+            if os.getenv('POSTGRES_PASSWORD'):
+                local_params['password'] = os.getenv('POSTGRES_PASSWORD')
+            
+            self.pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=2,
+                maxconn=10,
+                **local_params
+            )
+            
+            # Test the connection (don't close it - just check it's alive)
+            test_conn = self.pool.getconn()
+            try:
+                # Quick health check without closing
+                test_conn.isolation_level  # Access property to verify connection is alive
+            except (psycopg2.InterfaceError, psycopg2.OperationalError):
+                # Connection is dead, close it and don't return to pool
+                try:
+                    test_conn.close()
+                except:
+                    pass
+                raise Exception("Connection test failed - connection is dead")
+            # Return connection to pool (don't close it)
+            self.pool.putconn(test_conn)
+            
+            logger.info(f"✅ Connected to local PostgreSQL: {local_params['host']}:{local_params['port']}/{local_params['database']}")
+            return
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to local PostgreSQL: {e}")
+            logger.warning("⚠️  Database features will be disabled. Running in memory-only mode.")
+            logger.info("💡 To enable database:")
+            logger.info("   1. Run: ./scripts/setup_local_db.sh")
+            logger.info("   2. Or set DATABASE_URL environment variable")
+            self.pool = None
+            # Don't raise - allow bot to run without database
     
     @contextmanager
     def get_connection(self):
@@ -358,6 +436,50 @@ class DatabaseManager:
         );
         CREATE INDEX IF NOT EXISTS idx_strategy_states_account
             ON strategy_states(account_id);
+        
+        -- Process states (for slave process tracking)
+        CREATE TABLE IF NOT EXISTS process_states (
+            process_id VARCHAR(100) PRIMARY KEY,
+            process_type VARCHAR(50) NOT NULL,  -- 'strategy_executor', 'order_monitor', etc.
+            status VARCHAR(20) NOT NULL,  -- 'running', 'stopped', 'error'
+            account_id VARCHAR(50),
+            metadata JSONB,  -- Process-specific data
+            started_at TIMESTAMPTZ,
+            last_heartbeat TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_process_states_type_status
+            ON process_states(process_type, status);
+        CREATE INDEX IF NOT EXISTS idx_process_states_account
+            ON process_states(account_id);
+        CREATE INDEX IF NOT EXISTS idx_process_states_heartbeat
+            ON process_states(last_heartbeat);
+        
+        -- Strategy executions (log all strategy actions)
+        CREATE TABLE IF NOT EXISTS strategy_executions (
+            id SERIAL PRIMARY KEY,
+            strategy_name VARCHAR(50) NOT NULL,
+            account_id VARCHAR(50),
+            action VARCHAR(50) NOT NULL,  -- 'signal', 'order_placed', 'order_filled', etc.
+            symbol VARCHAR(20),
+            side VARCHAR(10),  -- BUY, SELL
+            quantity INT,
+            price DECIMAL(12, 4),
+            order_id VARCHAR(100),
+            result JSONB,  -- Full result/response
+            timestamp TIMESTAMPTZ DEFAULT NOW(),
+            metadata JSONB  -- Additional context
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_strategy_executions_strategy
+            ON strategy_executions(strategy_name, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_executions_account
+            ON strategy_executions(account_id, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_executions_action
+            ON strategy_executions(action, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_executions_order_id
+            ON strategy_executions(order_id);
 
         -- Dashboard/UI settings persistence
         CREATE TABLE IF NOT EXISTS dashboard_settings (
@@ -803,6 +925,118 @@ class DatabaseManager:
         """Retrieve a single strategy state."""
         states = self.get_strategy_states(account_id)
         return states.get(strategy_name)
+    
+    # ==================== Process State Methods ====================
+    
+    def save_process_state(
+        self,
+        process_id: str,
+        process_type: str,
+        status: str,
+        account_id: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ) -> bool:
+        """Save or update process state."""
+        if not self.pool:
+            return False
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    upsert_sql = """
+                        INSERT INTO process_states
+                        (process_id, process_type, status, account_id, metadata, started_at, last_heartbeat, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                        ON CONFLICT (process_id)
+                        DO UPDATE SET
+                            status = EXCLUDED.status,
+                            account_id = EXCLUDED.account_id,
+                            metadata = EXCLUDED.metadata,
+                            last_heartbeat = NOW(),
+                            updated_at = NOW()
+                    """
+                    
+                    cur.execute(
+                        upsert_sql,
+                        (
+                            process_id,
+                            process_type,
+                            status,
+                            account_id,
+                            json.dumps(metadata) if metadata else None
+                        )
+                    )
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to save process state: {e}")
+            return False
+    
+    def get_process_states(self, process_type: Optional[str] = None) -> List[Dict]:
+        """Get all process states, optionally filtered by type."""
+        if not self.pool:
+            return []
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    if process_type:
+                        cur.execute(
+                            "SELECT * FROM process_states WHERE process_type = %s ORDER BY last_heartbeat DESC",
+                            (process_type,)
+                        )
+                    else:
+                        cur.execute("SELECT * FROM process_states ORDER BY last_heartbeat DESC")
+                    
+                    return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"❌ Failed to get process states: {e}")
+            return []
+    
+    def log_strategy_execution(
+        self,
+        strategy_name: str,
+        action: str,
+        account_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        quantity: Optional[int] = None,
+        price: Optional[float] = None,
+        order_id: Optional[str] = None,
+        result: Optional[Dict] = None,
+        metadata: Optional[Dict] = None
+    ) -> bool:
+        """Log a strategy execution event."""
+        if not self.pool:
+            return False
+        
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    insert_sql = """
+                        INSERT INTO strategy_executions
+                        (strategy_name, account_id, action, symbol, side, quantity, price, order_id, result, metadata, timestamp)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    """
+                    
+                    cur.execute(
+                        insert_sql,
+                        (
+                            strategy_name,
+                            account_id,
+                            action,
+                            symbol,
+                            side,
+                            quantity,
+                            price,
+                            order_id,
+                            json.dumps(result) if result else None,
+                            json.dumps(metadata) if metadata else None
+                        )
+                    )
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to log strategy execution: {e}")
+            return False
     
     # ==================== Dashboard Settings Methods ====================
     
