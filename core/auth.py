@@ -102,11 +102,14 @@ class AuthManager:
             Configured requests.Session
         """
         session = requests.Session()
+        # Increased retries and backoff for 500 errors (server issues)
+        # 5 retries with exponential backoff: 2, 4, 8, 16, 32 seconds
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
+            total=5,
+            backoff_factor=2,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST", "GET"]
+            allowed_methods=["POST", "GET"],
+            raise_on_status=False  # Don't raise on status, let us handle it
         )
         adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
         session.mount("http://", adapter)
@@ -185,9 +188,26 @@ class AuthManager:
             try:
                 response.raise_for_status()
             except requests.exceptions.HTTPError as e:
-                error_msg = f"HTTP {response.status_code}: {str(e)}"
+                status_code = response.status_code
+                error_msg = f"HTTP {status_code}: {str(e)}"
+                
+                # Provide more context for 500 errors
+                if status_code == 500:
+                    logger.error(f"Server error (500) from {endpoint}")
+                    logger.warning("⚠️  500 errors might indicate:")
+                    logger.warning("   1. TopStepX server is temporarily unavailable")
+                    logger.warning("   2. Token may have expired (will attempt refresh on retry)")
+                    logger.warning("   3. Account settings issue (check 'Auto OCO Brackets' for bracket orders)")
+                    # Try to get error message from response body
+                    try:
+                        error_body = response.json() if response.text else {}
+                        if error_body:
+                            logger.debug(f"Error response body: {error_body}")
+                    except:
+                        pass
+                
                 logger.error(error_msg)
-                return {"error": error_msg, "status_code": response.status_code}
+                return {"error": error_msg, "status_code": status_code}
             
             # Parse JSON response
             try:
@@ -211,9 +231,27 @@ class AuthManager:
             error_msg = f"Connection error: {str(e)}"
             logger.error(error_msg)
             return {"error": error_msg}
+        except requests.exceptions.RetryError as e:
+            # This happens when all retries are exhausted
+            error_msg = f"Request failed after all retries: {str(e)}"
+            logger.error(error_msg)
+            # Check if it's a 500 error - might be token-related
+            if "500" in str(e) or "too many 500" in str(e).lower():
+                logger.warning("⚠️  Multiple 500 errors received. This might indicate:")
+                logger.warning("   1. Server is temporarily unavailable")
+                logger.warning("   2. Token may have expired (try refreshing)")
+                logger.warning("   3. Account settings issue (check 'Auto OCO Brackets' setting)")
+            return {"error": error_msg, "retry_exhausted": True}
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Request failed: {error_msg}")
+            # Check for ResponseError from urllib3
+            if "too many 500" in error_msg.lower() or "ResponseError" in str(type(e)):
+                logger.warning("⚠️  Multiple 500 errors received. This might indicate:")
+                logger.warning("   1. Server is temporarily unavailable")
+                logger.warning("   2. Token may have expired (try refreshing)")
+                logger.warning("   3. Account settings issue (check 'Auto OCO Brackets' setting)")
+                return {"error": error_msg, "retry_exhausted": True, "status_code": 500}
             return {"error": error_msg}
     
     async def authenticate(self) -> bool:

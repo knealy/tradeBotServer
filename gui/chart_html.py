@@ -1382,10 +1382,25 @@ def generate_chart_html(
                 
                 if (data.latest_bar) {{
                     const bar = data.latest_bar;
+                    if (!chartData || chartData.length === 0) {{
+                        console.warn('No chart data available for real-time update');
+                        return;
+                    }}
+                    
                     const lastBar = chartData[chartData.length - 1];
                     
+                    // Normalize timestamps to numbers for comparison
+                    // TradingView expects timestamps as Unix seconds (number)
+                    const barTime = typeof bar.time === 'number' ? bar.time : (typeof bar.time === 'string' ? parseInt(bar.time) : null);
+                    const lastBarTime = typeof lastBar.time === 'number' ? lastBar.time : (typeof lastBar.time === 'string' ? parseInt(lastBar.time) : null);
+                    
+                    if (barTime === null || lastBarTime === null) {{
+                        console.warn('Invalid timestamp format in real-time update:', {{ barTime, lastBarTime, bar, lastBar }});
+                        return;
+                    }}
+                    
                     // Check if this is a new bar or update to current bar
-                    if (bar.time === lastBar.time) {{
+                    if (barTime === lastBarTime) {{
                         // Update current bar
                         lastBar.high = Math.max(lastBar.high, bar.close);
                         lastBar.low = Math.min(lastBar.low, bar.close);
@@ -1393,35 +1408,54 @@ def generate_chart_html(
                         lastBar.volume = bar.volume;
                         
                         // Update chart
-                        candlestickSeries.update({{
-                            time: bar.time,
-                            open: lastBar.open,
-                            high: lastBar.high,
-                            low: lastBar.low,
-                            close: lastBar.close,
-                        }});
+                        try {{
+                            candlestickSeries.update({{
+                                time: barTime,
+                                open: lastBar.open,
+                                high: lastBar.high,
+                                low: lastBar.low,
+                                close: lastBar.close,
+                            }});
+                            
+                            volumeSeries.update({{
+                                time: barTime,
+                                value: bar.volume,
+                                color: bar.close >= lastBar.open ? '#26a69a80' : '#ef535080',
+                            }});
+                        }} catch (updateError) {{
+                            console.warn('Chart update error (same time):', updateError);
+                        }}
+                    }} else if (barTime > lastBarTime) {{
+                        // New bar - ensure timestamp is normalized
+                        const newBar = {{
+                            ...bar,
+                            time: barTime
+                        }};
+                        chartData.push(newBar);
                         
-                        volumeSeries.update({{
-                            time: bar.time,
-                            value: bar.volume,
-                            color: bar.close >= lastBar.open ? '#26a69a80' : '#ef535080',
-                        }});
-                    }} else if (bar.time > lastBar.time) {{
-                        // New bar
-                        chartData.push(bar);
-                        candlestickSeries.update({{
-                            time: bar.time,
-                            open: bar.open,
-                            high: bar.high,
-                            low: bar.low,
-                            close: bar.close,
-                        }});
-                        
-                        volumeSeries.update({{
-                            time: bar.time,
-                            value: bar.volume,
-                            color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
-                        }});
+                        try {{
+                            candlestickSeries.update({{
+                                time: barTime,
+                                open: bar.open,
+                                high: bar.high,
+                                low: bar.low,
+                                close: bar.close,
+                            }});
+                            
+                            volumeSeries.update({{
+                                time: barTime,
+                                value: bar.volume,
+                                color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
+                            }});
+                        }} catch (updateError) {{
+                            console.warn('Chart update error (new bar):', updateError);
+                            // Remove the bar we just added if update failed
+                            chartData.pop();
+                        }}
+                    }} else {{
+                        // barTime < lastBarTime - this should not happen, but handle gracefully
+                        console.warn(`Skipping real-time update: new bar time (${{barTime}}) is older than last bar time (${{lastBarTime}}). This may indicate clock skew or delayed data.`);
+                        // Don't update the chart - TradingView doesn't allow updating older bars
                     }}
                     
                     updateStatus(`Real-time: ${{data.quote.last || data.quote.bid || 'N/A'}} | ${{new Date().toLocaleTimeString()}}`);

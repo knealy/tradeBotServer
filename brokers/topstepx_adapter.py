@@ -84,6 +84,9 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         self._historical_cache: Dict[Tuple[str, str, int, Optional[str], Optional[str]], Tuple[List[Bar], float]] = {}
         self._cache_lock = asyncio.Lock()
         self._cache_ttl_seconds = 5  # Cache for 5 seconds to prevent duplicate requests
+
+        # Track pending requests to prevent duplicate concurrent requests
+        self._pending_requests: Dict = {}
         
         # Initialize Rust executors if available
         self._use_rust = False
@@ -3739,6 +3742,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             logger.warning("⚠️  IMPORTANT: Bracket orders require 'Auto OCO Brackets' to be enabled in your TopStepX account settings.")
             logger.info(f"Creating bracket order for {side} {quantity} {symbol} on account {account_id}")
+            logger.debug(f"Bracket order data: stop_loss_ticks={stop_loss_ticks}, take_profit_ticks={take_profit_ticks}")
             
             # Get contract ID
             try:
@@ -3950,6 +3954,13 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 }
                 logger.debug(f"Added take profit bracket: {take_profit_ticks} ticks, size: {quantity}, reduceOnly: True")
             
+            # Ensure token is valid before making request
+            await self.auth.ensure_valid_token()
+            
+            # Log order data for debugging (without sensitive info)
+            logger.debug(f"Sending bracket order request: accountId={account_id}, contractId={contract_id}, "
+                        f"side={side}, size={quantity}, stopLossTicks={stop_loss_ticks}, takeProfitTicks={take_profit_ticks}")
+            
             # Make API call
             headers = {
                 "accept": "text/plain",
@@ -3958,6 +3969,23 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             }
             
             response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            
+            # If we got 500 errors and retries are exhausted, try refreshing token and retrying once
+            if "error" in response and response.get("retry_exhausted") and response.get("status_code") == 500:
+                logger.warning("⚠️  Received 500 errors, attempting token refresh and retry...")
+                # Refresh token
+                if await self.auth.authenticate():
+                    logger.info("Token refreshed, retrying bracket order...")
+                    # Update headers with new token
+                    headers["Authorization"] = f"Bearer {self.auth.get_token()}"
+                    # Retry once more
+                    response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+                    if "error" in response:
+                        logger.error(f"Failed to create bracket order after token refresh: {response['error']}")
+                        return OrderResponse(success=False, error=response['error'], raw_response=response)
+                else:
+                    logger.error("Failed to refresh token, cannot retry bracket order")
+                    return OrderResponse(success=False, error="Failed to refresh token after 500 errors", raw_response=response)
             
             if "error" in response:
                 logger.error(f"Failed to create bracket order: {response['error']}")
