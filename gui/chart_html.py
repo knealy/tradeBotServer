@@ -42,6 +42,95 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     _latest_bar_cache = {}
     _last_bar_fetch_time = {}
     
+    # Cache for account state to reduce slow API calls
+    _account_state_cache = {}
+    _account_state_cache_time = {}
+    _account_state_cache_ttl = 10000  # 10 seconds cache TTL
+    
+    async def handle_account_state(request):
+        """Get account state - balance, P&L, compliance - lightweight with caching."""
+        try:
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
+            # Check cache first
+            cache_key = f"account_state_{account_id}"
+            import time
+            current_time = time.time() * 1000  # milliseconds
+            
+            if cache_key in _account_state_cache:
+                cache_age = current_time - _account_state_cache_time.get(cache_key, 0)
+                if cache_age < _account_state_cache_ttl:
+                    # Return cached data
+                    response = web.json_response(_account_state_cache[cache_key])
+                    response.headers['Access-Control-Allow-Origin'] = '*'
+                    return response
+            
+            # Get account info and balance efficiently (only if cache expired)
+            # Use balance from selected_account if available (faster)
+            balance = 0.0
+            account_name = ''
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    balance = float(trading_bot.selected_account.get('balance', 0.0))
+                    account_name = trading_bot.selected_account.get('name', '')
+            
+            # Only fetch account_info if we don't have cached balance
+            account_info = None
+            if not balance or balance == 0.0:
+                account_info = await trading_bot.get_account_info(account_id=account_id)
+                balance_data = await trading_bot.get_account_balance(account_id=account_id)
+                
+                if balance_data is not None:
+                    balance = float(balance_data)
+            
+            # Get P&L from positions (lighter than account_info)
+            unrealized_pnl = 0.0
+            realized_pnl = 0.0
+            try:
+                positions = await trading_bot.get_open_positions(account_id=account_id)
+                if positions:
+                    for pos in positions:
+                        unrealized_pnl += float(pos.get('unrealizedPnL', pos.get('unrealized_pnl', 0)))
+            except:
+                pass
+            
+            # Get compliance status if available
+            compliance = {}
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                try:
+                    compliance = trading_bot.account_tracker.check_compliance()
+                except:
+                    pass
+            
+            state = {
+                'account_id': account_id,
+                'account_name': account_name,
+                'balance': balance,
+                'unrealized_pnl': unrealized_pnl,
+                'realized_pnl': realized_pnl,
+                'compliance': compliance
+            }
+            
+            # Cache the result
+            _account_state_cache[cache_key] = state
+            _account_state_cache_time[cache_key] = current_time
+            
+            response = web.json_response(state)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching account state: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
     async def handle_quote(request):
         """Handle quote requests for real-time updates."""
         try:
@@ -797,6 +886,94 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
     
+    async def handle_strategy_status(request):
+        """Get strategy status - includes all available strategies, not just active ones."""
+        try:
+            if not hasattr(trading_bot, 'strategy_manager'):
+                return web.json_response({'strategies': {}, 'available': [], 'error': 'Strategy manager not available'})
+            
+            # Get all loaded strategies
+            statuses = {}
+            for name, strategy in trading_bot.strategy_manager.strategies.items():
+                if strategy:
+                    statuses[name] = {
+                        'name': name,
+                        'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
+                        'active': getattr(strategy, 'status', None) == getattr(strategy.__class__, 'Status', type('Status', (), {'ACTIVE': 'active'}))().ACTIVE if hasattr(strategy.__class__, 'Status') else False,
+                        'symbols': getattr(strategy.config, 'symbols', []) if hasattr(strategy, 'config') else [],
+                        'positions': len(getattr(strategy, 'active_positions', [])) if hasattr(strategy, 'active_positions') else 0
+                    }
+            
+            # Get all available strategies (registered but not necessarily loaded)
+            available_strategies = list(trading_bot.strategy_manager.available_strategies.keys()) if hasattr(trading_bot.strategy_manager, 'available_strategies') else []
+            
+            # Add available strategies that aren't loaded yet
+            for name in available_strategies:
+                if name not in statuses:
+                    statuses[name] = {
+                        'name': name,
+                        'status': 'idle',
+                        'active': False,
+                        'symbols': [],
+                        'positions': 0,
+                        'available': True
+                    }
+            
+            response = web.json_response({
+                'strategies': statuses,
+                'available': available_strategies,
+                'active': list(trading_bot.strategy_manager.active_strategies) if hasattr(trading_bot.strategy_manager, 'active_strategies') else []
+            })
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching strategy status: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e), 'strategies': {}, 'available': []}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_strategy_start(request):
+        """Start a strategy."""
+        try:
+            data = await request.json()
+            strategy_name = data.get('strategy')
+            symbols = data.get('symbols', [])
+            
+            if not hasattr(trading_bot, 'strategy_manager'):
+                return web.json_response({'success': False, 'error': 'Strategy manager not available'})
+            
+            success, message = await trading_bot.strategy_manager.start_strategy(strategy_name, symbols)
+            response = web.json_response({'success': success, 'message': message})
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error starting strategy: {e}")
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_strategy_stop(request):
+        """Stop a strategy."""
+        try:
+            data = await request.json()
+            strategy_name = data.get('strategy')
+            
+            if not hasattr(trading_bot, 'strategy_manager'):
+                return web.json_response({'success': False, 'error': 'Strategy manager not available'})
+            
+            success, message = await trading_bot.strategy_manager.stop_strategy(strategy_name)
+            response = web.json_response({'success': success, 'message': message})
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error stopping strategy: {e}")
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+
     app.router.add_get('/api/chart/quote', handle_quote)
     app.router.add_options('/api/chart/quote', handle_options)
     app.router.add_post('/api/chart/order', handle_place_order)
@@ -809,6 +986,62 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     app.router.add_options('/api/chart/contracts', handle_options)
     app.router.add_get('/api/chart/reload', handle_reload_data)
     app.router.add_options('/api/chart/reload', handle_options)
+    # Strategy endpoints
+    app.router.add_get('/api/chart/strategy/status', handle_strategy_status)
+    app.router.add_options('/api/chart/strategy/status', handle_options)
+    app.router.add_post('/api/chart/strategy/start', handle_strategy_start)
+    app.router.add_options('/api/chart/strategy/start', handle_options)
+    app.router.add_post('/api/chart/strategy/stop', handle_strategy_stop)
+    app.router.add_options('/api/chart/strategy/stop', handle_options)
+    # Account state endpoint
+    app.router.add_get('/api/chart/account/state', handle_account_state)
+    app.router.add_options('/api/chart/account/state', handle_options)
+    
+    # Serve master control HTML
+    async def handle_master_control(request):
+        """Serve the master control HTML page."""
+        try:
+            # Read master control HTML file
+            from pathlib import Path
+            master_html_path = Path(__file__).parent / 'master_control.html'
+            if not master_html_path.exists():
+                # Return a simple HTML that loads from the generated file
+                html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Master Trading Control</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #1a1a1a; color: #fff; }}
+        .error {{ color: #ff4444; padding: 20px; text-align: center; }}
+    </style>
+</head>
+<body>
+    <div class="error">
+        <h1>Master Control HTML Not Found</h1>
+        <p>Please create gui/master_control.html</p>
+    </div>
+</body>
+</html>"""
+            else:
+                with open(master_html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+            
+            # Replace placeholder with actual server port
+            html_content = html_content.replace('{{SERVER_PORT}}', str(port))
+            html_content = html_content.replace('{{SYMBOL}}', symbol)
+            
+            response = web.Response(text=html_content, content_type='text/html')
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error serving master control: {e}")
+            response = web.Response(text=f"Error: {e}", status=500)
+            return response
+    
+    app.router.add_get('/', handle_master_control)
+    app.router.add_get('/master', handle_master_control)
     
     # Find available port
     import socket

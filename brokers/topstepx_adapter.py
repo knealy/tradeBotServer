@@ -3261,7 +3261,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
                     import traceback
                     logger.debug(f"Rust error traceback: {traceback.format_exc()}")
-
+            
             # Python fallback
             logger.info("🔄 Using Python fallback for stop bracket order")
             print("🔄 Using Python fallback for stop bracket order (Rust path unavailable)")

@@ -35,6 +35,8 @@ class CLICommandParser:
             'depth': self._handle_depth,
             'history': self._handle_history,
             'chart': self._handle_chart,
+            'master': self._handle_master_gui,
+            'gui': self._handle_master_gui,
             'flatten': self._handle_flatten,
             'accounts': self._handle_accounts,
             'switch_account': self._handle_switch_account,
@@ -484,6 +486,53 @@ class CLICommandParser:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": f"Failed to generate chart: {str(e)}"}
+    
+    async def _handle_master_gui(self, args: List[str]) -> Dict[str, Any]:
+        """Handle master GUI command: master [symbol] [timeframe] [limit]"""
+        symbol = 'MNQ'
+        timeframe = '5m'
+        limit = 300
+        
+        # Parse optional arguments
+        if args:
+            symbol = args[0].upper()
+        if len(args) > 1:
+            timeframe = args[1].lower()
+        if len(args) > 2:
+            try:
+                limit = int(args[2])
+            except ValueError:
+                pass
+        
+        # Start chart server with master GUI
+        try:
+            from gui.chart_html import _start_chart_server
+            import webbrowser
+            
+            # Start server
+            port = await _start_chart_server(self.trading_bot, symbol)
+            
+            # Open master GUI in browser
+            master_url = f"http://127.0.0.1:{port}/master"
+            webbrowser.open(master_url)
+            
+            result = {
+                "success": True,
+                "url": master_url,
+                "port": port,
+                "symbol": symbol,
+                "message": "Master GUI opened in browser. Bot will keep running. Press Ctrl+C to stop."
+            }
+            
+            # Return keep_running flag so bot stays alive
+            result["keep_running"] = True
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error opening master GUI: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"error": f"Failed to open master GUI: {e}"}
     
     async def _handle_flatten(self, args: List[str]) -> Dict[str, Any]:
         """Handle flatten command: flatten [SYMBOL] [account_id]"""
