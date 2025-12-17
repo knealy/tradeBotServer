@@ -484,7 +484,7 @@ class AuthManager:
                 
                 if "PRAC" in account_name.upper():
                     account_type = "practice"
-                elif "150KTC" in account_name.upper():
+                elif "50KTC" in account_name.upper() or "100KTC" in account_name.upper() or "150KTC" in account_name.upper():
                     account_type = "eval"
                 elif "EXPRESS" in account_name.upper():
                     account_type = "funded"

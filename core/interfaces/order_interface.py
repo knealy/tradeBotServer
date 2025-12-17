@@ -44,6 +44,7 @@ class ModifyOrderResponse:
     order_id: Optional[str] = None
     message: Optional[str] = None
     error: Optional[str] = None
+    raw_response: Optional[Dict[str, Any]] = None
 
 
 @dataclass

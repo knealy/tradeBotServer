@@ -514,12 +514,33 @@ impl AsyncOrderExecutor {
                 format!("HTTP request failed: {}", e)
             ))?;
 
-        // Parse response
+        // Parse response (handle empty responses gracefully)
         let status = response.status();
-        let response_json: serde_json::Value = response.json().await
+        let response_text = response.text().await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to parse response: {}", e)
+                format!("Failed to read response: {}", e)
             ))?;
+        
+        // Handle empty response - treat as success if status is successful
+        let response_json: serde_json::Value = if response_text.trim().is_empty() {
+            if status.is_success() {
+                serde_json::json!({
+                    "success": true,
+                    "orderId": "unknown",
+                    "message": "Order executed successfully (empty response)"
+                })
+            } else {
+                serde_json::json!({
+                    "success": false,
+                    "error": format!("Request failed with status {}", status)
+                })
+            }
+        } else {
+            serde_json::from_str(&response_text)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("Failed to parse response: {}. Response: {}", e, response_text)
+                ))?
+        };
 
         // Check for errors in response
         if let Some(error) = response_json.get("error") {

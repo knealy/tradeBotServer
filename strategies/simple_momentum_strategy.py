@@ -157,51 +157,59 @@ class SimpleMomentumStrategy(BaseStrategy):
             entry_price = signal['entry_price']
             stop_loss = signal['stop_loss']
             take_profit = signal['take_profit']
-            
-            # Check if we should trade
-            should_trade, reason = self.should_trade(symbol)
-            if not should_trade:
-                logger.info(f"⏭️  Skipping {action} on {symbol}: {reason}")
-                return False
-            
+
+            # TESTING MODE: Skip should_trade checks
+            print(f"⚡ TESTING MODE: Bypassing should_trade() checks")
+            logger.info(f"⚡ TESTING MODE: Bypassing should_trade() checks")
+
             # Get account ID
             account_id = None
             if isinstance(self.trading_bot.selected_account, dict):
                 account_id = self.trading_bot.selected_account.get('id')
             else:
                 account_id = self.trading_bot.selected_account
-            
+
             if not account_id:
+                print("❌ No account selected")
                 logger.error("No account selected")
                 return False
             
-            # Place bracket order
+            # Place order using the EXACT method that works from CLI (stop_bracket command)
             side = "BUY" if action == "LONG" else "SELL"
             quantity = self.config.position_size
-            
+
             print(f"📈 Executing {action} on {symbol}: Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
             logger.info(f"📈 Executing {action} on {symbol}: Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
+
+            # Use the verified working bracket order method from BaseStrategy
+            print("📝 Placing bracket order (verified working method)...")
+            logger.info("Using BaseStrategy.place_bracket_order() - same path as CLI stop_bracket")
             
-            result = await self.trading_bot.create_bracket_order(
+            result = await self.place_bracket_order(
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
+                entry_price=entry_price,
                 stop_loss_price=stop_loss,
                 take_profit_price=take_profit,
-                account_id=account_id
+                enable_breakeven=False  # Can enable later if desired
             )
-            
-            if result and result.get('success'):
-                order_id = result.get('order_id')
-                print(f"✅ Order placed: {order_id}")
-                logger.info(f"✅ Order placed: {order_id}")
-                self.daily_trades += 1
-                return True
-            else:
-                error = result.get('error', 'Unknown error') if result else 'No result'
-                print(f"❌ Order failed: {error}")
-                logger.error(f"❌ Order failed: {error}")
+
+            if result.get("error"):
+                error_msg = result.get("error")
+                print(f"❌ Stop bracket order failed: {error_msg}")
+                logger.error(f"Stop bracket order failed: {error_msg}")
                 return False
+
+            # Success!
+            order_id = result.get('orderId')
+            method = result.get('method', 'unknown')
+            print(f"✅ Stop bracket order placed successfully!")
+            print(f"   Order ID: {order_id}")
+            print(f"   Method: {method}")
+            logger.info(f"✅ Stop bracket placed: Order ID {order_id}, Method: {method}")
+            self.daily_trades += 1
+            return True
                 
         except Exception as e:
             logger.error(f"Error executing signal: {e}")
@@ -238,32 +246,28 @@ class SimpleMomentumStrategy(BaseStrategy):
         logger.info("🧹 Cleaning up Simple Momentum Strategy")
         self.status = StrategyStatus.IDLE
     
+    def _in_trading_window(self) -> bool:
+        """Override: Trade 24/7 for testing."""
+        return True  # Always trade, no time restrictions
+    
     async def run(self):
         """Main strategy loop."""
         self.status = StrategyStatus.ACTIVE
         print(f"🚀 Starting Simple Momentum Strategy for {self.config.symbols}")
         logger.info(f"🚀 Starting Simple Momentum Strategy for {self.config.symbols}")
         
-        # Set end time (2 hours from now)
-        end_time = datetime.now() + timedelta(hours=2)
-        print(f"⏰ Strategy will run until {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"⏰ Strategy will run until {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        # NO time limit for testing
+        print(f"⏰ Strategy running with NO time limit (test mode)")
+        logger.info(f"⏰ Strategy running with NO time limit (test mode)")
         
-        check_interval = 30  # Check every 30 seconds
+        check_interval = 10  # Check every 10 seconds (faster for testing)
         loop_count = 0
         
-        while self.status == StrategyStatus.ACTIVE and datetime.now() < end_time:
+        while self.status == StrategyStatus.ACTIVE:
             try:
-                # Check if we should continue
-                if datetime.now() >= end_time:
-                    print("⏰ Strategy time limit reached")
-                    logger.info("⏰ Strategy time limit reached")
-                    break
-                
                 loop_count += 1
-                if loop_count % 2 == 0:  # Print status every 2 loops (every minute)
-                    remaining = (end_time - datetime.now()).total_seconds() / 60
-                    print(f"🔄 Strategy running... ({remaining:.1f} minutes remaining, {len(self.active_positions)} positions)")
+                if loop_count % 6 == 0:  # Print status every 6 loops (every minute)
+                    print(f"🔄 Strategy running... ({len(self.active_positions)} positions, {self.daily_trades} trades today)")
                 
                 # Manage existing positions
                 await self.manage_positions()

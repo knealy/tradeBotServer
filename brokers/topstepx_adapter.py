@@ -768,7 +768,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         if not account_id:
             return ModifyOrderResponse(
                 success=False,
-                error="Account ID is required"
+                error="Account ID is required",
+                raw_response=None
             )
 
         # Get order info to determine type and check if it's a bracket order
@@ -790,6 +791,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         "Bracket orders automatically match position size. "
                         "You can only modify the price, or close the position to remove the bracket orders."
                     ),
+                    raw_response=None
                 )
 
         logger.info(f"Modifying order {order_id} on account {account_id}")
@@ -839,6 +841,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 success=False,
                 error=response["error"],
                 order_id=order_id,
+                raw_response=response
             )
 
         # Check if the API response indicates success
@@ -850,6 +853,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 success=False,
                 error=f"Order modification failed: {error_message} (Code: {error_code})",
                 order_id=order_id,
+                raw_response=response
             )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -860,6 +864,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             success=True,
             order_id=order_id,
             message="Order modified successfully",
+            raw_response=response
         )
     
     async def cancel_order(
@@ -1124,14 +1129,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             List of historical orders
         """
         try:
-            # Try Rust hot path first
-            if self._use_rust and self._query_executor:
-                try:
-                    return await self._get_order_history_rust(account_id, limit)
-                except Exception as e:
-                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
-            
-            # Python fallback
+            # Note: Rust implementation for order history not yet available
+            # Using Python path for now
             await self.auth.ensure_valid_token()
             
             if not account_id:
@@ -1686,12 +1685,142 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "orders_count": len(canceled_orders)
             }
             
+            # Handle edge case where positions list is empty but we need to check orders
+            if not positions:
+                # Get and cancel all open orders even if no positions
+                logger.info("No positions found, checking for orders to cancel")
+                orders = await self.get_open_orders(account_id=account_id)
+                canceled_orders = []
+                failed_orders = []
+
+                for order in orders:
+                    try:
+                        order_id = str(order.get('id', ''))
+                        if not order_id:
+                            continue
+
+                        result = await self.cancel_order(order_id=order_id, account_id=account_id)
+
+                        if result.success:
+                            canceled_orders.append(order_id)
+                            logger.info(f"Successfully canceled order {order_id}")
+                        else:
+                            failed_orders.append({
+                                "id": order_id,
+                                "error": result.error
+                            })
+                    except Exception as e:
+                        logger.error(f"Exception canceling order: {e}")
+
+                result = {
+                    "success": True,
+                    "closed_positions": [],
+                    "canceled_orders": canceled_orders,
+                    "failed_positions": [],
+                    "failed_orders": failed_orders,
+                    "positions_count": 0,
+                    "orders_count": len(canceled_orders)
+                }
+                
+                logger.info(f"Flatten complete: No positions, {len(canceled_orders)} orders canceled")
+                return result
+
             logger.info(f"Flatten complete: {len(closed_positions)} positions closed, {len(canceled_orders)} orders canceled")
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to flatten positions: {str(e)}")
             return {"success": False, "error": str(e)}
+    
+    async def get_linked_orders(
+        self,
+        position_id: str,
+        account_id: Optional[str] = None,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Get linked orders (stop loss, take profit) for a position.
+        
+        Args:
+            position_id: Position ID
+            account_id: Account ID
+            **kwargs: Additional parameters
+            
+        Returns:
+            List of linked orders
+        """
+        try:
+            await self.auth.ensure_valid_token()
+            
+            if not account_id:
+                logger.error("Account ID is required for get_linked_orders")
+                return []
+            
+            logger.debug(f"Fetching linked orders for position {position_id}")
+            
+            # Get the position details to know its contract and side
+            positions = await self.get_positions(account_id=account_id)
+            position = None
+            for pos in positions:
+                if str(pos.position_id) == str(position_id):
+                    position = pos
+                    break
+            
+            if not position:
+                logger.warning(f"Position {position_id} not found")
+                return []
+            
+            # Get all open orders for the account
+            all_orders = await self.get_open_orders(account_id=account_id)
+            
+            # Filter orders linked to this position using multiple criteria
+            linked_orders = []
+            for order in all_orders:
+                # Method 1: Check positionId field (most reliable if present)
+                order_position_id = order.get('positionId') or order.get('position_id')
+                if order_position_id and str(order_position_id) == str(position_id):
+                    linked_orders.append(order)
+                    logger.debug(f"Matched order {order.get('id')} via positionId")
+                    continue
+                
+                # Method 2: Check customTag for AutoBracket
+                custom_tag = order.get('customTag', '') or ''
+                if custom_tag and 'AutoBracket' in custom_tag:
+                    # Extract position ID from tag if present (format: AutoBracket-{positionId}-SL or -TP)
+                    if f"-{position_id}-" in custom_tag or custom_tag.endswith(f"-{position_id}"):
+                        linked_orders.append(order)
+                        logger.debug(f"Matched order {order.get('id')} via AutoBracket tag")
+                        continue
+                
+                # Method 3: Match by contract + order type (stop/limit) + opposite side
+                # This catches bracket orders that don't have explicit linking
+                order_contract = order.get('contractId', '')
+                position_contract = position.raw_data.get('contractId', '') if position.raw_data else ''
+                
+                if order_contract and position_contract and order_contract == position_contract:
+                    order_type = order.get('type', 0)
+                    order_side = order.get('side', -1)
+                    position_side = position.side
+                    
+                    # For LONG positions: stop loss is SELL STOP (side=1, type=4), TP is SELL LIMIT (side=1, type=1)
+                    # For SHORT positions: stop loss is BUY STOP (side=0, type=4), TP is BUY LIMIT (side=0, type=1)
+                    is_opposite_side = False
+                    if position_side == 'LONG' and order_side == 1:  # SELL orders for LONG position
+                        is_opposite_side = True
+                    elif position_side == 'SHORT' and order_side == 0:  # BUY orders for SHORT position
+                        is_opposite_side = True
+                    
+                    # Only link if it's a stop or limit order on the opposite side
+                    if is_opposite_side and order_type in [1, 4]:  # 1=Limit, 4=Stop
+                        linked_orders.append(order)
+                        logger.debug(f"Matched order {order.get('id')} via contract+type+side heuristic")
+            
+            logger.debug(f"Found {len(linked_orders)} linked orders for position {position_id}")
+            return linked_orders
+            
+        except Exception as e:
+            logger.error(f"Failed to get linked orders for position {position_id}: {e}")
+            return []
     
     # ==================== Market Data Interface Implementation ====================
     

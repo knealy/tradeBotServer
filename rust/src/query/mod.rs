@@ -368,10 +368,20 @@ impl QueryExecutor {
                 format!("HTTP request failed: {}", e)
             ))?;
 
-        let response_json: Value = response.json().await
+        // Handle empty responses gracefully
+        let response_text = response.text().await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to parse response: {}", e)
+                format!("Failed to read response: {}", e)
             ))?;
+        
+        let response_json: Value = if response_text.trim().is_empty() {
+            return Ok(Vec::new()); // Empty response = no orders
+        } else {
+            serde_json::from_str(&response_text)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("Failed to parse response: {}. Response: {}", e, response_text)
+                ))?
+        };
 
         if response_json.get("error").is_some() || response_json.get("success") == Some(&Value::Bool(false)) {
             return Ok(vec![]);
@@ -506,10 +516,24 @@ impl QueryExecutor {
                 format!("HTTP request failed: {}", e)
             ))?;
 
-        let response_json: Value = response.json().await
+        // Get response text first to handle empty responses
+        let response_text = response.text().await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Failed to parse response: {}", e)
+                format!("Failed to read response: {}", e)
             ))?;
+        
+        // Handle empty response (EOF) - treat as success
+        let response_json: Value = if response_text.trim().is_empty() {
+            serde_json::json!({
+                "success": true,
+                "message": "Position closed successfully (empty response)"
+            })
+        } else {
+            serde_json::from_str(&response_text)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("Failed to parse response: {}. Response: {}", e, response_text)
+                ))?
+        };
 
         if response_json.get("error").is_some() || response_json.get("success") == Some(&Value::Bool(false)) {
             let error = response_json.get("error")

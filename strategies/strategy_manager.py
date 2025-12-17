@@ -139,36 +139,36 @@ class StrategyManager:
                     if name in self.active_strategies:
                         logger.info(f"⏭️  Strategy {name} already active, skipping auto-start")
                     else:
-                        # Strategy should be running but isn't
+                        # Strategy should be running but isn't - START IT!
                         logger.info(f"▶️  Auto-starting {name} from {config_source} (symbols: {', '.join(symbols) if symbols else 'default'})")
+                        
+                        # Ensure strategy instance exists
+                        if name not in self.strategies:
+                            base_config = StrategyConfig.from_env(name)
+                            strategy = strategy_class(self.trading_bot, base_config)
+                            self.strategies[name] = strategy
+                            
+                            # Apply persisted settings if available
+                            if persisted_state and persisted_state.get('settings'):
+                                self._apply_config_settings(strategy, persisted_state['settings'])
+                                # Apply strategy-specific parameters
+                                self._apply_strategy_specific_settings(strategy, persisted_state['settings'])
+                        else:
+                            strategy = self.strategies[name]
+                            # Update from persisted state if available
+                            if persisted_state and persisted_state.get('settings'):
+                                self._apply_config_settings(strategy, persisted_state['settings'])
+                                self._apply_strategy_specific_settings(strategy, persisted_state['settings'])
+
+                        # Start the strategy with persisted symbols or config symbols
+                        start_symbols = symbols if symbols else (strategy.config.symbols if strategy else [])
+                        success, message = await self.start_strategy(name, symbols=start_symbols, persist=True)
+                        if success:
+                            logger.info(f"✅ Auto-started: {message}")
+                        else:
+                            logger.error(f"❌ Failed to auto-start {name}: {message}")
                 else:
                     logger.info(f"⏸️  Strategy {name} is disabled (should_start=False), skipping auto-start")
-
-                    # Ensure strategy instance exists
-                    if name not in self.strategies:
-                        base_config = StrategyConfig.from_env(name)
-                        strategy = strategy_class(self.trading_bot, base_config)
-                        self.strategies[name] = strategy
-                        
-                        # Apply persisted settings if available
-                        if persisted_state and persisted_state.get('settings'):
-                            self._apply_config_settings(strategy, persisted_state['settings'])
-                            # Apply strategy-specific parameters
-                            self._apply_strategy_specific_settings(strategy, persisted_state['settings'])
-                    else:
-                        strategy = self.strategies[name]
-                        # Update from persisted state if available
-                        if persisted_state and persisted_state.get('settings'):
-                            self._apply_config_settings(strategy, persisted_state['settings'])
-                            self._apply_strategy_specific_settings(strategy, persisted_state['settings'])
-
-                    # Start the strategy with persisted symbols or config symbols
-                    start_symbols = symbols if symbols else (strategy.config.symbols if strategy else [])
-                    success, message = await self.start_strategy(name, symbols=start_symbols, persist=True)
-                    if success:
-                        logger.info(f"✅ Auto-started: {message}")
-                    else:
-                        logger.error(f"❌ Failed to auto-start {name}: {message}")
 
             except Exception as e:
                 logger.error(f"❌ Error auto-starting strategy {name}: {e}")
@@ -603,14 +603,23 @@ class StrategyManager:
         self.active_strategies.append(name)
         strategy.config.enabled = True
         
-        # Strategies with their own event loop can implement an async start() hook
+        # Strategies with their own event loop can implement an async start() or run() hook
         custom_start = getattr(strategy, 'start', None)
+        custom_run = getattr(strategy, 'run', None)
+        
         if callable(custom_start) and asyncio.iscoroutinefunction(custom_start):
             await custom_start(symbols or strategy.config.symbols)
             logger.debug(f"▶️  Invoked custom start() for strategy {name}")
+        elif callable(custom_run) and asyncio.iscoroutinefunction(custom_run):
+            # If strategy has run() but no start(), create task for run()
+            task = asyncio.create_task(custom_run())
+            self._tasks.append(task)
+            logger.debug(f"▶️  Created task for custom run() method of strategy {name}")
         else:
+            # Use standard monitoring loop
             task = asyncio.create_task(self._run_strategy(strategy))
             self._tasks.append(task)
+            logger.debug(f"▶️  Using standard monitoring loop for strategy {name}")
         
         logger.info(f"🚀 Started strategy: {name}")
         self._save_strategy_state(name, enabled=True, symbols=strategy.config.symbols, persist=persist)
@@ -832,15 +841,22 @@ class StrategyManager:
         """Get manager status with detailed strategy information."""
         # Get aggregated metrics
         metrics = self.get_aggregated_metrics()
-        
-        # Get individual strategy statuses
+
+        # Get individual strategy statuses with monitoring info
         strategy_statuses = {}
         for name, strategy in self.strategies.items():
-            strategy_statuses[name] = strategy.get_status()
-        
+            status = strategy.get_status()
+            # Add whether it's actually in active list (monitoring)
+            status['monitoring'] = name in self.active_strategies
+            # Add task info if available
+            running_tasks = sum(1 for task in self._tasks if not task.done())
+            status['has_running_task'] = running_tasks > 0 and name in self.active_strategies
+            strategy_statuses[name] = status
+
         return {
             "total_strategies": len(self.strategies),
             "active_strategies": len(self.active_strategies),
+            "running_tasks": sum(1 for task in self._tasks if not task.done()),
             "total_positions": sum(len(s.active_positions) for s in self.strategies.values()),
             "strategies": strategy_statuses,
             "auto_select_enabled": self.auto_select_enabled,

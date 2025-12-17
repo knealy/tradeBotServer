@@ -1225,43 +1225,105 @@ class TopStepXTradingBot:
         
         print("="*80)
     
+    async def switch_account(self, account_identifier: str) -> bool:
+        """
+        Switch to a different account by ID or index.
+        Used by strategy executor and programmatic account switching.
+
+        Args:
+            account_identifier: Account ID or 1-based index as string
+
+        Returns:
+            bool: True if account switched successfully, False otherwise
+        """
+        try:
+            # Fetch accounts
+            accounts = await self.list_accounts()
+            if not accounts:
+                logger.error("No accounts available")
+                return False
+            
+            selected_account = None
+            
+            # Try as index first (1-based)
+            if account_identifier.isdigit():
+                idx = int(account_identifier) - 1
+                if 0 <= idx < len(accounts):
+                    selected_account = accounts[idx]
+                    logger.info(f"Selected account by index {account_identifier}: {selected_account['name']}")
+            
+            # Try as account ID if not found by index
+            if not selected_account:
+                for acc in accounts:
+                    if str(acc.get('id')) == account_identifier or acc.get('name') == account_identifier:
+                        selected_account = acc
+                        logger.info(f"Selected account by ID/name: {selected_account['name']}")
+                        break
+            
+            if not selected_account:
+                logger.error(f"Account not found: {account_identifier}")
+                return False
+            
+            # Set as selected account
+            self.selected_account = selected_account
+            
+            # Update OrderExecutor's selected account
+            if hasattr(self, 'order_executor'):
+                self.order_executor.set_selected_account(selected_account)
+            
+            # Initialize account tracker
+            account_balance = selected_account.get('balance', 0)
+            account_type = selected_account.get('type', 'unknown')
+            self.account_tracker.initialize(
+                account_id=selected_account['id'],
+                starting_balance=account_balance,
+                account_type=account_type
+            )
+            logger.info(f"Account tracker initialized for {selected_account['name']} (${account_balance:,.2f})")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to switch account: {e}")
+            return False
+
     def select_account(self, accounts: List[Dict]) -> Optional[Dict]:
         """
-        Allow user to select an account for trading.
-        
+        Allow user to select an account for trading (interactive mode).
+
         Args:
             accounts: List of account dictionaries
-            
+
         Returns:
             Optional[Dict]: Selected account or None if invalid selection
         """
         if not accounts:
             print("No accounts available for selection.")
             return None
-        
+
         while True:
             try:
                 print(f"\nSelect an account to trade on (1-{len(accounts)}, or 'q' to quit):")
                 choice = input("Enter your choice: ").strip().lower()
-                
+
                 if choice == 'q':
                     print("Exiting account selection.")
                     return None
-                
+
                 account_index = int(choice) - 1
-                
+
                 if 0 <= account_index < len(accounts):
                     selected_account = accounts[account_index]
                     self.selected_account = selected_account
-                    
+
                     # Update OrderExecutor's selected account
                     self.order_executor.set_selected_account(selected_account)
-                    
+
                     print(f"\n✓ Selected Account: {selected_account['name']}")
                     print(f"  Account ID: {selected_account['id']}")
                     print(f"  Balance: ${selected_account.get('balance', 0):,.2f}")
                     print(f"  Status: {selected_account.get('status', 'N/A')}")
-                    
+
                     # Initialize account tracker with this account
                     account_balance = selected_account.get('balance', 0)
                     account_type = selected_account.get('type', 'unknown')
@@ -1271,11 +1333,11 @@ class TopStepXTradingBot:
                         account_type=account_type
                     )
                     logger.info(f"Account tracker initialized for {selected_account['name']} (${account_balance:,.2f})")
-                    
+
                     return selected_account
                 else:
                     print(f"Invalid choice. Please enter a number between 1 and {len(accounts)}.")
-                    
+
             except ValueError:
                 print("Invalid input. Please enter a number or 'q' to quit.")
             except KeyboardInterrupt:
@@ -5955,9 +6017,12 @@ class TopStepXTradingBot:
                 # On error, wait 1 hour before retrying
                 await asyncio.sleep(3600)
     
-    async def run(self):
+    async def run(self, account_select: Optional[str] = None):
         """
         Main bot execution flow with parallel initialization and performance timing.
+        
+        Args:
+            account_select: Optional account index/ID to auto-select (e.g., "1", "2", or account ID)
         
         Uses parallel execution for independent operations to reduce startup time by 30-50%.
         """
@@ -6009,8 +6074,42 @@ class TopStepXTradingBot:
             self.display_accounts(accounts)
             print(f"   (Parallel init: {_parallel_ms} ms)")
             
-            # Step 4: Select account (interactive, no timer needed)
-            selected_account = self.select_account(accounts)
+            # Step 4: Select account (auto-select if provided, otherwise interactive)
+            if account_select:
+                # Auto-select account by index or ID
+                selected_account = None
+                try:
+                    # Try as index first (1-based)
+                    account_index = int(account_select)
+                    if 1 <= account_index <= len(accounts):
+                        selected_account = accounts[account_index - 1]
+                        print(f"✅ Selected account by index {account_index}: {selected_account['name']}")
+                except ValueError:
+                    # Try as account ID
+                    for account in accounts:
+                        if str(account.get('id')) == str(account_select):
+                            selected_account = account
+                            print(f"✅ Selected account by ID: {selected_account['name']}")
+                            break
+                
+                if not selected_account:
+                    print(f"❌ Could not find account matching '{account_select}'")
+                    selected_account = self.select_account(accounts)
+                else:
+                    self.selected_account = selected_account
+                    # Initialize account tracker for auto-selected account
+                    account_balance = selected_account.get('balance', 0)
+                    account_type = selected_account.get('type', 'unknown')
+                    self.account_tracker.initialize(
+                        account_id=selected_account['id'],
+                        starting_balance=account_balance,
+                        account_type=account_type
+                    )
+                    logger.info(f"Account tracker initialized for {selected_account['name']} (${account_balance:,.2f})")
+            else:
+                # Interactive selection
+                selected_account = self.select_account(accounts)
+            
             if not selected_account:
                 print("❌ No account selected. Exiting.")
                 return
@@ -6051,13 +6150,16 @@ class TopStepXTradingBot:
             asyncio.create_task(self._eod_scheduler())
             logger.info("EOD scheduler background task started")
             
-            # Step 9: Auto-start enabled strategies (if strategy manager available)
-            if hasattr(self, 'strategy_manager'):
-                logger.info("💾 Loading persisted strategy states for CLI session...")
+            # Step 9: Auto-start enabled strategies (optional; default disabled for interactive CLI)
+            auto_start_flag = os.getenv("AUTO_START_STRATEGIES", "0").lower() in ("1", "true", "yes")
+            if auto_start_flag and hasattr(self, 'strategy_manager'):
+                logger.info("💾 Loading persisted strategy states for CLI session (auto-start enabled)...")
                 await self.strategy_manager.apply_persisted_states()
                 logger.info("🚀 Auto-starting enabled strategies for CLI session...")
                 await self.strategy_manager.auto_start_enabled_strategies()
                 logger.info("✅ Strategy initialization complete for CLI session")
+            else:
+                logger.info("🚫 Auto-start of strategies is disabled for interactive CLI (set AUTO_START_STRATEGIES=1 to enable)")
             
             # Step 10: Trading interface
             print(f"\n🎯 Ready to trade on account: {selected_account['name']}")
@@ -6205,6 +6307,16 @@ class TopStepXTradingBot:
             
             self.selected_account = selected_account
             
+            # Initialize account tracker
+            account_balance = selected_account.get('balance', 0)
+            account_type = selected_account.get('type', 'unknown')
+            self.account_tracker.initialize(
+                account_id=selected_account['id'],
+                starting_balance=account_balance,
+                account_type=account_type
+            )
+            logger.info(f"Account tracker initialized for {selected_account['name']} (${account_balance:,.2f})")
+
             # Step 3.5: Fetch contracts in parallel (needed for trading commands)
             print("📋 Fetching available contracts...")
             try:
@@ -6925,11 +7037,14 @@ class TopStepXTradingBot:
                     parts = command.split()
                     if len(parts) != 6:
                         print("❌ Usage: bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks>")
-                        print("   Example: bracket MNQ BUY 1 80 80")
+                        print("   Example: bracket MNQ BUY 1 80 80  (stop down 80, profit up 80)")
+                        print("   Example: bracket MNQ SELL 1 80 80  (stop up 80, profit down 80)")
+                        print("")
+                        print("   💡 Tip: Use positive numbers - the bot auto-corrects signs based on side")
                         continue
-                    
+
                     symbol, side, quantity, stop_ticks, profit_ticks = parts[1], parts[2], parts[3], parts[4], parts[5]
-                    
+
                     try:
                         quantity = int(quantity)
                         stop_ticks = int(stop_ticks)
@@ -6937,28 +7052,57 @@ class TopStepXTradingBot:
                     except ValueError:
                         print("❌ Quantity, stop_ticks, and profit_ticks must be numbers")
                         continue
-                    
+
                     if side.upper() not in ["BUY", "SELL"]:
                         print("❌ Side must be BUY or SELL")
                         continue
                     
+                    # Auto-correct tick signs based on side for better UX
+                    # TopStepX requires specific signs based on position direction
+                    if side.upper() == "BUY":
+                        # For LONG: stop loss below entry (negative), profit above entry (positive)
+                        stop_ticks_corrected = -abs(stop_ticks)
+                        profit_ticks_corrected = abs(profit_ticks)
+                    else:  # SELL
+                        # For SHORT: stop loss above entry (positive), profit below entry (negative)
+                        stop_ticks_corrected = abs(stop_ticks)
+                        profit_ticks_corrected = -abs(profit_ticks)
+                    
+                    # Show corrected values if they changed
+                    if stop_ticks != stop_ticks_corrected or profit_ticks != profit_ticks_corrected:
+                        print(f"\n💡 Auto-corrected tick signs for {side.upper()} order:")
+                        print(f"   Stop Loss: {stop_ticks} → {stop_ticks_corrected} ticks")
+                        print(f"   Take Profit: {profit_ticks} → {profit_ticks_corrected} ticks")
+                    
+                    # Update with corrected values
+                    stop_ticks = stop_ticks_corrected
+                    profit_ticks = profit_ticks_corrected
+                    
+                    # Validate minimum tick distance (TopStepX requires at least 4 ticks)
+                    if abs(stop_ticks) < 4:
+                        print(f"❌ Stop loss must be at least 4 ticks away from entry (you entered {abs(stop_ticks)})")
+                        continue
+                    if abs(profit_ticks) < 4:
+                        print(f"❌ Take profit must be at least 4 ticks away from entry (you entered {abs(profit_ticks)})")
+                        continue
+
                     # Confirm the bracket trade
                     print(f"\n⚠️  CONFIRM BRACKET TRADE:")
                     print(f"   Symbol: {symbol.upper()}")
                     print(f"   Side: {side.upper()}")
                     print(f"   Quantity: {quantity}")
-                    print(f"   Stop Loss: {stop_ticks} ticks")
-                    print(f"   Take Profit: {profit_ticks} ticks")
+                    print(f"   Stop Loss: {stop_ticks} ticks {'(below entry)' if stop_ticks < 0 else '(above entry)'}")
+                    print(f"   Take Profit: {profit_ticks} ticks {'(below entry)' if profit_ticks < 0 else '(above entry)'}")
                     print(f"   Account: {self.selected_account['name']}")
-                    
+
                     confirm = input("   Confirm? (y/N): ").strip().lower()
                     if confirm != 'y':
                         print("❌ Trade cancelled")
                         continue
-                    
+
                     # Place the bracket order
-                    result = await self.place_market_order(symbol, side, quantity, 
-                                                        stop_loss_ticks=stop_ticks, 
+                    result = await self.place_market_order(symbol, side, quantity,
+                                                        stop_loss_ticks=stop_ticks,
                                                         take_profit_ticks=profit_ticks,
                                                         order_type="bracket")
                     if "error" in result:
@@ -7328,21 +7472,27 @@ class TopStepXTradingBot:
                 elif command_lower == "strategies status":
                     # Show detailed status of all strategies
                     status = self.strategy_manager.get_status()
-                    
+
                     print(f"\n📊 Strategy Manager Status:")
                     print(f"="*60)
                     print(f"Active Strategies: {status['active_strategies']}/{status['total_strategies']}")
+                    print(f"Running Tasks: {status.get('running_tasks', 0)}")
                     print(f"Total Positions: {status['total_positions']}")
                     print()
-                    
+
                     for strategy_name, strategy_status in status['strategies'].items():
-                        print(f"📈 {strategy_name.replace('_', ' ').title()}:")
+                        # Show monitoring status with icon
+                        monitoring = strategy_status.get('monitoring', False)
+                        monitoring_icon = "🟢" if monitoring else "⚪"
+                        
+                        print(f"{monitoring_icon} {strategy_name.replace('_', ' ').title()}:")
                         print(f"   Status: {strategy_status['status']}")
                         print(f"   Enabled: {strategy_status['enabled']}")
+                        print(f"   Monitoring: {'YES - Actively Trading' if monitoring else 'NO - Not Running'}")
                         print(f"   Symbols: {', '.join(strategy_status['symbols'])}")
                         print(f"   Active Positions: {strategy_status['active_positions']}")
                         print(f"   Daily Trades: {strategy_status['daily_trades']}")
-                        
+
                         metrics = strategy_status.get('metrics', {})
                         if metrics.get('total_trades', 0) > 0:
                             print(f"   Metrics:")
@@ -7680,14 +7830,17 @@ class TopStepXTradingBot:
                             else:
                                 symbol = pos.get('symbol', 'N/A')
                             
-                            # Determine side from type (1 = Long, 2 = Short)
-                            position_type = pos.get('type', 0)
-                            if position_type == 1:
+                            # Determine side (0 = Long, 1 = Short per TopStepX API)
+                            position_side = pos.get('side', 0)
+                            if position_side == 0:
                                 side = "LONG"
-                            elif position_type == 2:
+                                position_type = 1  # For compatibility with linked orders check below
+                            elif position_side == 1:
                                 side = "SHORT"
+                                position_type = 2  # For compatibility with linked orders check below
                             else:
                                 side = "UNKNOWN"
+                                position_type = 0
                             
                             quantity = pos.get('size', 0)
                             price = pos.get('averagePrice', 0.0)
@@ -7696,7 +7849,13 @@ class TopStepXTradingBot:
                             stop_price = None
                             tp_price = None
                             try:
-                                linked_orders = await self.get_linked_orders(str(pos_id))
+                                # Use the adapter's get_linked_orders method for better reliability
+                                account_id = self.selected_account['id'] if self.selected_account else None
+                                if self.broker_adapter and hasattr(self.broker_adapter, 'get_linked_orders'):
+                                    linked_orders = await self.broker_adapter.get_linked_orders(str(pos_id), account_id)
+                                else:
+                                    linked_orders = await self.get_linked_orders(str(pos_id))
+                                
                                 if linked_orders and isinstance(linked_orders, list):
                                     logger.debug(f"Found {len(linked_orders)} linked orders for position {pos_id}")
                                     for order in linked_orders:
@@ -8386,9 +8545,56 @@ class TopStepXTradingBot:
                                 print(f"   - {key}: {value}")
                 
                 elif command_lower == "account_state":
+                    # Update account tracker with current positions before displaying
+                    account_id = self.selected_account['id'] if self.selected_account else None
+                    if account_id:
+                        try:
+                            # Get current positions
+                            positions = await self.get_open_positions(account_id=account_id)
+                            
+                            # Prepare position data for tracker update
+                            position_data = []
+                            current_prices = {}
+                            
+                            for pos in positions:
+                                symbol = pos.get('symbol', '')
+                                if not symbol:
+                                    # Extract from contractId
+                                    contract_id = pos.get('contractId', '')
+                                    if '.' in contract_id:
+                                        symbol = contract_id.split('.')[-2]
+                                
+                                # Get current price for the symbol
+                                try:
+                                    quote = await self.get_market_quote(symbol)
+                                    if 'error' not in quote and quote.get('last'):
+                                        current_prices[symbol] = float(quote['last'])
+                                except:
+                                    pass
+                                
+                                # Determine side
+                                position_type = pos.get('type', 0)
+                                side = 'LONG' if position_type == 1 else 'SHORT'
+                                
+                                position_data.append({
+                                    'symbol': symbol,
+                                    'qty': pos.get('size', 0),
+                                    'entry_price': pos.get('averagePrice', 0.0),
+                                    'side': side
+                                })
+                            
+                            # Update unrealized PnL in tracker
+                            self.account_tracker.update_unrealised_pnl(
+                                str(account_id),
+                                position_data,
+                                current_prices
+                            )
+                        except Exception as e:
+                            logger.debug(f"Could not update account tracker with positions: {e}")
+                    
                     # Show real-time account state from tracker
                     state = self.account_tracker.get_state()
-                    
+
                     print(f"\n📊 Real-Time Account State:")
                     print(f"   Account ID: {state['account_id']}")
                     print(f"   Starting Balance: ${state['starting_balance']:,.2f}")
@@ -8402,11 +8608,58 @@ class TopStepXTradingBot:
                         print(f"   Position Details:")
                         for symbol, pos in state['positions'].items():
                             print(f"      {symbol}: {pos['quantity']} @ ${pos['entry_price']:.2f} (PnL: ${pos['unrealized_pnl']:.2f})")
-                    
+
                     print(f"\n   Last Updated: {state['last_update']}")
                     print(f"   📝 Note: Real-time tracking based on local state + API data")
                 
                 elif command_lower == "compliance":
+                    # Update account tracker with current positions before checking compliance
+                    account_id = self.selected_account['id'] if self.selected_account else None
+                    if account_id:
+                        try:
+                            # Get current positions
+                            positions = await self.get_open_positions(account_id=account_id)
+                            
+                            # Prepare position data for tracker update
+                            position_data = []
+                            current_prices = {}
+                            
+                            for pos in positions:
+                                symbol = pos.get('symbol', '')
+                                if not symbol:
+                                    # Extract from contractId
+                                    contract_id = pos.get('contractId', '')
+                                    if '.' in contract_id:
+                                        symbol = contract_id.split('.')[-2]
+                                
+                                # Get current price for the symbol
+                                try:
+                                    quote = await self.get_market_quote(symbol)
+                                    if 'error' not in quote and quote.get('last'):
+                                        current_prices[symbol] = float(quote['last'])
+                                except:
+                                    pass
+                                
+                                # Determine side
+                                position_type = pos.get('type', 0)
+                                side = 'LONG' if position_type == 1 else 'SHORT'
+                                
+                                position_data.append({
+                                    'symbol': symbol,
+                                    'qty': pos.get('size', 0),
+                                    'entry_price': pos.get('averagePrice', 0.0),
+                                    'side': side
+                                })
+                            
+                            # Update unrealized PnL in tracker
+                            self.account_tracker.update_unrealised_pnl(
+                                str(account_id),
+                                position_data,
+                                current_prices
+                            )
+                        except Exception as e:
+                            logger.debug(f"Could not update account tracker with positions: {e}")
+                    
                     # Check compliance status
                     compliance = self.account_tracker.check_compliance()
                     state = self.account_tracker.get_state()
@@ -8595,6 +8848,37 @@ class TopStepXTradingBot:
                         print("❌ No account selected")
                         continue
                     
+                    # Parse and normalize dates to ISO format
+                    def parse_date_to_iso(date_str):
+                        """Parse various date formats and convert to ISO format."""
+                        from datetime import datetime
+                        import pytz
+                        
+                        # Common date formats
+                        formats = [
+                            '%m/%d/%y', '%m/%d/%Y',  # 12/15/25, 12/15/2025
+                            '%m-%d-%y', '%m-%d-%Y',  # 12-15-25, 12-15-2025
+                            '%Y-%m-%d',               # 2025-12-15
+                            '%Y/%m/%d',               # 2025/12/15
+                            '%m.%d.%y', '%m.%d.%Y',  # 12.15.25, 12.15.2025
+                        ]
+                        
+                        for fmt in formats:
+                            try:
+                                dt = datetime.strptime(date_str, fmt)
+                                # Set to UTC
+                                dt = pytz.UTC.localize(dt)
+                                return dt.isoformat()
+                            except ValueError:
+                                continue
+                        
+                        # If no format matched, try to parse as ISO (let it fail if invalid)
+                        try:
+                            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                            return dt.isoformat()
+                        except:
+                            return date_str  # Return as-is and let API handle error
+                    
                     # If no dates provided, use current trading session
                     if not start_date_str and not end_date_str:
                         from datetime import datetime
@@ -8605,6 +8889,11 @@ class TopStepXTradingBot:
                         print(f"\n📊 Trades for Current Trading Session:")
                         print(f"   Session: {session_start.strftime('%Y-%m-%d %H:%M:%S %Z')} to {session_end.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                     else:
+                        # Parse user-provided dates
+                        if start_date_str:
+                            start_date_str = parse_date_to_iso(start_date_str)
+                        if end_date_str:
+                            end_date_str = parse_date_to_iso(end_date_str)
                         print(f"\n📊 Trades from {start_date_str} to {end_date_str}")
                     
                     # Get order history (filled orders only)
@@ -8779,15 +9068,16 @@ def main():
     
     try:
         # Handle non-interactive mode with CLI commands
-        if args.command or args.non_interactive or args.account_select or args.disable_strategy:
+        if args.command or args.non_interactive or args.disable_strategy:
+            # Non-interactive mode (command execution or disable strategy)
             asyncio.run(bot.run_non_interactive(
                 account_select=args.account_select,
                 command=args.command,
                 disable_strategy=args.disable_strategy
             ))
         else:
-            # Interactive mode
-            asyncio.run(bot.run())
+            # Interactive mode (account_select allowed without command)
+            asyncio.run(bot.run(account_select=args.account_select))
     except KeyboardInterrupt:
         print("\n\n👋 Bot stopped by user.")
     except Exception as e:

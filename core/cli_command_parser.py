@@ -46,6 +46,7 @@ class CLICommandParser:
             'strategy_stop': self._handle_strategy_stop,
             'strategy_status': self._handle_strategy_status,
             'disable_strategy': self._handle_disable_strategy,
+            'strategies': self._handle_strategies,  # Added: multi-command handler
         }
     
     async def execute_command(self, command_str: str) -> Dict[str, Any]:
@@ -581,12 +582,49 @@ class CLICommandParser:
         if not account_id:
             return {"error": "No account selected"}
         
+        # Parse and normalize dates to ISO format
+        def parse_date_to_iso(date_str):
+            """Parse various date formats and convert to ISO format."""
+            from datetime import datetime
+            import pytz
+            
+            # Common date formats
+            formats = [
+                '%m/%d/%y', '%m/%d/%Y',  # 12/15/25, 12/15/2025
+                '%m-%d-%y', '%m-%d-%Y',  # 12-15-25, 12-15-2025
+                '%Y-%m-%d',               # 2025-12-15
+                '%Y/%m/%d',               # 2025/12/15
+                '%m.%d.%y', '%m.%d.%Y',  # 12.15.25, 12.15.2025
+            ]
+            
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(date_str, fmt)
+                    # Set to UTC
+                    dt = pytz.UTC.localize(dt)
+                    return dt.isoformat()
+                except ValueError:
+                    continue
+            
+            # If no format matched, try to parse as ISO (let it fail if invalid)
+            try:
+                dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                return dt.isoformat()
+            except:
+                return date_str  # Return as-is and let API handle error
+        
         # If no dates provided, use current trading session
         if not start_date_str and not end_date_str:
             if hasattr(self.trading_bot, '_get_trading_session_dates'):
                 session_start, session_end = self.trading_bot._get_trading_session_dates()
                 start_date_str = session_start.isoformat()
                 end_date_str = session_end.isoformat()
+        else:
+            # Parse user-provided dates
+            if start_date_str:
+                start_date_str = parse_date_to_iso(start_date_str)
+            if end_date_str:
+                end_date_str = parse_date_to_iso(end_date_str)
         
         # Get order history
         orders = await self.trading_bot.get_order_history(
@@ -650,13 +688,13 @@ class CLICommandParser:
         """Handle disable_strategy command: disable_strategy NAME1,NAME2"""
         if not args:
             return {"error": "Usage: disable_strategy NAME1,NAME2"}
-        
+
         strategy_names = args[0].split(',')
         account_id = self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else self.trading_bot.selected_account
-        
+
         if not account_id:
             return {"error": "No account selected"}
-        
+
         if hasattr(self.trading_bot, 'db') and self.trading_bot.db:
             from datetime import datetime, timezone
             results = []
@@ -671,3 +709,63 @@ class CLICommandParser:
             return {"results": results}
         else:
             return {"error": "Database not available"}
+    
+    async def _handle_strategies(self, args: List[str]) -> Dict[str, Any]:
+        """Handle strategies commands: strategies list|status|start|stop|start_all|stop_all"""
+        if not args:
+            return {"error": "Usage: strategies <command> [args]"}
+        
+        subcommand = args[0].lower()
+        
+        if not hasattr(self.trading_bot, 'strategy_manager'):
+            return {"error": "Strategy manager not available"}
+        
+        strategy_manager = self.trading_bot.strategy_manager
+        
+        if subcommand == "list":
+            # List all available strategies
+            strategies = []
+            for name in strategy_manager.available_strategies.keys():
+                status = "loaded" if name in strategy_manager.strategies else "available"
+                enabled = strategy_manager.strategies[name].config.enabled if name in strategy_manager.strategies else False
+                strategies.append({
+                    "name": name,
+                    "status": status,
+                    "enabled": enabled
+                })
+            return {"success": True, "strategies": strategies}
+        
+        elif subcommand == "status":
+            # Show status of all strategies
+            status = strategy_manager.get_status()
+            return {"success": True, "status": status}
+        
+        elif subcommand == "start":
+            # Start a specific strategy
+            if len(args) < 2:
+                return {"error": "Usage: strategies start <name> [symbols]"}
+            strategy_name = args[1]
+            symbols = args[2].split(',') if len(args) > 2 else None
+            success, message = await strategy_manager.start_strategy(strategy_name, symbols)
+            return {"success": success, "message": message}
+        
+        elif subcommand == "stop":
+            # Stop a specific strategy
+            if len(args) < 2:
+                return {"error": "Usage: strategies stop <name>"}
+            strategy_name = args[1]
+            success, message = await strategy_manager.stop_strategy(strategy_name)
+            return {"success": success, "message": message}
+        
+        elif subcommand == "start_all":
+            # Start all enabled strategies
+            results = await strategy_manager.start_all_strategies()
+            return {"success": True, "results": results}
+        
+        elif subcommand == "stop_all":
+            # Stop all strategies
+            results = await strategy_manager.stop_all_strategies()
+            return {"success": True, "results": results}
+        
+        else:
+            return {"error": f"Unknown strategies subcommand: {subcommand}. Available: list, status, start, stop, start_all, stop_all"}

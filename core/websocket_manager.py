@@ -207,6 +207,16 @@ class WebSocketManager:
                     error_text = str(err)
                     error_type = type(err).__name__
                     
+                    # Handle CompletionMessage (often just informational, not always an error)
+                    if error_type == "CompletionMessage" or "CompletionMessage" in error_text:
+                        # Check if it's actually an error or just a completion
+                        if hasattr(err, 'error') and err.error:
+                            logger.warning(f"SignalR completion with error: {err.error}")
+                        else:
+                            # Not an actual error, just a completion message - log at debug level
+                            logger.debug(f"SignalR hub method completed: {error_text}")
+                        return
+                    
                     # Handle network interruptions (sleep mode, network down, etc.)
                     if (
                         isinstance(err, OSError) or

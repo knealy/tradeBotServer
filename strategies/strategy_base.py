@@ -420,6 +420,63 @@ class BaseStrategy(ABC):
         
         logger.info(f"📊 {self.config.name} Trade Logged: PnL={pnl:.2f}, Total Trades={self.metrics.total_trades}, Win Rate={self.metrics.win_rate:.1%}")
     
+    async def place_bracket_order(self, symbol: str, side: str, quantity: int,
+                                  entry_price: float, stop_loss_price: float, 
+                                  take_profit_price: float, enable_breakeven: bool = False) -> Dict:
+        """
+        Place a bracket order using the verified working method (same as CLI stop_bracket command).
+        
+        This is the standard way for ALL strategies to place bracket orders.
+        Uses place_oco_bracket_with_stop_entry which is proven to work reliably.
+        
+        Args:
+            symbol: Trading symbol (e.g., "MNQ", "ES")
+            side: "BUY" or "SELL"
+            quantity: Number of contracts
+            entry_price: Entry/stop price for the order
+            stop_loss_price: Stop loss price
+            take_profit_price: Take profit price
+            enable_breakeven: Enable automatic breakeven stop adjustment (default: False)
+        
+        Returns:
+            Dict with 'success' bool, 'orderId', 'method', and optional 'error'
+        
+        Example:
+            ```python
+            result = await self.place_bracket_order(
+                symbol="MNQ",
+                side="BUY",
+                quantity=1,
+                entry_price=25390.0,
+                stop_loss_price=25380.0,
+                take_profit_price=25400.0
+            )
+            if not result.get('error'):
+                logger.info(f"✅ Order placed: {result.get('orderId')}")
+            ```
+        """
+        logger.info(f"📝 {self.config.name}: Placing bracket order via verified path")
+        logger.info(f"   {side} {quantity} {symbol} @ {entry_price:.2f}, SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}")
+        
+        result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            enable_breakeven=enable_breakeven
+        )
+        
+        if result.get("error"):
+            logger.error(f"❌ {self.config.name}: Bracket order failed - {result.get('error')}")
+        else:
+            order_id = result.get('orderId')
+            method = result.get('method', 'unknown')
+            logger.info(f"✅ {self.config.name}: Bracket order placed - ID: {order_id}, Method: {method}")
+        
+        return result
+    
     def get_status(self) -> Dict:
         """Get strategy status and metrics."""
         return {

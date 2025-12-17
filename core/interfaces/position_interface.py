@@ -117,4 +117,24 @@ class PositionInterface(ABC):
             Dictionary with flatten operation results
         """
         pass
+    
+    @abstractmethod
+    async def get_linked_orders(
+        self,
+        position_id: str,
+        account_id: Optional[str] = None,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Get linked orders (stop loss, take profit) for a position.
+        
+        Args:
+            position_id: Position ID
+            account_id: Account ID (optional)
+            **kwargs: Additional broker-specific parameters
+            
+        Returns:
+            List of linked orders
+        """
+        pass
 

@@ -61,6 +61,15 @@ class StrategyExecutor:
                 symbols=symbols
             )
             
+            # Treat "already active" as success so executor can continue
+            if not success and message and "already active" in str(message).lower():
+                logger.warning(f"⚠️  Strategy already active: {strategy_name} (continuing)")
+                self.running_strategies[strategy_name] = {
+                    "started_at": datetime.now(timezone.utc),
+                    "symbols": symbols or []
+                }
+                return True
+
             if success:
                 logger.info(f"✅ Started strategy: {strategy_name}")
                 self.running_strategies[strategy_name] = {
@@ -109,8 +118,23 @@ class StrategyExecutor:
         
         # Switch account if provided
         if account_id:
-            await self.trading_bot.switch_account(account_id)
+            success = await self.trading_bot.switch_account(str(account_id))
+            if not success:
+                logger.error(f"❌ Failed to switch to account: {account_id}")
+                return
             logger.info(f"✅ Switched to account: {account_id}")
+        
+        # Prefetch contracts to ensure cache is populated
+        logger.info("📋 Fetching available contracts...")
+        try:
+            contracts = await self.trading_bot.get_available_contracts()
+            if contracts:
+                logger.info(f"✅ Loaded {len(contracts)} contracts")
+            else:
+                logger.warning("⚠️  No contracts loaded, strategies may fail")
+        except Exception as e:
+            logger.error(f"❌ Failed to load contracts: {e}")
+            logger.warning("⚠️  Continuing without contracts, strategies may fail")
         
         # Load persisted strategy states
         if hasattr(self.trading_bot, 'strategy_manager'):
