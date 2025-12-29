@@ -38,11 +38,12 @@ psycopg2-binary>=2.9.0  # PostgreSQL adapter for Python
 # DataFrame engine for fast Parquet caching
 polars>=0.20.27
 
-# Optional: For enhanced functionality
-# pandas>=2.0.0       # For data analysis
-# numpy>=1.24.0       # For numerical operations
-# matplotlib>=3.7.0   # For plotting and visualization
-# ta>=0.10.0          # For technical analysis indicators
+# Data analysis and backtesting (REQUIRED for backtesting engine)
+pandas>=2.0.0       # For data analysis and backtesting
+numpy>=1.24.0       # For numerical operations and Monte Carlo simulations
+scipy>=1.10.0       # For statistical functions and analysis
+matplotlib>=3.7.0   # For plotting and visualization
+seaborn>=0.12.0     # For statistical visualization
 
 # Development and testing
 pytest>=7.0.0

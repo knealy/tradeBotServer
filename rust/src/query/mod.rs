@@ -498,12 +498,39 @@ impl QueryExecutor {
                 "Authentication token required"
             ))?;
 
+        // First, get the position to find the contract ID (required by API)
+        let positions = self.get_positions_async(account_id).await?;
+        let contract_id_opt = positions.iter()
+            .find(|pos| {
+                pos.get("id")
+                    .or_else(|| pos.get("positionId"))
+                    .and_then(|v| v.as_str())
+                    .map(|id| id == position_id)
+                    .unwrap_or(false)
+            })
+            .and_then(|pos| pos.get("contractId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let contract_id = match contract_id_opt {
+            Some(id) => id,
+            None => {
+                return Ok(ClosePositionResponse {
+                    success: false,
+                    position_id: position_id.clone(),
+                    message: None,
+                    error: Some(format!("Could not find contract ID for position {}", position_id)),
+                });
+            }
+        };
+
+        // Use the correct endpoint: /api/Position/closeContract with contractId
         let close_data = serde_json::json!({
-            "positionId": position_id,
-            "accountId": account_id
+            "accountId": account_id,
+            "contractId": contract_id
         });
 
-        let url = format!("{}/api/Position/close", self.base_url);
+        let url = format!("{}/api/Position/closeContract", self.base_url);
         let response = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
@@ -516,17 +543,40 @@ impl QueryExecutor {
                 format!("HTTP request failed: {}", e)
             ))?;
 
-        // Get response text first to handle empty responses
+        // Check HTTP status code BEFORE reading response
+        let status = response.status();
+        let status_code = status.as_u16();
+        
+        // Get response text
         let response_text = response.text().await
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 format!("Failed to read response: {}", e)
             ))?;
         
-        // Handle empty response (EOF) - treat as success
+        // Log response for debugging
+        eprintln!("Position close API response: status={}, body={}", status_code, response_text);
+        
+        // Check if HTTP request was successful
+        if !status.is_success() {
+            let error_msg = if response_text.trim().is_empty() {
+                format!("HTTP {} error (empty response)", status_code)
+            } else {
+                format!("HTTP {} error: {}", status_code, response_text)
+            };
+            
+            return Ok(ClosePositionResponse {
+                success: false,
+                position_id: position_id.clone(),
+                message: None,
+                error: Some(error_msg),
+            });
+        }
+        
+        // Parse response JSON (empty response on 200 OK is valid - API sometimes returns empty on success)
         let response_json: Value = if response_text.trim().is_empty() {
             serde_json::json!({
                 "success": true,
-                "message": "Position closed successfully (empty response)"
+                "message": "Position closed successfully"
             })
         } else {
             serde_json::from_str(&response_text)

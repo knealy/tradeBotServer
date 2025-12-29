@@ -55,12 +55,23 @@ class SimpleCandleStrategy(BaseStrategy):
         
         # Strategy-specific settings
         self.candles_needed = 2  # Need 2 consecutive candles
-        self.profit_ticks = 8    # Take profit at 8 ticks
-        self.stop_ticks = 12     # Stop loss at 12 ticks
-        self.timeframe = "1m"   # Use 1-minute candles
+        self.profit_multiplier = 3.0    # Take profit at 3 * ATR
+        self.stop_multiplier = 1.5      # Stop loss at 1.5 * ATR
+        self.atr_period = 14            # ATR period (14 bars)
         
-        logger.info(f"✅ Simple Candle Strategy initialized for {config.symbols}")
-        print(f"✅ Simple Candle Strategy initialized for {config.symbols}")
+        # EMA settings for cross detection
+        self.ema_fast_period = 8   # Fast EMA period
+        self.ema_slow_period = 21  # Slow EMA period
+        
+        # Track previous EMA values per symbol to detect crosses
+        self.prev_emas: Dict[str, Dict[str, float]] = {}  # {symbol: {"fast": float, "slow": float}}
+        
+        # Get timeframe from environment variable or use default
+        self.timeframe = os.getenv('SIMPLE_CANDLE_TIMEFRAME', "30s")
+        
+        logger.debug(f"✅ Simple Candle Strategy initialized for {config.symbols}")
+        logger.info(f"⏰ Timeframe: {self.timeframe}, ATR period: {self.atr_period}, Profit: {self.profit_multiplier}x ATR, Stop: {self.stop_multiplier}x ATR")
+        logger.info(f"📊 EMA Cross Detection: {self.ema_fast_period}EMA / {self.ema_slow_period}EMA - Will flatten on cross")
 
     def _in_trading_window(self) -> bool:
         """
@@ -69,6 +80,204 @@ class SimpleCandleStrategy(BaseStrategy):
         """
         return True
     
+    async def calculate_ema(self, symbol: str, period: int) -> Optional[float]:
+        """
+        Calculate EMA (Exponential Moving Average).
+        
+        Args:
+            symbol: Trading symbol
+            period: EMA period
+        
+        Returns:
+            EMA value or None if error
+        """
+        try:
+            # Fetch historical data (need more data for EMA calculation)
+            bars = await self.trading_bot.get_historical_data(
+                symbol=symbol,
+                timeframe=self.timeframe,
+                limit=period * 2  # EMA needs more data for accuracy
+            )
+            
+            if not bars or len(bars) < period:
+                return None
+            
+            # Extract closing prices
+            closes = []
+            for bar in bars:
+                close = bar.get('close', bar.get('c', bar.get('Close', 0)))
+                if close > 0:
+                    closes.append(close)
+            
+            if len(closes) < period:
+                return None
+            
+            # Calculate EMA
+            multiplier = 2 / (period + 1)
+            # Start with SMA of first period values
+            ema = sum(closes[:period]) / period
+            
+            # Calculate EMA for remaining values
+            for close in closes[period:]:
+                ema = (close * multiplier) + (ema * (1 - multiplier))
+            
+            return ema
+            
+        except Exception as e:
+            logger.error(f"Error calculating EMA({period}) for {symbol}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    async def check_ema_cross(self, symbol: str) -> Optional[str]:
+        """
+        Check for EMA cross and return cross type if detected.
+        
+        Args:
+            symbol: Trading symbol
+        
+        Returns:
+            "bullish" if fast EMA crosses above slow EMA (golden cross)
+            "bearish" if fast EMA crosses below slow EMA (death cross)
+            None if no cross detected
+        """
+        try:
+            # Calculate current EMAs
+            fast_ema = await self.calculate_ema(symbol, self.ema_fast_period)
+            slow_ema = await self.calculate_ema(symbol, self.ema_slow_period)
+            
+            if fast_ema is None or slow_ema is None:
+                return None
+            
+            # Get previous EMAs for this symbol
+            prev = self.prev_emas.get(symbol, {})
+            prev_fast = prev.get("fast")
+            prev_slow = prev.get("slow")
+            
+            # Update stored values
+            self.prev_emas[symbol] = {
+                "fast": fast_ema,
+                "slow": slow_ema
+            }
+            
+            # Check for cross (need previous values to detect)
+            if prev_fast is None or prev_slow is None:
+                return None  # First time, no cross yet
+            
+            # Detect bullish cross: fast EMA crosses above slow EMA
+            if prev_fast <= prev_slow and fast_ema > slow_ema:
+                logger.info(f"🟢 BULLISH EMA CROSS detected for {symbol}: {self.ema_fast_period}EMA ({fast_ema:.2f}) crossed above {self.ema_slow_period}EMA ({slow_ema:.2f})")
+                return "bullish"
+            
+            # Detect bearish cross: fast EMA crosses below slow EMA
+            if prev_fast >= prev_slow and fast_ema < slow_ema:
+                logger.info(f"🔴 BEARISH EMA CROSS detected for {symbol}: {self.ema_fast_period}EMA ({fast_ema:.2f}) crossed below {self.ema_slow_period}EMA ({slow_ema:.2f})")
+                return "bearish"
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking EMA cross for {symbol}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    async def flatten_all(self, symbol: str = None):
+        """
+        Flatten all positions and cancel all orders.
+        
+        Uses the same method as the 'flatten' command in trading_bot.py.
+        When EMA cross is detected, we flatten ALL positions and orders (not just for specific symbol).
+        
+        Args:
+            symbol: Symbol that triggered the flatten (for logging purposes)
+        """
+        try:
+            if not self.trading_bot.selected_account:
+                logger.error("No account selected, cannot flatten")
+                return
+            
+            logger.warning(f"🛑 FLATTENING ALL POSITIONS AND ORDERS (triggered by EMA cross on {symbol if symbol else 'unknown'})")
+            print(f"🛑 FLATTENING ALL POSITIONS AND ORDERS (triggered by EMA cross on {symbol if symbol else 'unknown'})")
+            
+            # Use the same flatten method as the trading_bot flatten command
+            # This uses broker_adapter.flatten_all_positions which properly closes all positions and cancels all orders
+            result = await self.trading_bot.flatten_all_positions(interactive=False)
+            
+            if "error" in result:
+                logger.error(f"❌ Flatten failed: {result['error']}")
+                print(f"❌ Flatten failed: {result['error']}")
+            else:
+                closed_count = result.get("positions_count", 0) or len(result.get("closed_positions", []))
+                canceled_count = result.get("orders_count", 0) or len(result.get("canceled_orders", []))
+                logger.info(f"✅ Flatten completed: {closed_count} positions closed, {canceled_count} orders canceled")
+                print(f"✅ Flatten completed: {closed_count} positions closed, {canceled_count} orders canceled")
+                
+                if result.get("failed_positions"):
+                    logger.warning(f"⚠️  Failed to close {len(result['failed_positions'])} positions")
+                if result.get("failed_orders"):
+                    logger.warning(f"⚠️  Failed to cancel {len(result['failed_orders'])} orders")
+            
+        except Exception as e:
+            logger.error(f"Error in flatten_all: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            print(f"❌ Error flattening: {e}")
+    
+    async def calculate_atr(self, symbol: str, period: int = None) -> Optional[float]:
+        """
+        Calculate ATR (Average True Range).
+        
+        Args:
+            symbol: Trading symbol
+            period: ATR period (default: 14)
+        
+        Returns:
+            ATR value or None if error
+        """
+        try:
+            period = period or self.atr_period
+            
+            # Fetch historical data (need period + 1 for previous close)
+            bars = await self.trading_bot.get_historical_data(
+                symbol=symbol,
+                timeframe=self.timeframe,
+                limit=period + 1
+            )
+            
+            if not bars or len(bars) < period + 1:
+                return None
+            
+            # Calculate True Range for each bar
+            true_ranges = []
+            for i in range(1, len(bars)):
+                high = bars[i].get('high', bars[i].get('h', bars[i].get('High', 0)))
+                low = bars[i].get('low', bars[i].get('l', bars[i].get('Low', 0)))
+                prev_close = bars[i-1].get('close', bars[i-1].get('c', bars[i-1].get('Close', 0)))
+                
+                if high == 0 or low == 0 or prev_close == 0:
+                    continue
+                
+                tr = max(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close)
+                )
+                true_ranges.append(tr)
+            
+            if len(true_ranges) < period:
+                return None
+            
+            # Calculate ATR as average of True Ranges
+            atr = sum(true_ranges[-period:]) / period
+            return atr
+            
+        except Exception as e:
+            logger.error(f"Error calculating ATR for {symbol}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
     async def analyze(self, symbol: str) -> Optional[Dict]:
         """
         Analyze market and generate trading signal based on candle patterns.
@@ -76,7 +285,7 @@ class SimpleCandleStrategy(BaseStrategy):
         Returns signal dict or None.
         """
         try:
-            # Get recent 1-minute bars (need at least 2)
+            # Get recent bars using configured timeframe (need at least 2)
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
                 timeframe=self.timeframe,
@@ -111,12 +320,39 @@ class SimpleCandleStrategy(BaseStrategy):
             
             if last_bullish and prev_bullish:
                 # 2 consecutive bullish candles = LONG signal
-                # For stop_bracket LONG: entry (stop buy) should be above current price
-                # Add a few ticks above the close to trigger on continuation
-                current_price = last_close
-                entry_price = current_price + (2 * 0.25)  # 2 ticks above for stop buy
-                stop_loss = entry_price - (self.stop_ticks * 0.25)  # Stop loss below entry price
-                take_profit = entry_price + (self.profit_ticks * 0.25)  # Take profit above entry price
+                # Calculate ATR for stop/profit levels
+                atr = await self.calculate_atr(symbol, self.atr_period)
+                if atr is None or atr <= 0:
+                    logger.warning(f"Could not calculate ATR for {symbol}, skipping signal")
+                    return None
+                
+                # Get current market quote to ensure entry price is above current bid
+                # For stop_bracket LONG: entry (stop buy) must be above current best bid
+                quote = await self.trading_bot.get_market_quote(symbol)
+                if quote and "error" not in quote:
+                    current_bid = quote.get('bid')
+                    current_ask = quote.get('ask')
+                    current_price = quote.get('last') or current_bid or current_ask or last_close
+                    
+                    # For LONG stop order, entry must be above current bid
+                    # Use ask price as base, or bid + buffer if ask unavailable
+                    if current_ask:
+                        base_price = current_ask
+                    elif current_bid:
+                        base_price = current_bid + (2 * 0.25)  # 2 ticks above bid
+                    else:
+                        base_price = last_close + (2 * 0.25)  # Fallback to candle close + buffer
+                    
+                    # Entry price should be above current ask to ensure it's valid
+                    entry_price = base_price + (2 * 0.25)  # 2 ticks above ask/bid for stop buy
+                else:
+                    # Fallback: use candle close + buffer
+                    current_price = last_close
+                    entry_price = current_price + (2 * 0.25)  # 2 ticks above for stop buy
+                    logger.warning(f"Could not get market quote for {symbol}, using candle close")
+                
+                stop_loss = entry_price - (self.stop_multiplier * atr)  # Stop loss below entry price (1.5 * ATR)
+                take_profit = entry_price + (self.profit_multiplier * atr)  # Take profit above entry price (3 * ATR)
                 
                 return {
                     "action": "LONG",
@@ -125,7 +361,7 @@ class SimpleCandleStrategy(BaseStrategy):
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "confidence": 0.6,
-                    "reason": f"2 consecutive bullish candles (prev: {prev_close:.2f}->{prev_open:.2f}, last: {last_open:.2f}->{last_close:.2f})"
+                    "reason": f"2 consecutive bullish candles (prev: {prev_close:.2f}->{prev_open:.2f}, last: {last_open:.2f}->{last_close:.2f}), ATR: {atr:.2f}"
                 }
             
             # Check for bearish pattern: 2 consecutive red candles (close < open)
@@ -134,11 +370,39 @@ class SimpleCandleStrategy(BaseStrategy):
             
             if last_bearish and prev_bearish:
                 # 2 consecutive bearish candles = SHORT signal
-                # For stop_bracket SHORT: entry (stop sell) should be below current price
-                current_price = last_close
-                entry_price = current_price - (2 * 0.25)  # 2 ticks below for stop sell
-                stop_loss = entry_price + (self.stop_ticks * 0.25)  # Stop loss above entry price
-                take_profit = entry_price - (self.profit_ticks * 0.25)  # Take profit below entry price
+                # Calculate ATR for stop/profit levels
+                atr = await self.calculate_atr(symbol, self.atr_period)
+                if atr is None or atr <= 0:
+                    logger.warning(f"Could not calculate ATR for {symbol}, skipping signal")
+                    return None
+                
+                # Get current market quote to ensure entry price is below current ask
+                # For stop_bracket SHORT: entry (stop sell) must be below current best ask
+                quote = await self.trading_bot.get_market_quote(symbol)
+                if quote and "error" not in quote:
+                    current_bid = quote.get('bid')
+                    current_ask = quote.get('ask')
+                    current_price = quote.get('last') or current_ask or current_bid or last_close
+                    
+                    # For SHORT stop order, entry must be below current ask
+                    # Use bid price as base, or ask - buffer if bid unavailable
+                    if current_bid:
+                        base_price = current_bid
+                    elif current_ask:
+                        base_price = current_ask - (2 * 0.25)  # 2 ticks below ask
+                    else:
+                        base_price = last_close - (2 * 0.25)  # Fallback to candle close - buffer
+                    
+                    # Entry price should be below current bid to ensure it's valid
+                    entry_price = base_price - (2 * 0.25)  # 2 ticks below bid/ask for stop sell
+                else:
+                    # Fallback: use candle close - buffer
+                    current_price = last_close
+                    entry_price = current_price - (2 * 0.25)  # 2 ticks below for stop sell
+                    logger.warning(f"Could not get market quote for {symbol}, using candle close")
+                
+                stop_loss = entry_price + (self.stop_multiplier * atr)  # Stop loss above entry price (1.5 * ATR)
+                take_profit = entry_price - (self.profit_multiplier * atr)  # Take profit below entry price (3 * ATR)
                 
                 return {
                     "action": "SHORT",
@@ -147,7 +411,7 @@ class SimpleCandleStrategy(BaseStrategy):
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "confidence": 0.6,
-                    "reason": f"2 consecutive bearish candles (prev: {prev_open:.2f}->{prev_close:.2f}, last: {last_open:.2f}->{last_close:.2f})"
+                    "reason": f"2 consecutive bearish candles (prev: {prev_open:.2f}->{prev_close:.2f}, last: {last_open:.2f}->{last_close:.2f}), ATR: {atr:.2f}"
                 }
             
             return None
@@ -279,6 +543,7 @@ class SimpleCandleStrategy(BaseStrategy):
         self.status = StrategyStatus.ACTIVE
         print(f"🚀 Starting Simple Candle Strategy for {self.config.symbols}")
         logger.info(f"🚀 Starting Simple Candle Strategy for {self.config.symbols}")
+        logger.info(f"⏰ Using timeframe: {self.timeframe}, ATR period: {self.atr_period}")
 
         # Ensure valid token before starting
         print("🔐 Ensuring valid authentication token...")
@@ -305,6 +570,16 @@ class SimpleCandleStrategy(BaseStrategy):
                 
                 # Manage existing positions
                 await self.manage_positions()
+                
+                # Check for EMA crosses and flatten if detected
+                for symbol in self.config.symbols:
+                    cross_type = await self.check_ema_cross(symbol)
+                    if cross_type:
+                        logger.warning(f"🛑 EMA CROSS DETECTED ({cross_type}) for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
+                        print(f"🛑 EMA CROSS DETECTED ({cross_type}) for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
+                        await self.flatten_all(symbol)
+                        # Continue to next symbol after flattening
+                        continue
                 
                 # Check each symbol for signals
                 for symbol in self.config.symbols:

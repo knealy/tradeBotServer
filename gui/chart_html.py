@@ -973,6 +973,70 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
     
+    async def handle_flatten(request):
+        """Handle flatten command - close all positions and cancel all orders."""
+        try:
+            # Call trading bot's flatten_all_positions method
+            result = await trading_bot.flatten_all_positions(interactive=False)
+            
+            # Parse result based on format (could be dict or string)
+            if isinstance(result, dict):
+                response = web.json_response(result)
+            elif isinstance(result, str):
+                # Try to parse JSON string
+                import json
+                try:
+                    result_dict = json.loads(result)
+                    response = web.json_response(result_dict)
+                except json.JSONDecodeError:
+                    response = web.json_response({'success': False, 'error': result})
+            else:
+                response = web.json_response({'success': True, 'message': 'Flatten completed'})
+            
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error flattening positions: {e}")
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_cancel_all(request):
+        """Handle cancel all orders command."""
+        try:
+            # Get all orders
+            orders = await trading_bot.get_orders(account_id=trading_bot.selected_account)
+            
+            if not orders:
+                return web.json_response({'success': True, 'message': 'No orders to cancel', 'canceled': 0})
+            
+            # Cancel each order
+            canceled = []
+            failed = []
+            for order in orders:
+                try:
+                    order_id = order.get('orderId') or order.get('id')
+                    if order_id:
+                        await trading_bot.cancel_order(order_id, account_id=trading_bot.selected_account)
+                        canceled.append(order_id)
+                except Exception as e:
+                    logger.error(f"Failed to cancel order {order_id}: {e}")
+                    failed.append({'order_id': order_id, 'error': str(e)})
+            
+            response = web.json_response({
+                'success': len(failed) == 0,
+                'canceled': len(canceled),
+                'failed': len(failed),
+                'canceled_orders': canceled,
+                'failed_orders': failed
+            })
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error canceling orders: {e}")
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
 
     app.router.add_get('/api/chart/quote', handle_quote)
     app.router.add_options('/api/chart/quote', handle_options)
@@ -996,6 +1060,11 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     # Account state endpoint
     app.router.add_get('/api/chart/account/state', handle_account_state)
     app.router.add_options('/api/chart/account/state', handle_options)
+    # Flatten and cancel endpoints
+    app.router.add_post('/api/chart/flatten', handle_flatten)
+    app.router.add_options('/api/chart/flatten', handle_options)
+    app.router.add_post('/api/chart/cancel_all', handle_cancel_all)
+    app.router.add_options('/api/chart/cancel_all', handle_options)
     
     # Serve master control HTML
     async def handle_master_control(request):

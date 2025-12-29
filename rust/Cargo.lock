@@ -1709,6 +1709,7 @@ dependencies = [
  "criterion",
  "pyo3",
  "pyo3-asyncio",
+ "pyo3-build-config",
  "reqwest",
  "serde",
  "serde_json",

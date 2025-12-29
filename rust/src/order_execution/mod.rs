@@ -103,6 +103,7 @@ pub struct OrderExecutor {
     client: Arc<Client>,
     session_token: Arc<RwLock<Option<String>>>,
     contract_cache: Arc<RwLock<HashMap<String, String>>>,
+    account_id: Arc<RwLock<Option<u64>>>,
 }
 
 #[pymethods]
@@ -129,6 +130,7 @@ impl OrderExecutor {
             client: Arc::new(client),
             session_token: Arc::new(RwLock::new(None)),
             contract_cache: Arc::new(RwLock::new(HashMap::new())),
+            account_id: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -170,6 +172,18 @@ impl OrderExecutor {
                 "Failed to acquire contract_cache lock",
             )),
         }
+    }
+
+    /// Set account ID for operations
+    fn set_account_id(&self, account_id: u64) {
+        if let Ok(mut guard) = self.account_id.write() {
+            *guard = Some(account_id);
+        }
+    }
+
+    /// Get current account ID
+    fn get_account_id(&self) -> Option<u64> {
+        self.account_id.read().ok().and_then(|guard| *guard)
     }
 
     /// Place an order (supports market, limit, stop, stop-limit, trailing stop)
@@ -248,11 +262,29 @@ impl OrderExecutor {
     }
 
     /// Cancel an order
-    fn cancel_order<'a>(&self, py: Python<'a>, order_id: String) -> PyResult<&'a PyAny> {
+    /// 
+    /// Args:
+    ///     order_id: Order ID to cancel
+    ///
+    /// Note: Uses account_id set via set_account_id()
+    fn cancel_order<'a>(
+        &self,
+        py: Python<'a>,
+        order_id: String,
+    ) -> PyResult<&'a PyAny> {
         let executor = self.clone_for_async();
         
         pyo3_asyncio::tokio::future_into_py(py, async move {
-            let result = executor.cancel_order_async(order_id).await?;
+            // Get account_id from executor state
+            let account_id = executor.account_id.read()
+                .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Failed to acquire account_id lock"
+                ))?
+                .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "Account ID not set. Call set_account_id() first."
+                ))?;
+            
+            let result = executor.cancel_order_async(order_id, account_id).await?;
             Python::with_gil(|py| {
                 order_response_to_py(py, &result)
             })
@@ -268,6 +300,7 @@ impl OrderExecutor {
             client: self.client.clone(),
             session_token: self.session_token.clone(),
             contract_cache: self.contract_cache.clone(),
+            account_id: self.account_id.clone(),
         }
     }
 }
@@ -278,6 +311,7 @@ struct AsyncOrderExecutor {
     client: Arc<Client>,
     session_token: Arc<RwLock<Option<String>>>,
     contract_cache: Arc<RwLock<HashMap<String, String>>>,
+    account_id: Arc<RwLock<Option<u64>>>,
 }
 
 impl AsyncOrderExecutor {
@@ -481,21 +515,25 @@ impl AsyncOrderExecutor {
 
         // Add bracket orders if specified
         if stop_loss_ticks.is_some() || take_profit_ticks.is_some() {
+            // NOTE: Do NOT set reduceOnly=true on brackets for entry orders!
+            // The entry order hasn't filled yet, so there's no position to reduce.
+            // TopStepX automatically handles bracket attachment once the entry fills.
+            // Setting reduceOnly=true causes 500 errors from the API.
             if let Some(stop_ticks) = stop_loss_ticks {
                 order_data["stopLossBracket"] = serde_json::json!({
                     "ticks": stop_ticks,
                     "type": 4,
-                    "size": quantity,
-                    "reduceOnly": true
+                    "size": quantity
+                    // reduceOnly removed - brackets auto-attach after entry fills
                 });
             }
-            
+
             if let Some(tp_ticks) = take_profit_ticks {
                 order_data["takeProfitBracket"] = serde_json::json!({
                     "ticks": tp_ticks,
                     "type": 1,
-                    "size": quantity,
-                    "reduceOnly": true
+                    "size": quantity
+                    // reduceOnly removed - brackets auto-attach after entry fills
                 });
             }
         }
@@ -709,6 +747,7 @@ impl AsyncOrderExecutor {
     async fn cancel_order_async(
         &self,
         order_id: String,
+        account_id: u64,
     ) -> PyResult<OrderResponse> {
         // Get token
         let token = self
@@ -722,9 +761,10 @@ impl AsyncOrderExecutor {
                 "Authentication token required. Call set_token() first.",
             ))?;
 
-        // Build request body
+        // Build request body - API requires both orderId and accountId
         let body = serde_json::json!({
             "orderId": order_id,
+            "accountId": account_id,
         });
 
         // Make API request

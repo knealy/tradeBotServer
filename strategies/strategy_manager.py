@@ -436,9 +436,15 @@ class StrategyManager:
         """Get currently active strategies."""
         return [self.strategies[name] for name in self.active_strategies if name in self.strategies]
     
-    async def apply_persisted_states(self):
+    async def apply_persisted_states(self, auto_start: bool = True):
         """
         Load persisted state from the database and sync running strategies.
+
+        Args:
+            auto_start: When True (default), start/stop strategies to match
+                        persisted enabled state. When False, only apply configs
+                        without changing running state. Useful for callers that
+                        want to start specific strategies exclusively.
         """
         db = getattr(self.trading_bot, 'db', None)
         account_id = self._get_account_id()
@@ -483,12 +489,17 @@ class StrategyManager:
             should_be_active = bool(state.get('enabled'))
             is_active = name in self.active_strategies
             
-            if should_be_active and not is_active:
-                logger.info(f"▶️  Auto-starting strategy from persisted state: {name}")
-                await self.start_strategy(name, symbols=strategy.config.symbols, persist=False)
-            elif not should_be_active and is_active:
-                logger.info(f"⏹️  Auto-stopping strategy from persisted state: {name}")
-                await self.stop_strategy(name, persist=False)
+            if auto_start:
+                if should_be_active and not is_active:
+                    logger.info(f"▶️  Auto-starting strategy from persisted state: {name}")
+                    await self.start_strategy(name, symbols=strategy.config.symbols, persist=False)
+                elif not should_be_active and is_active:
+                    logger.info(f"⏹️  Auto-stopping strategy from persisted state: {name}")
+                    await self.stop_strategy(name, persist=False)
+            else:
+                # When auto_start is False, just log the intended state without changing runtime
+                logger.info(f"ℹ️  apply_persisted_states(auto_start=False): skipping auto-start/stop for {name} "
+                            f"(enabled={should_be_active}, running={is_active})")
     
     def get_strategy_summaries(self) -> List[Dict[str, Any]]:
         """
@@ -594,6 +605,12 @@ class StrategyManager:
             return False, f"Max concurrent strategies limit reached ({self.max_concurrent_strategies})"
         
         strategy = self.strategies[name]
+        
+        # Update timeframe if provided and strategy supports it (e.g., SimpleCandleStrategy)
+        timeframe = os.getenv('SIMPLE_CANDLE_TIMEFRAME')
+        if timeframe and hasattr(strategy, 'timeframe'):
+            strategy.timeframe = timeframe
+            logger.info(f"⏰ Updated timeframe for {name} to: {timeframe}")
         
         # Override symbols if provided
         if symbols:

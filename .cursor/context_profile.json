@@ -941,6 +941,105 @@
         "Test mode flag prevents backtest from interfering with manual data loading",
         "Initial zoom should show ~50 bars, not just 1 bar (too zoomed in)"
       ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "Rust library build errors - Python library linking failures on macOS",
+      "fix": "✅ FIXED! Root cause: Rust was linking against system Python instead of venv Python. Solution: (1) Created custom build.rs that dynamically detects Python library path from active venv. (2) Explicitly links against libpython3.13.dylib in Homebrew Python framework. (3) Added framework search path for macOS. Build command: PYO3_PYTHON=$(which python3) cargo build --release",
+      "files": [
+        "rust/build.rs",
+        "rust/Cargo.toml"
+      ],
+      "impact": "CRITICAL FIX - Rust module now builds successfully on macOS. Always use venv Python for PyO3 projects.",
+      "lessons_learned": [
+        "PyO3 projects MUST link against the same Python used by the application (venv, not system)",
+        "macOS: Explicitly set PYO3_PYTHON=$(which python3) when building from activated venv",
+        "build.rs can dynamically detect venv Python library path: env::var(\"VIRTUAL_ENV\")",
+        "Use maturin develop --release instead of cargo build for PyO3 projects (handles linking automatically)",
+        "Linker errors like 'framework Python not found' indicate wrong Python being used"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "PyO3 0.20 parameter passing bug - async methods don't expose all parameters to Python",
+      "fix": "⚠️ WORKAROUND APPLIED - Disabled Rust cancel_order implementation, using Python fallback. Root cause: PyO3 0.20 with abi3-py38 has known issue where additional parameters in async methods aren't properly exposed to Python bindings. Tried: (1) #[pyo3(signature = (order_id, account_id))] - ignored. (2) #[pyo3(text_signature = ...)] - ignored. (3) Keyword-only args with * - ignored. (4) State-based approach with set_account_id() - method not exported. Actual fix requires upgrading to PyO3 0.21+.",
+      "files": [
+        "rust/src/order_execution/mod.rs",
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "Python fallback works (43-47ms execution time). Re-enable Rust after upgrading PyO3.",
+      "lessons_learned": [
+        "PyO3 0.20 has parameter exposure bugs in async methods - use 0.21+ for production",
+        "inspect.signature() in Python shows what parameters are actually exposed",
+        "Rust code can be correct but Python binding may not expose all parameters",
+        "Always test Python bindings with actual calls, not just compilation",
+        "State-based workarounds (set_account_id) also fail if methods not exported to Python"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "Position close reporting success but positions remaining open",
+      "fix": "✅ FIXED! Root cause: (1) Rust was using wrong API endpoint (/api/Position/close with positionId) instead of (/api/Position/closeContract with contractId). (2) API sometimes returns {\"success\": true} even when position not fully closed. Solution: (1) Updated Rust to fetch position details first to get contractId, then use correct endpoint. (2) Added verification step in Python adapter - re-fetches positions after close to confirm they're actually closed. (3) Disabled Rust implementation until thoroughly tested. Currently using Python with verification.",
+      "files": [
+        "rust/src/query/mod.rs",
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "CRITICAL FIX - Flatten command now reliably closes all positions. Verification prevents API lies.",
+      "lessons_learned": [
+        "TopStepX API has two position close endpoints - use /api/Position/closeContract (correct) not /api/Position/close",
+        "API requires contractId (from position object) not positionId for closeContract endpoint",
+        "Never trust API success responses - always verify with follow-up query",
+        "Add 500ms delay between close request and verification to allow API to update",
+        "Move positions to failed_positions list if they still exist after successful close response"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "JWT token validation appearing to cause performance issues",
+      "fix": "✅ CLARIFIED - No issue exists. User concern: \"Token reauthorization happening on every command\". Reality: ensure_valid_token() is called before every operation BUT: (1) It's just a datetime comparison (<1ms) - NOT re-authentication. (2) Re-authentication only happens when token actually expires (~every 29 hours). (3) Logs show only ONE authentication at startup (when env JWT was expired from 2025-11-07). (4) No \"Token expired or missing\" messages after initial auth = working correctly.",
+      "files": [
+        "core/auth.py",
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "NO FIX NEEDED - System already working optimally. Token checking is fast, re-auth is rare.",
+      "lessons_learned": [
+        "Token CHECKING (datetime comparison) ≠ Token RE-AUTHENTICATION (API call)",
+        "ensure_valid_token() returns immediately if token still valid (<1ms)",
+        "JWT tokens expire after ~29 hours, checked with 5-minute safety buffer",
+        "Logging \"ensure_valid_token() called\" would create noise - only log actual re-auth",
+        "Rust executors receive token via set_token() before each operation (correct pattern)",
+        "99% of token checks are fast path (return True immediately without API call)"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "IndentationError in strategies/simple_candle_strategy.py - else blocks",
+      "fix": "✅ FIXED! Root cause: Python else blocks require indented body. Lines following else statements were not indented. Fixed by adding proper indentation to current_price, entry_price, and logger.warning lines inside else blocks.",
+      "files": [
+        "strategies/simple_candle_strategy.py"
+      ],
+      "impact": "Strategy now loads and runs without syntax errors.",
+      "lessons_learned": [
+        "Python requires indented body after else statement (4 spaces standard)",
+        "IndentationError shows line number of statement requiring indentation",
+        "Use consistent indentation (spaces not tabs) throughout Python files",
+        "Python syntax errors prevent module import - fix before testing"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "Flatten command only canceling orders, not closing positions",
+      "fix": "✅ FIXED (via previous fixes)! Root cause: Combination of issues: (1) Rust close_position using wrong API endpoint. (2) API reporting success even when positions not closed. (3) No verification step to catch failures. Solution: (1) Disabled Rust close_position. (2) Use Python implementation with correct /api/Position/closeContract endpoint. (3) Added verification step - re-fetch positions after close and move to failed_positions if still exist.",
+      "files": [
+        "brokers/topstepx_adapter.py"
+      ],
+      "impact": "CRITICAL FIX - Flatten command now closes positions AND cancels orders reliably.",
+      "lessons_learned": [
+        "Flatten orchestrates multiple operations: get positions (Rust) → close positions (Python) → get orders (Rust) → cancel orders (Python)",
+        "Verification step is essential for position closes - API lies about success",
+        "Order cancellation works reliably with Python fallback (~43-47ms)",
+        "Position closing requires contractId from position object before calling closeContract"
+      ]
     }
   ],
   

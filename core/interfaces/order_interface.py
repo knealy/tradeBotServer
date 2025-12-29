@@ -54,6 +54,7 @@ class CancelResponse:
     order_id: Optional[str] = None
     message: Optional[str] = None
     error: Optional[str] = None
+    raw_response: Optional[Dict[str, Any]] = None
 
 
 class OrderInterface(ABC):

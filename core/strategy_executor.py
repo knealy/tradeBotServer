@@ -105,11 +105,15 @@ class StrategyExecutor:
             logger.error(f"Error stopping strategy {strategy_name}: {e}")
             return False
     
-    async def run(self, strategies: List[str], symbols: Optional[List[str]] = None, account_id: Optional[str] = None):
+    async def run(self, strategies: List[str], symbols: Optional[List[str]] = None,
+                 account_id: Optional[str] = None, auto_start_persisted: bool = True):
         """Run strategy executor."""
         self.is_running = True
         
         logger.info("🚀 Strategy Executor starting...")
+        logger.info(f"📈 Requested strategies: {', '.join(strategies)}")
+        if symbols:
+            logger.info(f"📊 Target symbols: {', '.join(symbols)}")
         
         # Ensure valid token
         if not await self.trading_bot._ensure_valid_token():
@@ -139,7 +143,7 @@ class StrategyExecutor:
         # Load persisted strategy states
         if hasattr(self.trading_bot, 'strategy_manager'):
             logger.info("💾 Loading persisted strategy states...")
-            await self.trading_bot.strategy_manager.apply_persisted_states()
+            await self.trading_bot.strategy_manager.apply_persisted_states(auto_start=auto_start_persisted)
         
         # Start requested strategies
         for strategy_name in strategies:
@@ -207,6 +211,7 @@ async def main():
     parser.add_argument('--symbols', type=str, help='Comma-separated symbols (e.g., MNQ,MES)')
     parser.add_argument('--account_id', type=str, help='Account ID to trade on')
     parser.add_argument('--account_select', type=str, help='Account selection by index (1, 2, 3...)')
+    parser.add_argument('--timeframe', type=str, help='Timeframe for strategy (e.g., 30s, 1m, 5m). Used by simple_candle strategy.')
     args = parser.parse_args()
     
     # Get credentials
@@ -239,15 +244,30 @@ async def main():
         symbols = [s.strip().upper() for s in args.symbols.split(',')]
         logger.info(f"📊 Symbols: {', '.join(symbols)}")
     
+    # Set timeframe environment variable if provided (for simple_candle strategy)
+    if args.timeframe:
+        os.environ['SIMPLE_CANDLE_TIMEFRAME'] = args.timeframe
+        logger.info(f"⏰ Timeframe set to: {args.timeframe}")
+    
     # Determine account
     account_id = args.account_id
     if args.account_select and not account_id:
         # Will be handled in executor.run() after listing accounts
         account_id = args.account_select
     
+    # Decide whether to auto-start persisted strategies
+    # If user explicitly passes a single strategy, do NOT auto-start others.
+    # If --all is passed, keep auto-start behavior for completeness.
+    auto_start_persisted = True if args.all else False
+    
     # Create and run executor
     executor = StrategyExecutor(trading_bot)
-    await executor.run(strategies=strategies, symbols=symbols, account_id=account_id)
+    await executor.run(
+        strategies=strategies,
+        symbols=symbols,
+        account_id=account_id,
+        auto_start_persisted=auto_start_persisted
+    )
 
 
 if __name__ == '__main__':

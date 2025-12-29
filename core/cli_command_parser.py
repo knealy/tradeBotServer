@@ -6,7 +6,8 @@ Parses and executes commands from CLI arguments for non-interactive operation.
 
 import logging
 import asyncio
-from typing import Dict, Any, Optional, List
+import os
+from typing import Dict, Any, Optional, List, Tuple
 import re
 
 logger = logging.getLogger(__name__)
@@ -536,13 +537,17 @@ class CLICommandParser:
             return {"error": f"Failed to open master GUI: {e}"}
     
     async def _handle_flatten(self, args: List[str]) -> Dict[str, Any]:
-        """Handle flatten command: flatten [SYMBOL] [account_id]"""
+        """Handle flatten command: flatten [SYMBOL]"""
         symbol = args[0].upper() if args else None
-        account_id = args[1] if len(args) > 1 else None
         if symbol:
-            result = await self.trading_bot.flatten_symbol(symbol, account_id=account_id)
+            # Check if flatten_symbol method exists
+            if hasattr(self.trading_bot, 'flatten_symbol'):
+                result = await self.trading_bot.flatten_symbol(symbol)
+            else:
+                return {"error": "flatten_symbol method not available"}
         else:
-            result = await self.trading_bot.flatten_all_positions(account_id=account_id)
+            # flatten_all_positions doesn't take account_id - it uses selected_account
+            result = await self.trading_bot.flatten_all_positions(interactive=False)
         return result
     
     async def _handle_accounts(self, args: List[str]) -> Dict[str, Any]:
@@ -684,6 +689,39 @@ class CLICommandParser:
         else:
             return {"error": "Strategy manager not available"}
     
+    def _parse_strategy_args(self, args: List[str]) -> Tuple[str, Optional[List[str]], Optional[str]]:
+        """
+        Parse strategy start arguments with support for flags.
+        
+        Supports:
+        - strategies start <name> [symbols]
+        - strategies start <name> --symbols=SYM1,SYM2
+        - strategies start <name> --timeframe=1m --symbols=MNQ
+        
+        Returns:
+            tuple: (strategy_name, symbols, timeframe)
+        """
+        if not args:
+            return None, None, None
+        
+        strategy_name = args[0]
+        symbols = None
+        timeframe = None
+        
+        # Parse remaining arguments for flags
+        for arg in args[1:]:
+            if arg.startswith('--symbols='):
+                symbols_str = arg.split('=', 1)[1].strip("'\"")
+                symbols = [s.strip().upper() for s in symbols_str.split(',')]
+            elif arg.startswith('--timeframe='):
+                timeframe = arg.split('=', 1)[1].strip("'\"")
+            elif not arg.startswith('--'):
+                # Legacy support: treat non-flag arguments as symbols
+                if symbols is None:
+                    symbols = [s.strip().upper() for s in arg.split(',')]
+        
+        return strategy_name, symbols, timeframe
+    
     async def _handle_disable_strategy(self, args: List[str]) -> Dict[str, Any]:
         """Handle disable_strategy command: disable_strategy NAME1,NAME2"""
         if not args:
@@ -743,9 +781,18 @@ class CLICommandParser:
         elif subcommand == "start":
             # Start a specific strategy
             if len(args) < 2:
-                return {"error": "Usage: strategies start <name> [symbols]"}
-            strategy_name = args[1]
-            symbols = args[2].split(',') if len(args) > 2 else None
+                return {"error": "Usage: strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME]"}
+            
+            strategy_name, symbols, timeframe = self._parse_strategy_args(args[1:])
+            
+            if not strategy_name:
+                return {"error": "Usage: strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME]"}
+            
+            # Set timeframe environment variable if provided (for simple_candle strategy)
+            if timeframe:
+                os.environ['SIMPLE_CANDLE_TIMEFRAME'] = timeframe
+                logger.info(f"⏰ Timeframe set to: {timeframe}")
+            
             success, message = await strategy_manager.start_strategy(strategy_name, symbols)
             return {"success": success, "message": message}
         

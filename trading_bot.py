@@ -54,6 +54,7 @@ from strategies.mean_reversion_strategy import MeanReversionStrategy
 from strategies.trend_following_strategy import TrendFollowingStrategy
 from strategies.simple_momentum_strategy import SimpleMomentumStrategy
 from strategies.simple_candle_strategy import SimpleCandleStrategy
+from strategies.trend_scalping_strategy import TrendScalpingStrategy
 from strategies.strategy_manager import StrategyManager
 from infrastructure.performance_metrics import get_metrics_tracker
 from infrastructure.database import get_database
@@ -292,6 +293,7 @@ class TopStepXTradingBot:
         self.strategy_manager.register_strategy("trend_following", TrendFollowingStrategy)
         self.strategy_manager.register_strategy("simple_momentum", SimpleMomentumStrategy)
         self.strategy_manager.register_strategy("simple_candle", SimpleCandleStrategy)
+        self.strategy_manager.register_strategy("trend_scalping", TrendScalpingStrategy)
         logger.debug("Strategies registered with manager")
         
         # Load strategies from environment configuration
@@ -6532,7 +6534,7 @@ class TopStepXTradingBot:
         print("  📦 Modular Strategy System:")
         print("  strategies list - List all available strategies")
         print("  strategies status - Show all strategies status")
-        print("  strategies start <name> [symbols] - Start a specific strategy")
+        print("  strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME] - Start a specific strategy")
         print("  strategies stop <name> - Stop a specific strategy")
         print("  strategies start_all - Start all enabled strategies")
         print("  strategies stop_all - Stop all strategies")
@@ -6905,9 +6907,10 @@ class TopStepXTradingBot:
                     print("  strategies status")
                     print("    Show status of all strategies")
                     print()
-                    print("  strategies start <name> [symbols]")
+                    print("  strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME]")
                     print("    Start a specific strategy")
-                    print("    Example: strategies start overnight_range MNQ MES")
+                    print("    Example: strategies start simple_candle --timeframe=1m --symbols=MNQ")
+                    print("    Example: strategies start overnight_range --symbols=MNQ,MES")
                     print()
                     print("  strategies stop <name>")
                     print("    Stop a specific strategy")
@@ -6993,9 +6996,20 @@ class TopStepXTradingBot:
                 
                 elif command_lower.startswith("limit "):
                     parts = command.split()
+                    
+                    # Check for --reduce-only or -r flag
+                    reduce_only = False
+                    if '--reduce-only' in parts:
+                        reduce_only = True
+                        parts.remove('--reduce-only')
+                    elif '-r' in parts:
+                        reduce_only = True
+                        parts.remove('-r')
+                    
                     if len(parts) != 5:
-                        print("❌ Usage: limit <symbol> <side> <quantity> <price>")
-                        print("   Example: limit MNQ BUY 1 19500.50")
+                        print("❌ Usage: limit <symbol> <side> <quantity> <price> [--reduce-only|-r]")
+                        print("   Example: limit MNQ SELL 1 19500.50 --reduce-only")
+                        print("   --reduce-only: Order auto-cancels when position closes (for TP)")
                         continue
                     
                     symbol, side, quantity, price = parts[1], parts[2], parts[3], parts[4]
@@ -7017,6 +7031,8 @@ class TopStepXTradingBot:
                     print(f"   Side: {side.upper()}")
                     print(f"   Quantity: {quantity}")
                     print(f"   Price: {price}")
+                    if reduce_only:
+                        print(f"   🛡️  Reduce-Only: YES (auto-cancels when position closes)")
                     print(f"   Account: {self.selected_account['name']}")
                     
                     confirm = input("   Confirm? (y/N): ").strip().lower()
@@ -7025,13 +7041,15 @@ class TopStepXTradingBot:
                         continue
                     
                     # Place the limit order
-                    result = await self.place_market_order(symbol, side, quantity, order_type="limit", limit_price=price)
+                    result = await self.place_market_order(symbol, side, quantity, order_type="limit", limit_price=price, reduce_only=reduce_only)
                     if "error" in result:
                         print(f"❌ Order failed: {result['error']}")
                     else:
                         print(f"✅ Limit order placed successfully!")
                         print(f"   Order ID: {result.get('orderId', 'Unknown')}")
                         print(f"   Status: {result.get('status', 'Unknown')}")
+                        if reduce_only:
+                            print(f"   🛡️  Reduce-only: Will auto-cancel when position closes")
                 
                 elif command_lower.startswith("bracket "):
                     parts = command.split()
@@ -7504,17 +7522,36 @@ class TopStepXTradingBot:
                 
                 elif command_lower.startswith("strategies start "):
                     # Start a specific strategy
+                    # Parse command: strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME]
                     parts = command.split()
                     if len(parts) < 3:
-                        print("❌ Usage: strategies start <name> [symbols]")
-                        print("   Example: strategies start mean_reversion MNQ,MES")
+                        print("❌ Usage: strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME]")
+                        print("   Example: strategies start simple_candle --timeframe=1m --symbols=MNQ")
                         print("   Available strategies:")
                         for name in self.strategy_manager.available_strategies.keys():
                             print(f"     - {name}")
                         continue
                     
                     strategy_name = parts[2]
-                    symbols = parts[3].split(',') if len(parts) > 3 else None
+                    symbols = None
+                    timeframe = None
+                    
+                    # Parse remaining arguments for flags
+                    for arg in parts[3:]:
+                        if arg.startswith('--symbols='):
+                            symbols_str = arg.split('=', 1)[1].strip("'\"")
+                            symbols = [s.strip().upper() for s in symbols_str.split(',')]
+                        elif arg.startswith('--timeframe='):
+                            timeframe = arg.split('=', 1)[1].strip("'\"")
+                        elif not arg.startswith('--'):
+                            # Legacy support: treat non-flag arguments as symbols
+                            if symbols is None:
+                                symbols = [s.strip().upper() for s in arg.split(',')]
+                    
+                    # Set timeframe environment variable if provided (for simple_candle strategy)
+                    if timeframe:
+                        os.environ['SIMPLE_CANDLE_TIMEFRAME'] = timeframe
+                        print(f"⏰ Timeframe set to: {timeframe}")
                     
                     print(f"\n🚀 Starting {strategy_name.replace('_', ' ').title()} Strategy...")
                     success, message = await self.strategy_manager.start_strategy(strategy_name, symbols)
@@ -7565,11 +7602,39 @@ class TopStepXTradingBot:
                         emoji = "✅" if success else "❌"
                         print(f"{emoji} {strategy_name.replace('_', ' ').title()}: {message}")
                 
+                elif command_lower.startswith("backtest "):
+                    # Run backtest: backtest <strategy> <symbol> [options]
+                    print("\n🔬 Launching backtest...")
+                    print("   Use: python core/backtest_executor.py --strategy=<name> --symbol=<sym> --days=<N>")
+                    print("   Example: python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --days=30 --sample")
+                    print("\n   See docs/BACKTEST_CLI_GUIDE.md for full documentation")
+                
+                elif command_lower == "backtest":
+                    # Show backtest help
+                    print("\n🔬 Backtesting Commands:")
+                    print("   backtest <strategy> <symbol> - Quick info on how to run")
+                    print("\n   For full backtesting, use:")
+                    print("   python core/backtest_executor.py --strategy=<name> --symbol=<sym> [options]")
+                    print("\n   Available strategies: ma_crossover, rsi_mean_reversion, ema_trend")
+                    print("   Options: --days, --timeframe, --sample, --monte-carlo, --optimize")
+                    print("\n   See docs/BACKTEST_CLI_GUIDE.md for examples")
+                
                 elif command_lower.startswith("stop "):
                     parts = command.split()
+                    
+                    # Check for --reduce-only or -r flag
+                    reduce_only = False
+                    if '--reduce-only' in parts:
+                        reduce_only = True
+                        parts.remove('--reduce-only')
+                    elif '-r' in parts:
+                        reduce_only = True
+                        parts.remove('-r')
+                    
                     if len(parts) != 5:
-                        print("❌ Usage: stop <symbol> <side> <quantity> <price>")
-                        print("   Example: stop MNQ BUY 1 19400.00")
+                        print("❌ Usage: stop <symbol> <side> <quantity> <price> [--reduce-only|-r]")
+                        print("   Example: stop MNQ SELL 1 19400.00 --reduce-only")
+                        print("   --reduce-only: Order auto-cancels when position closes (for SL/TP)")
                         continue
                     
                     symbol, side, quantity, price = parts[1], parts[2], parts[3], parts[4]
@@ -7591,6 +7656,8 @@ class TopStepXTradingBot:
                     print(f"   Side: {side.upper()}")
                     print(f"   Quantity: {quantity}")
                     print(f"   Stop Price: ${price}")
+                    if reduce_only:
+                        print(f"   🛡️  Reduce-Only: YES (auto-cancels when position closes)")
                     print(f"   Account: {self.selected_account['name']}")
                     
                     confirm = input("   Confirm? (y/N): ").strip().lower()
@@ -7599,13 +7666,15 @@ class TopStepXTradingBot:
                         continue
                     
                     # Place the stop order
-                    result = await self.place_stop_order(symbol, side, quantity, price)
+                    result = await self.place_stop_order(symbol, side, quantity, price, reduce_only=reduce_only)
                     if "error" in result:
                         print(f"❌ Order failed: {result['error']}")
                     else:
                         print(f"✅ Stop {side} order placed successfully!")
                         print(f"   Order ID: {result.get('orderId', 'Unknown')}")
                         print(f"   Status: {result.get('status', 'Unknown')}")
+                        if reduce_only:
+                            print(f"   🛡️  Reduce-only: Will auto-cancel when position closes")
                         print(f"   ⚠️  This order will trigger a market order when price reaches ${price}")
                 
                 elif command_lower.startswith("stop_buy "):
@@ -7820,6 +7889,47 @@ class TopStepXTradingBot:
                         print(f"\n📊 Open Positions ({len(positions)}):")
                         print(f"{'ID':<12} {'Symbol':<8} {'Side':<6} {'Quantity':<10} {'Price':<12} {'Stop':<12} {'TP':<12} {'P&L':<12}")
                         print("-" * 90)
+                        
+                        # OPTIMIZATION: Fetch orders AND quotes in PARALLEL before loop
+                        account_id = self.selected_account['id'] if self.selected_account else None
+                        all_orders = None
+                        all_quotes = {}
+                        
+                        if account_id and self.broker_adapter:
+                            try:
+                                # Extract unique symbols from positions
+                                symbols = set()
+                                for pos in positions:
+                                    contract_id = pos.get('contractId', '')
+                                    if contract_id:
+                                        symbol = contract_id.split('.')[-2] if '.' in contract_id else contract_id
+                                        symbols.add(symbol)
+                                    elif pos.get('symbol'):
+                                        symbols.add(pos.get('symbol'))
+                                
+                                # Fetch orders and all quotes in parallel (concurrent API calls)
+                                import asyncio as aio  # Local import to avoid any shadowing issues
+                                fetch_tasks = [
+                                    self.broker_adapter.get_open_orders(account_id=account_id),
+                                ]
+                                for symbol in symbols:
+                                    fetch_tasks.append(self.get_market_quote(symbol))
+                                
+                                results = await aio.gather(*fetch_tasks, return_exceptions=True)
+                                
+                                # First result is orders
+                                if not isinstance(results[0], Exception):
+                                    all_orders = results[0]
+                                
+                                # Remaining results are quotes (same order as symbols list)
+                                for i, symbol in enumerate(symbols, start=1):
+                                    if i < len(results) and not isinstance(results[i], Exception):
+                                        all_quotes[symbol] = results[i]
+                                
+                                logger.debug(f"⚡ Parallel fetch: {len(all_orders) if all_orders else 0} orders + {len(all_quotes)} quotes in one batch")
+                            except Exception as e:
+                                logger.warning(f"Could not fetch data for batch optimization: {e}")
+                        
                         for pos in positions:
                             pos_id = pos.get('id', 'N/A')
                             # Get symbol from contractId or symbol field
@@ -7849,10 +7959,14 @@ class TopStepXTradingBot:
                             stop_price = None
                             tp_price = None
                             try:
-                                # Use the adapter's get_linked_orders method for better reliability
-                                account_id = self.selected_account['id'] if self.selected_account else None
+                                # Use the adapter's get_linked_orders method with pre-fetched orders (optimization!)
                                 if self.broker_adapter and hasattr(self.broker_adapter, 'get_linked_orders'):
-                                    linked_orders = await self.broker_adapter.get_linked_orders(str(pos_id), account_id)
+                                    linked_orders = await self.broker_adapter.get_linked_orders(
+                                        str(pos_id), 
+                                        account_id,
+                                        all_orders=all_orders,  # Pass pre-fetched orders
+                                        position_data=pos  # Pass position data to avoid re-query
+                                    )
                                 else:
                                     linked_orders = await self.get_linked_orders(str(pos_id))
                                 
@@ -7895,7 +8009,12 @@ class TopStepXTradingBot:
                                 # Calculate P&L from current market price
                                 # P&L = (price_difference) * quantity * point_value
                                 try:
-                                    quote = await self.get_market_quote(symbol)
+                                    # OPTIMIZATION: Use pre-fetched quote if available
+                                    quote = all_quotes.get(symbol)
+                                    if not quote or "error" in quote:
+                                        # Fallback: fetch quote if not in batch
+                                        quote = await self.get_market_quote(symbol)
+                                    
                                     if "error" not in quote and quote.get('last'):
                                         current_price = float(quote['last'])
                                         point_value = self._get_point_value(symbol)
@@ -8981,7 +9100,8 @@ class TopStepXTradingBot:
                     print("❌ Unknown command. Available commands:")
                     print("   trade, limit, bracket, native_bracket, stop_bracket, stop, trail, positions, orders,")
                     print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts,")
-                    print("   switch_account, account_info, account_state, compliance, risk, drawdown, trades, help, quit")
+                    print("   switch_account, account_info, account_state, compliance, risk, drawdown, trades,")
+                    print("   strategies, backtest, help, quit")
                     print("   Use ↑/↓ arrows for command history, Tab for completion")
                     print("   Type 'help' for detailed command information")
                     

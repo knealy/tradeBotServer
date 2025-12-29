@@ -172,6 +172,7 @@ class OvernightRangeStrategy(BaseStrategy):
         self.is_trading = False
         self._tracking_task: Optional[asyncio.Task] = None
         self._breakeven_task: Optional[asyncio.Task] = None
+        self._plain_stop_monitor_task: Optional[asyncio.Task] = None
         
         logger.info(f"🎯 Overnight Range Strategy initialized")
         logger.info(f"   Overnight: {self.overnight_start} - {self.overnight_end} {self.timezone}")
@@ -998,13 +999,48 @@ class OvernightRangeStrategy(BaseStrategy):
                 account_id=account_id,
                 strategy_name=self.config.name  # Add strategy name for tracking
             )
-            
+
             # Check for successful order placement (response has orderId or success=True)
             if long_result and long_result.get('orderId'):
                 order_id = long_result.get('orderId')
                 results["orders"].append({"side": "LONG", "order_id": order_id, "result": long_result})
                 logger.info(f"✅ Long breakout order placed: {order_id}")
-                self.breakout_active_orders.setdefault(symbol, {})["BUY"] = str(order_id)
+            # Fallback: If bracket order fails due to API issues, try plain stop order
+            elif long_result and "500" in str(long_result.get('error', '')):
+                logger.warning(f"⚠️  Bracket order got 500 error, trying plain stop order as fallback...")
+                plain_result = await self.trading_bot.place_stop_order(
+                    symbol=symbol,
+                    side="BUY",
+                    quantity=long_order.quantity,
+                    stop_price=long_order.entry_price,
+                    account_id=account_id
+                )
+                if plain_result and plain_result.get('orderId'):
+                    order_id = plain_result.get('orderId')
+                    results["orders"].append({"side": "LONG", "order_id": order_id, "result": plain_result})
+                    logger.warning(f"✅ Plain stop order placed (no brackets): {order_id}")
+                    logger.warning(f"🔄 Will monitor for fill and add SL/TP automatically")
+                    # Store for automatic bracket addition after fill
+                    if symbol not in self.breakout_active_orders:
+                        self.breakout_active_orders[symbol] = {}
+                    self.breakout_active_orders[symbol]["BUY"] = {
+                        "order_id": order_id,
+                        "entry_price": long_order.entry_price,
+                        "stop_loss": long_order.stop_loss,
+                        "take_profit": long_order.take_profit,
+                        "quantity": long_order.quantity,
+                        "needs_brackets": True,  # Flag for post-fill bracket addition
+                        "monitoring": True  # Start monitoring for fill
+                    }
+                else:
+                    error_msg = plain_result.get('error', 'Unknown error') if plain_result else 'No response'
+                    logger.error(f"❌ Plain stop order also failed: {error_msg}")
+                    results.setdefault("errors", [])
+                    results["errors"].append({"side": "LONG", "error": f"Both bracket and plain orders failed: {error_msg}"})
+                    if symbol in self.breakout_active_orders:
+                        self.breakout_active_orders[symbol].pop("BUY", None)
+                # NOTE: This line is misplaced - it sets order_id to string even when plain order failed
+                # Removed: self.breakout_active_orders.setdefault(symbol, {})["BUY"] = str(order_id)
                 
                 # Add to active orders
                 if symbol not in self.active_orders:
@@ -1041,13 +1077,48 @@ class OvernightRangeStrategy(BaseStrategy):
                 account_id=account_id,
                 strategy_name=self.config.name  # Add strategy name for tracking
             )
-            
+
             # Check for successful order placement (response has orderId)
             if short_result and short_result.get('orderId'):
                 order_id = short_result.get('orderId')
                 results["orders"].append({"side": "SHORT", "order_id": order_id, "result": short_result})
                 logger.info(f"✅ Short breakout order placed: {order_id}")
-                self.breakout_active_orders.setdefault(symbol, {})["SELL"] = str(order_id)
+            # Fallback: If bracket order fails due to API issues, try plain stop order
+            elif short_result and "500" in str(short_result.get('error', '')):
+                logger.warning(f"⚠️  Bracket order got 500 error, trying plain stop order as fallback...")
+                plain_result = await self.trading_bot.place_stop_order(
+                    symbol=symbol,
+                    side="SELL",
+                    quantity=short_order.quantity,
+                    stop_price=short_order.entry_price,
+                    account_id=account_id
+                )
+                if plain_result and plain_result.get('orderId'):
+                    order_id = plain_result.get('orderId')
+                    results["orders"].append({"side": "SHORT", "order_id": order_id, "result": plain_result})
+                    logger.warning(f"✅ Plain stop order placed (no brackets): {order_id}")
+                    logger.warning(f"🔄 Will monitor for fill and add SL/TP automatically")
+                    # Store for automatic bracket addition after fill
+                    if symbol not in self.breakout_active_orders:
+                        self.breakout_active_orders[symbol] = {}
+                    self.breakout_active_orders[symbol]["SELL"] = {
+                        "order_id": order_id,
+                        "entry_price": short_order.entry_price,
+                        "stop_loss": short_order.stop_loss,
+                        "take_profit": short_order.take_profit,
+                        "quantity": short_order.quantity,
+                        "needs_brackets": True,  # Flag for post-fill bracket addition
+                        "monitoring": True  # Start monitoring for fill
+                    }
+                else:
+                    error_msg = plain_result.get('error', 'Unknown error') if plain_result else 'No response'
+                    logger.error(f"❌ Plain stop order also failed: {error_msg}")
+                    results.setdefault("errors", [])
+                    results["errors"].append({"side": "SHORT", "error": f"Both bracket and plain orders failed: {error_msg}"})
+                    if symbol in self.breakout_active_orders:
+                        self.breakout_active_orders[symbol].pop("SELL", None)
+                # NOTE: This line is misplaced - it sets order_id to string even when plain order failed
+                # Removed: self.breakout_active_orders.setdefault(symbol, {})["SELL"] = str(order_id)
                 
                 # Add to active orders
                 if symbol not in self.active_orders:
@@ -1249,23 +1320,117 @@ class OvernightRangeStrategy(BaseStrategy):
                 logger.error(f"Error in breakout monitoring: {exc}")
                 await asyncio.sleep(max(self.breakout_monitor_interval, 5))
     
+    async def monitor_plain_stop_fills(self):
+        """
+        Background task to monitor plain stop orders and add SL/TP when they fill.
+        
+        This is critical for the 500 error fallback path:
+        - When bracket orders fail with 500, we place plain stops
+        - We MUST add SL/TP automatically after fill (can't rely on manual intervention)
+        - Monitors every 5 seconds until position opens, then places protection
+        """
+        logger.info("🛡️  Plain stop fill monitoring ACTIVE (auto-adds SL/TP after fill)")
+        
+        while self.is_trading:
+            try:
+                await asyncio.sleep(5)  # Check every 5 seconds
+                
+                # Check if we have any orders flagged for monitoring
+                orders_to_monitor = []
+                for symbol, sides in self.breakout_active_orders.items():
+                    for side, order_data in sides.items():
+                        if order_data.get('needs_brackets') and order_data.get('monitoring'):
+                            orders_to_monitor.append((symbol, side, order_data))
+                
+                if not orders_to_monitor:
+                    continue  # Nothing to monitor
+                
+                # Get current positions
+                positions = await self.trading_bot.get_positions()
+                if not positions:
+                    continue
+                
+                # Check each monitored order
+                for symbol, side, order_data in orders_to_monitor:
+                    # Find matching position
+                    position_found = False
+                    for pos in positions:
+                        pos_symbol = pos.get('symbol', '').upper()
+                        pos_side = "LONG" if pos.get('net_quantity', 0) > 0 else "SHORT" if pos.get('net_quantity', 0) < 0 else None
+                        
+                        if pos_symbol == symbol.upper() and pos_side == side:
+                            position_found = True
+                            logger.info(f"🎯 Position opened for {symbol} {side} (from plain stop), adding SL/TP now...")
+                            
+                            # Place stop loss (CRITICAL: use reduce_only=True to link to position)
+                            try:
+                                sl_result = await self.trading_bot.place_stop_order(
+                                    symbol=symbol,
+                                    side="SELL" if side == "LONG" else "BUY",
+                                    quantity=order_data['quantity'],
+                                    stop_price=order_data['stop_loss'],
+                                    account_id=self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else self.trading_bot.selected_account,
+                                    reduce_only=True  # Auto-cancels when position closes
+                                )
+                                if sl_result and sl_result.get('orderId'):
+                                    logger.info(f"✅ Stop loss placed (reduce-only): {sl_result['orderId']} @ ${order_data['stop_loss']}")
+                                else:
+                                    logger.error(f"❌ Failed to place stop loss: {sl_result}")
+                            except Exception as sl_err:
+                                logger.error(f"❌ Error placing stop loss: {sl_err}")
+                            
+                            # Place take profit (CRITICAL: use reduce_only=True to link to position)
+                            try:
+                                tp_result = await self.trading_bot.place_limit_order(
+                                    symbol=symbol,
+                                    side="SELL" if side == "LONG" else "BUY",
+                                    quantity=order_data['quantity'],
+                                    limit_price=order_data['take_profit'],
+                                    account_id=self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else self.trading_bot.selected_account,
+                                    reduce_only=True  # Auto-cancels when position closes
+                                )
+                                if tp_result and tp_result.get('orderId'):
+                                    logger.info(f"✅ Take profit placed (reduce-only): {tp_result['orderId']} @ ${order_data['take_profit']}")
+                                else:
+                                    logger.error(f"❌ Failed to place take profit: {tp_result}")
+                            except Exception as tp_err:
+                                logger.error(f"❌ Error placing take profit: {tp_err}")
+                            
+                            # Stop monitoring this order
+                            order_data['monitoring'] = False
+                            order_data['needs_brackets'] = False
+                            logger.info(f"🛡️  SL/TP added for {symbol} {side} (reduce-only orders auto-cancel)")
+                            break
+                    
+                    # If position not found but order is old (>5 minutes), stop monitoring
+                    if not position_found:
+                        # Could add timeout logic here if needed
+                        pass
+            
+            except asyncio.CancelledError:
+                logger.info("Plain stop fill monitoring cancelled")
+                break
+            except Exception as exc:
+                logger.error(f"Error in plain stop fill monitoring: {exc}")
+                await asyncio.sleep(5)
+    
     async def monitor_breakeven_stops(self):
         """
         Background task to monitor FILLED positions and move stops to breakeven when profitable.
-        
+
         EFFICIENT APPROACH: Only monitors after positions are opened, not continuously.
-        
+
         Auto-start when: Position is opened (stop entry order filled)
-        Auto-stop when: 
+        Auto-stop when:
             - P&L >= threshold (move stop to BE, then stop monitoring this position)
             - Position is closed (SL/TP hit, clean up monitoring)
-        
+
         Optional: Can be disabled via BREAKEVEN_ENABLED env variable
         """
         if not self.breakeven_enabled:
             logger.info("🔄 Breakeven monitoring DISABLED (set BREAKEVEN_ENABLED=true to enable)")
             return
-        
+
         logger.info(f"🔄 Breakeven monitoring ACTIVE (+{self.breakeven_profit_points} pts threshold)")
         
         while self.is_trading:
@@ -1506,9 +1671,10 @@ class OvernightRangeStrategy(BaseStrategy):
         # Start background tasks
         self._tracking_task = asyncio.create_task(self.market_open_scanner())
         self._breakeven_task = asyncio.create_task(self.monitor_breakeven_stops())
+        self._plain_stop_monitor_task = asyncio.create_task(self.monitor_plain_stop_fills())
         if self.breakout_monitor_enabled:
             self._breakout_monitor_task = asyncio.create_task(self.monitor_breakout_levels())
-        
+
         logger.info("🚀 Overnight Range Strategy started!")
         logger.info(f"   Symbols: {symbols or os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES')}")
         logger.info(f"   Overnight: {self.overnight_start} - {self.overnight_end} {self.timezone}")
@@ -1528,13 +1694,16 @@ class OvernightRangeStrategy(BaseStrategy):
             self._tracking_task.cancel()
         if self._breakeven_task:
             self._breakeven_task.cancel()
+        if self._plain_stop_monitor_task:
+            self._plain_stop_monitor_task.cancel()
+            self._plain_stop_monitor_task = None
         if self._breakout_monitor_task:
             self._breakout_monitor_task.cancel()
             self._breakout_monitor_task = None
-        
+
         self.breakout_levels.clear()
         self.breakout_active_orders.clear()
-        
+
         logger.info("🛑 Overnight Range Strategy stopped!")
     
     def get_status(self) -> Dict:

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Master Trading Control</title>
+    <title>Master Trading Control - Unified Dashboard</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -12,6 +12,8 @@
             color: #e0e0e0;
             overflow-x: hidden;
         }
+        
+        /* Header */
         .header {
             background: #1a1a1a;
             border-bottom: 1px solid #333;
@@ -24,96 +26,95 @@
             z-index: 100;
         }
         .header h1 { font-size: 18px; font-weight: 600; }
-        .tabs {
-            display: flex;
-            gap: 8px;
+        .connection-status { font-size: 12px; color: #4caf50; }
+        
+        /* Account Status Bar */
+        .account-bar {
             background: #1a1a1a;
             border-bottom: 1px solid #333;
-            padding: 0 20px;
-            overflow-x: auto;
-        }
-        .tab {
-            padding: 12px 20px;
-            background: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            color: #888;
-            cursor: pointer;
-            font-size: 14px;
-            white-space: nowrap;
-            transition: all 0.2s;
-        }
-        .tab:hover { color: #fff; }
-        .tab.active {
-            color: #4a9eff;
-            border-bottom-color: #4a9eff;
-        }
-        .content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            padding: 20px;
-            max-width: 1920px;
-            margin: 0 auto;
-        }
-        .panel {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 16px;
-            min-height: 400px;
-        }
-        .panel.full { grid-column: 1 / -1; }
-        .panel h2 {
-            font-size: 16px;
-            margin-bottom: 16px;
-            color: #fff;
-            border-bottom: 1px solid #333;
-            padding-bottom: 8px;
-        }
-        .status-bar {
+            padding: 16px 20px;
             display: flex;
-            gap: 20px;
-            padding: 12px;
-            background: #151515;
-            border-radius: 4px;
-            margin-bottom: 16px;
-            font-size: 13px;
+            gap: 32px;
+            flex-wrap: wrap;
+            align-items: center;
         }
         .status-item {
             display: flex;
             flex-direction: column;
             gap: 4px;
         }
-        .status-label { color: #888; font-size: 11px; }
-        .status-value { color: #fff; font-weight: 600; }
+        .status-label { color: #888; font-size: 11px; text-transform: uppercase; }
+        .status-value { color: #fff; font-weight: 600; font-size: 16px; }
         .status-value.positive { color: #4caf50; }
         .status-value.negative { color: #f44336; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
+        
+        /* Main Dashboard Grid */
+        .dashboard {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            grid-template-rows: auto auto auto;
+            gap: 16px;
+            padding: 16px;
+            max-width: 2400px;
+            margin: 0 auto;
         }
-        th {
-            text-align: left;
-            padding: 8px;
+        
+        /* Panels */
+        .panel {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            overflow: hidden;
+        }
+        .panel h2 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: #fff;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+            font-weight: 600;
+        }
+        
+        /* Chart Panel (large, spans 2 rows) */
+        .chart-panel {
+            grid-column: 1;
+            grid-row: 1 / 3;
+            display: flex;
+            flex-direction: column;
+        }
+        #chart-container {
+            flex: 1;
+            min-height: 600px;
+            background: #0a0a0a;
+            border-radius: 4px;
+            margin-top: 8px;
+        }
+        
+        /* Chart Controls */
+        .chart-controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            padding: 12px;
             background: #151515;
-            color: #888;
-            font-weight: 500;
-            font-size: 11px;
-            text-transform: uppercase;
+            border-radius: 4px;
         }
-        td {
-            padding: 10px 8px;
-            border-bottom: 1px solid #222;
+        .chart-controls select, .chart-controls input {
+            background: #222;
+            border: 1px solid #444;
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 12px;
         }
-        tr:hover { background: #222; }
-        .btn {
-            padding: 8px 16px;
+        .chart-controls button {
+            padding: 6px 12px;
             border: none;
             border-radius: 4px;
+            font-size: 12px;
             cursor: pointer;
-            font-size: 13px;
             font-weight: 500;
             transition: all 0.2s;
         }
@@ -122,21 +123,56 @@
             color: #fff;
         }
         .btn-primary:hover { background: #3a8eef; }
+        .btn-buy {
+            background: #26a69a;
+            color: #fff;
+            font-weight: bold;
+        }
+        .btn-buy:hover { background: #1f8a7f; }
+        .btn-sell {
+            background: #ef5350;
+            color: #fff;
+            font-weight: bold;
+        }
+        .btn-sell:hover { background: #d32f2f; }
         .btn-danger {
             background: #f44336;
             color: #fff;
         }
         .btn-danger:hover { background: #d32f2f; }
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        
+        /* Positions Panel */
+        .positions-panel {
+            grid-column: 2;
+            grid-row: 1;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        /* Orders Panel */
+        .orders-panel {
+            grid-column: 2;
+            grid-row: 2;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        /* Strategy Panel */
+        .strategy-panel {
+            grid-column: 1;
+            grid-row: 3;
+        }
+        .strategy-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 12px;
+            margin-top: 8px;
         }
         .strategy-card {
             background: #151515;
             border: 1px solid #333;
             border-radius: 6px;
             padding: 12px;
-            margin-bottom: 12px;
         }
         .strategy-header {
             display: flex;
@@ -144,409 +180,547 @@
             align-items: center;
             margin-bottom: 8px;
         }
-        .strategy-name { font-weight: 600; color: #fff; }
+        .strategy-name { font-weight: 600; color: #fff; font-size: 13px; }
         .strategy-status {
             padding: 4px 8px;
             border-radius: 4px;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 600;
         }
         .strategy-status.active { background: #4caf50; color: #fff; }
         .strategy-status.idle { background: #666; color: #fff; }
         .strategy-info {
-            font-size: 12px;
-            color: #888;
-            margin-top: 8px;
-        }
-        .loading { opacity: 0.6; pointer-events: none; }
-        .error { color: #f44336; font-size: 12px; margin-top: 8px; }
-        .success { color: #4caf50; font-size: 12px; margin-top: 8px; }
-        #chart-container {
-            width: 100%;
-            height: 500px;
-            background: #0a0a0a;
-            border-radius: 4px;
-        }
-        .control-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
-            margin-top: 16px;
-        }
-        .control-item {
-            background: #151515;
-            padding: 12px;
-            border-radius: 4px;
-            border: 1px solid #333;
-        }
-        .control-label {
             font-size: 11px;
             color: #888;
-            margin-bottom: 8px;
+            margin: 8px 0;
         }
-        select {
+        .strategy-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .strategy-actions button {
+            flex: 1;
+            padding: 6px;
+            font-size: 11px;
+        }
+        
+        /* Quick Actions Panel */
+        .actions-panel {
+            grid-column: 2;
+            grid-row: 3;
+        }
+        .action-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 8px;
+        }
+        .action-grid button {
             width: 100%;
-            padding: 8px;
-            background: #222;
-            border: 1px solid #333;
-            color: #fff;
-            border-radius: 4px;
+            padding: 12px;
             font-size: 13px;
+            font-weight: 600;
         }
-        @media (max-width: 1200px) {
-            .content { grid-template-columns: 1fr; }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 8px;
         }
+        th {
+            text-align: left;
+            padding: 8px 6px;
+            background: #151515;
+            color: #888;
+            font-weight: 500;
+            font-size: 10px;
+            text-transform: uppercase;
+            border-bottom: 1px solid #333;
+        }
+        td {
+            padding: 10px 6px;
+            border-bottom: 1px solid #222;
+        }
+        tr:hover { background: #222; }
+        .positive { color: #4caf50; }
+        .negative { color: #f44336; }
+        .empty-state {
+            text-align: center;
+            color: #666;
+            padding: 20px;
+            font-size: 12px;
+        }
+        
+        /* Responsive */
+        @media (max-width: 1400px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto;
+            }
+            .chart-panel { grid-row: 1; }
+            .positions-panel { grid-column: 1; grid-row: 2; }
+            .orders-panel { grid-column: 1; grid-row: 3; }
+            .strategy-panel { grid-column: 1; grid-row: 4; }
+            .actions-panel { grid-column: 1; grid-row: 5; }
+        }
+        
+        /* Loading states */
+        .loading { opacity: 0.5; pointer-events: none; }
+        .error { color: #f44336; font-size: 11px; }
     </style>
 </head>
 <body>
+    <!-- Header -->
     <div class="header">
         <h1>🎯 Master Trading Control</h1>
-        <div id="connection-status" style="font-size: 12px; color: #888;">Connecting...</div>
+        <div class="connection-status" id="connection-status">Connecting...</div>
     </div>
     
-    <div class="tabs">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="chart">Chart</button>
-        <button class="tab" data-tab="positions">Positions</button>
-        <button class="tab" data-tab="strategy">Strategy</button>
-        <button class="tab" data-tab="control">Control</button>
+    <!-- Account Status Bar -->
+    <div class="account-bar">
+        <div class="status-item">
+            <div class="status-label">Account</div>
+            <div class="status-value" id="account-name">--</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">Balance</div>
+            <div class="status-value" id="balance">$--</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">Unrealized P&L</div>
+            <div class="status-value" id="unrealized-pnl">$--</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">Realized P&L</div>
+            <div class="status-value" id="realized-pnl">$--</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">Open Positions</div>
+            <div class="status-value" id="position-count">0</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">Open Orders</div>
+            <div class="status-value" id="order-count">0</div>
+        </div>
     </div>
     
-    <div class="content" id="content">
-        <!-- Overview Tab -->
-        <div class="tab-content" data-content="overview">
-            <div class="panel full">
-                <h2>Account Overview</h2>
-                <div class="status-bar" id="account-status">
-                    <div class="status-item">
-                        <div class="status-label">Balance</div>
-                        <div class="status-value" id="balance">--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Unrealized P&L</div>
-                        <div class="status-value" id="unrealized-pnl">--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Realized P&L</div>
-                        <div class="status-value" id="realized-pnl">--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Open Positions</div>
-                        <div class="status-value" id="position-count">--</div>
-                    </div>
-                </div>
-                
-                <h2 style="margin-top: 24px;">Open Positions</h2>
-                <div style="overflow-x: auto;">
-                    <table id="positions-table">
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Qty</th>
-                                <th>Entry</th>
-                                <th>Current</th>
-                                <th>P&L</th>
-                                <th>P&L %</th>
-                            </tr>
-                        </thead>
-                        <tbody id="positions-body"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Chart Tab -->
-        <div class="tab-content" style="display: none;" data-content="chart">
-            <div class="panel full">
-                <h2>Real-Time Chart</h2>
-                
-                <!-- Chart Controls -->
-                <div style="background: #2a2a2a; padding: 12px; margin-bottom: 12px; border-radius: 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                    <select id="chart-symbol-select" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px;">
-                        <option value="{{SYMBOL}}">{{SYMBOL}}</option>
+    <!-- Main Dashboard Grid -->
+    <div class="dashboard">
+        <!-- Chart Panel (Large, Left Side) -->
+        <div class="panel chart-panel">
+            <h2>📈 Real-Time Chart & Trading</h2>
+            
+            <!-- Chart Controls -->
+            <div class="chart-controls">
+                <select id="chart-symbol-select">
+                    <option value="{{SYMBOL}}">{{SYMBOL}}</option>
+                </select>
+                <select id="chart-timeframe-select">
+                    <option value="30s">30s</option>
+                    <option value="1m">1m</option>
+                    <option value="5m" selected>5m</option>
+                    <option value="15m">15m</option>
+                    <option value="1h">1h</option>
+                </select>
+                <button class="btn-primary" onclick="refreshChart()">Refresh</button>
+                <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 10px; color: #888;">Rate:</span>
+                    <select id="chart-refresh-rate" style="width: 70px;">
+                        <option value="1">1x/s</option>
+                        <option value="3">3x/s</option>
+                        <option value="6" selected>6x/s</option>
                     </select>
-                    <select id="chart-timeframe-select" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px;">
-                        <option value="30s">30s</option>
-                        <option value="1m">1m</option>
-                        <option value="5m" selected>5m</option>
-                        <option value="15m">15m</option>
-                        <option value="1h">1h</option>
-                        <option value="4h">4h</option>
-                        <option value="1d">1d</option>
-                    </select>
-                    <button class="btn btn-primary" onclick="refreshChartData()" style="font-size: 12px; padding: 6px 12px;">Refresh</button>
-                    <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
-                        <span style="font-size: 11px; color: #888;">Refresh Rate:</span>
-                        <select id="chart-refresh-rate" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 4px; border-radius: 4px; font-size: 11px;">
-                            <option value="1">1x/sec</option>
-                            <option value="3">3x/sec</option>
-                            <option value="6">6x/sec</option>
-                            <option value="12">12x/sec</option>
-                        </select>
-                    </div>
                 </div>
-                
-                <!-- Trading Panel -->
-                <div style="background: #2a2a2a; padding: 12px; margin-bottom: 12px; border-radius: 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                    <select id="order-type-select" onchange="updateOrderType()" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 90px;">
-                        <option value="market" selected>Market</option>
-                        <option value="limit">Limit</option>
-                        <option value="stop">Stop</option>
-                        <option value="bracket">Bracket</option>
-                    </select>
-                    <input type="number" id="order-quantity" value="1" min="1" placeholder="Qty" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 60px;">
-                    <input type="number" id="order-limit-price" step="0.25" placeholder="Limit" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 80px; display: none;">
-                    <input type="number" id="order-stop-price" step="0.25" placeholder="Stop" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 80px; display: none;">
-                    <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #888;">
-                        <input type="checkbox" id="enable-bracket" onchange="updateBracket()" style="margin: 0;">
-                        <span>Bracket</span>
-                    </label>
-                    <input type="number" id="order-stop-loss" step="0.25" placeholder="SL" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 70px; display: none;">
-                    <input type="number" id="order-take-profit" step="0.25" placeholder="TP" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 70px; display: none;">
-                    <button class="btn btn-primary" onclick="placeOrderFromChart('BUY')" style="background: #26a69a; font-size: 12px; padding: 6px 12px; font-weight: bold;">BUY</button>
-                    <button class="btn btn-danger" onclick="placeOrderFromChart('SELL')" style="background: #ef5350; font-size: 12px; padding: 6px 12px; font-weight: bold;">SELL</button>
-                </div>
-                
-                <div id="chart-container"></div>
+            </div>
+            
+            <!-- Trading Controls -->
+            <div class="chart-controls">
+                <select id="order-type" onchange="updateOrderType()">
+                    <option value="market">Market</option>
+                    <option value="limit">Limit</option>
+                    <option value="bracket">Bracket</option>
+                </select>
+                <input type="number" id="order-qty" value="1" min="1" placeholder="Qty" style="width: 60px;">
+                <input type="number" id="order-price" step="0.25" placeholder="Price" style="width: 80px; display: none;">
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 11px;">
+                    <input type="checkbox" id="enable-bracket" onchange="updateBracket()">
+                    <span>Bracket</span>
+                </label>
+                <input type="number" id="order-sl-ticks" placeholder="SL Ticks" style="width: 80px; display: none;">
+                <input type="number" id="order-tp-ticks" placeholder="TP Ticks" style="width: 80px; display: none;">
+                <button class="btn-buy" onclick="placeOrder('BUY')">BUY</button>
+                <button class="btn-sell" onclick="placeOrder('SELL')">SELL</button>
+            </div>
+            
+            <!-- Chart Container -->
+            <div id="chart-container"></div>
+        </div>
+        
+        <!-- Positions Panel (Right Side, Top) -->
+        <div class="panel positions-panel">
+            <h2>📊 Open Positions (<span id="pos-count">0</span>)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Qty</th>
+                        <th>Entry</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody id="positions-body">
+                    <tr><td colspan="5" class="empty-state">No positions</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Orders Panel (Right Side, Middle) -->
+        <div class="panel orders-panel">
+            <h2>📋 Open Orders (<span id="ord-count">0</span>)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Qty</th>
+                        <th>Price</th>
+                        <th>Type</th>
+                    </tr>
+                </thead>
+                <tbody id="orders-body">
+                    <tr><td colspan="5" class="empty-state">No orders</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Strategy Control Panel (Bottom Left) -->
+        <div class="panel strategy-panel">
+            <h2>🎯 Strategy Control</h2>
+            <div class="strategy-grid" id="strategy-grid">
+                <div class="empty-state">Loading strategies...</div>
             </div>
         </div>
         
-        <!-- Positions Tab -->
-        <div class="tab-content" style="display: none;" data-content="positions">
-            <div class="panel full">
-                <h2>Positions & Orders</h2>
-                <div style="overflow-x: auto;">
-                    <table id="positions-detail-table">
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Qty</th>
-                                <th>Entry</th>
-                                <th>Current</th>
-                                <th>P&L</th>
-                                <th>P&L %</th>
-                            </tr>
-                        </thead>
-                        <tbody id="positions-detail-body"></tbody>
-                    </table>
-                </div>
-                
-                <h2 style="margin-top: 24px;">Open Orders</h2>
-                <div style="overflow-x: auto;">
-                    <table id="orders-table">
-                        <thead>
-                            <tr>
-                                <th>Order ID</th>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Qty</th>
-                                <th>Price</th>
-                                <th>Type</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="orders-body"></tbody>
-                    </table>
-                </div>
+        <!-- Quick Actions Panel (Bottom Right) -->
+        <div class="panel actions-panel">
+            <h2>⚡ Quick Actions</h2>
+            <div class="action-grid">
+                <button class="btn-danger" onclick="flattenAll()">🛑 Flatten All</button>
+                <button class="btn-danger" onclick="cancelAllOrders()">❌ Cancel All Orders</button>
+                <button class="btn-primary" onclick="refreshAll()">🔄 Refresh All Data</button>
             </div>
-        </div>
-        
-        <!-- Strategy Tab -->
-        <div class="tab-content" style="display: none;" data-content="strategy">
-            <div class="panel full">
-                <h2>Strategy Control</h2>
-                <div id="strategies-container"></div>
-            </div>
-        </div>
-        
-        <!-- Control Tab -->
-        <div class="tab-content" style="display: none;" data-content="control">
-            <div class="panel">
-                <h2>Quick Actions</h2>
-                <div class="control-grid">
-                    <div class="control-item">
-                        <button class="btn btn-danger" onclick="flattenPositions()">Flatten All</button>
-                    </div>
-                    <div class="control-item">
-                        <button class="btn btn-danger" onclick="cancelAllOrders()">Cancel All Orders</button>
-                    </div>
-                </div>
-            </div>
-            <div class="panel">
-                <h2>System Status</h2>
-                <div class="status-bar">
-                    <div class="status-item">
-                        <div class="status-label">Server</div>
-                        <div class="status-value" id="server-status">--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Last Update</div>
-                        <div class="status-value" id="last-update">--</div>
-                    </div>
-                </div>
+            <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #333;">
+                <div style="font-size: 11px; color: #888; margin-bottom: 4px;">System Status</div>
+                <div style="font-size: 12px; color: #4caf50;" id="system-status">Online</div>
+                <div style="font-size: 10px; color: #666; margin-top: 4px;" id="last-update">--</div>
             </div>
         </div>
     </div>
     
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <script>
         const SERVER_PORT = {{SERVER_PORT}};
         const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
         const SYMBOL = '{{SYMBOL}}';
         
-        let updateIntervals = {};
         let chart = null;
+        let candlestickSeries = null;
+        let updateIntervals = {};
         
-        // Tab switching
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                const tabName = tab.dataset.tab;
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
-                tab.classList.add('active');
-                document.querySelector(`[data-content="${tabName}"]`).style.display = 'grid';
-                
-                // Initialize tab-specific features
-                if (tabName === 'chart' && !chart) {
-                    initChart();
+        // Initialize chart
+        function initChart() {
+            const container = document.getElementById('chart-container');
+            if (!container || typeof LightweightCharts === 'undefined') return;
+            
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: container.clientHeight,
+                layout: {
+                    background: { color: '#0a0a0a' },
+                    textColor: '#d1d5db',
+                },
+                grid: {
+                    vertLines: { color: '#1a1a1a' },
+                    horzLines: { color: '#1a1a1a' },
+                },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                rightPriceScale: {
+                    borderColor: '#1a1a1a',
+                    autoScale: true,
+                },
+                timeScale: {
+                    borderColor: '#1a1a1a',
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+            });
+            
+            candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#4caf50',
+                downColor: '#f44336',
+                borderVisible: false,
+                wickUpColor: '#4caf50',
+                wickDownColor: '#f44336',
+            });
+            
+            // Load initial data
+            loadChartData();
+            
+            // Set up auto-refresh
+            const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 6);
+            updateIntervals.chart = setInterval(updateChart, 1000 / rate);
+            
+            // Resize handler
+            window.addEventListener('resize', () => {
+                if (chart) {
+                    chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
                 }
             });
-        });
+        }
         
-        // Efficient data fetching with caching
-        async function fetchData(endpoint, cacheKey = null, maxAge = 1000) {
-            const cache = window.dataCache || {};
-            if (cacheKey && cache[cacheKey] && Date.now() - cache[cacheKey].timestamp < maxAge) {
-                return cache[cacheKey].data;
-            }
-            
+        async function loadChartData() {
             try {
-                const response = await fetch(`${BASE_URL}${endpoint}`);
+                const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
+                const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
+                const response = await fetch(`${BASE_URL}/api/chart/reload?symbol=${symbol}&timeframe=${timeframe}&limit=300`);
                 const data = await response.json();
-                if (cacheKey) {
-                    window.dataCache = window.dataCache || {};
-                    window.dataCache[cacheKey] = { data, timestamp: Date.now() };
+                if (data.bars && candlestickSeries) {
+                    candlestickSeries.setData(data.bars.map(bar => ({
+                        time: bar.time,
+                        open: bar.open,
+                        high: bar.high,
+                        low: bar.low,
+                        close: bar.close,
+                    })));
                 }
-                return data;
             } catch (error) {
-                console.error(`Error fetching ${endpoint}:`, error);
-                return null;
+                console.error('Error loading chart:', error);
             }
+        }
+        
+        async function updateChart() {
+            try {
+                const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
+                const response = await fetch(`${BASE_URL}/api/chart/quote?symbol=${symbol}`);
+                const data = await response.json();
+                if (data.latest_bar && candlestickSeries) {
+                    const bar = data.latest_bar;
+                    candlestickSeries.update({
+                        time: bar.time,
+                        open: bar.open,
+                        high: bar.high,
+                        low: bar.low,
+                        close: bar.close,
+                    });
+                }
+            } catch (error) {
+                // Silent fail for chart updates
+            }
+        }
+        
+        function refreshChart() {
+            loadChartData();
         }
         
         // Update account status
         async function updateAccountStatus() {
-            const data = await fetchData('/api/chart/account/state', 'account', 2000);
-            if (!data || data.error) return;
-            
-            const balance = data.balance || 0;
-            const unrealized = data.unrealized_pnl || 0;
-            const realized = data.realized_pnl || 0;
-            
-            document.getElementById('balance').textContent = `$${balance.toFixed(2)}`;
-            document.getElementById('unrealized-pnl').textContent = `$${unrealized.toFixed(2)}`;
-            document.getElementById('unrealized-pnl').className = `status-value ${unrealized >= 0 ? 'positive' : 'negative'}`;
-            document.getElementById('realized-pnl').textContent = `$${realized.toFixed(2)}`;
-            document.getElementById('realized-pnl').className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/account/state`);
+                const data = await response.json();
+                if (data && !data.error) {
+                    document.getElementById('account-name').textContent = data.account_name || '--';
+                    document.getElementById('balance').textContent = `$${(data.balance || 0).toFixed(2)}`;
+                    
+                    const unrealized = data.unrealized_pnl || 0;
+                    const realizedEl = document.getElementById('realized-pnl');
+                    const unrealizedEl = document.getElementById('unrealized-pnl');
+                    
+                    unrealizedEl.textContent = `$${unrealized.toFixed(2)}`;
+                    unrealizedEl.className = `status-value ${unrealized >= 0 ? 'positive' : 'negative'}`;
+                    
+                    const realized = data.realized_pnl || 0;
+                    realizedEl.textContent = `$${realized.toFixed(2)}`;
+                    realizedEl.className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
+                }
+            } catch (error) {
+                console.error('Error updating account:', error);
+            }
         }
         
-        // Update positions (efficient DOM updates)
+        // Update positions
         async function updatePositions() {
-            const data = await fetchData('/api/chart/positions', 'positions', 2000);
-            if (!data || !data.positions) return;
-            
-            const positions = data.positions;
-            document.getElementById('position-count').textContent = positions.length;
-            
-            // Update positions table efficiently
-            const tbody = document.getElementById('positions-body');
-            const detailTbody = document.getElementById('positions-detail-body');
-            
-            // Clear and rebuild only if data changed
-            const currentHtml = tbody.innerHTML;
-            const newHtml = positions.map(pos => {
-                const pnl = pos.unrealizedPnL || 0;
-                const pnlPct = pos.unrealizedPnLPercent || 0;
-                return `
-                    <tr>
-                        <td>${pos.symbol || 'N/A'}</td>
-                        <td>${pos.side || 'N/A'}</td>
-                        <td>${pos.quantity || 0}</td>
-                        <td>$${(pos.entryPrice || 0).toFixed(2)}</td>
-                        <td>$${(pos.currentPrice || 0).toFixed(2)}</td>
-                        <td class="${pnl >= 0 ? 'positive' : 'negative'}">$${pnl.toFixed(2)}</td>
-                        <td class="${pnlPct >= 0 ? 'positive' : 'negative'}">${pnlPct.toFixed(2)}%</td>
-                    </tr>
-                `;
-            }).join('');
-            
-            if (currentHtml !== newHtml) {
-                tbody.innerHTML = newHtml || '<tr><td colspan="7" style="text-align: center; color: #888;">No positions</td></tr>';
-                detailTbody.innerHTML = newHtml || '<tr><td colspan="7" style="text-align: center; color: #888;">No positions</td></tr>';
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/positions`);
+                const data = await response.json();
+                if (data && data.positions) {
+                    const positions = data.positions;
+                    document.getElementById('position-count').textContent = positions.length;
+                    document.getElementById('pos-count').textContent = positions.length;
+                    
+                    const tbody = document.getElementById('positions-body');
+                    if (positions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No positions</td></tr>';
+                    } else {
+                        tbody.innerHTML = positions.map(pos => {
+                            const pnl = pos.unrealizedPnL || 0;
+                            return `
+                                <tr>
+                                    <td>${pos.symbol || 'N/A'}</td>
+                                    <td>${pos.side || 'N/A'}</td>
+                                    <td>${pos.quantity || 0}</td>
+                                    <td>$${(pos.entryPrice || 0).toFixed(2)}</td>
+                                    <td class="${pnl >= 0 ? 'positive' : 'negative'}">$${pnl.toFixed(2)}</td>
+                                </tr>
+                            `;
+                        }).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating positions:', error);
             }
         }
         
         // Update orders
         async function updateOrders() {
-            const data = await fetchData('/api/chart/orders', 'orders', 2000);
-            if (!data || !data.orders) return;
-            
-            const orders = data.orders;
-            const tbody = document.getElementById('orders-body');
-            tbody.innerHTML = orders.map(order => `
-                <tr>
-                    <td>${order.id || 'N/A'}</td>
-                    <td>${order.symbol || 'N/A'}</td>
-                    <td>${order.side || 'N/A'}</td>
-                    <td>${order.quantity || 0}</td>
-                    <td>$${(order.price || 0).toFixed(2)}</td>
-                    <td>${order.type || 'N/A'}</td>
-                    <td>${order.status || 'N/A'}</td>
-                </tr>
-            `).join('') || '<tr><td colspan="7" style="text-align: center; color: #888;">No orders</td></tr>';
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/orders`);
+                const data = await response.json();
+                if (data && data.orders) {
+                    const orders = data.orders;
+                    document.getElementById('order-count').textContent = orders.length;
+                    document.getElementById('ord-count').textContent = orders.length;
+                    
+                    const tbody = document.getElementById('orders-body');
+                    if (orders.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
+                    } else {
+                        tbody.innerHTML = orders.map(order => `
+                            <tr>
+                                <td>${order.symbol || 'N/A'}</td>
+                                <td>${order.side || 'N/A'}</td>
+                                <td>${order.quantity || 0}</td>
+                                <td>$${(order.price || 0).toFixed(2)}</td>
+                                <td>${order.type || 'N/A'}</td>
+                            </tr>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating orders:', error);
+            }
         }
         
-        // Update strategies - show all available strategies
+        // Update strategies
         async function updateStrategies() {
-            const data = await fetchData('/api/chart/strategy/status', 'strategies', 3000);
-            if (!data || !data.strategies) return;
-            
-            const container = document.getElementById('strategies-container');
-            const strategies = Object.values(data.strategies);
-            const available = data.available || [];
-            const active = data.active || [];
-            
-            // Show all strategies (available + loaded)
-            const allStrategyNames = new Set([...Object.keys(data.strategies), ...available]);
-            
-            container.innerHTML = Array.from(allStrategyNames).map(name => {
-                const strategy = data.strategies[name] || { name, status: 'idle', active: false, symbols: [], positions: 0, available: true };
-                const isActive = active.includes(name);
-                
-                return `
-                <div class="strategy-card">
-                    <div class="strategy-header">
-                        <span class="strategy-name">${strategy.name}</span>
-                        <span class="strategy-status ${isActive ? 'active' : 'idle'}">${isActive ? 'ACTIVE' : 'IDLE'}</span>
-                    </div>
-                    <div class="strategy-info">
-                        Symbols: ${strategy.symbols && strategy.symbols.length ? strategy.symbols.join(', ') : 'None'} | Positions: ${strategy.positions || 0}
-                    </div>
-                    <div style="margin-top: 12px; display: flex; gap: 8px;">
-                        <button class="btn btn-primary" onclick="startStrategy('${strategy.name}')" ${isActive ? 'disabled' : ''}>
-                            Start
-                        </button>
-                        <button class="btn btn-danger" onclick="stopStrategy('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
-                            Stop
-                        </button>
-                    </div>
-                </div>
-            `;
-            }).join('') || '<div style="color: #888; text-align: center;">No strategies available</div>';
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/strategy/status`);
+                const data = await response.json();
+                if (data && data.strategies) {
+                    const strategies = Object.values(data.strategies);
+                    const active = data.active || [];
+                    const grid = document.getElementById('strategy-grid');
+                    
+                    if (strategies.length === 0) {
+                        grid.innerHTML = '<div class="empty-state">No strategies available</div>';
+                    } else {
+                        grid.innerHTML = strategies.map(strategy => {
+                            const isActive = active.includes(strategy.name);
+                            return `
+                                <div class="strategy-card">
+                                    <div class="strategy-header">
+                                        <span class="strategy-name">${strategy.name}</span>
+                                        <span class="strategy-status ${isActive ? 'active' : 'idle'}">
+                                            ${isActive ? 'ACTIVE' : 'IDLE'}
+                                        </span>
+                                    </div>
+                                    <div class="strategy-info">
+                                        ${strategy.symbols ? strategy.symbols.join(', ') : 'No symbols'} | 
+                                        ${strategy.positions || 0} pos
+                                    </div>
+                                    <div class="strategy-actions">
+                                        <button class="btn-primary" onclick="startStrategy('${strategy.name}')" ${isActive ? 'disabled' : ''}>
+                                            Start
+                                        </button>
+                                        <button class="btn-danger" onclick="stopStrategy('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
+                                            Stop
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating strategies:', error);
+            }
         }
         
-        // Strategy control functions
+        // Load contracts
+        async function loadContracts() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/contracts`);
+                const data = await response.json();
+                if (data && data.symbols) {
+                    const select = document.getElementById('chart-symbol-select');
+                    const currentValue = select.value;
+                    select.innerHTML = data.symbols.map(s => 
+                        `<option value="${s}" ${s === currentValue ? 'selected' : ''}>${s}</option>`
+                    ).join('');
+                }
+            } catch (error) {
+                console.error('Error loading contracts:', error);
+            }
+        }
+        
+        // Order placement
+        async function placeOrder(side) {
+            const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
+            const orderType = document.getElementById('order-type')?.value || 'market';
+            const qty = parseInt(document.getElementById('order-qty')?.value || 1);
+            const price = parseFloat(document.getElementById('order-price')?.value);
+            const enableBracket = document.getElementById('enable-bracket')?.checked;
+            const slTicks = parseInt(document.getElementById('order-sl-ticks')?.value);
+            const tpTicks = parseInt(document.getElementById('order-tp-ticks')?.value);
+            
+            const orderData = {
+                symbol: symbol,
+                side: side,
+                quantity: qty,
+                type: orderType
+            };
+            
+            if (orderType === 'limit' && price) {
+                orderData.limitPrice = price;
+            }
+            if (enableBracket) {
+                if (slTicks) orderData.stopLossTicks = slTicks;
+                if (tpTicks) orderData.takeProfitTicks = tpTicks;
+            }
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/order`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(orderData)
+                });
+                const result = await response.json();
+                if (result.success || result.orderId) {
+                    alert(`✅ Order placed: ${result.orderId || 'Pending'}`);
+                    updatePositions();
+                    updateOrders();
+                } else {
+                    alert(`❌ Order failed: ${result.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Error: ${error.message}`);
+            }
+        }
+        
+        // Strategy control
         async function startStrategy(name) {
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/start`, {
@@ -558,10 +732,10 @@
                 if (data.success) {
                     updateStrategies();
                 } else {
-                    alert(`Error: ${data.error || data.message}`);
+                    alert(`❌ ${data.error || data.message}`);
                 }
             } catch (error) {
-                alert(`Error starting strategy: ${error.message}`);
+                alert(`❌ Error: ${error.message}`);
             }
         }
         
@@ -576,302 +750,80 @@
                 if (data.success) {
                     updateStrategies();
                 } else {
-                    alert(`Error: ${data.error || data.message}`);
+                    alert(`❌ ${data.error || data.message}`);
                 }
             } catch (error) {
-                alert(`Error stopping strategy: ${error.message}`);
+                alert(`❌ Error: ${error.message}`);
             }
         }
         
-        async function flattenPositions() {
-            if (!confirm('Close all positions and cancel all orders?')) return;
-            // TODO: Implement flatten endpoint
-            alert('Flatten functionality to be implemented');
+        // Quick actions
+        async function flattenAll() {
+            if (!confirm('⚠️ Close all positions and cancel all orders?')) return;
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/flatten`, { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    alert('✅ All positions flattened');
+                    refreshAll();
+                } else {
+                    alert(`❌ ${data.error || 'Flatten failed'}`);
+                }
+            } catch (error) {
+                alert(`❌ Error: ${error.message}`);
+            }
         }
         
         async function cancelAllOrders() {
-            if (!confirm('Cancel all open orders?')) return;
-            // TODO: Implement cancel all endpoint
-            alert('Cancel all functionality to be implemented');
-        }
-        
-        // Initialize chart (lazy load TradingView library)
-        async function initChart() {
-            const container = document.getElementById('chart-container');
-            if (!container) return;
-            
-            // Check if library is already loaded
-            if (typeof LightweightCharts === 'undefined') {
-                // Load TradingView Lightweight Charts library (same version as working chart)
-                const script = document.createElement('script');
-                script.src = 'https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js';
-                script.onload = () => {
-                    // Wait a bit for library to fully initialize
-                    setTimeout(() => createChart(), 100);
-                };
-                script.onerror = () => {
-                    console.error('Failed to load TradingView Lightweight Charts library');
-                    container.innerHTML = '<div style="padding: 20px; color: #888;">Failed to load chart library. Please check your internet connection.</div>';
-                };
-                document.head.appendChild(script);
-            } else {
-                createChart();
-            }
-        }
-        
-        function createChart() {
-            const container = document.getElementById('chart-container');
-            if (!container) return;
-            
-            // Check if library is loaded
-            if (typeof LightweightCharts === 'undefined') {
-                console.error('TradingView Lightweight Charts library not loaded');
-                container.innerHTML = '<div style="padding: 20px; color: #888;">Chart library not available</div>';
-                return;
-            }
-            
+            if (!confirm('⚠️ Cancel all open orders?')) return;
             try {
-                // Use LightweightCharts directly (not window.LightweightCharts)
-                chart = LightweightCharts.createChart(container, {
-                    width: container.clientWidth,
-                    height: 500,
-                    layout: {
-                        background: { color: '#0a0a0a' },
-                        textColor: '#d1d5db',
-                    },
-                    grid: {
-                        vertLines: { color: '#1a1a1a' },
-                        horzLines: { color: '#1a1a1a' },
-                    },
-                    crosshair: {
-                        mode: LightweightCharts.CrosshairMode.Normal,
-                    },
-                    rightPriceScale: {
-                        borderColor: '#1a1a1a',
-                        autoScale: true,
-                    },
-                    timeScale: {
-                        borderColor: '#1a1a1a',
-                        timeVisible: true,
-                        secondsVisible: false,
-                    },
-                });
-                
-                // Check if addCandlestickSeries is available
-                if (typeof chart.addCandlestickSeries !== 'function') {
-                    console.error('addCandlestickSeries not available');
-                    console.error('Available methods:', Object.getOwnPropertyNames(chart));
-                    container.innerHTML = '<div style="padding: 20px; color: #f44336;">Chart API not available. Please refresh the page.</div>';
-                    return;
-                }
-                
-                const candlestickSeries = chart.addCandlestickSeries({
-                    upColor: '#4caf50',
-                    downColor: '#f44336',
-                    borderVisible: false,
-                    wickUpColor: '#4caf50',
-                    wickDownColor: '#f44336',
-                    priceScaleId: 'right',
-                    visible: true,
-                });
-                
-                // Store series reference globally
-                window.chartSeries = candlestickSeries;
-                
-                // Load initial data
-                loadChartData(candlestickSeries);
-                
-                // Set up refresh rate
-                const refreshRate = parseInt(document.getElementById('chart-refresh-rate')?.value || 1);
-                const intervalMs = 1000 / refreshRate;
-                window.chartRefreshInterval = setInterval(() => {
-                    if (window.chartSeries) updateChartData(window.chartSeries);
-                }, intervalMs);
-                
-                // Load contracts into symbol dropdown
-                loadContracts();
-                
-                // Set up change handlers
-                const symbolSelect = document.getElementById('chart-symbol-select');
-                const timeframeSelect = document.getElementById('chart-timeframe-select');
-                if (symbolSelect) {
-                    symbolSelect.addEventListener('change', refreshChartData);
-                }
-                if (timeframeSelect) {
-                    timeframeSelect.addEventListener('change', refreshChartData);
-                }
-            } catch (error) {
-                console.error('Error creating chart:', error);
-                container.innerHTML = `<div style="padding: 20px; color: #f44336;">Error creating chart: ${error.message}</div>`;
-            }
-        }
-        
-        async function loadChartData(series) {
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/reload?symbol=${SYMBOL}&timeframe=5m&limit=300`);
+                const response = await fetch(`${BASE_URL}/api/chart/cancel_all`, { method: 'POST' });
                 const data = await response.json();
-                if (data.bars) {
-                    series.setData(data.bars.map(bar => ({
-                        time: bar.time,
-                        open: bar.open,
-                        high: bar.high,
-                        low: bar.low,
-                        close: bar.close,
-                    })));
+                if (data.success) {
+                    alert('✅ All orders canceled');
+                    updateOrders();
+                } else {
+                    alert(`❌ ${data.error || 'Cancel failed'}`);
                 }
             } catch (error) {
-                console.error('Error loading chart data:', error);
+                alert(`❌ Error: ${error.message}`);
             }
         }
         
-        async function updateChartData(series) {
-            try {
-                const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
-                const response = await fetch(`${BASE_URL}/api/chart/quote?symbol=${symbol}`);
-                const data = await response.json();
-                if (data.latest_bar) {
-                    const bar = data.latest_bar;
-                    series.update({
-                        time: bar.time,
-                        open: bar.open,
-                        high: bar.high,
-                        low: bar.low,
-                        close: bar.close,
-                    });
-                }
-            } catch (error) {
-                console.error('Error updating chart:', error);
-            }
+        function refreshAll() {
+            updateAccountStatus();
+            updatePositions();
+            updateOrders();
+            updateStrategies();
+            refreshChart();
         }
         
-        // Chart control functions
-        
-        async function loadContracts() {
-            try {
-                const data = await fetchData('/api/chart/contracts', 'contracts', 60000);
-                if (data && data.symbols) {
-                    const select = document.getElementById('chart-symbol-select');
-                    if (select) {
-                        const currentValue = select.value;
-                        select.innerHTML = data.symbols.map(s => `<option value="${s}" ${s === currentValue ? 'selected' : ''}>${s}</option>`).join('');
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading contracts:', error);
-            }
-        }
-        
-        async function refreshChartData() {
-            if (!chart || !chartSeries) return;
-            const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
-            const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
-            
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/reload?symbol=${symbol}&timeframe=${timeframe}&limit=300`);
-                const data = await response.json();
-                if (data.bars) {
-                    chartSeries.setData(data.bars.map(bar => ({
-                        time: bar.time,
-                        open: bar.open,
-                        high: bar.high,
-                        low: bar.low,
-                        close: bar.close,
-                    })));
-                }
-            } catch (error) {
-                console.error('Error refreshing chart:', error);
-            }
-        }
-        
+        // UI helpers
         function updateOrderType() {
-            const orderType = document.getElementById('order-type-select')?.value;
-            const limitPrice = document.getElementById('order-limit-price');
-            const stopPrice = document.getElementById('order-stop-price');
-            
-            if (limitPrice) limitPrice.style.display = orderType === 'limit' ? 'block' : 'none';
-            if (stopPrice) stopPrice.style.display = orderType === 'stop' ? 'block' : 'none';
+            const type = document.getElementById('order-type')?.value;
+            const priceInput = document.getElementById('order-price');
+            if (priceInput) {
+                priceInput.style.display = (type === 'limit') ? 'block' : 'none';
+            }
         }
         
         function updateBracket() {
-            const enableBracket = document.getElementById('enable-bracket')?.checked;
-            const stopLoss = document.getElementById('order-stop-loss');
-            const takeProfit = document.getElementById('order-take-profit');
-            
-            if (stopLoss) stopLoss.style.display = enableBracket ? 'block' : 'none';
-            if (takeProfit) takeProfit.style.display = enableBracket ? 'block' : 'none';
+            const enabled = document.getElementById('enable-bracket')?.checked;
+            const slInput = document.getElementById('order-sl-ticks');
+            const tpInput = document.getElementById('order-tp-ticks');
+            if (slInput) slInput.style.display = enabled ? 'block' : 'none';
+            if (tpInput) tpInput.style.display = enabled ? 'block' : 'none';
         }
         
-        async function placeOrderFromChart(side) {
-            const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
-            const orderType = document.getElementById('order-type-select')?.value || 'market';
-            const quantity = parseInt(document.getElementById('order-quantity')?.value || 1);
-            const limitPrice = parseFloat(document.getElementById('order-limit-price')?.value);
-            const stopPrice = parseFloat(document.getElementById('order-stop-price')?.value);
-            const enableBracket = document.getElementById('enable-bracket')?.checked;
-            const stopLoss = parseFloat(document.getElementById('order-stop-loss')?.value);
-            const takeProfit = parseFloat(document.getElementById('order-take-profit')?.value);
-            
-            try {
-                const orderData = {
-                    symbol: symbol,
-                    side: side,
-                    quantity: quantity,
-                    type: orderType
-                };
-                
-                if (orderType === 'limit' && limitPrice) {
-                    orderData.limitPrice = limitPrice;
-                }
-                if (orderType === 'stop' && stopPrice) {
-                    orderData.stopPrice = stopPrice;
-                }
-                if (enableBracket) {
-                    if (stopLoss) orderData.stopLossPrice = stopLoss;
-                    if (takeProfit) orderData.takeProfitPrice = takeProfit;
-                }
-                
-                const response = await fetch(`${BASE_URL}/api/chart/order`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(orderData)
-                });
-                
-                const result = await response.json();
-                if (result.success || result.orderId) {
-                    alert(`Order placed successfully: ${result.orderId || 'ID pending'}`);
-                    updatePositions();
-                    updateOrders();
-                } else {
-                    alert(`Order failed: ${result.error || 'Unknown error'}`);
-                }
-            } catch (error) {
-                alert(`Error placing order: ${error.message}`);
-            }
-        }
-        
-        function updateChartRefreshRate() {
-            const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 1);
-            if (window.chartRefreshInterval) {
-                clearInterval(window.chartRefreshInterval);
-            }
-            if (window.chartSeries) {
-                const intervalMs = 1000 / rate;
-                window.chartRefreshInterval = setInterval(() => {
-                    if (window.chartSeries) updateChartData(window.chartSeries);
-                }, intervalMs);
-            }
-        }
-        
-        // Set up refresh rate control on page load
+        // Initialize
         window.addEventListener('load', () => {
-            const refreshRateSelect = document.getElementById('chart-refresh-rate');
-            if (refreshRateSelect) {
-                refreshRateSelect.addEventListener('change', updateChartRefreshRate);
-            }
-        });
-        
-        // Start update loops
-        function startUpdates() {
+            // Initialize chart
+            initChart();
+            
+            // Load contracts
+            loadContracts();
+            
+            // Start update loops
             updateIntervals.account = setInterval(updateAccountStatus, 3000);
             updateIntervals.positions = setInterval(updatePositions, 3000);
             updateIntervals.orders = setInterval(updateOrders, 5000);
@@ -883,20 +835,25 @@
             updateOrders();
             updateStrategies();
             
-            // Update connection status
+            // Connection status
             document.getElementById('connection-status').textContent = 'Connected';
-            document.getElementById('connection-status').style.color = '#4caf50';
-            document.getElementById('server-status').textContent = 'Online';
-            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+            document.getElementById('system-status').textContent = 'Online';
             
+            // Update timestamp
             setInterval(() => {
-                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                document.getElementById('last-update').textContent = 'Last update: ' + new Date().toLocaleTimeString();
             }, 1000);
-        }
-        
-        // Initialize on load
-        window.addEventListener('load', () => {
-            startUpdates();
+            
+            // Symbol change handler
+            document.getElementById('chart-symbol-select')?.addEventListener('change', refreshChart);
+            document.getElementById('chart-timeframe-select')?.addEventListener('change', refreshChart);
+            
+            // Refresh rate change handler
+            document.getElementById('chart-refresh-rate')?.addEventListener('change', (e) => {
+                clearInterval(updateIntervals.chart);
+                const rate = parseInt(e.target.value || 6);
+                updateIntervals.chart = setInterval(updateChart, 1000 / rate);
+            });
         });
         
         // Cleanup on unload
