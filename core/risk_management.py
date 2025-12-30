@@ -43,10 +43,10 @@ class RiskManager:
     
     # Point value mapping (dollar value per point move)
     POINT_VALUES = {
-        "MNQ": 0.50,   # $0.50 per point
-        "MES": 0.50,   # $0.50 per point
-        "MYM": 0.50,   # $0.50 per point
-        "M2K": 0.50,   # $0.50 per point
+        "MNQ": 2.0,    # $2 per point (Micro E-mini Nasdaq-100)
+        "MES": 5.0,    # $5 per point (Micro E-mini S&P 500)
+        "MYM": 0.5,    # $0.50 per point (Micro E-mini Dow)
+        "M2K": 5.0,    # $5 per point (Micro E-mini Russell 2000)
         "ES": 50.0,    # $50 per point
         "NQ": 20.0,    # $20 per point
         "YM": 5.0,     # $5 per point

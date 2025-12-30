@@ -120,11 +120,14 @@ class ContractManager:
                 )
                 
                 # If symbol field not found, try to extract from contract ID
-                # Format: CON.F.US.MNQ.Z25 -> extract MNQ (second to last part)
+                # Format: CON.F.US.MNQ.Z25 -> extract MNQ (fourth element, or second-to-last as fallback)
                 if not contract_symbol and contract_id:
                     if '.' in str(contract_id):
                         parts = str(contract_id).split('.')
-                        if len(parts) >= 4:
+                        # Prefer parts[3] for CON.F.US.SYM.EXP format
+                        if len(parts) >= 5:
+                            contract_symbol = parts[3]
+                        elif len(parts) >= 4:
                             contract_symbol = parts[-2]
                 
                 # Also try extracting from name field
@@ -180,7 +183,10 @@ class ContractManager:
                             cid = str(contract.get('contractId'))
                             if '.' in cid:
                                 parts = cid.split('.')
-                                if len(parts) >= 4:
+                                # Use parts[3] for CON.F.US.SYM.EXP format
+                                if len(parts) >= 5:
+                                    sym = parts[3]
+                                elif len(parts) >= 4:
                                     sym = parts[-2]
                         if sym:
                             available_symbols.add(str(sym).upper())

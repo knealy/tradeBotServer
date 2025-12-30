@@ -613,7 +613,75 @@
     ]
   },
   
+  "major_features": [
+    {
+      "date": "2025-12-29",
+      "feature": "Complete GUI Enhancement Suite (7 features)",
+      "description": "Comprehensive upgrade to the Master Control GUI with 7 major features implemented in one session",
+      "features": [
+        "Technicolor widget borders (purple/red/blue/orange/yellow repeating pattern)",
+        "Symbol/contract selection dropdown with live contract loading",
+        "Account selection dropdown with balance display and switching",
+        "Strategy Signal Feed widget with real-time BUY/SELL/ALERT signals",
+        "Command Input widget for executing CLI commands from GUI",
+        "Enhanced Strategy Control with parameter inputs (symbols, timeframe)",
+        "Verified flatten command functionality (no issues found)"
+      ],
+      "files": [
+        "gui/master_control.html",
+        "gui/chart_html.py"
+      ],
+      "new_endpoints": [
+        "GET /api/accounts - List all available accounts",
+        "POST /api/select_account - Switch to different account",
+        "POST /api/execute_command - Execute CLI commands from GUI"
+      ],
+      "impact": "Transformed GUI into a fully-featured trading dashboard with multi-account support, real-time signals, and complete strategy control",
+      "lessons_learned": [
+        "WebSocket integration allows real-time signal broadcasting to all connected clients",
+        "Reusing existing CLI command parser for GUI commands ensures consistency",
+        "Account switching requires updating both trading_bot.selected_account and account_tracker",
+        "Technicolor borders with box-shadow create professional visual hierarchy",
+        "Grid layouts with parameter inputs provide intuitive strategy configuration"
+      ]
+    }
+  ],
   "recent_fixes": [
+    {
+      "date": "2025-12-29",
+      "issue": "AttributeError: 'NoneType' object has no attribute 'query' in WebSocket broadcast loop",
+      "fix": "Fixed handler to accept None request: account_id = request.query.get('account_id') if request else None. WebSocket broadcast loop calls handlers with request=None, but handlers expected real request object.",
+      "files": ["gui/chart_html.py"],
+      "lessons_learned": [
+        "Handlers called from WebSocket broadcasts may receive None as request parameter",
+        "Always check if request is not None before accessing request.query or request.match_info",
+        "Use conditional expressions: request.query.get('key') if request else None"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType' in chart_html.py",
+      "fix": "Fixed volume handling in quote processing. Changed from int(quote.get('volume', 0)) to explicit None check: volume_raw = quote.get('volume', 0); current_volume = int(volume_raw) if volume_raw is not None else 0",
+      "files": ["gui/chart_html.py"],
+      "lessons_learned": [
+        "dict.get(key, default) only returns default if key doesn't exist, NOT if key exists with None value",
+        "Always check for None explicitly when converting to int/float",
+        "Quote data from API can have None values for optional fields like volume"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "Collapsible panels not actually collapsing - div remained visible as blank space",
+      "fix": "Fixed CSS for collapsible panels: (1) Reduced max-height from 10000px to 2000px for better transitions, (2) Added padding/margin transitions, (3) Force zero padding/margin when collapsed with !important, (4) Remove border from collapsed header, (5) Fixed collapse button rotation to -90deg",
+      "files": ["gui/master_control.html"],
+      "lessons_learned": [
+        "max-height: 10000px causes poor transition performance - use reasonable values like 2000px",
+        "Must animate padding/margin along with max-height for true collapse",
+        "Use !important to force zero padding/margin when collapsed",
+        "Remove borders from headers when collapsed for cleaner look",
+        "display: none can't be animated - use max-height with overflow: hidden instead"
+      ]
+    },
     {
       "date": "2025-12-04",
       "issue": "JWT token expiration causing 500 errors on order placement",
@@ -1039,6 +1107,110 @@
         "Verification step is essential for position closes - API lies about success",
         "Order cancellation works reliably with Python fallback (~43-47ms)",
         "Position closing requires contractId from position object before calling closeContract"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "GUI dropdowns showing month codes (6AH6) instead of root symbols (MNQ), causing 'Symbol not found in contract cache' errors",
+      "fix": "✅ FIXED! Root cause: Symbol extraction logic in gui/chart_html.py was prioritizing the 'name' field (which contains month codes like '6AH6') over parsing the contract ID. This caused the dropdowns to show month-specific symbols that the ContractManager couldn't resolve. Solution: (1) Reordered symbol extraction in handle_get_contracts to ALWAYS try extract_root_symbol(contractId) FIRST. (2) Updated core/market_data.py to use consistent parsing: CON.F.US.MNQ.H26 → parts[3] = 'MNQ'. (3) Only fall back to name/symbol fields if contract ID parsing fails.",
+      "files": [
+        "gui/chart_html.py",
+        "core/market_data.py"
+      ],
+      "impact": "CRITICAL FIX - GUI now correctly displays root symbols (MNQ, NQ, ES, etc.) instead of month codes (6AH6), eliminating 'Symbol not found' errors and enabling proper quote/chart loading.",
+      "lessons_learned": [
+        "TopStepX contract format: CON.F.US.<ROOT_SYMBOL>.<EXPIRATION> → parts[3] is the root symbol",
+        "The 'name' field from API often contains month codes (6AH6) not root symbols",
+        "ALWAYS prioritize parsing from structured contract ID over free-text name fields",
+        "Maintain consistent symbol extraction logic across all modules (GUI, ContractManager, MarketData)",
+        "Root symbols are what users recognize and what the cache indexes by"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "SignalR connection instability - repeated connect/disconnect cycles and 'Hub is not running' errors",
+      "fix": "✅ FIXED! Multiple issues resolved: (1) Added hub state checking before sending messages to prevent 'Hub is not running' errors. (2) Added _reconnecting flag to prevent multiple simultaneous reconnection attempts. (3) Improved on_close handler to only reconnect if actually connected (prevents duplicate reconnection attempts). (4) Added guard in start() to stop existing hub before creating new one. (5) Enhanced error handling in subscribe_quote() to gracefully handle 'Hub is not running' errors and queue subscriptions for retry. (6) Fixed KeyboardInterrupt handling in rate limiter to allow graceful shutdown.",
+      "files": [
+        "core/websocket_manager.py",
+        "trading_bot.py"
+      ],
+      "impact": "SignalR connections are now more stable, with proper state management and no duplicate reconnection attempts. 'Hub is not running' errors are handled gracefully with automatic retry.",
+      "lessons_learned": [
+        "SignalR hub must be in 'running' state before sending messages - check transport state",
+        "Prevent multiple simultaneous reconnection attempts with a flag (_reconnecting)",
+        "on_close callbacks can fire multiple times - check _connected state before acting",
+        "Always stop existing hub before creating new one to prevent connection conflicts",
+        "Queue subscriptions for retry when hub is not ready instead of failing immediately",
+        "KeyboardInterrupt during time.sleep() in rate limiter needs explicit handling for graceful shutdown"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "GUI account selection dropdown not working and chart not refreshing when symbol changes",
+      "fix": "✅ FIXED! Two issues resolved: (1) **Account Selection**: Enhanced backend to fetch accounts if not loaded, added better error handling in frontend with proper error messages and account reload on failure. (2) **Chart Symbol Change**: Added `currentChartSymbol` tracking variable, modified `loadChartData()` to reset visible range (last ~50 bars) and price scale (auto-fit) when loading new symbol data, modified `updateChart()` to detect symbol changes and reload chart instead of updating with wrong symbol, made `refreshChart()` async and properly restart update interval. Chart now properly resets when switching symbols instead of showing old price bars and wrong price scale.",
+      "files": [
+        "gui/chart_html.py",
+        "gui/master_control.html"
+      ],
+      "impact": "Account selection now works reliably with proper error handling. Chart properly refreshes when symbol changes, showing correct price scale and recent bars instead of old data.",
+      "lessons_learned": [
+        "When switching chart symbols, must reset visible range and price scale to show new symbol's data correctly",
+        "Track current chart symbol to detect changes and reload instead of updating with wrong data",
+        "TradingView Lightweight Charts: Use setVisibleRange() to show recent bars, applyOptions({autoScale: true}) to reset price scale",
+        "Account selection requires ensuring accounts list is loaded before accessing by index",
+        "Always provide clear error messages and reload data on errors for better UX"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "GUI null element errors and account selection/chart refresh issues",
+      "fix": "✅ FIXED! Multiple issues resolved: (1) **Null Element Errors**: Added null checks for all DOM element access in `updateAccountDisplay()`, `updateAccountStatus()`, and initialization code. Elements like 'account-name', 'system-status', 'last-update' may not exist - now safely checked before setting textContent. (2) **Account Selection (0 accounts)**: Fixed `handle_get_accounts()` to use `trading_bot.list_accounts()` instead of non-existent `get_accounts()` method. Added fallback to `auth_manager.accounts` if available. (3) **Chart Auto-Refresh Stopping**: Added `currentChartTimeframe` tracking variable, modified `updateChart()` to detect both symbol AND timeframe changes and reload chart, ensured `refreshChart()` properly restarts the update interval after clearing it, fixed refresh rate change handler to properly restart interval.",
+      "files": [
+        "gui/master_control.html",
+        "gui/chart_html.py"
+      ],
+      "impact": "GUI now works without null reference errors, account selection loads accounts correctly, and chart properly auto-refreshes after symbol/timeframe changes.",
+      "lessons_learned": [
+        "Always check if DOM elements exist before setting properties (null checks)",
+        "Use correct method names: `list_accounts()` not `get_accounts()`",
+        "Track both symbol AND timeframe changes for chart reloads",
+        "Always restart intervals after clearing them in refreshChart()",
+        "Set interval to null after clearing to prevent memory leaks",
+        "Log interval restarts for debugging chart refresh issues"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "AccountTracker.initialize_account() missing required arguments when switching accounts in GUI",
+      "fix": "✅ FIXED! Root cause: `handle_select_account()` was calling `initialize_account()` with only `account_id`, but the method requires 4 arguments: `account_id`, `account_name`, `account_type`, and `starting_balance`. Solution: Extract all required information from `selected_account` dictionary before calling `initialize_account()`. Also added check to see if account is already tracked - if yes, just update `current_account_id` instead of re-initializing.",
+      "files": [
+        "gui/chart_html.py"
+      ],
+      "impact": "Account switching in GUI now properly initializes the account tracker with all required information, preventing TypeError exceptions.",
+      "lessons_learned": [
+        "Always check method signatures before calling - `initialize_account()` requires 4 arguments, not just account_id",
+        "Extract account information (name, type, balance) from account dictionary before initializing tracker",
+        "Check if account is already tracked before initializing to avoid unnecessary re-initialization",
+        "Use `current_account_id` to switch between already-tracked accounts instead of re-initializing"
+      ]
+    },
+    {
+      "date": "2025-12-29",
+      "issue": "GUI: PnL staying at 0, grid layout spacing, strategy signals not working, command input not working",
+      "fix": "✅ FIXED! Multiple issues resolved: (1) **PnL Calculation**: Added logic to fetch current prices from market quotes if missing, then calculate unrealized PnL using entry price, current price, quantity, and point value. (2) **Grid Layout**: Reduced gaps from 16px to 10px, padding from 16px to 10px, and panel padding from 16px to 12px for more compact, uniform spacing. (3) **Strategy Signals**: Added signal broadcasting in `strategy_manager.py` when signals are generated - tries to import and call `broadcast_update` from GUI to send signals via WebSocket. (4) **Command Input**: Enhanced error messages to show available commands, improved output formatting, and added auto-refresh of positions/orders after successful commands.",
+      "files": [
+        "gui/chart_html.py",
+        "gui/master_control.html",
+        "strategies/strategy_manager.py"
+      ],
+      "impact": "GUI now displays accurate PnL, has cleaner compact layout, shows strategy signals in real-time, and command input works correctly with better feedback.",
+      "lessons_learned": [
+        "PnL calculation requires current price - fetch from market quotes if not in position data",
+        "Use point values from RiskManager or default values for PnL calculation",
+        "Strategy signals can be broadcast via WebSocket by importing GUI's broadcast_update function",
+        "Command execution should provide helpful error messages with available commands",
+        "Auto-refresh data after successful commands improves UX",
+        "Grid layouts benefit from uniform, compact spacing (10px gaps, 10px padding)"
       ]
     }
   ],

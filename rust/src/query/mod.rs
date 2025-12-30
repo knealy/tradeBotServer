@@ -500,17 +500,35 @@ impl QueryExecutor {
 
         // First, get the position to find the contract ID (required by API)
         let positions = self.get_positions_async(account_id).await?;
-        let contract_id_opt = positions.iter()
+
+        // Helper: TopStepX often returns ids as JSON numbers, not strings.
+        fn value_to_string(v: &Value) -> Option<String> {
+            match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            }
+        }
+
+        let contract_id_opt = positions
+            .iter()
             .find(|pos| {
-                pos.get("id")
+                let id_val = pos.get("id")
                     .or_else(|| pos.get("positionId"))
-                    .and_then(|v| v.as_str())
+                    .or_else(|| pos.get("position_id"));
+
+                id_val
+                    .and_then(value_to_string)
                     .map(|id| id == position_id)
                     .unwrap_or(false)
             })
-            .and_then(|pos| pos.get("contractId"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .and_then(|pos| {
+                // contractId is typically a string like "CON.F.US.MNQ.H26", but be tolerant.
+                pos.get("contractId")
+                    .or_else(|| pos.get("contractID"))
+                    .or_else(|| pos.get("contract_id"))
+                    .and_then(value_to_string)
+            });
 
         let contract_id = match contract_id_opt {
             Some(id) => id,

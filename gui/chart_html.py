@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from pathlib import Path
-from aiohttp import web
+from aiohttp import web, WSMsgType
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,15 +19,19 @@ logger = logging.getLogger(__name__)
 _chart_server = None
 _chart_server_port = None
 _chart_server_trading_bot = None
+_chart_server_symbol = None
+_chart_server_timeframe = None
 
 
-async def _start_chart_server(trading_bot, symbol: str) -> int:
+async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -> int:
     """Start a simple HTTP server for real-time chart updates."""
-    global _chart_server, _chart_server_port, _chart_server_trading_bot
+    global _chart_server, _chart_server_port, _chart_server_trading_bot, _chart_server_symbol, _chart_server_timeframe
     
     if _chart_server is not None:
         # Server already running
         _chart_server_trading_bot = trading_bot
+        _chart_server_symbol = symbol
+        _chart_server_timeframe = timeframe
         return _chart_server_port
     
     app = web.Application()
@@ -141,7 +145,9 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                 # Use quote data to build bar instead of fetching historical data
                 # This avoids rate limiting from too many historical data requests
                 current_price = float(quote.get('last') or quote.get('lastPrice') or quote.get('bid') or 0)
-                current_volume = int(quote.get('volume', 0))  # Total daily volume
+                # Handle None volume (can be None even if key exists)
+                volume_raw = quote.get('volume', 0)
+                current_volume = int(volume_raw) if volume_raw is not None else 0
                 current_time = datetime.now(timezone.utc)
                 
                 # Round timestamp down to minute boundary (for 1m bars)
@@ -474,7 +480,7 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                         order_type='limit',
                         limit_price=limit_price
                     )
-            elif order_type == 'stop':
+            elif order_type == 'stop' or order_type == 'stop_market':
                 if enable_bracket and stop_loss_price and take_profit_price:
                     result = await trading_bot.place_oco_bracket_with_stop_entry(
                         symbol=order_symbol,
@@ -485,12 +491,87 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                         take_profit_price=float(take_profit_price)
                     )
                 else:
-                    result = await trading_bot.place_stop_order(
-                        symbol=order_symbol,
-                        side=side,
-                        quantity=quantity,
-                        stop_price=float(stop_price)
-                    )
+                    if not stop_price:
+                        result = {'error': 'Stop orders require stop_price'}
+                    else:
+                        result = await trading_bot.place_stop_order(
+                            symbol=order_symbol,
+                            side=side,
+                            quantity=quantity,
+                            stop_price=float(stop_price)
+                        )
+            elif order_type == 'stop-limit' or order_type == 'stop_limit':
+                # Stop limit order: requires both stop_price and limit_price
+                if not stop_price or not limit_price:
+                    result = {'error': 'Stop limit orders require both stop_price and limit_price'}
+                else:
+                    try:
+                        # Stop limit orders use type 5 in TopStepX API
+                        # We need to call the broker adapter directly with type 5
+                        target_account = trading_bot.selected_account['id'] if trading_bot.selected_account else None
+                        if not target_account:
+                            result = {'error': 'No account selected'}
+                        else:
+                            # Get contract ID
+                            contract_id = trading_bot._get_contract_id(order_symbol)
+                            side_value = 0 if side.upper() == "BUY" else 1
+                            
+                            # Round prices to tick size
+                            tick_size = await trading_bot._get_tick_size(order_symbol)
+                            rounded_stop = trading_bot._round_to_tick_size(float(stop_price), tick_size)
+                            rounded_limit = trading_bot._round_to_tick_size(float(limit_price), tick_size)
+                            
+                            # Create stop limit order (type 5)
+                            order_data = {
+                                "accountId": int(target_account),
+                                "contractId": contract_id,
+                                "type": 5,  # Stop Limit order type
+                                "side": side_value,
+                                "size": quantity,
+                                "stopPrice": rounded_stop,
+                                "limitPrice": rounded_limit,
+                                "customTag": trading_bot._generate_unique_custom_tag("stop_limit")
+                            }
+                            
+                            # Use broker adapter to place order
+                            from brokers.topstepx_adapter import TopStepXAdapter
+                            if hasattr(trading_bot, 'broker_adapter'):
+                                adapter = trading_bot.broker_adapter
+                            else:
+                                adapter = TopStepXAdapter(trading_bot.auth_manager)
+                            
+                            # Place via adapter's _make_request
+                            response = await adapter._make_request(
+                                'POST',
+                                '/api/Order',
+                                json=order_data
+                            )
+                            
+                            if response and 'id' in response:
+                                result = {'success': True, 'orderId': response.get('id'), 'order_id': response.get('id')}
+                            else:
+                                result = {'error': f'Stop limit order failed: {response}'}
+                    except Exception as e:
+                        logger.error(f"Error placing stop limit order: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        result = {'error': f'Failed to place stop limit order: {str(e)}'}
+            elif order_type == 'trailing-stop' or order_type == 'trailing_stop':
+                # Trailing stop order: requires trail_amount
+                trail_amount = data.get('trail_amount') or data.get('trailAmount')
+                if not trail_amount:
+                    result = {'error': 'Trailing stop orders require trail_amount'}
+                else:
+                    try:
+                        result = await trading_bot.place_trailing_stop_order(
+                            symbol=order_symbol,
+                            side=side,
+                            quantity=quantity,
+                            trail_amount=float(trail_amount)
+                        )
+                    except Exception as e:
+                        logger.error(f"Error placing trailing stop order: {e}")
+                        result = {'error': f'Failed to place trailing stop order: {str(e)}'}
             else:
                 result = {'error': f'Unsupported order type: {order_type}'}
             
@@ -565,10 +646,80 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                         pos_dict['entry_price'] = float(entry_price)
                         pos_dict['entryPrice'] = float(entry_price)
                     
-                    # Ensure quantity/size
-                    quantity = pos_dict.get('quantity') or pos_dict.get('size') or 0
+                    # Ensure quantity/size (always use absolute value for quantity)
+                    quantity_raw = pos_dict.get('quantity') or pos_dict.get('size') or 0
+                    quantity = abs(float(quantity_raw)) if quantity_raw else 0
                     pos_dict['quantity'] = quantity
                     pos_dict['size'] = quantity
+                    
+                    # Calculate unrealized PnL if not provided or is 0
+                    unrealized_pnl = pos_dict.get('unrealizedPnL') or pos_dict.get('unrealized_pnl') or pos_dict.get('unrealizedPnl')
+                    if unrealized_pnl is None or unrealized_pnl == 0:
+                        # Try to calculate from current price and entry price
+                        try:
+                            entry_price = pos_dict.get('entryPrice') or pos_dict.get('entry_price')
+                            current_price = pos_dict.get('currentPrice') or pos_dict.get('current_price') or pos_dict.get('markPrice')
+                            
+                            # If no current price, fetch it from market quote
+                            if not current_price and symbol:
+                                try:
+                                    quote = await trading_bot.get_market_quote(symbol)
+                                    if quote and "error" not in quote:
+                                        current_price = quote.get('last') or quote.get('lastPrice') or quote.get('bid')
+                                        if current_price:
+                                            pos_dict['currentPrice'] = float(current_price)
+                                            pos_dict['current_price'] = float(current_price)
+                                except Exception as e:
+                                    logger.debug(f"Could not fetch quote for {symbol}: {e}")
+                            
+                            if entry_price and current_price and quantity and symbol:
+                                # Get tick size and point value for symbol
+                                if hasattr(trading_bot, 'risk_manager'):
+                                    tick_size = trading_bot.risk_manager.get_tick_size(symbol)
+                                    point_value = trading_bot.risk_manager.get_point_value(symbol)
+                                elif hasattr(trading_bot, '_get_tick_size') and hasattr(trading_bot, '_get_point_value'):
+                                    tick_size = trading_bot._get_tick_size(symbol)
+                                    point_value = trading_bot._get_point_value(symbol)
+                                else:
+                                    # Default values (correct point values for micro contracts)
+                                    tick_size_map = {'MNQ': 0.25, 'MES': 0.25, 'NQ': 0.25, 'ES': 0.25, 'YM': 1.0}
+                                    point_value_map = {'MNQ': 2.0, 'MES': 5.0, 'NQ': 20.0, 'ES': 50.0, 'YM': 5.0}
+                                    tick_size = tick_size_map.get(symbol.upper(), 0.25)
+                                    point_value = point_value_map.get(symbol.upper(), 2.0)
+                                
+                                # Calculate tick value: dollar value per tick
+                                # tick_value = point_value * tick_size
+                                # For MNQ: $5 per point * 0.25 points per tick = $1.25 per tick
+                                tick_value = point_value * tick_size
+                                
+                                # Calculate price difference
+                                entry_price_float = float(entry_price)
+                                current_price_float = float(current_price)
+                                
+                                # Determine direction and calculate ticks
+                                if side.upper() in ['LONG', 'BUY', '0']:
+                                    # LONG: profit when current > entry
+                                    price_diff = current_price_float - entry_price_float
+                                    direction = 1 if price_diff >= 0 else -1  # 1 if favorable, -1 if unfavorable
+                                else:  # SHORT
+                                    # SHORT: profit when current < entry
+                                    price_diff = entry_price_float - current_price_float
+                                    direction = 1 if price_diff >= 0 else -1  # 1 if favorable, -1 if unfavorable
+                                
+                                # Calculate ticks from entry
+                                ticks_from_entry = abs(price_diff) / tick_size
+                                
+                                # Calculate PnL: tick_value * ticks_from_entry * direction * quantity
+                                unrealized_pnl = tick_value * ticks_from_entry * direction * float(quantity)
+                                
+                                pos_dict['unrealizedPnL'] = unrealized_pnl
+                                pos_dict['unrealized_pnl'] = unrealized_pnl
+                                pos_dict['unrealizedPnl'] = unrealized_pnl
+                            else:
+                                unrealized_pnl = 0.0
+                        except Exception as e:
+                            logger.debug(f"Could not calculate PnL for position {pos_dict.get('id')}: {e}")
+                            unrealized_pnl = 0.0
                     
                     # Fetch linked orders to get stopLoss/takeProfit if not already present
                     # Only use linked orders that are explicitly bracket-linked (not standalone orders)
@@ -619,7 +770,7 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                         except Exception as e:
                             logger.debug(f"Could not fetch linked orders for position enrichment: {e}")
                     
-                    # Ensure all field aliases exist
+                    # Ensure all field aliases exist (both camelCase and snake_case)
                     if 'entryPrice' not in pos_dict and 'entry_price' in pos_dict:
                         pos_dict['entryPrice'] = pos_dict['entry_price']
                     if 'entry_price' not in pos_dict and 'entryPrice' in pos_dict:
@@ -632,6 +783,12 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                         pos_dict['takeProfit'] = pos_dict['take_profit']
                     if 'take_profit' not in pos_dict and 'takeProfit' in pos_dict:
                         pos_dict['take_profit'] = pos_dict['takeProfit']
+                    if 'unrealizedPnL' not in pos_dict and 'unrealized_pnl' in pos_dict:
+                        pos_dict['unrealizedPnL'] = pos_dict['unrealized_pnl']
+                    if 'unrealized_pnl' not in pos_dict and 'unrealizedPnL' in pos_dict:
+                        pos_dict['unrealized_pnl'] = pos_dict['unrealizedPnL']
+                    if 'unrealizedPnl' not in pos_dict:
+                        pos_dict['unrealizedPnl'] = pos_dict.get('unrealizedPnL') or pos_dict.get('unrealized_pnl', 0)
                     
                     positions_list.append(pos_dict)
                 else:
@@ -675,10 +832,43 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     async def handle_get_orders(request):
         """Handle order requests - canonicalize to match TradingChart.tsx format."""
         try:
-            # Get account ID from query or use default
-            account_id = request.query.get('account_id')
+            # Get account ID from query or use default (handle None request for WebSocket broadcasts)
+            account_id = request.query.get('account_id') if request else None
             orders = await trading_bot.get_open_orders(account_id=account_id)
-            logger.debug(f"✅ Fetched {len(orders) if orders else 0} orders for chart")
+            logger.debug(f"✅ Fetched {len(orders) if orders else 0} standalone orders for chart")
+            
+            # Also fetch linked orders (stop/take profit) for all positions
+            # These are typically not returned by get_open_orders() but are linked to positions
+            try:
+                positions = await trading_bot.get_open_positions(account_id=account_id)
+                linked_orders_all = []
+                for pos in positions or []:
+                    pos_id = pos.get('id') or pos.get('position_id')
+                    if pos_id:
+                        try:
+                            linked_orders = await trading_bot.get_linked_orders(pos_id, account_id=account_id)
+                            if linked_orders and isinstance(linked_orders, list):
+                                # Include all linked orders (stop/take profit), not just AutoBracket ones
+                                linked_orders_all.extend(linked_orders)
+                        except Exception as e:
+                            logger.debug(f"Could not fetch linked orders for position {pos_id}: {e}")
+                
+                # Combine standalone orders with linked orders
+                if linked_orders_all:
+                    logger.debug(f"✅ Found {len(linked_orders_all)} linked orders (stop/take profit)")
+                    # Initialize orders list if None
+                    if orders is None:
+                        orders = []
+                    # Add linked orders to the orders list (avoid duplicates by order ID)
+                    existing_order_ids = {str(order.get('id') or order.get('orderId')) for order in orders}
+                    for linked_order in linked_orders_all:
+                        order_id = str(linked_order.get('id') or linked_order.get('orderId'))
+                        if order_id and order_id not in existing_order_ids and order_id != 'None':
+                            orders.append(linked_order)
+                            existing_order_ids.add(order_id)
+                    logger.debug(f"✅ Total orders (standalone + linked): {len(orders)}")
+            except Exception as e:
+                logger.debug(f"Could not fetch linked orders: {e}")
             
             def extract_symbol_from_contract(contract_str):
                 """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
@@ -723,11 +913,19 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                     status = order_dict.get('status')
                     if isinstance(status, int):
                         if status == 1:
-                            order_dict['status'] = 'PENDING'  # Also accept 'OPEN' for filtering
+                            order_dict['status'] = 'OPEN'  # Keep as OPEN for display
                         elif status == 0:
                             order_dict['status'] = 'PENDING'
-                    elif isinstance(status, str) and status.upper() == 'OPEN':
-                        order_dict['status'] = 'PENDING'  # Normalize to PENDING
+                    elif isinstance(status, str) and status.upper() == 'PENDING':
+                        order_dict['status'] = 'OPEN'  # Normalize to OPEN for display
+                    
+                    # Convert order type: 1 = LIMIT, 2 = MARKET, 4 = STOP
+                    order_type_num = order_dict.get('type', 0)
+                    if isinstance(order_type_num, int):
+                        type_map = {1: 'LIMIT', 2: 'MARKET', 4: 'STOP'}
+                        order_dict['type'] = type_map.get(order_type_num, str(order_type_num))
+                    elif not isinstance(order_dict.get('type'), str):
+                        order_dict['type'] = str(order_type_num)
                     
                     # Set price and stop_price from limitPrice/stopPrice
                     # For LIMIT orders: use limitPrice as price
@@ -788,18 +986,50 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     async def handle_get_contracts(request):
         """Handle contract list requests."""
         try:
-            # Force fresh fetch
+            # Force fresh fetch to ensure we have latest contracts
             contracts = await trading_bot.get_available_contracts(use_cache=False)
             logger.info(f"📋 Fetched {len(contracts)} contracts for chart dropdown")
             
             if not contracts:
-                logger.warning("⚠️ No contracts returned - contract cache may be empty. Try running 'contracts' command in CLI first.")
+                logger.warning("⚠️ No contracts returned - attempting re-fetch...")
+                # Try one more time with a slight delay
+                import asyncio
+                await asyncio.sleep(0.5)
+                contracts = await trading_bot.get_available_contracts(use_cache=False)
+                logger.info(f"📋 Re-fetched {len(contracts)} contracts")
             
+            def extract_root_symbol(contract_id: str) -> Optional[str]:
+                """
+                TopStepX contract IDs often look like: CON.F.US.MNQ.H26
+                We want MNQ as the dropdown symbol.
+                """
+                if not contract_id:
+                    return None
+                try:
+                    parts = str(contract_id).split(".")
+                    # CON.F.US.<SYM>.<EXP>
+                    if len(parts) >= 5:
+                        return parts[3].strip().upper()
+                except Exception:
+                    pass
+                return None
+
             # Group by symbol
             by_symbol = {}
             for c in contracts:
-                sym = c.get('symbol') or c.get('Symbol') or 'Unknown'
-                contract_id = c.get('contractId') or c.get('ContractId') or c.get('id') or ''
+                contract_id = c.get('contractId') or c.get('ContractId') or c.get('id') or c.get('contract_id') or ''
+                
+                # ALWAYS try to extract root symbol from contract ID FIRST (most reliable)
+                sym = extract_root_symbol(contract_id)
+                
+                # Only if that fails, fall back to name/symbol fields
+                if not sym:
+                    sym = (
+                        c.get('symbol')
+                        or c.get('Symbol')
+                        or c.get('name')
+                        or 'Unknown'
+                    )
                 # Skip 'Unknown' symbols and empty symbols
                 if sym and sym != 'Unknown' and sym.strip():
                     if sym not in by_symbol:
@@ -809,7 +1039,21 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             symbols_list = sorted(list(by_symbol.keys()))
             logger.info(f"✅ Grouped into {len(symbols_list)} unique symbols: {symbols_list[:10] if len(symbols_list) > 10 else symbols_list}")
             
-            response = web.json_response({'contracts': by_symbol, 'symbols': symbols_list})
+            # Find the active MNQ contract (most recent or highest volume)
+            default_symbol = None
+            if 'MNQ' in by_symbol:
+                mnq_contracts = by_symbol['MNQ']
+                if mnq_contracts:
+                    # Sort by contractId to get the most recent expiration (e.g., H26 > G26)
+                    sorted_mnq = sorted(mnq_contracts, key=lambda x: x.get('id', ''), reverse=True)
+                    default_symbol = sorted_mnq[0].get('id') if sorted_mnq else None
+                    logger.info(f"📌 Default MNQ contract: {default_symbol}")
+            
+            response = web.json_response({
+                'contracts': by_symbol, 
+                'symbols': symbols_list,
+                'default_symbol': default_symbol  # Return the active MNQ contract ID
+            })
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
@@ -1004,8 +1248,16 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     async def handle_cancel_all(request):
         """Handle cancel all orders command."""
         try:
-            # Get all orders
-            orders = await trading_bot.get_orders(account_id=trading_bot.selected_account)
+            # Get selected account id (selected_account may be a dict)
+            account_id = None
+            if hasattr(trading_bot, "selected_account") and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get("id")
+                else:
+                    account_id = trading_bot.selected_account
+
+            # Get all open orders
+            orders = await trading_bot.get_open_orders(account_id=account_id)
             
             if not orders:
                 return web.json_response({'success': True, 'message': 'No orders to cancel', 'canceled': 0})
@@ -1017,7 +1269,7 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                 try:
                     order_id = order.get('orderId') or order.get('id')
                     if order_id:
-                        await trading_bot.cancel_order(order_id, account_id=trading_bot.selected_account)
+                        await trading_bot.cancel_order(order_id=str(order_id), account_id=account_id)
                         canceled.append(order_id)
                 except Exception as e:
                     logger.error(f"Failed to cancel order {order_id}: {e}")
@@ -1066,6 +1318,172 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     app.router.add_post('/api/chart/cancel_all', handle_cancel_all)
     app.router.add_options('/api/chart/cancel_all', handle_options)
     
+    async def handle_get_accounts(request):
+        """Handle get accounts request."""
+        try:
+            # Ensure accounts are loaded - use list_accounts() if not available
+            if not hasattr(trading_bot, 'accounts') or not trading_bot.accounts:
+                # Try to fetch accounts using list_accounts() method
+                try:
+                    accounts = await trading_bot.list_accounts()
+                    if accounts:
+                        trading_bot.accounts = accounts
+                        logger.info(f"✅ Loaded {len(accounts)} accounts for GUI")
+                    else:
+                        logger.warning("No accounts returned from list_accounts()")
+                except Exception as e:
+                    logger.warning(f"Could not fetch accounts via list_accounts(): {e}")
+                    # Try auth_manager as fallback
+                    if hasattr(trading_bot, 'auth_manager') and hasattr(trading_bot.auth_manager, 'accounts'):
+                        trading_bot.accounts = trading_bot.auth_manager.accounts
+            
+            accounts_list = []
+            if hasattr(trading_bot, 'accounts') and trading_bot.accounts:
+                for idx, acc in enumerate(trading_bot.accounts):
+                    account_data = {
+                        'index': idx,
+                        'name': acc.get('name', acc.get('accountName', 'Unknown')),
+                        'id': acc.get('id', acc.get('accountId', '')),
+                        'balance': float(acc.get('balance', acc.get('currentBalance', 0))),
+                        'status': acc.get('status', 'unknown'),
+                        'type': acc.get('accountType', 'unknown'),
+                        'selected': False
+                    }
+                    # Check if this is the currently selected account
+                    if hasattr(trading_bot, 'selected_account'):
+                        if isinstance(trading_bot.selected_account, dict):
+                            if trading_bot.selected_account.get('id') == account_data['id']:
+                                account_data['selected'] = True
+                        elif str(trading_bot.selected_account) == str(account_data['id']):
+                            account_data['selected'] = True
+                    accounts_list.append(account_data)
+            
+            return web.json_response({'accounts': accounts_list})
+        except Exception as e:
+            logger.error(f"❌ Error fetching accounts: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return web.json_response({'accounts': [], 'error': str(e)})
+    
+    async def handle_select_account(request):
+        """Handle account selection request."""
+        try:
+            data = await request.json()
+            account_index = data.get('account_index')
+            
+            if account_index is None:
+                return web.json_response({'success': False, 'error': 'Invalid account index'})
+            
+            # Ensure accounts are loaded
+            if not hasattr(trading_bot, 'accounts') or not trading_bot.accounts:
+                # Fetch accounts if not loaded using list_accounts()
+                try:
+                    accounts = await trading_bot.list_accounts()
+                    if accounts:
+                        trading_bot.accounts = accounts
+                        logger.info(f"✅ Loaded {len(accounts)} accounts for account selection")
+                    else:
+                        return web.json_response({'success': False, 'error': 'No accounts available'})
+                except Exception as e:
+                    logger.error(f"Error fetching accounts: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    return web.json_response({'success': False, 'error': f'Failed to load accounts: {e}'})
+            
+            if account_index < 0 or account_index >= len(trading_bot.accounts):
+                return web.json_response({'success': False, 'error': f'Account index out of range (0-{len(trading_bot.accounts)-1})'})
+            
+            # Select the account using the bot's own logic (ensures caches/trackers update consistently)
+            selected_account = trading_bot.accounts[account_index]
+            account_id = selected_account.get('id', selected_account.get('accountId'))
+            if account_id is None:
+                return web.json_response({'success': False, 'error': 'Selected account has no id'})
+            await trading_bot.switch_account(str(account_id))
+            
+            # Update account tracker if available
+            if hasattr(trading_bot, 'account_tracker'):
+                if account_id:
+                    account_name = selected_account.get('name', selected_account.get('accountName', f'Account-{account_id}'))
+                    account_type = selected_account.get('type', selected_account.get('accountType', 'unknown'))
+                    account_balance = float(selected_account.get('balance', selected_account.get('currentBalance', 0)))
+                    
+                    # Check if account is already tracked
+                    if str(account_id) not in trading_bot.account_tracker.accounts:
+                        logger.info(f"Initializing account tracker for {account_name} (ID: {account_id})")
+                        trading_bot.account_tracker.initialize_account(
+                            account_id=str(account_id),
+                            account_name=account_name,
+                            account_type=account_type,
+                            starting_balance=account_balance
+                        )
+                    else:
+                        # Update current account ID in tracker
+                        trading_bot.account_tracker.current_account_id = str(account_id)
+                        logger.info(f"Switched tracker to account {account_name} (ID: {account_id})")
+            
+            account_name = selected_account.get('name', selected_account.get('accountName', 'Unknown'))
+            logger.info(f"✅ Switched to account: {account_name}")
+            
+            return web.json_response({
+                'success': True,
+                'account_name': account_name,
+                'account_id': selected_account.get('id', selected_account.get('accountId'))
+            })
+        except Exception as e:
+            logger.error(f"❌ Error selecting account: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return web.json_response({'success': False, 'error': str(e)})
+    
+    app.router.add_get('/api/accounts', handle_get_accounts)
+    app.router.add_post('/api/select_account', handle_select_account)
+    app.router.add_options('/api/select_account', handle_options)
+    
+    async def handle_execute_command(request):
+        """Handle command execution from the GUI."""
+        try:
+            data = await request.json()
+            command = data.get('command', '').strip()
+            
+            if not command:
+                return web.json_response({'success': False, 'error': 'No command provided'})
+            
+            logger.info(f"🎮 GUI command execution: {command}")
+            
+            # Import CLI command parser
+            from core.cli_command_parser import CLICommandParser
+            
+            # Create parser instance
+            parser = CLICommandParser(trading_bot)
+            
+            # Execute command
+            resp = await parser.execute_command(command)
+            if resp.get("success"):
+                result = resp.get("result")
+                if result is None:
+                    return web.json_response({'success': True, 'output': 'Command executed successfully'})
+                if isinstance(result, (dict, list)):
+                    import json
+                    output = json.dumps(result, indent=2)
+                    return web.json_response({'success': True, 'output': output, 'result': result})
+                # Convert result to string, handling None and other types
+                output = str(result) if result is not None else 'Command executed successfully'
+                return web.json_response({'success': True, 'output': output, 'result': result})
+            # Return error with helpful message
+            error_msg = resp.get("error", "Command failed")
+            available = resp.get("available_commands", [])
+            if available:
+                error_msg += f"\n\nAvailable commands: {', '.join(available[:20])}"  # Limit to first 20
+            return web.json_response({'success': False, 'error': error_msg, 'result': resp})
+        except Exception as e:
+            logger.error(f"❌ Error executing command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return web.json_response({'success': False, 'error': str(e)})
+    
+    app.router.add_post('/api/execute_command', handle_execute_command)
+    app.router.add_options('/api/execute_command', handle_options)
+    
     # Serve master control HTML
     async def handle_master_control(request):
         """Serve the master control HTML page."""
@@ -1097,9 +1515,22 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
                 with open(master_html_path, 'r', encoding='utf-8') as f:
                     html_content = f.read()
             
-            # Replace placeholder with actual server port
+            # Replace placeholders with actual values
             html_content = html_content.replace('{{SERVER_PORT}}', str(port))
-            html_content = html_content.replace('{{SYMBOL}}', symbol)
+            html_content = html_content.replace('{{SYMBOL}}', _chart_server_symbol or symbol)
+            timeframe_value = _chart_server_timeframe or '5m'
+            html_content = html_content.replace('{{TIMEFRAME}}', timeframe_value)
+            
+            # Replace timeframe selection in dropdown (simple string replacement)
+            # Remove all selected attributes first
+            import re
+            html_content = re.sub(r'<option value="([^"]+)"([^>]*)\s+selected>', r'<option value="\1"\2>', html_content)
+            # Add selected to the matching timeframe option
+            html_content = re.sub(
+                rf'<option value="{re.escape(timeframe_value)}"([^>]*)>',
+                rf'<option value="{timeframe_value}"\1 selected>',
+                html_content
+            )
             
             response = web.Response(text=html_content, content_type='text/html')
             response.headers['Access-Control-Allow-Origin'] = '*'
@@ -1109,8 +1540,310 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
             response = web.Response(text=f"Error: {e}", status=500)
             return response
     
+    async def handle_popout(request):
+        """Handle popout widget requests."""
+        try:
+            widget_id = request.query.get('widget', 'chart-panel')
+            port = request.query.get('port', _chart_server_port)
+            symbol = request.query.get('symbol', _chart_server_symbol or 'MNQ')
+            timeframe = request.query.get('timeframe', _chart_server_timeframe or '5m')
+            
+            # Read master control HTML and extract the specific widget
+            from pathlib import Path
+            master_html_path = Path(__file__).parent / 'master_control.html'
+            if not master_html_path.exists():
+                return web.Response(text="Master control HTML not found", status=404)
+            
+            with open(master_html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            
+            # Create a simplified popout page with just the widget
+            # This is a simplified version - in production you'd want a dedicated popout template
+            popout_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Widget Popout</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            padding: 20px;
+            height: 100vh;
+            overflow: hidden;
+        }}
+        .panel {{
+            background: #1a1a1a;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            padding: 8px;
+            overflow: hidden;
+            position: relative;
+            border-image: linear-gradient(135deg, #a855f7, #ef4444, #3b82f6, #f97316, #eab308, #a855f7) 1;
+            box-shadow: 0 0 12px rgba(168, 85, 247, 0.06), 0 0 8px rgba(59, 130, 246, 0.04);
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }}
+        .panel h2 {{
+            font-size: 13px;
+            margin-bottom: 10px;
+            color: #fff;
+            border-bottom: 1px solid #333;
+            padding-bottom: 6px;
+            font-weight: 600;
+        }}
+        .panel-content {{
+            flex: 1;
+            overflow: auto;
+        }}
+        #chart-container {{
+            flex: 1;
+            min-height: 600px;
+            height: 100%;
+            background: #0a0a0a;
+            border-radius: 4px;
+            margin-top: 8px;
+        }}
+        .chart-controls {{
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            padding: 12px;
+            background: #151515;
+            border-radius: 4px;
+        }}
+        .chart-controls select, .chart-controls input, .chart-controls button {{
+            background: #222;
+            border: 1px solid #444;
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+        }}
+        .btn-primary {{ background: #4a9eff; color: #fff; }}
+        .btn-buy {{ background: #26a69a; color: #fff; font-weight: bold; }}
+        .btn-sell {{ background: #ef5350; color: #fff; font-weight: bold; }}
+        .btn-danger {{ background: #f44336; color: #fff; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 11px; }}
+        th {{ text-align: left; padding: 4px 6px; background: #151515; color: #888; font-size: 10px; }}
+        td {{ padding: 5px 6px; border-bottom: 1px solid #222; font-size: 11px; }}
+    </style>
+</head>
+<body>
+    <div class="panel" id="{widget_id}">
+        <!-- Widget content will be loaded via JavaScript -->
+    </div>
+    <script>
+        const SERVER_PORT = {port};
+        const BASE_URL = `http://127.0.0.1:${{SERVER_PORT}}`;
+        const SYMBOL = '{symbol}';
+        const TIMEFRAME = '{timeframe}';
+        const WIDGET_ID = '{widget_id}';
+        
+        // Load widget content from parent page via postMessage
+        window.addEventListener('message', function(event) {{
+            if (event.data.type === 'widget-content' && event.data.widgetId === WIDGET_ID) {{
+                document.getElementById(WIDGET_ID).innerHTML = event.data.html;
+                // Reinitialize any widgets that need it
+                if (WIDGET_ID === 'chart-panel' && typeof LightweightCharts !== 'undefined') {{
+                    // Chart initialization code would go here
+                }}
+            }}
+        }});
+        
+        // Request widget content from opener
+        if (window.opener) {{
+            window.opener.postMessage({{type: 'request-widget', widgetId: WIDGET_ID}}, '*');
+        }}
+    </script>
+</body>
+</html>
+            """
+            
+            return web.Response(text=popout_html, content_type='text/html')
+        except Exception as e:
+            logger.error(f"Error handling popout: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return web.Response(text=f"Error: {e}", status=500)
+    
     app.router.add_get('/', handle_master_control)
     app.router.add_get('/master', handle_master_control)
+    app.router.add_get('/popout', handle_popout)
+    
+    # WebSocket support for real-time updates
+    _ws_clients = set()
+    _ws_broadcast_task = None
+    
+    async def handle_websocket(request):
+        """Handle WebSocket connections for real-time updates."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        _ws_clients.add(ws)
+        logger.info(f"📡 WebSocket client connected (total: {len(_ws_clients)})")
+        
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        # Handle client requests (subscribe/unsubscribe)
+                        if data.get('type') == 'ping':
+                            await ws.send_json({'type': 'pong'})
+                    except json.JSONDecodeError:
+                        pass
+                elif msg.type == web.WSMsgType.ERROR:
+                    logger.error(f'WebSocket error: {ws.exception()}')
+        finally:
+            _ws_clients.discard(ws)
+            logger.info(f"📡 WebSocket client disconnected (remaining: {len(_ws_clients)})")
+        
+        return ws
+    
+    async def broadcast_update(data: dict):
+        """Broadcast update to all connected WebSocket clients."""
+        if not _ws_clients:
+            return
+        
+        # Send to all clients, remove dead connections
+        dead_clients = set()
+        for client in _ws_clients:
+            try:
+                await client.send_json(data)
+            except Exception as e:
+                logger.debug(f"Failed to send to client: {e}")
+                dead_clients.add(client)
+        
+        # Clean up dead connections
+        for client in dead_clients:
+            _ws_clients.discard(client)
+    
+    # Make broadcast_update globally accessible for strategy signals
+    # Store it in the module namespace so it can be imported
+    import sys
+    current_module = sys.modules[__name__]
+    current_module.broadcast_update = broadcast_update
+    
+    async def tail_log_file():
+        """Tail the trading_bot.log file and broadcast new lines."""
+        log_file_path = Path("trading_bot.log")
+        
+        # Open file and seek to end
+        try:
+            with open(log_file_path, 'r') as f:
+                # Seek to end minus last 10KB for recent history
+                f.seek(0, os.SEEK_END)
+                file_size = f.tell()
+                if file_size > 10240:  # 10KB
+                    f.seek(file_size - 10240)
+                    f.readline()  # Skip partial line
+                else:
+                    f.seek(0)
+                
+                # Send recent lines
+                recent_lines = f.readlines()
+                for line in recent_lines[-50:]:  # Last 50 lines
+                    log_data = parse_log_line(line)
+                    if log_data:
+                        await broadcast_update({'type': 'log', 'data': log_data})
+                
+                # Now tail for new lines
+                while True:
+                    line = f.readline()
+                    if line:
+                        log_data = parse_log_line(line)
+                        if log_data:
+                            await broadcast_update({'type': 'log', 'data': log_data})
+                    else:
+                        await asyncio.sleep(0.1)  # Wait for new content
+        except FileNotFoundError:
+            logger.warning("trading_bot.log not found, log streaming disabled")
+        except Exception as e:
+            logger.error(f"Error tailing log file: {e}")
+    
+    def parse_log_line(line: str) -> Optional[Dict]:
+        """Parse a log line into structured data."""
+        try:
+            # Format: "2025-12-29 12:34:56,789 - module - LEVEL - message"
+            parts = line.split(' - ', 3)
+            if len(parts) >= 3:
+                timestamp = parts[0].strip()
+                level = parts[2].strip()
+                message = parts[3].strip() if len(parts) >= 4 else parts[2].strip()
+                
+                return {
+                    'timestamp': timestamp,
+                    'level': level,
+                    'message': message
+                }
+        except Exception:
+            pass
+        return None
+    
+    async def websocket_broadcast_loop():
+        """Background task to broadcast updates to WebSocket clients."""
+        logger.info("📡 WebSocket broadcast loop started")
+        
+        # Start log tailing in separate task
+        log_task = asyncio.create_task(tail_log_file())
+        
+        while True:
+            try:
+                if _ws_clients:
+                    # Broadcast account state
+                    try:
+                        response = await handle_account_state(None)
+                        if hasattr(response, 'text'):
+                            account_data = json.loads(response.text)
+                            await broadcast_update({'type': 'account', 'data': account_data})
+                    except Exception as e:
+                        logger.debug(f"Error broadcasting account state: {e}")
+                    
+                    # Broadcast positions
+                    try:
+                        response = await handle_get_positions(None)
+                        if hasattr(response, 'text'):
+                            positions_data = json.loads(response.text)
+                            await broadcast_update({'type': 'positions', 'data': positions_data})
+                    except Exception as e:
+                        logger.debug(f"Error broadcasting positions: {e}")
+                    
+                    # Broadcast orders
+                    try:
+                        response = await handle_get_orders(None)
+                        if hasattr(response, 'text'):
+                            orders_data = json.loads(response.text)
+                            await broadcast_update({'type': 'orders', 'data': orders_data})
+                    except Exception as e:
+                        logger.debug(f"Error broadcasting orders: {e}")
+                    
+                    # Broadcast strategy status
+                    try:
+                        response = await handle_strategy_status(None)
+                        if hasattr(response, 'text'):
+                            strategy_data = json.loads(response.text)
+                            await broadcast_update({'type': 'strategies', 'data': strategy_data})
+                    except Exception as e:
+                        logger.debug(f"Error broadcasting strategy status: {e}")
+                
+                await asyncio.sleep(2)  # Broadcast every 2 seconds
+            except asyncio.CancelledError:
+                logger.info("📡 WebSocket broadcast loop cancelled")
+                log_task.cancel()
+                break
+            except Exception as e:
+                logger.error(f"Error in WebSocket broadcast loop: {e}")
+                await asyncio.sleep(5)
+    
+    app.router.add_get('/ws', handle_websocket)
     
     # Find available port
     import socket
@@ -1127,8 +1860,14 @@ async def _start_chart_server(trading_bot, symbol: str) -> int:
     _chart_server = runner
     _chart_server_port = port
     _chart_server_trading_bot = trading_bot
+    _chart_server_symbol = symbol
+    _chart_server_timeframe = timeframe
+    
+    # Start WebSocket broadcast loop
+    _ws_broadcast_task = asyncio.create_task(websocket_broadcast_loop())
     
     logger.info(f"📡 Chart server started on http://127.0.0.1:{port}")
+    logger.info(f"📡 WebSocket endpoint: ws://127.0.0.1:{port}/ws")
     return port
 
 

@@ -75,6 +75,7 @@ class WebSocketManager:
         self._subscribed_symbols: Set[str] = set()
         self._pending_symbols: Set[str] = set()
         self._lock = Lock()
+        self._reconnecting = False  # Flag to prevent multiple simultaneous reconnection attempts
         
         # Store event loop reference for async operations from sync callbacks
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -92,8 +93,17 @@ class WebSocketManager:
         Returns:
             True if connection started successfully
         """
-        if self._connected:
-            return True
+        # Prevent multiple simultaneous connection attempts
+        with self._lock:
+            if self._connected:
+                return True
+            # If hub exists but not connected, stop it first
+            if self._hub:
+                try:
+                    self._hub.stop()
+                except:
+                    pass
+                self._hub = None
         
         if not SIGNALR_AVAILABLE:
             logger.warning("SignalR not available - install signalrcore package")
@@ -182,25 +192,30 @@ class WebSocketManager:
                     thread.start()
             
             def on_close():
-                logger.warning("⚠️  SignalR Market Hub disconnected")
                 with self._lock:
-                    self._connected = False
-                # Schedule reconnection attempt for network interruptions
-                # Use create_task if loop is running, otherwise schedule in thread
-                if self._event_loop and self._event_loop.is_running():
-                    self._event_loop.create_task(self._handle_network_interruption_and_reconnect())
-                else:
-                    def run_in_thread():
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        try:
-                            new_loop.run_until_complete(self._handle_network_interruption_and_reconnect())
-                        except Exception as e:
-                            logger.debug(f"Error reconnecting in thread: {e}")
-                        finally:
-                            new_loop.close()
-                    thread = threading.Thread(target=run_in_thread, daemon=True)
-                    thread.start()
+                    # Only log and reconnect if we were actually connected
+                    if self._connected:
+                        logger.warning("⚠️  SignalR Market Hub disconnected")
+                        self._connected = False
+                        # Schedule reconnection attempt for network interruptions
+                        # Use create_task if loop is running, otherwise schedule in thread
+                        if self._event_loop and self._event_loop.is_running():
+                            self._event_loop.create_task(self._handle_network_interruption_and_reconnect())
+                        else:
+                            def run_in_thread():
+                                new_loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(new_loop)
+                                try:
+                                    new_loop.run_until_complete(self._handle_network_interruption_and_reconnect())
+                                except Exception as e:
+                                    logger.debug(f"Error reconnecting in thread: {e}")
+                                finally:
+                                    new_loop.close()
+                            thread = threading.Thread(target=run_in_thread, daemon=True)
+                            thread.start()
+                    else:
+                        # Already disconnected, just a cleanup call - don't log or reconnect
+                        logger.debug("SignalR close callback called (already disconnected)")
             
             def on_error(err):
                 try:
@@ -407,11 +422,16 @@ class WebSocketManager:
     
     async def _handle_network_interruption_and_reconnect(self):
         """Handle network interruptions (sleep mode, network down) with exponential backoff."""
+        # Prevent multiple simultaneous reconnection attempts
+        with self._lock:
+            if self._reconnecting:
+                logger.debug("Reconnection already in progress, skipping duplicate attempt")
+                return
+            if self._connected:
+                return
+            self._reconnecting = True
+        
         try:
-            # Don't reconnect if we're already connected
-            with self._lock:
-                if self._connected:
-                    return
             
             # Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
             max_attempts = 10
@@ -446,6 +466,8 @@ class WebSocketManager:
                     success = await self.start()
                     if success:
                         logger.info(f"✅ SignalR reconnected successfully after network interruption (attempt {attempt + 1})")
+                        with self._lock:
+                            self._reconnecting = False
                         # Re-subscribe to all symbols
                         await self._resubscribe_all_symbols()
                         return
@@ -456,8 +478,12 @@ class WebSocketManager:
                     continue
             
             logger.warning(f"⚠️  SignalR reconnection failed after {max_attempts} attempts")
+            with self._lock:
+                self._reconnecting = False
         except Exception as e:
             logger.error(f"Error during network interruption recovery: {e}")
+            with self._lock:
+                self._reconnecting = False
     
     async def _resubscribe_all_symbols(self):
         """Re-subscribe to all previously subscribed symbols after reconnection."""
@@ -542,6 +568,21 @@ class WebSocketManager:
         try:
             contract_id = self.contract_manager.get_contract_id(sym)
             
+            # Check if hub is actually running before sending
+            if not self._hub:
+                logger.warning(f"Cannot subscribe to quotes for {sym}: Hub not initialized")
+                return False
+            
+            # Check hub state - SignalR hub must be in running state
+            try:
+                # SignalR hub has a state property that indicates if it's running
+                if hasattr(self._hub, 'transport') and self._hub.transport:
+                    if hasattr(self._hub.transport, '_ws') and not self._hub.transport._ws:
+                        logger.warning(f"Cannot subscribe to quotes for {sym}: Hub transport not connected")
+                        return False
+            except:
+                pass  # If we can't check state, try anyway
+            
             logger.info(f"📡 Subscribing to live quotes for {sym} (contract: {contract_id})")
             self._hub.send(self.subscribe_method, [contract_id])
             
@@ -555,6 +596,14 @@ class WebSocketManager:
             logger.warning(f"Cannot subscribe to quotes for {sym}: {e}")
             return False
         except Exception as e:
+            error_msg = str(e)
+            # Handle "Hub is not running" errors gracefully
+            if "not running" in error_msg.lower() or "cand send" in error_msg.lower() or "can't send" in error_msg.lower():
+                logger.warning(f"Cannot subscribe to quotes for {sym}: Hub is not running (will retry when connected)")
+                # Queue for retry when hub is ready
+                with self._lock:
+                    self._pending_symbols.add(sym)
+                return False
             logger.error(f"Failed to subscribe to quotes for {sym}: {e}")
             return False
     

@@ -941,14 +941,13 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         if not account_id:
             return CancelResponse(success=False, error="Account ID is required", order_id=order_id)
         
-        # Update Rust executor with current token
+        # Update Rust executor with current token and account_id
         self._rust_executor.set_token(self.auth.get_token())
+        self._rust_executor.set_account_id(int(account_id))
         
-        # Call Rust async method - DISABLED due to PyO3 parameter issue
-        # Rust cancel_order doesn't properly expose account_id parameter
-        # Using Python fallback for now
+        # Call Rust async method (using state-based account_id)
         try:
-            raise Exception("Rust cancel_order disabled - using Python implementation")
+            rust_result = await self._rust_executor.cancel_order(order_id)
         except (TypeError, AttributeError) as e:
             error_str = str(e)
             if "unexpected keyword argument" in error_str or "needs rebuild" in error_str.lower():
@@ -1505,10 +1504,15 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         """
         try:
             # Try Rust hot path first (only for full closes, partial requires Python logic)
-            # DISABLED: Rust close_position has issues - using Python implementation
-            if False and self._use_rust and self._query_executor and quantity is None:
+            if self._use_rust and self._query_executor and quantity is None:
                 try:
-                    return await self._close_position_rust(position_id, account_id)
+                    rust_resp = await self._close_position_rust(position_id, account_id)
+                    # If Rust failed due to schema/lookup issues, fall back to Python.
+                    # This keeps flatten reliable even if TopStepX returns numeric IDs etc.
+                    if not rust_resp.success and (rust_resp.error or "").lower().find("could not find contract id") != -1:
+                        logger.warning(f"⚠️  Rust close_position couldn't resolve contractId, falling back to Python: {rust_resp.error}")
+                    else:
+                        return rust_resp
                 except Exception as e:
                     logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
             
@@ -1728,23 +1732,27 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 except Exception as e:
                     logger.error(f"Exception canceling order: {e}")
             
-            # Verify positions were actually closed by checking again
+            # Verify positions were actually closed by checking again.
+            # The API can be eventually-consistent; retry briefly before marking a close as failed.
             if closed_positions:
                 import asyncio
-                await asyncio.sleep(0.5)  # Brief delay for API to update
-                remaining_positions = await self.get_open_positions(account_id=account_id)
-                remaining_ids = {p.position_id for p in remaining_positions}
-                actually_closed = [pid for pid in closed_positions if pid not in remaining_ids]
-                still_open = [pid for pid in closed_positions if pid in remaining_ids]
+                still_open = list(closed_positions)
+                for attempt in range(3):
+                    await asyncio.sleep(0.5 + attempt * 0.5)  # 0.5s, 1.0s, 1.5s
+                    remaining_positions = await self.get_open_positions(account_id=account_id)
+                    remaining_ids = {p.position_id for p in remaining_positions}
+                    still_open = [pid for pid in closed_positions if pid in remaining_ids]
+                    if not still_open:
+                        break
                 
                 if still_open:
-                    logger.warning(f"⚠️  Position close reported success but positions still open: {still_open}")
-                    # Move from closed to failed
+                    logger.warning(f"⚠️  Position close reported success but positions still open after retries: {still_open}")
                     for pid in still_open:
-                        closed_positions.remove(pid)
+                        if pid in closed_positions:
+                            closed_positions.remove(pid)
                         failed_positions.append({
                             "id": pid,
-                            "error": "Position close reported success but position still exists"
+                            "error": "Position close reported success but position still exists (after retries)"
                         })
             
             result = {
@@ -1887,12 +1895,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 # Method 3: Match by contract + order type (stop/limit) + opposite side
                 # This catches bracket orders that don't have explicit linking
                 order_contract = order.get('contractId', '')
-                position_contract = position.raw_data.get('contractId', '') if position.raw_data else ''
+                # position may be a Position object or a dict (depending on caller)
+                if isinstance(position, dict):
+                    position_contract = position.get('contractId') or position.get('contract_id') or ''
+                    position_side = position.get('side')
+                    # Normalize if numeric side
+                    if isinstance(position_side, int):
+                        position_side = 'LONG' if position_side == 0 else 'SHORT'
+                else:
+                    position_contract = position.raw_data.get('contractId', '') if getattr(position, 'raw_data', None) else ''
+                    position_side = position.side
                 
                 if order_contract and position_contract and order_contract == position_contract:
                     order_type = order.get('type', 0)
                     order_side = order.get('side', -1)
-                    position_side = position.side
                     
                     # For LONG positions: stop loss is SELL STOP (side=1, type=4), TP is SELL LIMIT (side=1, type=1)
                     # For SHORT positions: stop loss is BUY STOP (side=0, type=4), TP is BUY LIMIT (side=0, type=1)

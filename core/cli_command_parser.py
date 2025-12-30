@@ -86,6 +86,16 @@ class CLICommandParser:
         except Exception as e:
             logger.error(f"Error executing command {command_name}: {e}")
             return {"success": False, "error": str(e)}
+
+    async def parse_and_execute(self, command_str: str) -> Any:
+        """
+        Backwards-compatible helper used by GUI / legacy callers.
+        Returns the handler result on success, raises on failure.
+        """
+        resp = await self.execute_command(command_str)
+        if resp.get("success"):
+            return resp.get("result")
+        raise RuntimeError(resp.get("error") or "Command failed")
     
     async def _handle_place_order(self, args: List[str]) -> Dict[str, Any]:
         """Handle place_order/market command: market SYMBOL SIDE QUANTITY"""
@@ -215,7 +225,7 @@ class CLICommandParser:
     async def _handle_positions(self, args: List[str]) -> Dict[str, Any]:
         """Handle positions command: positions [account_id]"""
         account_id = args[0] if args else None
-        result = await self.trading_bot.get_positions(account_id=account_id)
+        result = await self.trading_bot.get_open_positions(account_id=account_id)
         return result
     
     async def _handle_orders(self, args: List[str]) -> Dict[str, Any]:
@@ -511,8 +521,16 @@ class CLICommandParser:
             from gui.chart_html import _start_chart_server
             import webbrowser
             
-            # Start server
-            port = await _start_chart_server(self.trading_bot, symbol)
+            # Ensure contracts are loaded BEFORE starting GUI
+            logger.info("📋 Pre-loading contracts for GUI...")
+            try:
+                contracts = await self.trading_bot.get_available_contracts(use_cache=False)
+                logger.info(f"✅ Pre-loaded {len(contracts)} contracts")
+            except Exception as contract_err:
+                logger.warning(f"⚠️ Could not pre-load contracts: {contract_err}")
+            
+            # Start server with symbol and timeframe
+            port = await _start_chart_server(self.trading_bot, symbol, timeframe)
             
             # Open master GUI in browser
             master_url = f"http://127.0.0.1:{port}/master"
@@ -523,7 +541,9 @@ class CLICommandParser:
                 "url": master_url,
                 "port": port,
                 "symbol": symbol,
-                "message": "Master GUI opened in browser. Bot will keep running. Press Ctrl+C to stop."
+                "timeframe": timeframe,
+                "message": "Master GUI opened in browser. Bot will keep running. Press Ctrl+C to stop.",
+                "selected_account": self.trading_bot.selected_account.get('name') if self.trading_bot.selected_account else None
             }
             
             # Return keep_running flag so bot stays alive

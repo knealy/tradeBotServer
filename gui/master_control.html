@@ -27,6 +27,163 @@
         }
         .header h1 { font-size: 18px; font-weight: 600; }
         .connection-status { font-size: 12px; color: #4caf50; }
+        .customize-btn {
+            background: #3b82f6;
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        .customize-btn:hover { background: #2563eb; }
+        
+        /* Customization Panel */
+        .customize-panel {
+            position: fixed;
+            top: 0;
+            right: -400px;
+            width: 400px;
+            height: 100vh;
+            background: #1a1a1a;
+            border-left: 2px solid #333;
+            z-index: 1000;
+            transition: right 0.3s ease;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .customize-panel.open { right: 0; }
+        .customize-panel h2 {
+            color: #fff;
+            font-size: 18px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+        .customize-section {
+            margin-bottom: 24px;
+        }
+        .customize-section h3 {
+            color: #fff;
+            font-size: 14px;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .customize-control {
+            margin-bottom: 16px;
+        }
+        .customize-control label {
+            display: block;
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+        .customize-control input[type="range"] {
+            width: 100%;
+            margin: 8px 0;
+        }
+        .customize-control input[type="number"],
+        .customize-control select {
+            width: 100%;
+            background: #222;
+            border: 1px solid #444;
+            color: #fff;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .customize-control .value-display {
+            color: #4caf50;
+            font-weight: 600;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        .preset-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .preset-btn {
+            background: #333;
+            border: 1px solid #555;
+            color: #fff;
+            padding: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .preset-btn:hover {
+            background: #444;
+            border-color: #3b82f6;
+        }
+        .preset-btn.active {
+            background: #3b82f6;
+            border-color: #3b82f6;
+        }
+        
+        /* Widget Controls */
+        .widget-controls {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .panel:hover .widget-controls {
+            opacity: 1;
+        }
+        .widget-btn {
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid #555;
+            color: #fff;
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .widget-btn:hover {
+            background: rgba(59, 130, 246, 0.8);
+            border-color: #3b82f6;
+        }
+        
+        /* Draggable Widgets */
+        .panel.dragging {
+            opacity: 0.5;
+            cursor: grabbing;
+        }
+        .panel.drag-over {
+            border-color: #3b82f6;
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+        }
+        
+        /* Pop-out Window Styles */
+        .popout-window {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #1a1a1a;
+            border: 2px solid #3b82f6;
+            border-radius: 8px;
+            padding: 20px;
+            z-index: 10000;
+            min-width: 400px;
+            max-width: 90vw;
+            max-height: 90vh;
+            overflow: auto;
+        }
         
         /* Account Status Bar */
         .account-bar {
@@ -48,47 +205,158 @@
         .status-value.positive { color: #4caf50; }
         .status-value.negative { color: #f44336; }
         
-        /* Main Dashboard Grid */
+        /* Main Dashboard - Flexible Layout with Resizable Widgets */
         .dashboard {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            grid-template-rows: auto auto auto;
-            gap: 16px;
-            padding: 16px;
-            max-width: 2400px;
-            margin: 0 auto;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 8px;
+            width: 100%;
+            align-items: flex-start;
+            align-content: flex-start;
         }
         
-        /* Panels */
+        /* Panels - Independent sizing */
         .panel {
             background: #1a1a1a;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 16px;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            padding: 8px;
             overflow: hidden;
-        }
-        .panel h2 {
-            font-size: 14px;
-            margin-bottom: 12px;
-            color: #fff;
-            border-bottom: 1px solid #333;
-            padding-bottom: 8px;
-            font-weight: 600;
+            position: relative;
+            /* multi-color gradient border per widget */
+            border-image: linear-gradient(
+                135deg,
+                #a855f7,
+                #ef4444,
+                #3b82f6,
+                #f97316,
+                #eab308,
+                #a855f7
+            ) 1;
+            box-shadow: 0 0 12px rgba(168, 85, 247, 0.06), 0 0 8px rgba(59, 130, 246, 0.04);
+            /* Default sizes - can be overridden by customization */
+            flex: 0 0 auto;
+            min-width: 300px;
+            min-height: 200px;
         }
         
-        /* Chart Panel (large, spans 2 rows) */
+        /* Chart panel - larger by default */
         .chart-panel {
-            grid-column: 1;
-            grid-row: 1 / 3;
+            width: calc(66.666% - 6px);
+            min-width: 600px;
+            height: 600px;
+        }
+        
+        /* Other panels - smaller by default */
+        .strategy-panel,
+        .logs-panel,
+        .command-panel,
+        .positions-panel,
+        .orders-panel,
+        .signal-feed-panel,
+        .actions-panel {
+            width: calc(33.333% - 6px);
+            min-width: 300px;
+            height: 300px;
+        }
+        
+        /* Resize handles */
+        .resize-handle {
+            position: absolute;
+            background: transparent;
+            z-index: 10;
+        }
+        .resize-handle:hover {
+            background: rgba(168, 85, 247, 0.3);
+        }
+        .resize-handle.right {
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            cursor: ew-resize;
+        }
+        .resize-handle.bottom {
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            cursor: ns-resize;
+        }
+        .resize-handle.corner {
+            right: 0;
+            bottom: 0;
+            width: 8px;
+            height: 8px;
+            cursor: nwse-resize;
+        }
+        .panel h2 {
+            font-size: 13px;
+            margin-bottom: 10px;
+            color: #fff;
+            border-bottom: 1px solid #333;
+            padding-bottom: 6px;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        .panel-header-text {
+            flex: 1;
+        }
+        .collapse-btn {
+            background: transparent;
+            border: none;
+            color: #888;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 0 8px;
+            transition: all 0.2s;
+            line-height: 1;
+        }
+        .collapse-btn:hover {
+            color: #fff;
+        }
+        .panel-content {
+            max-height: 2000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease-in-out, padding 0.3s ease-in-out, margin 0.3s ease-in-out;
+        }
+        .panel.collapsed .panel-content {
+            max-height: 0;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            margin-top: 0 !important;
+            margin-bottom: 0 !important;
+        }
+        .panel.collapsed h2 {
+            border-bottom: none;
+            padding-bottom: 0;
+            margin-bottom: 0;
+        }
+        .panel.collapsed .collapse-btn {
+            transform: rotate(-90deg);
+        }
+        
+        /* Chart Panel - Dynamic sizing */
+        .chart-panel {
             display: flex;
             flex-direction: column;
+            height: 100%;
         }
         #chart-container {
             flex: 1;
-            min-height: 600px;
+            min-height: 400px;
+            max-height: calc(100vh - 200px);
+            height: 100%;
             background: #0a0a0a;
             border-radius: 4px;
             margin-top: 8px;
+            position: relative;
+            overflow: hidden;
         }
         
         /* Chart Controls */
@@ -142,26 +410,66 @@
         .btn-danger:hover { background: #d32f2f; }
         
         /* Positions Panel */
-        .positions-panel {
-            grid-column: 2;
-            grid-row: 1;
-            max-height: 400px;
+        .positions-panel { 
+            max-height: 400px; 
             overflow-y: auto;
+            min-height: 280px;
+        }
+        
+        .positions-panel table,
+        .orders-panel table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        
+        .positions-panel table th,
+        .orders-panel table th {
+            padding: 4px 6px !important;
+            text-align: left;
+            font-weight: 600;
+            color: #888;
+            border-bottom: 1px solid #333;
+            font-size: 10px;
+        }
+        
+        .positions-panel table td,
+        .orders-panel table td {
+            padding: 6px 6px !important;
+            border-bottom: 1px solid #222;
+            color: #d1d5db;
+        }
+        
+        .positions-panel table tr:last-child td,
+        .orders-panel table tr:last-child td {
+            border-bottom: none;
         }
         
         /* Orders Panel */
-        .orders-panel {
-            grid-column: 2;
-            grid-row: 2;
-            max-height: 400px;
+        .orders-panel { 
+            max-height: 400px; 
             overflow-y: auto;
+            min-height: 280px;
         }
         
         /* Strategy Panel */
-        .strategy-panel {
-            grid-column: 1;
-            grid-row: 3;
+        .strategy-panel { }
+
+        /* Signal feed + command + logs sizing */
+        .signal-feed-panel { max-height: 520px; overflow: hidden; }
+        .command-panel { max-height: 520px; overflow: hidden; }
+        .logs-panel { max-height: 520px; overflow: hidden; }
+
+        /* Drag handle */
+        .drag-handle {
+            font-size: 16px;
+            color: #777;
+            cursor: grab;
+            user-select: none;
+            padding: 0 6px;
         }
+        .drag-handle:hover { color: #fff; }
+        .panel.dragging { opacity: 0.6; }
         .strategy-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -205,11 +513,8 @@
             font-size: 11px;
         }
         
-        /* Quick Actions Panel */
-        .actions-panel {
-            grid-column: 2;
-            grid-row: 3;
-        }
+        /* Grid assignments are now in the main .dashboard rule above */
+        
         .action-grid {
             display: flex;
             flex-direction: column;
@@ -227,22 +532,24 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 12px;
-            margin-top: 8px;
+            font-size: 11px;
+            margin-top: 6px;
         }
         th {
             text-align: left;
-            padding: 8px 6px;
+            padding: 4px 6px !important;
             background: #151515;
             color: #888;
+            font-size: 10px;
             font-weight: 500;
             font-size: 10px;
             text-transform: uppercase;
             border-bottom: 1px solid #333;
         }
         td {
-            padding: 10px 6px;
+            padding: 5px 6px !important;
             border-bottom: 1px solid #222;
+            font-size: 11px;
         }
         tr:hover { background: #222; }
         .positive { color: #4caf50; }
@@ -276,147 +583,461 @@
     <!-- Header -->
     <div class="header">
         <h1>🎯 Master Trading Control</h1>
-        <div class="connection-status" id="connection-status">Connecting...</div>
+        <div style="display: flex; gap: 12px; align-items: center;">
+            <button class="customize-btn" onclick="toggleCustomizePanel()">⚙️ Customize UI</button>
+            <div class="connection-status" id="connection-status">Connecting...</div>
+        </div>
+    </div>
+    
+    <!-- Customization Panel -->
+    <div class="customize-panel" id="customize-panel">
+        <h2>🎨 UI Customization</h2>
+        
+        <div class="customize-section">
+            <h3>Layout Presets</h3>
+            <div class="preset-buttons">
+                <button class="preset-btn" onclick="applyPreset('compact')">Compact</button>
+                <button class="preset-btn" onclick="applyPreset('spacious')">Spacious</button>
+                <button class="preset-btn" onclick="applyPreset('wide')">Wide</button>
+                <button class="preset-btn" onclick="applyPreset('tall')">Tall</button>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Grid Layout</h3>
+            <div class="customize-control">
+                <label>Number of Columns</label>
+                <input type="range" id="grid-cols" min="1" max="4" value="2" oninput="updateGridLayout()">
+                <div class="value-display" id="grid-cols-value">2 columns</div>
+            </div>
+            <div class="customize-control">
+                <label>Gap Between Widgets (px)</label>
+                <input type="range" id="grid-gap" min="0" max="32" value="6" oninput="updateGridLayout()">
+                <div class="value-display" id="grid-gap-value">6px</div>
+            </div>
+            <div class="customize-control">
+                <label>Padding (px)</label>
+                <input type="range" id="grid-padding" min="0" max="32" value="6" oninput="updateGridLayout()">
+                <div class="value-display" id="grid-padding-value">6px</div>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Widget Styling</h3>
+            <div class="customize-control">
+                <label>Panel Padding (px)</label>
+                <input type="range" id="panel-padding" min="4" max="24" value="8" oninput="updateWidgetStyle()">
+                <div class="value-display" id="panel-padding-value">8px</div>
+            </div>
+            <div class="customize-control">
+                <label>Border Radius (px)</label>
+                <input type="range" id="border-radius" min="0" max="16" value="4" oninput="updateWidgetStyle()">
+                <div class="value-display" id="border-radius-value">4px</div>
+            </div>
+            <div class="customize-control">
+                <label>Border Width (px)</label>
+                <input type="range" id="border-width" min="1" max="4" value="2" oninput="updateWidgetStyle()">
+                <div class="value-display" id="border-width-value">2px</div>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Colors</h3>
+            <div class="customize-control">
+                <label>Background Color</label>
+                <input type="color" id="bg-color" value="#1a1a1a" onchange="updateColors()">
+            </div>
+            <div class="customize-control">
+                <label>Text Color</label>
+                <input type="color" id="text-color" value="#e0e0e0" onchange="updateColors()">
+            </div>
+            <div class="customize-control">
+                <label>Accent Color</label>
+                <input type="color" id="accent-color" value="#3b82f6" onchange="updateColors()">
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Typography</h3>
+            <div class="customize-control">
+                <label>Base Font Size (px)</label>
+                <input type="range" id="font-size" min="10" max="16" value="13" oninput="updateTypography()">
+                <div class="value-display" id="font-size-value">13px</div>
+            </div>
+            <div class="customize-control">
+                <label>Table Font Size (px)</label>
+                <input type="range" id="table-font-size" min="9" max="14" value="11" oninput="updateTypography()">
+                <div class="value-display" id="table-font-size-value">11px</div>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Widget Layout</h3>
+            <div class="customize-control">
+                <label>Widget Order</label>
+                <div id="widget-order-list" style="background: #222; padding: 12px; border-radius: 4px; max-height: 300px; overflow-y: auto;">
+                    <!-- Widget order controls will be populated here -->
+                </div>
+            </div>
+            <div class="customize-control">
+                <label>Chart Position</label>
+                <select id="chart-position" onchange="updateWidgetOrder()">
+                    <option value="top">Top</option>
+                    <option value="middle">Middle</option>
+                    <option value="bottom">Bottom</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Button Styling</h3>
+            <div class="customize-control">
+                <label>Buy Button Color</label>
+                <input type="color" id="btn-buy-color" value="#26a69a" onchange="updateButtonStyles()">
+            </div>
+            <div class="customize-control">
+                <label>Sell Button Color</label>
+                <input type="color" id="btn-sell-color" value="#ef5350" onchange="updateButtonStyles()">
+            </div>
+            <div class="customize-control">
+                <label>Primary Button Color</label>
+                <input type="color" id="btn-primary-color" value="#4a9eff" onchange="updateButtonStyles()">
+            </div>
+            <div class="customize-control">
+                <label>Danger Button Color</label>
+                <input type="color" id="btn-danger-color" value="#f44336" onchange="updateButtonStyles()">
+            </div>
+            <div class="customize-control">
+                <label>Start Button Color</label>
+                <input type="color" id="btn-start-color" value="#4caf50" onchange="updateButtonStyles()">
+            </div>
+            <div class="customize-control">
+                <label>Stop Button Color</label>
+                <input type="color" id="btn-stop-color" value="#f44336" onchange="updateButtonStyles()">
+            </div>
+            <div class="customize-control">
+                <label>Button Border Radius (px)</label>
+                <input type="range" id="btn-border-radius" min="0" max="12" value="4" oninput="updateButtonStyles()">
+                <div class="value-display" id="btn-border-radius-value">4px</div>
+            </div>
+            <div class="customize-control">
+                <label>Button Font Size (px)</label>
+                <input type="range" id="btn-font-size" min="10" max="16" value="11" oninput="updateButtonStyles()">
+                <div class="value-display" id="btn-font-size-value">11px</div>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <h3>Widget Widths</h3>
+            <div class="customize-control">
+                <label>Chart Width (columns)</label>
+                <input type="range" id="chart-width" min="1" max="4" value="1" oninput="updateWidgetWidths()">
+                <div class="value-display" id="chart-width-value">1 column</div>
+            </div>
+            <div class="customize-control">
+                <label>Positions Width (columns)</label>
+                <input type="range" id="positions-width" min="1" max="4" value="1" oninput="updateWidgetWidths()">
+                <div class="value-display" id="positions-width-value">1 column</div>
+            </div>
+            <div class="customize-control">
+                <label>Orders Width (columns)</label>
+                <input type="range" id="orders-width" min="1" max="4" value="1" oninput="updateWidgetWidths()">
+                <div class="value-display" id="orders-width-value">1 column</div>
+            </div>
+        </div>
+        
+        <div class="customize-section">
+            <button class="preset-btn" onclick="saveCustomization()" style="width: 100%; background: #4caf50; border-color: #4caf50;">💾 Save Settings</button>
+            <button class="preset-btn" onclick="resetCustomization()" style="width: 100%; margin-top: 8px; background: #f44336; border-color: #f44336;">🔄 Reset to Default</button>
+        </div>
     </div>
     
     <!-- Account Status Bar -->
     <div class="account-bar">
         <div class="status-item">
             <div class="status-label">Account</div>
-            <div class="status-value" id="account-name">--</div>
-        </div>
-        <div class="status-item">
-            <div class="status-label">Balance</div>
+            <select id="account-select" onchange="switchAccount()" style="background: #222; border: 1px solid #444; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; width: 200px;">
+                <option value="">Loading...</option>
+            </select>
+    </div>
+                    <div class="status-item">
+                        <div class="status-label">Balance</div>
             <div class="status-value" id="balance">$--</div>
-        </div>
-        <div class="status-item">
-            <div class="status-label">Unrealized P&L</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="status-label">Unrealized P&L</div>
             <div class="status-value" id="unrealized-pnl">$--</div>
-        </div>
-        <div class="status-item">
-            <div class="status-label">Realized P&L</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="status-label">Realized P&L</div>
             <div class="status-value" id="realized-pnl">$--</div>
-        </div>
-        <div class="status-item">
-            <div class="status-label">Open Positions</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="status-label">Open Positions</div>
             <div class="status-value" id="position-count">0</div>
-        </div>
+                    </div>
         <div class="status-item">
             <div class="status-label">Open Orders</div>
             <div class="status-value" id="order-count">0</div>
+            </div>
         </div>
-    </div>
-    
+        
     <!-- Main Dashboard Grid -->
     <div class="dashboard">
         <!-- Chart Panel (Large, Left Side) -->
-        <div class="panel chart-panel">
-            <h2>📈 Real-Time Chart & Trading</h2>
-            
-            <!-- Chart Controls -->
+        <div class="panel chart-panel" id="chart-panel">
+            <h2 onclick="togglePanel('chart-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">📈 Real-Time Chart & Trading</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('chart-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+                <!-- Chart Controls -->
             <div class="chart-controls">
                 <select id="chart-symbol-select">
-                    <option value="{{SYMBOL}}">{{SYMBOL}}</option>
-                </select>
+                        <option value="{{SYMBOL}}">{{SYMBOL}}</option>
+                    </select>
                 <select id="chart-timeframe-select">
-                    <option value="30s">30s</option>
-                    <option value="1m">1m</option>
-                    <option value="5m" selected>5m</option>
-                    <option value="15m">15m</option>
-                    <option value="1h">1h</option>
-                </select>
+                        <option value="30s">30s</option>
+                        <option value="1m">1m</option>
+                    <option value="2m">2m</option>
+                    <option value="3m">3m</option>
+                        <option value="5m">5m</option>
+                    <option value="10m">10m</option>
+                        <option value="15m">15m</option>
+                    <option value="30m">30m</option>
+                        <option value="1h">1h</option>
+                    <option value="2h">2h</option>
+                    <option value="4h">4h</option>
+                    <option value="1d">1d</option>
+                    </select>
                 <button class="btn-primary" onclick="refreshChart()">Refresh</button>
-                <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+                <button class="btn-danger" onclick="flattenAll()" style="padding: 6px 10px;">Flatten</button>
+                <button class="btn-danger" onclick="cancelAllOrders()" style="padding: 6px 10px;">Cancel</button>
+                <button class="btn-primary" onclick="refreshAll()" style="padding: 6px 10px;">Refresh All</button>
+                    <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
                     <span style="font-size: 10px; color: #888;">Rate:</span>
                     <select id="chart-refresh-rate" style="width: 70px;">
                         <option value="1">1x/s</option>
                         <option value="3">3x/s</option>
                         <option value="6" selected>6x/s</option>
-                    </select>
+                        <option value="12">12x/s</option>
+                        <option value="18">18x/s</option>
+                        <option value="24">24x/s</option>
+                        </select>
+                    </div>
                 </div>
-            </div>
-            
+                
             <!-- Trading Controls -->
             <div class="chart-controls">
                 <select id="order-type" onchange="updateOrderType()">
                     <option value="market">Market</option>
-                    <option value="limit">Limit</option>
-                    <option value="bracket">Bracket</option>
-                </select>
+                        <option value="limit">Limit</option>
+                    <option value="stop">Stop Market</option>
+                    <option value="stop-limit">Stop Limit</option>
+                    <option value="trailing-stop">Trailing Stop</option>
+                    </select>
                 <input type="number" id="order-qty" value="1" min="1" placeholder="Qty" style="width: 60px;">
-                <input type="number" id="order-price" step="0.25" placeholder="Price" style="width: 80px; display: none;">
+                <input type="number" id="order-price" step="0.25" placeholder="Limit Price" style="width: 90px; display: none;">
+                <input type="number" id="order-stop-price" step="0.25" placeholder="Stop Price" style="width: 90px; display: none;">
+                <input type="number" id="order-trail-amount" step="0.25" placeholder="Trail ($)" style="width: 90px; display: none;">
                 <label style="display: flex; align-items: center; gap: 4px; font-size: 11px;">
                     <input type="checkbox" id="enable-bracket" onchange="updateBracket()">
-                    <span>Bracket</span>
-                </label>
+                        <span>Bracket</span>
+                    </label>
                 <input type="number" id="order-sl-ticks" placeholder="SL Ticks" style="width: 80px; display: none;">
                 <input type="number" id="order-tp-ticks" placeholder="TP Ticks" style="width: 80px; display: none;">
                 <button class="btn-buy" onclick="placeOrder('BUY')">BUY</button>
                 <button class="btn-sell" onclick="placeOrder('SELL')">SELL</button>
-            </div>
-            
+                </div>
+                
             <!-- Chart Container -->
-            <div id="chart-container"></div>
+                <div id="chart-container"></div>
+            </div> <!-- End panel-content -->
         </div>
         
         <!-- Positions Panel (Right Side, Top) -->
-        <div class="panel positions-panel">
-            <h2>📊 Open Positions (<span id="pos-count">0</span>)</h2>
+        <div class="panel positions-panel" id="positions-panel">
+            <h2 onclick="togglePanel('positions-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">📊 Open Positions (<span id="pos-count">0</span>)</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('positions-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
             <table>
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Qty</th>
-                        <th>Entry</th>
-                        <th>P&L</th>
-                    </tr>
-                </thead>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Side</th>
+                                <th>Qty</th>
+                                <th>Entry</th>
+                                <th>P&L</th>
+                            </tr>
+                        </thead>
                 <tbody id="positions-body">
                     <tr><td colspan="5" class="empty-state">No positions</td></tr>
                 </tbody>
-            </table>
-        </div>
-        
+                    </table>
+            </div> <!-- End panel-content -->
+                </div>
+                
         <!-- Orders Panel (Right Side, Middle) -->
-        <div class="panel orders-panel">
-            <h2>📋 Open Orders (<span id="ord-count">0</span>)</h2>
+        <div class="panel orders-panel" id="orders-panel">
+            <h2 onclick="togglePanel('orders-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">📋 Open Orders (<span id="ord-count">0</span>)</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('orders-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
             <table>
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Qty</th>
-                        <th>Price</th>
-                        <th>Type</th>
-                    </tr>
-                </thead>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Side</th>
+                                <th>Qty</th>
+                                <th>Price</th>
+                                <th>Type</th>
+                            </tr>
+                        </thead>
                 <tbody id="orders-body">
                     <tr><td colspan="5" class="empty-state">No orders</td></tr>
                 </tbody>
-            </table>
-        </div>
+                    </table>
+            </div> <!-- End panel-content -->
+                </div>
         
         <!-- Strategy Control Panel (Bottom Left) -->
-        <div class="panel strategy-panel">
-            <h2>🎯 Strategy Control</h2>
+        <div class="panel strategy-panel" id="strategy-panel">
+            <h2 onclick="togglePanel('strategy-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">🎯 Strategy Control</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('strategy-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+            <!-- Strategy Start Controls -->
+            <div style="margin-bottom: 16px; padding: 12px; background: #151515; border: 1px solid #333; border-radius: 6px;">
+                <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: #fff;">Start New Strategy</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end;">
+                    <div>
+                        <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Strategy</label>
+                        <select id="strategy-select" style="width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                            <option value="simple_candle">Simple Candle</option>
+                            <option value="overnight_range">Overnight Range</option>
+                            <option value="trend_scalping">Trend Scalping</option>
+                            <option value="mean_reversion">Mean Reversion</option>
+                            <option value="trend_following">Trend Following</option>
+                            <option value="simple_momentum">Simple Momentum</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Symbol(s)</label>
+                        <input type="text" id="strategy-symbols" placeholder="MNQ,MES" value="MNQ" style="width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Timeframe</label>
+                        <select id="strategy-timeframe" style="width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                            <option value="5s">5s</option>
+                            <option value="15s">15s</option>
+                            <option value="30s">30s</option>
+                            <option value="1m">1m</option>
+                            <option value="2m">2m</option>
+                            <option value="5m" selected>5m</option>
+                            <option value="15m">15m</option>
+                            <option value="30m">30m</option>
+                            <option value="1h">1h</option>
+                        </select>
+                    </div>
+                    <button onclick="startStrategy()" style="background: #4caf50; border: none; color: #fff; padding: 8px 16px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 11px;">▶ Start</button>
+            </div>
+        </div>
+        
+            <!-- Active Strategies Grid -->
             <div class="strategy-grid" id="strategy-grid">
                 <div class="empty-state">Loading strategies...</div>
             </div>
+            </div> <!-- End panel-content -->
         </div>
         
-        <!-- Quick Actions Panel (Bottom Right) -->
-        <div class="panel actions-panel">
-            <h2>⚡ Quick Actions</h2>
-            <div class="action-grid">
-                <button class="btn-danger" onclick="flattenAll()">🛑 Flatten All</button>
-                <button class="btn-danger" onclick="cancelAllOrders()">❌ Cancel All Orders</button>
-                <button class="btn-primary" onclick="refreshAll()">🔄 Refresh All Data</button>
+        <!-- Strategy Signal Feed Panel -->
+        <div class="panel signal-feed-panel" id="signal-feed-panel">
+            <h2 onclick="togglePanel('signal-feed-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">📡 Strategy Signals</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('signal-feed-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+                <div id="signal-feed-container" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; max-height: 300px; overflow-y: auto;">
+                    <div style="color: #888; font-size: 11px; text-align: center;">No signals yet...</div>
+                    </div>
+                    </div>
+                </div>
+
+        <!-- Command Input Panel -->
+        <div class="panel command-panel" id="command-panel">
+            <h2 onclick="togglePanel('command-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">⌨️ Command Input</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('command-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                    <input type="text" id="command-input" placeholder="Enter command (e.g., flatten, contracts, positions)" 
+                           style="flex: 1; background: #222; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px;"
+                           onkeypress="if(event.key==='Enter') executeCommand()">
+                    <button onclick="executeCommand()" style="background: #4caf50; border: none; color: #fff; padding: 8px 20px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 12px;">Execute</button>
             </div>
-            <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #333;">
-                <div style="font-size: 11px; color: #888; margin-bottom: 4px;">System Status</div>
-                <div style="font-size: 12px; color: #4caf50;" id="system-status">Online</div>
-                <div style="font-size: 10px; color: #666; margin-top: 4px;" id="last-update">--</div>
+                <div id="command-output" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; font-family: 'Courier New', monospace; font-size: 11px; max-height: 200px; overflow-y: auto; color: #d1d5db;">
+                    <div style="color: #888;">Ready to execute commands...</div>
+                    </div>
+                    </div>
+                </div>
+
+        <!-- Terminal Logs Panel -->
+        <div class="panel logs-panel" id="logs-panel">
+            <h2 onclick="togglePanel('logs-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">📋 Terminal Logs</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('logs-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+                <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                    <span style="font-size: 11px; color: #888;">Filter:</span>
+                    <select id="log-level-filter" style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px;">
+                        <option value="all">All</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                    </select>
+                    <button onclick="clearLogs()" style="background: #444; border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Clear</button>
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; margin-left: auto;">
+                        <input type="checkbox" id="auto-scroll-logs" checked>
+                        <span style="color: #888;">Auto-scroll</span>
+                    </label>
+                </div>
+                <div id="logs-container" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; font-family: 'Courier New', monospace; font-size: 11px; max-height: 300px; overflow-y: auto; color: #d1d5db;">
+                    <div style="color: #888;">Connecting to log stream...</div>
+                </div>
             </div>
         </div>
     </div>
@@ -425,61 +1046,582 @@
     <script>
         const SERVER_PORT = {{SERVER_PORT}};
         const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
+        const WS_URL = `ws://127.0.0.1:${SERVER_PORT}/ws`;
         const SYMBOL = '{{SYMBOL}}';
+        const TIMEFRAME = '{{TIMEFRAME}}';
         
         let chart = null;
         let candlestickSeries = null;
         let updateIntervals = {};
+        let websocket = null;
+        let wsReconnectAttempts = 0;
+        const wsMaxReconnectAttempts = 5;
+        let currentChartSymbol = SYMBOL || 'MNQ'; // Track current chart symbol
+        let currentChartTimeframe = TIMEFRAME || '5m'; // Track current chart timeframe
+        
+        // Set default symbol in dropdown on page load
+        window.addEventListener('load', () => {
+            const symbolSelect = document.getElementById('chart-symbol-select');
+            if (symbolSelect && SYMBOL) {
+                symbolSelect.value = SYMBOL;
+                currentChartSymbol = SYMBOL;
+            }
+        });
+        
+        // Toggle panel collapse/expand
+        function togglePanel(panelId) {
+            const panel = document.getElementById(panelId);
+            if (!panel) return;
+            
+            panel.classList.toggle('collapsed');
+            
+            // Save state to localStorage
+            const collapsed = panel.classList.contains('collapsed');
+            localStorage.setItem(`panel-${panelId}-collapsed`, collapsed);
+        }
+        
+        // Restore panel states from localStorage
+        function restorePanelStates() {
+            ['chart-panel', 'positions-panel', 'orders-panel', 'strategy-panel', 'signal-feed-panel', 'command-panel', 'logs-panel'].forEach(panelId => {
+                const collapsed = localStorage.getItem(`panel-${panelId}-collapsed`) === 'true';
+                if (collapsed) {
+                    const panel = document.getElementById(panelId);
+                    if (panel) panel.classList.add('collapsed');
+                }
+            });
+        }
+
+        // Restore dashboard order from localStorage
+        function restoreDashboardOrder() {
+            const dashboard = document.querySelector('.dashboard');
+            if (!dashboard) return;
+            try {
+                const raw = localStorage.getItem('dashboard-order');
+                if (!raw) return;
+                const ids = JSON.parse(raw);
+                if (!Array.isArray(ids)) return;
+                ids.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el && el.classList.contains('panel')) {
+                        dashboard.appendChild(el);
+                    }
+                });
+            } catch (e) {
+                console.warn('Failed to restore dashboard order:', e);
+            }
+        }
+
+        function saveDashboardOrder() {
+            const dashboard = document.querySelector('.dashboard');
+            if (!dashboard) return;
+            const ids = Array.from(dashboard.querySelectorAll('.panel')).map(p => p.id).filter(Boolean);
+            localStorage.setItem('dashboard-order', JSON.stringify(ids));
+        }
+
+        // Fast native drag/drop reorder (HTML5 DnD) using a small handle
+        function initDashboardDnD() {
+            const dashboard = document.querySelector('.dashboard');
+            if (!dashboard) return;
+            let draggedPanel = null;
+
+            const handles = dashboard.querySelectorAll('.drag-handle');
+            handles.forEach(handle => {
+                handle.setAttribute('draggable', 'true');
+                handle.addEventListener('dragstart', (e) => {
+                    draggedPanel = handle.closest('.panel');
+                    if (!draggedPanel) return;
+                    draggedPanel.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    // Required by some browsers to initiate DnD
+                    e.dataTransfer.setData('text/plain', draggedPanel.id || 'panel');
+                });
+                handle.addEventListener('dragend', () => {
+                    if (draggedPanel) draggedPanel.classList.remove('dragging');
+                    draggedPanel = null;
+                    saveDashboardOrder();
+                });
+            });
+
+            dashboard.querySelectorAll('.panel').forEach(panel => {
+                panel.addEventListener('dragover', (e) => {
+                    if (!draggedPanel) return;
+                    e.preventDefault();
+                    const target = panel;
+                    if (!target || target === draggedPanel) return;
+                    const rect = target.getBoundingClientRect();
+                    const after = (e.clientY - rect.top) > rect.height / 2;
+                    dashboard.insertBefore(draggedPanel, after ? target.nextSibling : target);
+                });
+            });
+        }
+        
+        // WebSocket connection for real-time updates
+        function connectWebSocket() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                return; // Already connected
+            }
+            
+            try {
+                websocket = new WebSocket(WS_URL);
+                
+                websocket.onopen = () => {
+                    console.log('📡 WebSocket connected');
+                    document.getElementById('connection-status').textContent = 'Connected (WebSocket)';
+                    document.getElementById('connection-status').style.color = '#4caf50';
+                    wsReconnectAttempts = 0;
+                    
+                    // Stop HTTP polling when WebSocket is connected
+                    stopHttpPolling();
+                };
+                
+                websocket.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleWebSocketMessage(message);
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error);
+                    }
+                };
+                
+                websocket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    document.getElementById('connection-status').textContent = 'Connection Error';
+                    document.getElementById('connection-status').style.color = '#f44336';
+                };
+                
+                websocket.onclose = () => {
+                    console.log('📡 WebSocket disconnected');
+                    document.getElementById('connection-status').textContent = 'Disconnected';
+                    document.getElementById('connection-status').style.color = '#ff9800';
+                    
+                    // Fallback to HTTP polling
+                    startHttpPolling();
+                    
+                    // Attempt to reconnect
+                    if (wsReconnectAttempts < wsMaxReconnectAttempts) {
+                        wsReconnectAttempts++;
+                        const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+                        console.log(`Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts}/${wsMaxReconnectAttempts})`);
+                        setTimeout(connectWebSocket, delay);
+                    } else {
+                        console.log('Max reconnect attempts reached, using HTTP polling');
+                        document.getElementById('connection-status').textContent = 'Connected (Polling)';
+                        document.getElementById('connection-status').style.color = '#ff9800';
+                    }
+                };
+                
+                // Send ping every 30 seconds to keep connection alive
+                setInterval(() => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        websocket.send(JSON.stringify({ type: 'ping' }));
+                    }
+                }, 30000);
+                
+            } catch (error) {
+                console.error('Failed to create WebSocket:', error);
+                startHttpPolling();
+            }
+        }
+        
+        function handleWebSocketMessage(message) {
+            const { type, data } = message;
+            
+            switch (type) {
+                case 'account':
+                    if (data && !data.error) {
+                        updateAccountDisplay(data);
+                    }
+                    break;
+                case 'positions':
+                    if (data && data.positions) {
+                        updatePositionsDisplay(data.positions);
+                    }
+                    break;
+                case 'orders':
+                    if (data && data.orders) {
+                        updateOrdersDisplay(data.orders);
+                    }
+                    break;
+                case 'strategies':
+                    if (data) {
+                        updateStrategiesDisplay(data);
+                    }
+                    break;
+                case 'log':
+                    if (data) {
+                        appendLog(data);
+                    }
+                    break;
+                case 'signal':
+                    if (data) {
+                        console.log('📡 Received strategy signal:', data);
+                        addSignal(data);
+                    }
+                    break;
+                case 'pong':
+                    // Keep-alive response
+                    break;
+                default:
+                    console.log('Unknown WebSocket message type:', type);
+            }
+        }
+        
+        function appendLog(logData) {
+            const container = document.getElementById('logs-container');
+            const levelFilter = document.getElementById('log-level-filter')?.value || 'all';
+            const autoScroll = document.getElementById('auto-scroll-logs')?.checked;
+            
+            // Filter by log level
+            if (levelFilter !== 'all' && logData.level !== levelFilter) {
+                return;
+            }
+            
+            // Clear initial message if it exists
+            if (container.textContent.includes('Connecting to log stream')) {
+                container.innerHTML = '';
+            }
+            
+            // Create log entry
+            const logEntry = document.createElement('div');
+            logEntry.style.marginBottom = '4px';
+            logEntry.style.lineHeight = '1.5';
+            
+            // Color code by level
+            let color = '#d1d5db'; // Default (INFO)
+            if (logData.level === 'WARNING') color = '#ff9800';
+            if (logData.level === 'ERROR') color = '#f44336';
+            
+            logEntry.innerHTML = `<span style="color: #666;">${logData.timestamp || ''}</span> <span style="color: ${color}; font-weight: bold;">${logData.level || 'INFO'}</span> <span style="color: ${color};">${logData.message || ''}</span>`;
+            
+            container.appendChild(logEntry);
+            
+            // Auto-scroll to bottom
+            if (autoScroll) {
+                container.scrollTop = container.scrollHeight;
+            }
+            
+            // Limit logs to 500 entries
+            while (container.children.length > 500) {
+                container.removeChild(container.firstChild);
+            }
+        }
+        
+        function clearLogs() {
+            const container = document.getElementById('logs-container');
+            container.innerHTML = '<div style="color: #888;">Logs cleared</div>';
+        }
+        
+        // Strategy Signal Feed
+        function addSignal(signal) {
+            console.log('🎯 addSignal called with:', signal);
+            const container = document.getElementById('signal-feed-container');
+            if (!container) {
+                console.error('❌ signal-feed-container not found!');
+                return;
+            }
+            
+            // Clear placeholder if this is first signal
+            if (container.children.length === 1 && container.firstChild.textContent.includes('No signals')) {
+                container.innerHTML = '';
+            }
+            
+            const signalEntry = document.createElement('div');
+            signalEntry.style.marginBottom = '8px';
+            signalEntry.style.padding = '8px';
+            signalEntry.style.background = '#1a1a1a';
+            signalEntry.style.border = '1px solid #333';
+            signalEntry.style.borderRadius = '4px';
+            signalEntry.style.fontSize = '11px';
+            
+            // Use signal timestamp if available, otherwise use current time
+            const timestamp = signal.timestamp ? new Date(signal.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+            const signalType = signal.type || signal.direction || 'SIGNAL';
+            const signalColor = signalType === 'BUY' || signalType === 'LONG' ? '#4caf50' : signalType === 'SELL' || signalType === 'SHORT' ? '#f44336' : '#ff9800';
+            
+            signalEntry.innerHTML = `
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                    <span style="color: ${signalColor}; font-weight: 600;">${signalType}</span>
+                    <span style="color: #888; font-size: 10px;">${timestamp}</span>
+                </div>
+                <div style="color: #d1d5db; margin-bottom: 2px;"><strong>${signal.strategy || 'Unknown'}</strong> - ${signal.symbol || 'N/A'}</div>
+                ${signal.entry_price ? `<div style="color: #888; font-size: 10px;">Entry: $${parseFloat(signal.entry_price).toFixed(2)}</div>` : ''}
+                ${signal.stop_loss ? `<div style="color: #f44336; font-size: 10px;">Stop: $${parseFloat(signal.stop_loss).toFixed(2)}</div>` : ''}
+                ${signal.take_profit ? `<div style="color: #4caf50; font-size: 10px;">Target: $${parseFloat(signal.take_profit).toFixed(2)}</div>` : ''}
+                <div style="color: #888; font-size: 10px; margin-top: 4px;">${signal.message || 'No details'}</div>
+            `;
+            
+            container.insertBefore(signalEntry, container.firstChild);
+            
+            // Limit to last 20 signals
+            while (container.children.length > 20) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        // Command Input
+        async function executeCommand() {
+            const input = document.getElementById('command-input');
+            const output = document.getElementById('command-output');
+            if (!input || !output) return;
+            
+            const command = input.value.trim();
+            if (!command) return;
+            
+            // Add command to output
+            const cmdEntry = document.createElement('div');
+            cmdEntry.style.color = '#4caf50';
+            cmdEntry.style.marginBottom = '8px';
+            cmdEntry.textContent = `> ${command}`;
+            output.appendChild(cmdEntry);
+            
+            // Clear input
+            input.value = '';
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/execute_command`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: command })
+                });
+                const data = await response.json();
+                
+                const resultEntry = document.createElement('div');
+                resultEntry.style.color = data.success ? '#d1d5db' : '#f44336';
+                resultEntry.style.marginBottom = '12px';
+                resultEntry.style.whiteSpace = 'pre-wrap';
+                resultEntry.style.fontFamily = "'Courier New', monospace";
+                resultEntry.style.fontSize = '11px';
+                resultEntry.textContent = data.output || data.error || 'No output';
+                output.appendChild(resultEntry);
+                
+                // Refresh data after successful command execution
+                if (data.success) {
+                    if (command.toLowerCase().includes('position') || command.toLowerCase() === 'flatten') {
+                        updatePositions();
+                    }
+                    if (command.toLowerCase().includes('order') || command.toLowerCase() === 'flatten' || command.toLowerCase().includes('cancel')) {
+                        updateOrders();
+                    }
+                    if (command.toLowerCase().includes('account') || command.toLowerCase().includes('switch')) {
+                        updateAccountStatus();
+                    }
+                }
+            } catch (error) {
+                const errorEntry = document.createElement('div');
+                errorEntry.style.color = '#f44336';
+                errorEntry.style.marginBottom = '12px';
+                errorEntry.textContent = `Error: ${error.message}`;
+                output.appendChild(errorEntry);
+            }
+            
+            // Auto-scroll
+            output.scrollTop = output.scrollHeight;
+            
+            // Limit to last 50 entries
+            while (output.children.length > 50) {
+                output.removeChild(output.firstChild);
+            }
+        }
+        
+        function updateAccountDisplay(data) {
+            // Safely update account display elements (check if they exist)
+            const accountNameEl = document.getElementById('account-name');
+            if (accountNameEl) {
+                accountNameEl.textContent = data.account_name || '--';
+            }
+            
+            const balanceEl = document.getElementById('balance');
+            if (balanceEl) {
+                balanceEl.textContent = `$${(data.balance || 0).toFixed(2)}`;
+            }
+            
+            const unrealized = data.unrealized_pnl || 0;
+            const unrealizedEl = document.getElementById('unrealized-pnl');
+            if (unrealizedEl) {
+                unrealizedEl.textContent = `$${unrealized.toFixed(2)}`;
+                unrealizedEl.className = `status-value ${unrealized >= 0 ? 'positive' : 'negative'}`;
+            }
+            
+            const realized = data.realized_pnl || 0;
+            const realizedEl = document.getElementById('realized-pnl');
+            if (realizedEl) {
+                realizedEl.textContent = `$${realized.toFixed(2)}`;
+                realizedEl.className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
+            }
+        }
+        
+        function updatePositionsDisplay(positions) {
+            document.getElementById('position-count').textContent = positions.length;
+            document.getElementById('pos-count').textContent = positions.length;
+            
+            const tbody = document.getElementById('positions-body');
+            if (positions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No positions</td></tr>';
+            } else {
+                tbody.innerHTML = positions.map(pos => {
+                // Handle both camelCase and snake_case field names
+                const pnl = pos.unrealizedPnL || pos.unrealized_pnl || pos.unrealizedPnl || 0;
+                const entryPrice = pos.entryPrice || pos.entry_price || 0;
+                const quantity = pos.quantity || pos.size || 0;
+                return `
+                    <tr>
+                        <td>${pos.symbol || 'N/A'}</td>
+                        <td>${pos.side || 'N/A'}</td>
+                        <td>${quantity}</td>
+                        <td>$${entryPrice.toFixed(2)}</td>
+                        <td class="${pnl >= 0 ? 'positive' : 'negative'}">$${pnl.toFixed(2)}</td>
+                    </tr>
+                `;
+            }).join('');
+            }
+        }
+        
+        function updateOrdersDisplay(orders) {
+            document.getElementById('order-count').textContent = orders.length;
+            document.getElementById('ord-count').textContent = orders.length;
+            
+            const tbody = document.getElementById('orders-body');
+            if (orders.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
+            } else {
+            tbody.innerHTML = orders.map(order => `
+                <tr>
+                    <td>${order.symbol || 'N/A'}</td>
+                    <td>${order.side || 'N/A'}</td>
+                    <td>${order.quantity || 0}</td>
+                    <td>$${(order.price || 0).toFixed(2)}</td>
+                    <td>${order.type || 'N/A'}</td>
+                </tr>
+                `).join('');
+        }
+        }
+        
+        function updateStrategiesDisplay(data) {
+            const strategies = Object.values(data.strategies || {});
+            const active = data.active || [];
+            const grid = document.getElementById('strategy-grid');
+            
+            if (strategies.length === 0) {
+                grid.innerHTML = '<div class="empty-state">No strategies available</div>';
+            } else {
+                grid.innerHTML = strategies.map(strategy => {
+                    const isActive = active.includes(strategy.name);
+                return `
+                <div class="strategy-card">
+                    <div class="strategy-header">
+                        <span class="strategy-name">${strategy.name}</span>
+                                <span class="strategy-status ${isActive ? 'active' : 'idle'}">
+                                    ${isActive ? 'ACTIVE' : 'IDLE'}
+                                </span>
+                    </div>
+                    <div class="strategy-info">
+                                ${strategy.symbols ? strategy.symbols.join(', ') : 'No symbols'} | 
+                                ${strategy.positions || 0} pos
+                    </div>
+                            <div class="strategy-actions">
+                                <button class="btn-primary" onclick="startStrategy('${strategy.name}')" ${isActive ? 'disabled' : ''}>
+                            Start
+                        </button>
+                                <button class="btn-danger" onclick="stopStrategy('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
+                            Stop
+                        </button>
+                    </div>
+                </div>
+            `;
+                }).join('');
+            }
+        }
+        
+        function stopHttpPolling() {
+            if (updateIntervals.account) clearInterval(updateIntervals.account);
+            if (updateIntervals.positions) clearInterval(updateIntervals.positions);
+            if (updateIntervals.orders) clearInterval(updateIntervals.orders);
+            if (updateIntervals.strategies) clearInterval(updateIntervals.strategies);
+            }
+        
+        function startHttpPolling() {
+            // Start HTTP polling as fallback
+            updateIntervals.account = setInterval(updateAccountStatus, 3000);
+            updateIntervals.positions = setInterval(updatePositions, 3000);
+            updateIntervals.orders = setInterval(updateOrders, 5000);
+            updateIntervals.strategies = setInterval(updateStrategies, 5000);
+        }
         
         // Initialize chart
         function initChart() {
             const container = document.getElementById('chart-container');
             if (!container || typeof LightweightCharts === 'undefined') return;
             
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth,
+                chart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth,
                 height: container.clientHeight,
-                layout: {
-                    background: { color: '#0a0a0a' },
-                    textColor: '#d1d5db',
-                },
-                grid: {
-                    vertLines: { color: '#1a1a1a' },
-                    horzLines: { color: '#1a1a1a' },
-                },
+                    layout: {
+                        background: { color: '#0a0a0a' },
+                        textColor: '#d1d5db',
+                    },
+                    grid: {
+                        vertLines: { color: '#1a1a1a' },
+                        horzLines: { color: '#1a1a1a' },
+                    },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                rightPriceScale: {
-                    borderColor: '#1a1a1a',
-                    autoScale: true,
-                },
-                timeScale: {
-                    borderColor: '#1a1a1a',
-                    timeVisible: true,
-                    secondsVisible: false,
-                },
-            });
-            
+                    rightPriceScale: {
+                        borderColor: '#1a1a1a',
+                        autoScale: true,
+                    },
+                    timeScale: {
+                        borderColor: '#1a1a1a',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                });
+                
             candlestickSeries = chart.addCandlestickSeries({
-                upColor: '#4caf50',
-                downColor: '#f44336',
-                borderVisible: false,
-                wickUpColor: '#4caf50',
-                wickDownColor: '#f44336',
-            });
+                    upColor: '#4caf50',
+                    downColor: '#f44336',
+                    borderVisible: false,
+                    wickUpColor: '#4caf50',
+                    wickDownColor: '#f44336',
+                });
+                
+                // Load initial data
+            // Set default symbol and timeframe in dropdowns
+            const symbolSelect = document.getElementById('chart-symbol-select');
+            if (symbolSelect && SYMBOL) {
+                symbolSelect.value = SYMBOL;
+                currentChartSymbol = SYMBOL;
+            }
             
-            // Load initial data
+            const timeframeSelect = document.getElementById('chart-timeframe-select');
+            if (timeframeSelect && TIMEFRAME) {
+                timeframeSelect.value = TIMEFRAME;
+                currentChartTimeframe = TIMEFRAME;
+            }
+            
             loadChartData();
-            
+                
             // Set up auto-refresh
             const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 6);
             updateIntervals.chart = setInterval(updateChart, 1000 / rate);
             
-            // Resize handler
-            window.addEventListener('resize', () => {
-                if (chart) {
-                    chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
-                }
-            });
+            // Resize handler - debounced to prevent excessive updates
+            let resizeTimeout;
+            const handleResize = () => {
+                if (resizeTimeout) clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    if (chart && container) {
+                        const width = Math.min(container.clientWidth, window.innerWidth - 100);
+                        const height = Math.min(container.clientHeight, window.innerHeight - 200);
+                        chart.applyOptions({ width, height });
+                    }
+                }, 100);
+            };
+            window.addEventListener('resize', handleResize);
+            
+            // Also handle panel resize
+            const resizeObserver = new ResizeObserver(handleResize);
+            if (container) {
+                resizeObserver.observe(container);
+            }
         }
         
         async function loadChartData() {
@@ -488,14 +1630,39 @@
                 const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
                 const response = await fetch(`${BASE_URL}/api/chart/reload?symbol=${symbol}&timeframe=${timeframe}&limit=300`);
                 const data = await response.json();
-                if (data.bars && candlestickSeries) {
-                    candlestickSeries.setData(data.bars.map(bar => ({
+                if (data.bars && candlestickSeries && chart) {
+                    // Clear old data and set new data
+                    const bars = data.bars.map(bar => ({
                         time: bar.time,
                         open: bar.open,
                         high: bar.high,
                         low: bar.low,
                         close: bar.close,
-                    })));
+                    }));
+                    
+                    // Update current symbol and timeframe tracking
+                    currentChartSymbol = symbol;
+                    currentChartTimeframe = timeframe;
+                    
+                    candlestickSeries.setData(bars);
+                    
+                    // Reset visible range to show recent bars (last ~50 bars)
+                    if (bars.length > 0) {
+                        const lastBar = bars[bars.length - 1];
+                        const firstVisibleBar = Math.max(0, bars.length - 50);
+                        const firstBar = bars[firstVisibleBar];
+                        
+                        // Set visible range to show recent data
+                        chart.timeScale().setVisibleRange({
+                            from: firstBar.time,
+                            to: lastBar.time
+                        });
+                    }
+                    
+                    // Reset price scale to auto-fit new data
+                    chart.priceScale('right').applyOptions({ autoScale: true });
+                    
+                    console.log(`✅ Chart loaded ${bars.length} bars for ${symbol} ${timeframe}`);
                 }
             } catch (error) {
                 console.error('Error loading chart:', error);
@@ -505,6 +1672,15 @@
         async function updateChart() {
             try {
                 const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
+                const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
+                
+                // If symbol or timeframe changed, reload chart data instead of updating
+                if (symbol !== currentChartSymbol || timeframe !== currentChartTimeframe) {
+                    console.log(`Chart changed: ${currentChartSymbol} ${currentChartTimeframe} → ${symbol} ${timeframe}, reloading...`);
+                    await refreshChart();
+                    return;
+                }
+                
                 const response = await fetch(`${BASE_URL}/api/chart/quote?symbol=${symbol}`);
                 const data = await response.json();
                 if (data.latest_bar && candlestickSeries) {
@@ -522,8 +1698,22 @@
             }
         }
         
-        function refreshChart() {
-            loadChartData();
+        async function refreshChart() {
+            // Stop current update interval
+            if (updateIntervals.chart) {
+                clearInterval(updateIntervals.chart);
+                updateIntervals.chart = null;
+            }
+            
+            // Reload chart data with new symbol/timeframe
+            await loadChartData();
+            
+            // Restart update interval with current refresh rate
+            const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 6);
+            if (rate > 0) {
+                updateIntervals.chart = setInterval(updateChart, 1000 / rate);
+                console.log(`✅ Chart auto-refresh restarted at ${rate}x/s`);
+            }
         }
         
         // Update account status
@@ -532,19 +1722,30 @@
                 const response = await fetch(`${BASE_URL}/api/chart/account/state`);
                 const data = await response.json();
                 if (data && !data.error) {
-                    document.getElementById('account-name').textContent = data.account_name || '--';
-                    document.getElementById('balance').textContent = `$${(data.balance || 0).toFixed(2)}`;
+                    // Safely update elements (check if they exist)
+                    const accountNameEl = document.getElementById('account-name');
+                    if (accountNameEl) {
+                        accountNameEl.textContent = data.account_name || '--';
+                    }
+                    
+                    const balanceEl = document.getElementById('balance');
+                    if (balanceEl) {
+                        balanceEl.textContent = `$${(data.balance || 0).toFixed(2)}`;
+                    }
                     
                     const unrealized = data.unrealized_pnl || 0;
-                    const realizedEl = document.getElementById('realized-pnl');
                     const unrealizedEl = document.getElementById('unrealized-pnl');
-                    
-                    unrealizedEl.textContent = `$${unrealized.toFixed(2)}`;
-                    unrealizedEl.className = `status-value ${unrealized >= 0 ? 'positive' : 'negative'}`;
+                    if (unrealizedEl) {
+                        unrealizedEl.textContent = `$${unrealized.toFixed(2)}`;
+                        unrealizedEl.className = `status-value ${unrealized >= 0 ? 'positive' : 'negative'}`;
+                    }
                     
                     const realized = data.realized_pnl || 0;
-                    realizedEl.textContent = `$${realized.toFixed(2)}`;
-                    realizedEl.className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
+                    const realizedEl = document.getElementById('realized-pnl');
+                    if (realizedEl) {
+                        realizedEl.textContent = `$${realized.toFixed(2)}`;
+                        realizedEl.className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
+                    }
                 }
             } catch (error) {
                 console.error('Error updating account:', error);
@@ -566,13 +1767,16 @@
                         tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No positions</td></tr>';
                     } else {
                         tbody.innerHTML = positions.map(pos => {
-                            const pnl = pos.unrealizedPnL || 0;
+                            // Handle both camelCase and snake_case field names
+                            const pnl = pos.unrealizedPnL || pos.unrealized_pnl || pos.unrealizedPnl || 0;
+                            const entryPrice = pos.entryPrice || pos.entry_price || 0;
+                            const quantity = pos.quantity || pos.size || 0;
                             return `
                                 <tr>
                                     <td>${pos.symbol || 'N/A'}</td>
                                     <td>${pos.side || 'N/A'}</td>
-                                    <td>${pos.quantity || 0}</td>
-                                    <td>$${(pos.entryPrice || 0).toFixed(2)}</td>
+                                    <td>${quantity}</td>
+                                    <td>$${entryPrice.toFixed(2)}</td>
                                     <td class="${pnl >= 0 ? 'positive' : 'negative'}">$${pnl.toFixed(2)}</td>
                                 </tr>
                             `;
@@ -598,15 +1802,26 @@
                     if (orders.length === 0) {
                         tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
                     } else {
-                        tbody.innerHTML = orders.map(order => `
-                            <tr>
-                                <td>${order.symbol || 'N/A'}</td>
-                                <td>${order.side || 'N/A'}</td>
-                                <td>${order.quantity || 0}</td>
-                                <td>$${(order.price || 0).toFixed(2)}</td>
-                                <td>${order.type || 'N/A'}</td>
-                            </tr>
-                        `).join('');
+                        tbody.innerHTML = orders.map(order => {
+                            // Handle both camelCase and snake_case, and convert numeric types
+                            const quantity = order.quantity || order.size || 0;
+                            const price = order.price || order.limitPrice || order.limit_price || order.stopPrice || order.stop_price || 0;
+                            let orderType = order.type || 'N/A';
+                            // Convert numeric type to string if needed
+                            if (typeof orderType === 'number') {
+                                const typeMap = {1: 'LIMIT', 2: 'MARKET', 4: 'STOP'};
+                                orderType = typeMap.get(orderType, orderType);
+                            }
+                            return `
+                                <tr>
+                                    <td>${order.symbol || 'N/A'}</td>
+                                    <td>${order.side || 'N/A'}</td>
+                                    <td>${quantity}</td>
+                                    <td>$${price.toFixed(2)}</td>
+                                    <td>${orderType}</td>
+                                </tr>
+                            `;
+                        }).join('');
                     }
                 }
             } catch (error) {
@@ -618,27 +1833,37 @@
         async function updateStrategies() {
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/status`);
+                if (!response.ok) {
+                    console.error(`Strategy status API error: ${response.status} ${response.statusText}`);
+                    return;
+                }
                 const data = await response.json();
+                const grid = document.getElementById('strategy-grid');
+                if (!grid) {
+                    console.warn('Strategy grid element not found');
+                    return;
+                }
+                
                 if (data && data.strategies) {
                     const strategies = Object.values(data.strategies);
                     const active = data.active || [];
-                    const grid = document.getElementById('strategy-grid');
                     
                     if (strategies.length === 0) {
                         grid.innerHTML = '<div class="empty-state">No strategies available</div>';
                     } else {
                         grid.innerHTML = strategies.map(strategy => {
-                            const isActive = active.includes(strategy.name);
+                            const isActive = active.includes(strategy.name) || strategy.active === true;
+                            const symbols = Array.isArray(strategy.symbols) ? strategy.symbols : (strategy.symbols ? [strategy.symbols] : []);
                             return `
                                 <div class="strategy-card">
                                     <div class="strategy-header">
-                                        <span class="strategy-name">${strategy.name}</span>
+                                        <span class="strategy-name">${strategy.name || 'Unknown'}</span>
                                         <span class="strategy-status ${isActive ? 'active' : 'idle'}">
                                             ${isActive ? 'ACTIVE' : 'IDLE'}
                                         </span>
                                     </div>
                                     <div class="strategy-info">
-                                        ${strategy.symbols ? strategy.symbols.join(', ') : 'No symbols'} | 
+                                        ${symbols.length > 0 ? symbols.join(', ') : 'No symbols'} | 
                                         ${strategy.positions || 0} pos
                                     </div>
                                     <div class="strategy-actions">
@@ -652,10 +1877,20 @@
                                 </div>
                             `;
                         }).join('');
+                        console.log(`✅ Updated ${strategies.length} strategies in widget`);
                     }
+                } else if (data.error) {
+                    grid.innerHTML = `<div class="empty-state">Error: ${data.error}</div>`;
+                    console.error('Strategy status error:', data.error);
+                } else {
+                    grid.innerHTML = '<div class="empty-state">No strategy data available</div>';
                 }
             } catch (error) {
                 console.error('Error updating strategies:', error);
+                const grid = document.getElementById('strategy-grid');
+                if (grid) {
+                    grid.innerHTML = `<div class="empty-state">Error loading strategies: ${error.message}</div>`;
+                }
             }
         }
         
@@ -664,15 +1899,101 @@
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/contracts`);
                 const data = await response.json();
-                if (data && data.symbols) {
+                if (data && data.symbols && data.symbols.length > 0) {
                     const select = document.getElementById('chart-symbol-select');
                     const currentValue = select.value;
+                    
+                    // PRIORITY: Use SYMBOL from template (CLI command), then currentValue, then first symbol
+                    const targetSymbol = SYMBOL || currentValue || data.symbols[0];
+                    
                     select.innerHTML = data.symbols.map(s => 
-                        `<option value="${s}" ${s === currentValue ? 'selected' : ''}>${s}</option>`
+                        `<option value="${s}" ${s === targetSymbol ? 'selected' : ''}>${s}</option>`
                     ).join('');
+                    
+                    // Always set to SYMBOL if it exists and is in the list
+                    if (SYMBOL && data.symbols.includes(SYMBOL)) {
+                        select.value = SYMBOL;
+                        currentChartSymbol = SYMBOL;
+                        console.log(`✅ Loaded ${data.symbols.length} symbols, using CLI symbol: ${SYMBOL}`);
+                    } else if (currentValue && data.symbols.includes(currentValue)) {
+                        select.value = currentValue;
+                        currentChartSymbol = currentValue;
+                        console.log(`✅ Loaded ${data.symbols.length} symbols, keeping current: ${currentValue}`);
+                    } else {
+                        select.value = data.symbols[0];
+                        currentChartSymbol = data.symbols[0];
+                        console.log(`✅ Loaded ${data.symbols.length} symbols, default: ${data.symbols[0]}`);
+                    }
+                } else {
+                    console.warn('⚠️ No symbols available, using default MNQ');
                 }
             } catch (error) {
                 console.error('Error loading contracts:', error);
+            }
+        }
+        
+        // Account management
+        let availableAccounts = [];
+        
+        async function loadAccounts() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/accounts`);
+                const data = await response.json();
+                if (data && data.accounts) {
+                    availableAccounts = data.accounts;
+                    const select = document.getElementById('account-select');
+                    select.innerHTML = data.accounts.map((acc, idx) => 
+                        `<option value="${idx}" ${acc.selected ? 'selected' : ''}>${acc.name} ($${acc.balance?.toFixed(2) || '0.00'})</option>`
+                    ).join('');
+                    console.log(`✅ Loaded ${data.accounts.length} accounts`);
+                }
+            } catch (error) {
+                console.error('Error loading accounts:', error);
+            }
+        }
+        
+        async function switchAccount() {
+            const select = document.getElementById('account-select');
+            const accountIndex = parseInt(select.value);
+            
+            if (isNaN(accountIndex) || accountIndex < 0) {
+                console.warn('Invalid account index:', select.value);
+                return;
+            }
+            
+            console.log(`🔄 Switching to account index: ${accountIndex}`);
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/select_account`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_index: accountIndex })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                if (data.success) {
+                    console.log(`✅ Switched to account: ${data.account_name} (ID: ${data.account_id})`);
+                    // Refresh all data
+                    await updateAccountStatus();
+                    await updatePositions();
+                    await updateOrders();
+                    // Also refresh strategies to show correct account's strategies
+                    await updateStrategies();
+                } else {
+                    console.error('Failed to switch account:', data.error);
+                    alert(`Failed to switch account: ${data.error || 'Unknown error'}`);
+                    // Reload accounts in case the list is stale
+                    await loadAccounts();
+                }
+            } catch (error) {
+                console.error('Error switching account:', error);
+                alert(`Error switching account: ${error.message}`);
+                // Reload accounts in case of error
+                await loadAccounts();
             }
         }
         
@@ -682,25 +2003,45 @@
             const orderType = document.getElementById('order-type')?.value || 'market';
             const qty = parseInt(document.getElementById('order-qty')?.value || 1);
             const price = parseFloat(document.getElementById('order-price')?.value);
+            const stopPrice = parseFloat(document.getElementById('order-stop-price')?.value);
+            const trailAmount = parseFloat(document.getElementById('order-trail-amount')?.value);
             const enableBracket = document.getElementById('enable-bracket')?.checked;
             const slTicks = parseInt(document.getElementById('order-sl-ticks')?.value);
             const tpTicks = parseInt(document.getElementById('order-tp-ticks')?.value);
             
-            const orderData = {
-                symbol: symbol,
-                side: side,
-                quantity: qty,
-                type: orderType
-            };
-            
+                const orderData = {
+                    symbol: symbol,
+                    side: side,
+                    quantity: qty,
+                    order_type: orderType  // Backend expects 'order_type', not 'type'
+                };
+                
+            // Add price parameters based on order type
             if (orderType === 'limit' && price) {
-                orderData.limitPrice = price;
+                orderData.limit_price = price;  // Backend expects snake_case
+            } else if (orderType === 'stop' && stopPrice) {
+                orderData.stop_price = stopPrice;  // Backend expects snake_case
+            } else if (orderType === 'stop-limit') {
+                if (!price || !stopPrice) {
+                    alert('⚠️ Stop Limit orders require both Limit Price and Stop Price');
+                    return;
+                }
+                orderData.limit_price = price;  // Backend expects snake_case
+                orderData.stop_price = stopPrice;  // Backend expects snake_case
+            } else if (orderType === 'trailing-stop') {
+                if (!trailAmount) {
+                    alert('⚠️ Trailing Stop orders require Trail Amount');
+                    return;
+                }
+                orderData.trail_amount = trailAmount;  // Backend expects snake_case
             }
-            if (enableBracket) {
+            
+            // Add bracket orders if enabled
+                if (enableBracket) {
                 if (slTicks) orderData.stopLossTicks = slTicks;
                 if (tpTicks) orderData.takeProfitTicks = tpTicks;
-            }
-            
+                }
+                
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/order`, {
                     method: 'POST',
@@ -710,8 +2051,13 @@
                 const result = await response.json();
                 if (result.success || result.orderId) {
                     alert(`✅ Order placed: ${result.orderId || 'Pending'}`);
+                    // Refresh positions and orders
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        // WebSocket will push updates automatically
+                    } else {
                     updatePositions();
                     updateOrders();
+                    }
                 } else {
                     alert(`❌ Order failed: ${result.error || 'Unknown error'}`);
                 }
@@ -798,12 +2144,86 @@
             refreshChart();
         }
         
+        // Strategy control functions
+        async function startStrategy() {
+            const strategyName = document.getElementById('strategy-select')?.value;
+            const symbols = document.getElementById('strategy-symbols')?.value;
+            const timeframe = document.getElementById('strategy-timeframe')?.value;
+            
+            if (!strategyName || !symbols) {
+                alert('Please select a strategy and enter symbols');
+                return;
+            }
+            
+            try {
+                const command = `strategies start ${strategyName} --symbols=${symbols} --timeframe=${timeframe}`;
+                const response = await fetch(`${BASE_URL}/api/execute_command`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: command })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    console.log(`✅ Started strategy: ${strategyName}`);
+                    // Refresh strategies display
+                    await updateStrategies();
+                } else {
+                    alert(`Failed to start strategy: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error starting strategy:', error);
+                alert(`Error starting strategy: ${error.message}`);
+            }
+        }
+        
+        async function stopStrategy(strategyName) {
+            if (!confirm(`Stop strategy: ${strategyName}?`)) return;
+            
+            try {
+                const command = `strategies stop ${strategyName}`;
+                const response = await fetch(`${BASE_URL}/api/execute_command`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: command })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    console.log(`✅ Stopped strategy: ${strategyName}`);
+                    // Refresh strategies display
+                    await updateStrategies();
+                } else {
+                    alert(`Failed to stop strategy: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error stopping strategy:', error);
+                alert(`Error stopping strategy: ${error.message}`);
+            }
+        }
+        
         // UI helpers
         function updateOrderType() {
             const type = document.getElementById('order-type')?.value;
             const priceInput = document.getElementById('order-price');
-            if (priceInput) {
-                priceInput.style.display = (type === 'limit') ? 'block' : 'none';
+            const stopPriceInput = document.getElementById('order-stop-price');
+            const trailAmountInput = document.getElementById('order-trail-amount');
+            
+            // Hide all special inputs first
+            if (priceInput) priceInput.style.display = 'none';
+            if (stopPriceInput) stopPriceInput.style.display = 'none';
+            if (trailAmountInput) trailAmountInput.style.display = 'none';
+            
+            // Show relevant inputs based on order type
+            if (type === 'limit') {
+                if (priceInput) priceInput.style.display = 'block';
+            } else if (type === 'stop') {
+                if (stopPriceInput) stopPriceInput.style.display = 'block';
+            } else if (type === 'stop-limit') {
+                if (priceInput) priceInput.style.display = 'block';
+                if (stopPriceInput) stopPriceInput.style.display = 'block';
+            } else if (type === 'trailing-stop') {
+                if (trailAmountInput) trailAmountInput.style.display = 'block';
             }
         }
         
@@ -815,50 +2235,560 @@
             if (tpInput) tpInput.style.display = enabled ? 'block' : 'none';
         }
         
+        // Widget resize functionality
+        function initWidgetResize() {
+            const panels = document.querySelectorAll('.panel');
+            panels.forEach(panel => {
+                // Add resize handles
+                const rightHandle = document.createElement('div');
+                rightHandle.className = 'resize-handle right';
+                panel.appendChild(rightHandle);
+                
+                const bottomHandle = document.createElement('div');
+                bottomHandle.className = 'resize-handle bottom';
+                panel.appendChild(bottomHandle);
+                
+                const cornerHandle = document.createElement('div');
+                cornerHandle.className = 'resize-handle corner';
+                panel.appendChild(cornerHandle);
+                
+                // Make panel resizable
+                let isResizing = false;
+                let resizeHandle = null; // Track which handle is being used
+                let startX, startY, startWidth, startHeight;
+                
+                const startResize = (e, handle) => {
+                    isResizing = true;
+                    resizeHandle = handle;
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    startWidth = panel.offsetWidth;
+                    startHeight = panel.offsetHeight;
+                    panel.style.userSelect = 'none';
+                    document.body.style.cursor = handle === 'right' ? 'ew-resize' : handle === 'bottom' ? 'ns-resize' : 'nwse-resize';
+                    e.preventDefault();
+                    e.stopPropagation();
+                };
+                
+                const doResize = (e) => {
+                    if (!isResizing || !resizeHandle) return;
+                    const deltaX = e.clientX - startX;
+                    const deltaY = e.clientY - startY;
+                    
+                    if (resizeHandle === 'right' || resizeHandle === 'corner') {
+                        panel.style.width = Math.max(300, startWidth + deltaX) + 'px';
+                    }
+                    if (resizeHandle === 'bottom' || resizeHandle === 'corner') {
+                        panel.style.height = Math.max(200, startHeight + deltaY) + 'px';
+                    }
+                    
+                    // Resize chart if this is the chart panel
+                    if (panel.id === 'chart-panel' && chart) {
+                        const container = document.getElementById('chart-container');
+                        if (container) {
+                            setTimeout(() => {
+                                chart.applyOptions({
+                                    width: container.clientWidth,
+                                    height: container.clientHeight
+                                });
+                            }, 10);
+                        }
+                    }
+                };
+                
+                const stopResize = () => {
+                    if (isResizing) {
+                        isResizing = false;
+                        resizeHandle = null;
+                        panel.style.userSelect = '';
+                        document.body.style.cursor = '';
+                    }
+                };
+                
+                rightHandle.addEventListener('mousedown', (e) => startResize(e, 'right'));
+                bottomHandle.addEventListener('mousedown', (e) => startResize(e, 'bottom'));
+                cornerHandle.addEventListener('mousedown', (e) => startResize(e, 'corner'));
+                document.addEventListener('mousemove', doResize);
+                document.addEventListener('mouseup', stopResize);
+                document.addEventListener('mouseleave', stopResize); // Stop if mouse leaves window
+            });
+        }
+        
         // Initialize
         window.addEventListener('load', () => {
+            // Restore panel collapse states
+            restorePanelStates();
+            // Restore dashboard order + enable drag/drop reorder
+            restoreDashboardOrder();
+            initDashboardDnD();
+            
+            // Initialize widget resize
+            initWidgetResize();
+            
             // Initialize chart
             initChart();
             
-            // Load contracts
+            // Load accounts and contracts
+            loadAccounts();
             loadContracts();
             
-            // Start update loops
-            updateIntervals.account = setInterval(updateAccountStatus, 3000);
-            updateIntervals.positions = setInterval(updatePositions, 3000);
-            updateIntervals.orders = setInterval(updateOrders, 5000);
-            updateIntervals.strategies = setInterval(updateStrategies, 5000);
+            // Connect WebSocket for real-time updates (falls back to HTTP polling on failure)
+            connectWebSocket();
             
-            // Initial updates
+            // Initial updates via HTTP
             updateAccountStatus();
             updatePositions();
             updateOrders();
             updateStrategies();
             
-            // Connection status
-            document.getElementById('connection-status').textContent = 'Connected';
-            document.getElementById('system-status').textContent = 'Online';
+            // Connection status (will be updated by WebSocket)
+            const connectionStatusEl = document.getElementById('connection-status');
+            if (connectionStatusEl) {
+                connectionStatusEl.textContent = 'Connecting...';
+            }
             
-            // Update timestamp
+            // Safely update system-status and last-update if they exist
+            const systemStatusEl = document.getElementById('system-status');
+            if (systemStatusEl) {
+                systemStatusEl.textContent = 'Online';
+            }
+            
+            const lastUpdateEl = document.getElementById('last-update');
+            if (lastUpdateEl) {
             setInterval(() => {
-                document.getElementById('last-update').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+                    lastUpdateEl.textContent = 'Last update: ' + new Date().toLocaleTimeString();
             }, 1000);
-            
+        }
+        
             // Symbol change handler
             document.getElementById('chart-symbol-select')?.addEventListener('change', refreshChart);
             document.getElementById('chart-timeframe-select')?.addEventListener('change', refreshChart);
             
             // Refresh rate change handler
             document.getElementById('chart-refresh-rate')?.addEventListener('change', (e) => {
-                clearInterval(updateIntervals.chart);
+                if (updateIntervals.chart) {
+                    clearInterval(updateIntervals.chart);
+                    updateIntervals.chart = null;
+                }
                 const rate = parseInt(e.target.value || 6);
-                updateIntervals.chart = setInterval(updateChart, 1000 / rate);
+                if (rate > 0) {
+                    updateIntervals.chart = setInterval(updateChart, 1000 / rate);
+                    console.log(`✅ Chart refresh rate changed to ${rate}x/s`);
+                }
             });
         });
         
         // Cleanup on unload
         window.addEventListener('beforeunload', () => {
             Object.values(updateIntervals).forEach(interval => clearInterval(interval));
+        });
+        
+        // UI Customization Functions
+        function toggleCustomizePanel() {
+            const panel = document.getElementById('customize-panel');
+            panel.classList.toggle('open');
+        }
+        
+        // Load saved customization on page load
+        function loadCustomization() {
+            const saved = localStorage.getItem('ui_customization');
+            if (!saved) return;
+            
+            try {
+                const config = JSON.parse(saved);
+                if (config.gridCols) document.getElementById('grid-cols').value = config.gridCols;
+                if (config.gridGap) document.getElementById('grid-gap').value = config.gridGap;
+                if (config.gridPadding) document.getElementById('grid-padding').value = config.gridPadding;
+                if (config.panelPadding) document.getElementById('panel-padding').value = config.panelPadding;
+                if (config.borderRadius) document.getElementById('border-radius').value = config.borderRadius;
+                if (config.borderWidth) document.getElementById('border-width').value = config.borderWidth;
+                if (config.bgColor) document.getElementById('bg-color').value = config.bgColor;
+                if (config.textColor) document.getElementById('text-color').value = config.textColor;
+                if (config.accentColor) document.getElementById('accent-color').value = config.accentColor;
+                if (config.fontSize) document.getElementById('font-size').value = config.fontSize;
+                if (config.tableFontSize) document.getElementById('table-font-size').value = config.tableFontSize;
+                if (config.btnBuyColor) document.getElementById('btn-buy-color').value = config.btnBuyColor;
+                if (config.btnSellColor) document.getElementById('btn-sell-color').value = config.btnSellColor;
+                if (config.btnPrimaryColor) document.getElementById('btn-primary-color').value = config.btnPrimaryColor;
+                if (config.btnDangerColor) document.getElementById('btn-danger-color').value = config.btnDangerColor;
+                if (config.btnStartColor) document.getElementById('btn-start-color').value = config.btnStartColor;
+                if (config.btnStopColor) document.getElementById('btn-stop-color').value = config.btnStopColor;
+                if (config.btnBorderRadius) document.getElementById('btn-border-radius').value = config.btnBorderRadius;
+                if (config.btnFontSize) document.getElementById('btn-font-size').value = config.btnFontSize;
+                
+                // Apply loaded settings
+                updateGridLayout();
+                updateWidgetStyle();
+                updateColors();
+                updateTypography();
+                updateButtonStyles();
+            } catch (e) {
+                console.error('Failed to load customization:', e);
+            }
+        }
+        
+        function updateGridLayout() {
+            const cols = parseInt(document.getElementById('grid-cols').value);
+            const gap = parseInt(document.getElementById('grid-gap').value);
+            const padding = parseInt(document.getElementById('grid-padding').value);
+            
+            document.getElementById('grid-cols-value').textContent = `${cols} column${cols !== 1 ? 's' : ''}`;
+            document.getElementById('grid-gap-value').textContent = `${gap}px`;
+            document.getElementById('grid-padding-value').textContent = `${padding}px`;
+            
+            const dashboard = document.querySelector('.dashboard');
+            if (dashboard) {
+                dashboard.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+                dashboard.style.gap = `${gap}px`;
+                dashboard.style.padding = `${padding}px`;
+            }
+        }
+        
+        function updateWidgetStyle() {
+            const padding = parseInt(document.getElementById('panel-padding').value);
+            const radius = parseInt(document.getElementById('border-radius').value);
+            const width = parseInt(document.getElementById('border-width').value);
+            
+            document.getElementById('panel-padding-value').textContent = `${padding}px`;
+            document.getElementById('border-radius-value').textContent = `${radius}px`;
+            document.getElementById('border-width-value').textContent = `${width}px`;
+            
+            const style = document.createElement('style');
+            style.id = 'custom-widget-style';
+            style.textContent = `
+                .panel {
+                    padding: ${padding}px !important;
+                    border-radius: ${radius}px !important;
+                    border-width: ${width}px !important;
+                }
+            `;
+            
+            const existing = document.getElementById('custom-widget-style');
+            if (existing) existing.remove();
+            document.head.appendChild(style);
+        }
+        
+        function updateColors() {
+            const bgColor = document.getElementById('bg-color').value;
+            const textColor = document.getElementById('text-color').value;
+            const accentColor = document.getElementById('accent-color').value;
+            
+            const style = document.createElement('style');
+            style.id = 'custom-colors-style';
+            style.textContent = `
+                .panel {
+                    background: ${bgColor} !important;
+                }
+                body {
+                    color: ${textColor} !important;
+                }
+                .customize-btn, .preset-btn.active {
+                    background: ${accentColor} !important;
+                }
+            `;
+            
+            const existing = document.getElementById('custom-colors-style');
+            if (existing) existing.remove();
+            document.head.appendChild(style);
+        }
+        
+        function updateTypography() {
+            const fontSize = parseInt(document.getElementById('font-size').value);
+            const tableFontSize = parseInt(document.getElementById('table-font-size').value);
+            
+            document.getElementById('font-size-value').textContent = `${fontSize}px`;
+            document.getElementById('table-font-size-value').textContent = `${tableFontSize}px`;
+            
+            const style = document.createElement('style');
+            style.id = 'custom-typography-style';
+            style.textContent = `
+                body {
+                    font-size: ${fontSize}px !important;
+                }
+                table {
+                    font-size: ${tableFontSize}px !important;
+                }
+                th, td {
+                    font-size: ${tableFontSize}px !important;
+                }
+            `;
+            
+            const existing = document.getElementById('custom-typography-style');
+            if (existing) existing.remove();
+            document.head.appendChild(style);
+        }
+        
+        function updateButtonStyles() {
+            const buyColor = document.getElementById('btn-buy-color').value;
+            const sellColor = document.getElementById('btn-sell-color').value;
+            const primaryColor = document.getElementById('btn-primary-color').value;
+            const dangerColor = document.getElementById('btn-danger-color').value;
+            const startColor = document.getElementById('btn-start-color').value;
+            const stopColor = document.getElementById('btn-stop-color').value;
+            const borderRadius = parseInt(document.getElementById('btn-border-radius').value);
+            const fontSize = parseInt(document.getElementById('btn-font-size').value);
+            
+            document.getElementById('btn-border-radius-value').textContent = `${borderRadius}px`;
+            document.getElementById('btn-font-size-value').textContent = `${fontSize}px`;
+            
+            // Apply button styles
+            const style = document.createElement('style');
+            style.id = 'button-custom-styles';
+            style.textContent = `
+                .btn-buy { background: ${buyColor} !important; }
+                .btn-buy:hover { background: ${adjustBrightness(buyColor, -10)} !important; }
+                .btn-sell { background: ${sellColor} !important; }
+                .btn-sell:hover { background: ${adjustBrightness(sellColor, -10)} !important; }
+                .btn-primary { background: ${primaryColor} !important; }
+                .btn-primary:hover { background: ${adjustBrightness(primaryColor, -10)} !important; }
+                .btn-danger { background: ${dangerColor} !important; }
+                .btn-danger:hover { background: ${adjustBrightness(dangerColor, -10)} !important; }
+                button[onclick*="startStrategy"], button[onclick*="Start"] { background: ${startColor} !important; }
+                button[onclick*="stopStrategy"], button[onclick*="Stop"] { background: ${stopColor} !important; }
+                .btn-buy, .btn-sell, .btn-primary, .btn-danger, button[onclick*="startStrategy"], button[onclick*="stopStrategy"] {
+                    border-radius: ${borderRadius}px !important;
+                    font-size: ${fontSize}px !important;
+                }
+            `;
+            
+            // Remove old style if exists
+            const oldStyle = document.getElementById('button-custom-styles');
+            if (oldStyle) oldStyle.remove();
+            document.head.appendChild(style);
+        }
+        
+        function adjustBrightness(hex, percent) {
+            // Simple brightness adjustment for hover states
+            const num = parseInt(hex.replace('#', ''), 16);
+            const r = Math.max(0, Math.min(255, (num >> 16) + percent));
+            const g = Math.max(0, Math.min(255, ((num >> 8) & 0x00FF) + percent));
+            const b = Math.max(0, Math.min(255, (num & 0x0000FF) + percent));
+            return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        }
+        
+        function applyPreset(preset) {
+            // Remove active class from all buttons
+            document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+            
+            // Activate clicked button
+            event.target.classList.add('active');
+            
+            switch(preset) {
+                case 'compact':
+                    document.getElementById('grid-cols').value = 3;
+                    document.getElementById('grid-gap').value = 4;
+                    document.getElementById('grid-padding').value = 4;
+                    document.getElementById('panel-padding').value = 6;
+                    document.getElementById('border-radius').value = 2;
+                    document.getElementById('font-size').value = 12;
+                    document.getElementById('table-font-size').value = 10;
+                    break;
+                case 'spacious':
+                    document.getElementById('grid-cols').value = 2;
+                    document.getElementById('grid-gap').value = 16;
+                    document.getElementById('grid-padding').value = 16;
+                    document.getElementById('panel-padding').value = 16;
+                    document.getElementById('border-radius').value = 8;
+                    document.getElementById('font-size').value = 14;
+                    document.getElementById('table-font-size').value = 12;
+                    break;
+                case 'wide':
+                    document.getElementById('grid-cols').value = 4;
+                    document.getElementById('grid-gap').value = 8;
+                    document.getElementById('grid-padding').value = 8;
+                    document.getElementById('panel-padding').value = 10;
+                    document.getElementById('border-radius').value = 4;
+                    break;
+                case 'tall':
+                    document.getElementById('grid-cols').value = 1;
+                    document.getElementById('grid-gap').value = 12;
+                    document.getElementById('grid-padding').value = 12;
+                    document.getElementById('panel-padding').value = 12;
+                    break;
+            }
+            
+            updateGridLayout();
+            updateWidgetStyle();
+            updateTypography();
+        }
+        
+        function saveCustomization() {
+            const config = {
+                gridCols: parseInt(document.getElementById('grid-cols').value),
+                gridGap: parseInt(document.getElementById('grid-gap').value),
+                gridPadding: parseInt(document.getElementById('grid-padding').value),
+                panelPadding: parseInt(document.getElementById('panel-padding').value),
+                borderRadius: parseInt(document.getElementById('border-radius').value),
+                borderWidth: parseInt(document.getElementById('border-width').value),
+                bgColor: document.getElementById('bg-color').value,
+                textColor: document.getElementById('text-color').value,
+                accentColor: document.getElementById('accent-color').value,
+                fontSize: parseInt(document.getElementById('font-size').value),
+                tableFontSize: parseInt(document.getElementById('table-font-size').value),
+                btnBuyColor: document.getElementById('btn-buy-color').value,
+                btnSellColor: document.getElementById('btn-sell-color').value,
+                btnPrimaryColor: document.getElementById('btn-primary-color').value,
+                btnDangerColor: document.getElementById('btn-danger-color').value,
+                btnStartColor: document.getElementById('btn-start-color').value,
+                btnStopColor: document.getElementById('btn-stop-color').value,
+                btnBorderRadius: parseInt(document.getElementById('btn-border-radius').value),
+                btnFontSize: parseInt(document.getElementById('btn-font-size').value)
+            };
+            
+            localStorage.setItem('ui_customization', JSON.stringify(config));
+            alert('✅ Settings saved! They will persist across page reloads.');
+            // Close the panel after saving
+            toggleCustomizePanel();
+        }
+        
+        function resetCustomization() {
+            if (!confirm('Reset all customization to defaults?')) return;
+            
+            localStorage.removeItem('ui_customization');
+            location.reload();
+        }
+        
+        // Widget Management Functions
+        function updateWidgetOrder() {
+            const chartPos = document.getElementById('chart-position').value;
+            const chartPanel = document.querySelector('.chart-panel');
+            
+            // Update chart position
+            if (chartPos === 'top') {
+                chartPanel.style.gridRow = '1';
+            } else if (chartPos === 'middle') {
+                chartPanel.style.gridRow = '2';
+            } else {
+                chartPanel.style.gridRow = '3';
+            }
+        }
+        
+        function updateWidgetWidths() {
+            const chartWidth = parseInt(document.getElementById('chart-width').value);
+            const positionsWidth = parseInt(document.getElementById('positions-width').value);
+            const ordersWidth = parseInt(document.getElementById('orders-width').value);
+            
+            document.getElementById('chart-width-value').textContent = `${chartWidth} column${chartWidth !== 1 ? 's' : ''}`;
+            document.getElementById('positions-width-value').textContent = `${positionsWidth} column${positionsWidth !== 1 ? 's' : ''}`;
+            document.getElementById('orders-width-value').textContent = `${ordersWidth} column${ordersWidth !== 1 ? 's' : ''}`;
+            
+            const chartPanel = document.querySelector('.chart-panel');
+            const positionsPanel = document.querySelector('.positions-panel');
+            const ordersPanel = document.querySelector('.orders-panel');
+            
+            if (chartPanel) chartPanel.style.gridColumn = `span ${chartWidth}`;
+            if (positionsPanel) positionsPanel.style.gridColumn = `span ${positionsWidth}`;
+            if (ordersPanel) ordersPanel.style.gridColumn = `span ${ordersWidth}`;
+        }
+        
+        function popOutWidget(panelId) {
+            const panel = document.getElementById(panelId);
+            if (!panel) return;
+            
+            // Create popout URL with widget ID
+            const popoutUrl = `${BASE_URL}/popout?widget=${panelId}&port=${SERVER_PORT}&symbol=${encodeURIComponent(SYMBOL)}&timeframe=${encodeURIComponent(TIMEFRAME)}`;
+            
+            // Open in new window
+            const popoutWindow = window.open(
+                popoutUrl,
+                `popout-${panelId}`,
+                'width=1200,height=800,resizable=yes,scrollbars=yes,toolbar=no,menubar=no'
+            );
+            
+            if (!popoutWindow) {
+                alert('Please allow pop-ups for this site to use the pop-out feature');
+                return;
+            }
+            
+            // Store reference for communication
+            if (!window.popoutWindows) window.popoutWindows = {};
+            window.popoutWindows[panelId] = popoutWindow;
+        }
+        
+        // Widget reordering with drag and drop
+        let draggedElement = null;
+        let widgetOrder = [];
+        
+        function initWidgetOrderList() {
+            const widgetOrderList = document.getElementById('widget-order-list');
+            if (!widgetOrderList) return;
+            
+            // Get current widget order from DOM
+            const dashboard = document.querySelector('.dashboard');
+            const panels = Array.from(dashboard.querySelectorAll('.panel'));
+            widgetOrder = panels.map(panel => ({
+                id: panel.id,
+                name: panel.querySelector('.panel-header-text')?.textContent || panel.id
+            }));
+            
+            widgetOrderList.innerHTML = widgetOrder.map((widget, idx) => `
+                <div class="widget-order-item" draggable="true" data-widget-id="${widget.id}" data-index="${idx}" 
+                     ondragstart="handleDragStart(event)" 
+                     ondragover="handleDragOver(event)" 
+                     ondrop="handleDrop(event)" 
+                     ondragend="handleDragEnd(event)"
+                     style="display: flex; align-items: center; gap: 8px; padding: 8px; background: #151515; margin-bottom: 4px; border-radius: 4px; cursor: move;">
+                    <span>⠿</span>
+                    <span style="flex: 1;">${widget.name}</span>
+                    <button class="widget-btn" onclick="popOutWidget('${widget.id}')" title="Pop out">⤢</button>
+                </div>
+            `).join('');
+        }
+        
+        function handleDragStart(e) {
+            draggedElement = e.target;
+            e.target.style.opacity = '0.5';
+            e.dataTransfer.effectAllowed = 'move';
+        }
+        
+        function handleDragOver(e) {
+            if (e.preventDefault) e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const target = e.target.closest('.widget-order-item');
+            if (target && target !== draggedElement) {
+                target.style.borderTop = '2px solid #3b82f6';
+            }
+        }
+        
+        function handleDrop(e) {
+            if (e.stopPropagation) e.stopPropagation();
+            e.preventDefault();
+            
+            const target = e.target.closest('.widget-order-item');
+            if (target && draggedElement && target !== draggedElement) {
+                const targetIndex = parseInt(target.dataset.index);
+                const draggedIndex = parseInt(draggedElement.dataset.index);
+                
+                // Reorder array
+                const [removed] = widgetOrder.splice(draggedIndex, 1);
+                widgetOrder.splice(targetIndex, 0, removed);
+                
+                // Update DOM order
+                const dashboard = document.querySelector('.dashboard');
+                widgetOrder.forEach((widget, idx) => {
+                    const panel = document.getElementById(widget.id);
+                    if (panel) {
+                        dashboard.appendChild(panel);
+                    }
+                });
+                
+                // Re-render order list
+                initWidgetOrderList();
+            }
+            return false;
+        }
+        
+        function handleDragEnd(e) {
+            e.target.style.opacity = '1';
+            document.querySelectorAll('.widget-order-item').forEach(item => {
+                item.style.borderTop = '';
+            });
+        }
+        
+        // Load customization on page load
+        window.addEventListener('load', () => {
+            loadCustomization();
+            initWidgetOrderList();
         });
     </script>
 </body>

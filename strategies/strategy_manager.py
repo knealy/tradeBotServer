@@ -727,6 +727,30 @@ class StrategyManager:
                         # Execute if signal present
                         if signal:
                             logger.info(f"📊 {strategy.config.name} signal for {symbol}: {signal['action']}")
+                            
+                            # Broadcast signal to GUI if available
+                            try:
+                                # Try to import and broadcast signal to GUI
+                                import gui.chart_html as chart_html_module
+                                if hasattr(chart_html_module, 'broadcast_update'):
+                                    signal_data = {
+                                        'type': signal.get('action', 'SIGNAL'),
+                                        'strategy': strategy.config.name,
+                                        'symbol': symbol,
+                                        'message': signal.get('reason', f"{signal.get('action', 'SIGNAL')} signal generated"),
+                                        'price': signal.get('entry_price') or signal.get('price'),
+                                        'entry_price': signal.get('entry_price'),
+                                        'stop_loss': signal.get('stop_loss'),
+                                        'take_profit': signal.get('take_profit'),
+                                        'direction': signal.get('action', 'SIGNAL'),
+                                        'timestamp': datetime.now(timezone.utc).isoformat()
+                                    }
+                                    await chart_html_module.broadcast_update({'type': 'signal', 'data': signal_data})
+                                    logger.info(f"📡 Broadcasted signal to GUI: {signal_data['type']} {symbol} from {strategy.config.name} - Entry: {signal_data.get('entry_price')}, Stop: {signal_data.get('stop_loss')}, TP: {signal_data.get('take_profit')}")
+                            except (ImportError, AttributeError, Exception) as e:
+                                # GUI not available or broadcast not set up - that's okay
+                                logger.debug(f"Could not broadcast signal to GUI: {e}")
+                            
                             await strategy.execute(signal)
                     
                     except Exception as e:

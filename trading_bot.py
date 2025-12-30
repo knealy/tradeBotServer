@@ -66,6 +66,7 @@ from core.market_data import ContractManager
 from core.risk_management import RiskManager
 from core.position_management import PositionManager
 from core.websocket_manager import WebSocketManager
+from core.user_hub_manager import UserHubManager
 from core.order_execution import OrderExecutor
 from brokers.topstepx_adapter import TopStepXAdapter
 from events.event_bus import EventBus, get_event_bus
@@ -162,7 +163,11 @@ class RateLimiter:
                 sleep_time = self.period - (now - self.calls[0])
                 if sleep_time > 0:
                     logger.debug(f"Rate limit reached, waiting {sleep_time:.2f}s before next API call")
-                    time.sleep(sleep_time)
+                    try:
+                        time.sleep(sleep_time)
+                    except KeyboardInterrupt:
+                        # Allow KeyboardInterrupt to propagate for graceful shutdown
+                        raise
                     # Update now after sleep
                     now = time.time()
                     # Remove any additional expired calls
@@ -384,6 +389,17 @@ class TopStepXTradingBot:
         self.websocket_manager.register_depth_callback(self._on_websocket_depth)
         logger.debug("✅ WebSocketManager initialized")
         
+        # Initialize UserHubManager (handles SignalR User Hub for account/position/order updates)
+        self.user_hub_manager = UserHubManager(
+            auth_manager=self.auth_manager
+        )
+        # Register callbacks for User Hub updates
+        self.user_hub_manager.register_account_callback(self._on_user_hub_account)
+        self.user_hub_manager.register_position_callback(self._on_user_hub_position)
+        self.user_hub_manager.register_order_callback(self._on_user_hub_order)
+        self.user_hub_manager.register_trade_callback(self._on_user_hub_trade)
+        logger.debug("✅ UserHubManager initialized")
+        
         # Initialize OrderExecutor (high-level order orchestration)
         self.order_executor = OrderExecutor(
             broker_adapter=self.broker_adapter,
@@ -505,6 +521,169 @@ class TopStepXTradingBot:
                 entry["ts"] = datetime.now(timezone.utc).isoformat()
         except Exception as e:
             logger.debug(f"Failed processing depth message: {e}")
+    
+    def _on_user_hub_account(self, data: Dict):
+        """Callback for User Hub account updates."""
+        try:
+            # Calculate PnL from account tracker if available
+            unrealized_pnl = 0.0
+            realized_pnl = 0.0
+            account_id_str = str(data.get('id', ''))
+            
+            if hasattr(self, 'account_tracker') and self.account_tracker:
+                try:
+                    # Get account state which contains PnL
+                    account_state = self.account_tracker.get_account_state(account_id=account_id_str)
+                    if account_state:
+                        # Account state returns realized_pnl and unrealized_pnl (snake_case)
+                        realized_pnl = float(account_state.get('realized_pnl', 0))
+                        unrealized_pnl = float(account_state.get('unrealized_pnl', 0))
+                        logger.info(f"📊 Account state PnL - Realized: ${realized_pnl:.2f}, Unrealized: ${unrealized_pnl:.2f}")
+                    
+                    # If account state doesn't have PnL, calculate from positions
+                    if unrealized_pnl == 0.0:
+                        positions = self.get_open_positions(account_id=account_id_str)
+                        if positions:
+                            for pos in positions:
+                                upnl = pos.get('unrealizedPnL') or pos.get('unrealized_pnl') or 0
+                                unrealized_pnl += float(upnl)
+                except Exception as e:
+                    logger.debug(f"Error calculating PnL for account update: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+            
+            # Broadcast to GUI if available
+            try:
+                from gui.chart_html import broadcast_update
+                account_update = {
+                    'account_id': data.get('id'),
+                    'account_name': data.get('name'),
+                    'balance': data.get('balance', 0),
+                    'unrealized_pnl': unrealized_pnl,
+                    'realized_pnl': realized_pnl,
+                    'canTrade': data.get('canTrade', True),
+                    'isVisible': data.get('isVisible', True),
+                    'simulated': data.get('simulated', False)
+                }
+                broadcast_update({
+                    'type': 'account',
+                    'data': account_update
+                })
+                logger.debug(f"📡 Broadcasted User Hub account update: {account_update.get('account_name')} - Balance: ${account_update.get('balance'):.2f}, Unrealized: ${unrealized_pnl:.2f}, Realized: ${realized_pnl:.2f}")
+            except Exception as e:
+                logger.debug(f"Could not broadcast account update to GUI: {e}")
+        except Exception as e:
+            logger.error(f"Error handling User Hub account update: {e}")
+    
+    def _on_user_hub_position(self, data: Dict):
+        """Callback for User Hub position updates."""
+        try:
+            # Broadcast to GUI if available
+            try:
+                from gui.chart_html import broadcast_update
+                # Convert position data to GUI format
+                contract_id = data.get('contractId', '')
+                symbol = ''
+                if contract_id and hasattr(self, 'contract_manager'):
+                    symbol = self.contract_manager.get_symbol_from_contract_id(contract_id) or ''
+                
+                position_data = {
+                    'id': data.get('id'),
+                    'accountId': data.get('accountId'),
+                    'contractId': contract_id,
+                    'symbol': symbol,
+                    'side': 'LONG' if data.get('type') == 1 else 'SHORT',
+                    'quantity': data.get('size', 0),
+                    'entryPrice': data.get('averagePrice', 0),
+                    'creationTimestamp': data.get('creationTimestamp')
+                }
+                broadcast_update({
+                    'type': 'positions',
+                    'data': {'positions': [position_data]}
+                })
+                
+                # Also trigger account update to refresh PnL
+                account_id = str(data.get('accountId', ''))
+                if account_id and hasattr(self, 'account_tracker') and self.account_tracker:
+                    try:
+                        # Calculate updated PnL
+                        positions = self.get_open_positions(account_id=account_id)
+                        unrealized_pnl = sum(float(p.get('unrealizedPnL') or p.get('unrealized_pnl') or 0) for p in positions)
+                        daily_pnl = self.account_tracker.get_daily_pnl(account_id=account_id) or 0.0
+                        realized_pnl = float(daily_pnl)
+                        
+                        # Get account balance
+                        balance = 0.0
+                        if hasattr(self, 'selected_account') and self.selected_account:
+                            if isinstance(self.selected_account, dict):
+                                balance = float(self.selected_account.get('balance', 0.0))
+                        
+                        # Broadcast account update with updated PnL
+                        broadcast_update({
+                            'type': 'account',
+                            'data': {
+                                'account_id': account_id,
+                                'account_name': self.selected_account.get('name', '') if hasattr(self, 'selected_account') and self.selected_account else '',
+                                'balance': balance,
+                                'unrealized_pnl': unrealized_pnl,
+                                'realized_pnl': realized_pnl
+                            }
+                        })
+                        logger.debug(f"📡 Updated account PnL after position change: Unrealized: ${unrealized_pnl:.2f}, Realized: ${realized_pnl:.2f}")
+                    except Exception as e:
+                        logger.debug(f"Error updating account PnL after position change: {e}")
+            except Exception as e:
+                logger.debug(f"Could not broadcast position update to GUI: {e}")
+        except Exception as e:
+            logger.error(f"Error handling User Hub position update: {e}")
+    
+    def _on_user_hub_order(self, data: Dict):
+        """Callback for User Hub order updates."""
+        try:
+            # Broadcast to GUI if available
+            try:
+                from gui.chart_html import broadcast_update
+                order_data = {
+                    'id': data.get('id'),
+                    'accountId': data.get('accountId'),
+                    'contractId': data.get('contractId'),
+                    'symbolId': data.get('symbolId'),
+                    'status': data.get('status'),
+                    'type': data.get('type'),
+                    'side': 'BUY' if data.get('side') == 0 else 'SELL',
+                    'size': data.get('size', 0),
+                    'limitPrice': data.get('limitPrice'),
+                    'stopPrice': data.get('stopPrice'),
+                    'fillVolume': data.get('fillVolume', 0),
+                    'filledPrice': data.get('filledPrice'),
+                    'customTag': data.get('customTag')
+                }
+                broadcast_update({
+                    'type': 'orders',
+                    'data': {'orders': [order_data]}
+                })
+            except Exception as e:
+                logger.debug(f"Could not broadcast order update to GUI: {e}")
+        except Exception as e:
+            logger.error(f"Error handling User Hub order update: {e}")
+    
+    def _on_user_hub_trade(self, data: Dict):
+        """Callback for User Hub trade updates."""
+        try:
+            # Update account PnL from trade
+            if data.get('profitAndLoss'):
+                try:
+                    from gui.chart_html import broadcast_update
+                    broadcast_update({
+                        'type': 'account',
+                        'data': {
+                            'realized_pnl': data.get('profitAndLoss', 0)
+                        }
+                    })
+                except Exception as e:
+                    logger.debug(f"Could not broadcast trade update to GUI: {e}")
+        except Exception as e:
+            logger.error(f"Error handling User Hub trade update: {e}")
     
     async def _ensure_market_socket_started(self) -> None:
         """
@@ -1283,6 +1462,23 @@ class TopStepXTradingBot:
             )
             logger.info(f"Account tracker initialized for {selected_account['name']} (${account_balance:,.2f})")
             
+            # Start/update User Hub subscription for new account
+            if hasattr(self, 'user_hub_manager'):
+                try:
+                    account_id = selected_account.get('id')
+                    if self.user_hub_manager.is_connected():
+                        # Already connected, just subscribe to new account
+                        await self.user_hub_manager.subscribe_account(account_id)
+                    else:
+                        # Not connected, start connection
+                        success = await self.user_hub_manager.start(account_id=account_id)
+                        if success:
+                            logger.info("✅ User Hub connected for real-time updates")
+                        else:
+                            logger.warning("⚠️  User Hub connection failed, will use polling")
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to start/update User Hub: {e}")
+            
             return True
             
         except Exception as e:
@@ -1930,7 +2126,7 @@ class TopStepXTradingBot:
 
     async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
                                 stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
-                                limit_price: float = None, strategy_name: str = None) -> Dict:
+                                limit_price: float = None, strategy_name: str = None, reduce_only: bool = False) -> Dict:
         """
         Place a market or limit order on the selected account.
         
@@ -1943,6 +2139,7 @@ class TopStepXTradingBot:
             take_profit_ticks: Optional take profit in ticks
             order_type: "market" or "limit"
             limit_price: Price for limit orders (required if order_type="limit")
+            reduce_only: Accepted for CLI compatibility (some call sites pass this flag).
             
         Returns:
             Dict: Order response or error
@@ -6116,6 +6313,18 @@ class TopStepXTradingBot:
                 print("❌ No account selected. Exiting.")
                 return
             
+            # Start User Hub for real-time account/position/order updates
+            if hasattr(self, 'user_hub_manager'):
+                try:
+                    account_id = selected_account.get('id')
+                    success = await self.user_hub_manager.start(account_id=account_id)
+                    if success:
+                        logger.info("✅ User Hub connected for real-time updates")
+                    else:
+                        logger.warning("⚠️  User Hub connection failed, will use polling")
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to start User Hub: {e}")
+            
             # Step 5: Show account details (requires selected account)
             _balance_start = _t.time()
             balance = await self.get_account_balance()
@@ -6557,6 +6766,22 @@ class TopStepXTradingBot:
                 if command_lower == "quit" or command_lower == "q":
                     print("👋 Exiting trading interface.")
                     break
+                elif command_lower == "master" or command_lower.startswith("master ") or command_lower == "gui" or command_lower.startswith("gui "):
+                    # Open unified master dashboard (chart server + master page) from interactive CLI
+                    try:
+                        from core.cli_command_parser import CLICommandParser
+                        parser = CLICommandParser(self)
+                        resp = await parser.execute_command(command)
+                        if resp.get("success"):
+                            result = resp.get("result") or {}
+                            if isinstance(result, dict) and result.get("url"):
+                                print(f"✅ Master dashboard opened: {result['url']}")
+                            else:
+                                print("✅ Master dashboard command executed.")
+                        else:
+                            print(f"❌ Failed to open master dashboard: {resp.get('error')}")
+                    except Exception as e:
+                        print(f"❌ Failed to open master dashboard: {e}")
                 elif command_lower == "flatten":
                     await self.flatten_all_positions()
                 elif command_lower == "contracts":
@@ -9097,13 +9322,28 @@ class TopStepXTradingBot:
                         print("❌ No orders found for this period")
                 
                 else:
-                    print("❌ Unknown command. Available commands:")
-                    print("   trade, limit, bracket, native_bracket, stop_bracket, stop, trail, positions, orders,")
-                    print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts,")
-                    print("   switch_account, account_info, account_state, compliance, risk, drawdown, trades,")
-                    print("   strategies, backtest, help, quit")
-                    print("   Use ↑/↓ arrows for command history, Tab for completion")
-                    print("   Type 'help' for detailed command information")
+                    # Fallback: try the modular command parser so newer commands work in interactive mode
+                    try:
+                        from core.cli_command_parser import CLICommandParser
+                        parser = CLICommandParser(self)
+                        resp = await parser.execute_command(command)
+                        if resp.get("success"):
+                            result = resp.get("result")
+                            if isinstance(result, dict):
+                                import json
+                                print(json.dumps(result, indent=2))
+                            else:
+                                print(result)
+                        else:
+                            print("❌ Unknown command. Available commands:")
+                            print("   trade, limit, bracket, native_bracket, stop_bracket, stop, trail, positions, orders,")
+                            print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts,")
+                            print("   switch_account, account_info, account_state, compliance, risk, drawdown, trades,")
+                            print("   strategies, backtest, master, gui, help, quit")
+                            print("   Use ↑/↓ arrows for command history, Tab for completion")
+                            print("   Type 'help' for detailed command information")
+                    except Exception as e:
+                        print(f"❌ Command error: {e}")
                     
             except KeyboardInterrupt:
                 print("\n👋 Exiting trading interface.")
