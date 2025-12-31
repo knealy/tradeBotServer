@@ -203,3 +203,7 @@ backtest ma_crossover MNQ  # Show command
 ```bash
 python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --days=30 --sample --monte-carlo=1000
 ```
+
+
+
+

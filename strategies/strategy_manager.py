@@ -729,27 +729,63 @@ class StrategyManager:
                             logger.info(f"📊 {strategy.config.name} signal for {symbol}: {signal['action']}")
                             
                             # Broadcast signal to GUI if available
+                            signal_data = {
+                                'type': signal.get('action', 'SIGNAL'),
+                                'strategy': strategy.config.name,
+                                'symbol': symbol,
+                                'message': signal.get('reason', f"{signal.get('action', 'SIGNAL')} signal generated"),
+                                'price': signal.get('entry_price') or signal.get('price'),
+                                'entry_price': signal.get('entry_price'),
+                                'stop_loss': signal.get('stop_loss'),
+                                'take_profit': signal.get('take_profit'),
+                                'direction': signal.get('action', 'SIGNAL'),
+                                'timestamp': datetime.now(timezone.utc).isoformat()
+                            }
+                            
+                            # Send Discord notification for strategy signal
+                            try:
+                                if hasattr(self.trading_bot, 'discord_notifier') and self.trading_bot.discord_notifier:
+                                    account_name = 'Unknown'
+                                    if hasattr(self.trading_bot, 'selected_account') and self.trading_bot.selected_account:
+                                        if isinstance(self.trading_bot.selected_account, dict):
+                                            account_name = self.trading_bot.selected_account.get('name', 'Unknown')
+                                        else:
+                                            account_name = str(self.trading_bot.selected_account)
+                                    
+                                    details = {
+                                        'entry_price': signal.get('entry_price'),
+                                        'stop_loss': signal.get('stop_loss'),
+                                        'take_profit': signal.get('take_profit'),
+                                        'reason': signal.get('reason', ''),
+                                        'strategy': strategy.config.name
+                                    }
+                                    self.trading_bot.discord_notifier.send_signal_notification(
+                                        signal_type=signal.get('action', 'SIGNAL'),
+                                        symbol=symbol,
+                                        account_name=account_name,
+                                        details=details
+                                    )
+                                    logger.info(f"📧 Discord notification sent for {signal.get('action')} signal on {symbol} from {strategy.config.name}")
+                            except Exception as e:
+                                logger.debug(f"Could not send Discord notification for signal: {e}")
+                            
+                            # Broadcast signal to GUI if available
                             try:
                                 # Try to import and broadcast signal to GUI
                                 import gui.chart_html as chart_html_module
                                 if hasattr(chart_html_module, 'broadcast_update'):
-                                    signal_data = {
-                                        'type': signal.get('action', 'SIGNAL'),
-                                        'strategy': strategy.config.name,
-                                        'symbol': symbol,
-                                        'message': signal.get('reason', f"{signal.get('action', 'SIGNAL')} signal generated"),
-                                        'price': signal.get('entry_price') or signal.get('price'),
-                                        'entry_price': signal.get('entry_price'),
-                                        'stop_loss': signal.get('stop_loss'),
-                                        'take_profit': signal.get('take_profit'),
-                                        'direction': signal.get('action', 'SIGNAL'),
-                                        'timestamp': datetime.now(timezone.utc).isoformat()
-                                    }
-                                    await chart_html_module.broadcast_update({'type': 'signal', 'data': signal_data})
-                                    logger.info(f"📡 Broadcasted signal to GUI: {signal_data['type']} {symbol} from {strategy.config.name} - Entry: {signal_data.get('entry_price')}, Stop: {signal_data.get('stop_loss')}, TP: {signal_data.get('take_profit')}")
+                                    # Ensure broadcast_update is called correctly
+                                    broadcast_func = getattr(chart_html_module, 'broadcast_update', None)
+                                    if broadcast_func:
+                                        await broadcast_func({'type': 'signal', 'data': signal_data})
+                                        logger.info(f"📡 Broadcasted signal to GUI: {signal_data['type']} {symbol} from {strategy.config.name} - Entry: {signal_data.get('entry_price')}, Stop: {signal_data.get('stop_loss')}, TP: {signal_data.get('take_profit')}")
+                                    else:
+                                        logger.warning(f"broadcast_update function not found in chart_html_module")
                             except (ImportError, AttributeError, Exception) as e:
-                                # GUI not available or broadcast not set up - that's okay
-                                logger.debug(f"Could not broadcast signal to GUI: {e}")
+                                # GUI not available or broadcast not set up - log the actual error
+                                logger.warning(f"Could not broadcast signal to GUI: {e}")
+                                import traceback
+                                logger.debug(traceback.format_exc())
                             
                             await strategy.execute(signal)
                     

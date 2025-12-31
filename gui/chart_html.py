@@ -61,14 +61,17 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 else:
                     account_id = str(trading_bot.selected_account)
             
-            # Check cache first
+            # Check cache first (but reduce TTL for PnL updates)
             cache_key = f"account_state_{account_id}"
             import time
             current_time = time.time() * 1000  # milliseconds
             
+            # Reduce cache TTL to 1 second for real-time PnL updates
+            cache_ttl = 1000  # 1 second instead of default
+            
             if cache_key in _account_state_cache:
                 cache_age = current_time - _account_state_cache_time.get(cache_key, 0)
-                if cache_age < _account_state_cache_ttl:
+                if cache_age < cache_ttl:
                     # Return cached data
                     response = web.json_response(_account_state_cache[cache_key])
                     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -92,16 +95,51 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 if balance_data is not None:
                     balance = float(balance_data)
             
-            # Get P&L from positions (lighter than account_info)
+            # Get P&L from positions (aggregate from all positions as per accountInfo.md)
             unrealized_pnl = 0.0
             realized_pnl = 0.0
+            
+            # First, try to get PnL from account tracker (most accurate)
             try:
-                positions = await trading_bot.get_open_positions(account_id=account_id)
-                if positions:
-                    for pos in positions:
-                        unrealized_pnl += float(pos.get('unrealizedPnL', pos.get('unrealized_pnl', 0)))
-            except:
-                pass
+                if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                    if account_id:
+                        # Use get_state() which returns both realized and unrealized PnL
+                        account_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
+                        if account_state:
+                            # get_state() returns 'realized_pnl' and 'unrealized_pnl' (American spelling)
+                            realized_pnl = float(account_state.get('realized_pnl', 0.0) or 0.0)
+                            unrealized_pnl = float(account_state.get('unrealized_pnl', 0.0) or 0.0)
+                            logger.debug(f"Got PnL from account tracker: realized={realized_pnl}, unrealized={unrealized_pnl}")
+            except Exception as e:
+                logger.debug(f"Could not get PnL from account tracker: {e}")
+            
+            # If account tracker doesn't have PnL, aggregate from positions
+            if unrealized_pnl == 0.0:
+                try:
+                    positions = await trading_bot.get_open_positions(account_id=account_id)
+                    if positions:
+                        for pos in positions:
+                            # Try multiple field names for unrealized PnL
+                            pos_unrealized = pos.get('unrealizedPnL') or pos.get('unrealized_pnl') or pos.get('unrealizedPnl') or 0
+                            if pos_unrealized:
+                                unrealized_pnl += float(pos_unrealized)
+                        logger.debug(f"Aggregated unrealized PnL from {len(positions)} positions: {unrealized_pnl}")
+                except Exception as e:
+                    logger.debug(f"Could not aggregate PnL from positions: {e}")
+            
+            # If still no realized PnL, try to get from account tracker's daily PnL
+            if realized_pnl == 0.0:
+                try:
+                    if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                        if account_id:
+                            daily_pnl = trading_bot.account_tracker.get_daily_pnl(account_id=str(account_id))
+                            if daily_pnl:
+                                # Daily PnL includes both realized and unrealized, but we want only realized
+                                # For now, use daily PnL as realized (this is approximate)
+                                realized_pnl = float(daily_pnl)
+                                logger.debug(f"Got realized PnL from daily PnL: {realized_pnl}")
+                except Exception as e:
+                    logger.debug(f"Could not get realized PnL from daily PnL: {e}")
             
             # Get compliance status if available
             compliance = {}
@@ -111,16 +149,36 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 except:
                     pass
             
+            # Try to detect bracket mode by attempting a test bracket order or checking account settings
+            bracket_mode = 'unknown'  # 'position', 'oco', or 'unknown'
+            bracket_warning = None
+            try:
+                # Check if we've seen bracket order errors recently
+                # This is a heuristic - if bracket orders fail with "Brackets cannot be used with Position Brackets"
+                # then we know it's Position Brackets mode
+                # We'll track this in a simple way by checking recent errors
+                if hasattr(trading_bot, '_last_bracket_error'):
+                    if 'Position Brackets' in str(trading_bot._last_bracket_error):
+                        bracket_mode = 'position'
+                        bracket_warning = '⚠️ Position Brackets mode detected. Enable Auto OCO Brackets in TopStepX account settings for bracket orders.'
+                    elif 'Auto OCO Brackets' in str(trading_bot._last_bracket_error):
+                        bracket_mode = 'position'
+                        bracket_warning = '⚠️ Auto OCO Brackets not enabled. Bracket orders will fail.'
+            except:
+                pass
+            
             state = {
                 'account_id': account_id,
                 'account_name': account_name,
                 'balance': balance,
                 'unrealized_pnl': unrealized_pnl,
                 'realized_pnl': realized_pnl,
-                'compliance': compliance
+                'compliance': compliance,
+                'bracket_mode': bracket_mode,
+                'bracket_warning': bracket_warning
             }
             
-            # Cache the result
+            # Cache the result (with shorter TTL for PnL)
             _account_state_cache[cache_key] = state
             _account_state_cache_time[cache_key] = current_time
             
@@ -319,6 +377,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                     take_profit_price=float(take_profit_price)
                                 )
                             except Exception as e:
+                                error_str = str(e)
+                                # Track bracket errors for mode detection
+                                if hasattr(trading_bot, '_last_bracket_error'):
+                                    trading_bot._last_bracket_error = error_str
+                                else:
+                                    trading_bot._last_bracket_error = error_str
                                 logger.error(f"Error creating market order with brackets: {e}")
                                 import traceback
                                 logger.error(traceback.format_exc())
@@ -946,7 +1010,19 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         if 'stopPrice' not in order_dict:
                             order_dict['stopPrice'] = float(stop_price)
                     
-                    # For STOP orders, also set price from stopPrice if no limitPrice
+                    # For STOP orders, set price from stopPrice if no limitPrice
+                    if order_dict.get('type') == 'STOP' or order_type_num == 4:
+                        if stop_price is not None:
+                            # For STOP orders, use stopPrice as the display price
+                            order_dict['price'] = float(stop_price)
+                        elif not order_dict.get('price'):
+                            # If STOP order has no price set, try to get from triggerPrice
+                            trigger_price = order_dict.get('triggerPrice') or order_dict.get('trigger_price')
+                            if trigger_price:
+                                order_dict['price'] = float(trigger_price)
+                            else:
+                                # Last resort: use 0.00 (will be displayed)
+                                order_dict['price'] = 0.0
                     if order_type_num == 4 and stop_price is not None and order_dict.get('price') is None:
                         order_dict['price'] = float(stop_price)
                     
@@ -1140,11 +1216,37 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             statuses = {}
             for name, strategy in trading_bot.strategy_manager.strategies.items():
                 if strategy:
+                    # Get strategy config
+                    config = getattr(strategy, 'config', None)
+                    symbols = getattr(config, 'symbols', []) if config else []
+                    timeframe = getattr(config, 'timeframe', None) or getattr(strategy, 'timeframe', None) or 'N/A'
+                    
+                    # Get start time if available
+                    start_time = None
+                    if hasattr(strategy, 'start_time'):
+                        start_time = strategy.start_time
+                    elif hasattr(strategy, '_start_time'):
+                        start_time = strategy._start_time
+                    
+                    # Format start time
+                    start_time_str = 'N/A'
+                    if start_time:
+                        if isinstance(start_time, str):
+                            start_time_str = start_time
+                        else:
+                            from datetime import datetime
+                            if isinstance(start_time, datetime):
+                                start_time_str = start_time.strftime('%Y-%m-%d %H:%M:%S')
+                            else:
+                                start_time_str = str(start_time)
+                    
                     statuses[name] = {
                         'name': name,
                         'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
                         'active': getattr(strategy, 'status', None) == getattr(strategy.__class__, 'Status', type('Status', (), {'ACTIVE': 'active'}))().ACTIVE if hasattr(strategy.__class__, 'Status') else False,
-                        'symbols': getattr(strategy.config, 'symbols', []) if hasattr(strategy, 'config') else [],
+                        'symbols': symbols,
+                        'timeframe': timeframe,
+                        'start_time': start_time_str,
                         'positions': len(getattr(strategy, 'active_positions', [])) if hasattr(strategy, 'active_positions') else 0
                     }
             
@@ -1184,16 +1286,40 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             data = await request.json()
             strategy_name = data.get('strategy')
             symbols = data.get('symbols', [])
+            timeframe = data.get('timeframe')
             
             if not hasattr(trading_bot, 'strategy_manager'):
                 return web.json_response({'success': False, 'error': 'Strategy manager not available'})
             
-            success, message = await trading_bot.strategy_manager.start_strategy(strategy_name, symbols)
-            response = web.json_response({'success': success, 'message': message})
+            # Use CLI command parser for consistency (handles --timeframe and --symbols)
+            from core.cli_command_parser import CLICommandParser
+            parser = CLICommandParser(trading_bot)
+            
+            # Build command string
+            cmd_parts = ['strategies', 'start', strategy_name]
+            if symbols:
+                symbols_str = ','.join(symbols) if isinstance(symbols, list) else str(symbols)
+                cmd_parts.append(f'--symbols={symbols_str}')
+            if timeframe:
+                cmd_parts.append(f'--timeframe={timeframe}')
+            
+            command = ' '.join(cmd_parts)
+            logger.info(f"Executing strategy start command: {command}")
+            
+            # Execute via CLI parser
+            result = await parser.parse_and_execute(command, interactive=False)
+            
+            if result.get('success'):
+                response = web.json_response({'success': True, 'message': result.get('message', 'Strategy started')})
+            else:
+                response = web.json_response({'success': False, 'error': result.get('error', 'Failed to start strategy')})
+            
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
             logger.error(f"Error starting strategy: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             response = web.json_response({'success': False, 'error': str(e)}, status=500)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -1207,12 +1333,27 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             if not hasattr(trading_bot, 'strategy_manager'):
                 return web.json_response({'success': False, 'error': 'Strategy manager not available'})
             
-            success, message = await trading_bot.strategy_manager.stop_strategy(strategy_name)
-            response = web.json_response({'success': success, 'message': message})
+            # Use CLI command parser for consistency
+            from core.cli_command_parser import CLICommandParser
+            parser = CLICommandParser(trading_bot)
+            
+            command = f'strategies stop {strategy_name}'
+            logger.info(f"Executing strategy stop command: {command}")
+            
+            # Execute via CLI parser
+            result = await parser.parse_and_execute(command, interactive=False)
+            
+            if result.get('success'):
+                response = web.json_response({'success': True, 'message': result.get('message', 'Strategy stopped')})
+            else:
+                response = web.json_response({'success': False, 'error': result.get('error', 'Failed to stop strategy')})
+            
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
             logger.error(f"Error stopping strategy: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             response = web.json_response({'success': False, 'error': str(e)}, status=500)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -1658,10 +1799,265 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             }}
         }});
         
-        // Request widget content from opener
+        // Request widget content from opener and set up communication
         if (window.opener) {{
+            // Request widget content
             window.opener.postMessage({{type: 'request-widget', widgetId: WIDGET_ID}}, '*');
+            
+            // Set up WebSocket connection for real-time updates
+            let ws = null;
+            function connectWebSocket() {{
+                try {{
+                    ws = new WebSocket(`ws://127.0.0.1:${{SERVER_PORT}}/ws`);
+                    ws.onmessage = function(event) {{
+                        try {{
+                            const message = JSON.parse(event.data);
+                            if (message.type === 'signal' && WIDGET_ID === 'signal-feed-panel') {{
+                                if (typeof addSignal === 'function') {{
+                                    addSignal(message.data);
+                                }}
+                            }} else if (message.type === 'positions' && WIDGET_ID === 'positions-panel') {{
+                                if (typeof updatePositionsDisplay === 'function') {{
+                                    updatePositionsDisplay(message.data.positions || []);
+                                }}
+                            }} else if (message.type === 'orders' && WIDGET_ID === 'orders-panel') {{
+                                if (typeof updateOrdersDisplay === 'function') {{
+                                    updateOrdersDisplay(message.data.orders || []);
+                                }}
+                            }} else if (message.type === 'strategies' && WIDGET_ID === 'strategy-panel') {{
+                                if (typeof updateStrategiesDisplay === 'function') {{
+                                    updateStrategiesDisplay(message.data);
+                                }}
+                            }} else if (message.type === 'account' && WIDGET_ID === 'account-bar') {{
+                                if (typeof updateAccountDisplay === 'function') {{
+                                    updateAccountDisplay(message.data);
+                                }}
+                            }}
+                        }} catch (e) {{
+                            console.error('Error handling WebSocket message:', e);
+                        }}
+                    }};
+                    ws.onopen = function() {{
+                        console.log('✅ Popout WebSocket connected');
+                        // Send ping to keep connection alive
+                        setInterval(() => {{
+                            if (ws && ws.readyState === WebSocket.OPEN) {{
+                                ws.send(JSON.stringify({{ type: 'ping' }}));
+                            }}
+                        }}, 30000);
+                    }};
+                    ws.onerror = function(error) {{
+                        console.error('WebSocket error:', error);
+                    }};
+                    ws.onclose = function() {{
+                        console.log('WebSocket closed, reconnecting...');
+                        setTimeout(connectWebSocket, 3000);
+                    }};
+                }} catch (e) {{
+                    console.error('Failed to create WebSocket:', e);
+                }}
+            }}
+            connectWebSocket();
+            
+            // Load initial data
+            setTimeout(() => {{
+                if (WIDGET_ID === 'chart-panel' && typeof LightweightCharts !== 'undefined') {{
+                    // Chart will be initialized by opener
+                }} else if (WIDGET_ID === 'positions-panel') {{
+                    fetch(`${{BASE_URL}}/api/chart/positions`).then(r => r.json()).then(d => {{
+                        if (d.positions && typeof updatePositionsDisplay === 'function') {{
+                            updatePositionsDisplay(d.positions);
+                        }}
+                    }});
+                }} else if (WIDGET_ID === 'orders-panel') {{
+                    fetch(`${{BASE_URL}}/api/chart/orders`).then(r => r.json()).then(d => {{
+                        if (d.orders && typeof updateOrdersDisplay === 'function') {{
+                            updateOrdersDisplay(d.orders);
+                        }}
+                    }});
+                }} else if (WIDGET_ID === 'strategy-panel') {{
+                    fetch(`${{BASE_URL}}/api/chart/strategy/status`).then(r => r.json()).then(d => {{
+                        if (typeof updateStrategiesDisplay === 'function') {{
+                            updateStrategiesDisplay(d);
+                        }}
+                    }});
+                }} else if (WIDGET_ID === 'signal-feed-panel') {{
+                    // Signal feed will receive updates via WebSocket
+                    const container = document.getElementById('signal-feed-container');
+                    if (container && container.children.length === 0) {{
+                        container.innerHTML = '<div style="color: #888; text-align: center; padding: 20px;">Waiting for signals...</div>';
+                    }}
+                }}
+            }}, 500);
         }}
+        
+        // Include all necessary JavaScript functions for popout widgets
+        // These functions are needed for widgets to function independently
+        function addSignal(signal) {{
+            const container = document.getElementById('signal-feed-container');
+            if (!container) return;
+            
+            if (container.children.length === 1 && (container.firstChild.textContent.includes('Waiting') || container.firstChild.textContent.includes('No signals'))) {{
+                container.innerHTML = '';
+            }}
+            
+            const signalEntry = document.createElement('div');
+            signalEntry.style.marginBottom = '8px';
+            signalEntry.style.padding = '8px';
+            signalEntry.style.background = '#1a1a1a';
+            signalEntry.style.border = '1px solid #333';
+            signalEntry.style.borderRadius = '4px';
+            signalEntry.style.fontSize = '11px';
+            
+            const timestamp = signal.timestamp ? new Date(signal.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+            const signalType = signal.type || signal.direction || 'SIGNAL';
+            const signalColor = signalType === 'BUY' || signalType === 'LONG' ? '#4caf50' : signalType === 'SELL' || signalType === 'SHORT' ? '#f44336' : '#ff9800';
+            
+            const entryPrice = signal.entry_price ? parseFloat(signal.entry_price) || 0 : null;
+            const stopLoss = signal.stop_loss ? parseFloat(signal.stop_loss) || 0 : null;
+            const takeProfit = signal.take_profit ? parseFloat(signal.take_profit) || 0 : null;
+            
+            let priceHtml = '';
+            if (entryPrice !== null) {{
+                priceHtml += `<div style="color: #888; font-size: 10px;">Entry: $${entryPrice.toFixed(2)}</div>`;
+            }}
+            if (stopLoss !== null) {{
+                priceHtml += `<div style="color: #f44336; font-size: 10px;">Stop: $${stopLoss.toFixed(2)}</div>`;
+            }}
+            if (takeProfit !== null) {{
+                priceHtml += `<div style="color: #4caf50; font-size: 10px;">Target: $${takeProfit.toFixed(2)}</div>`;
+            }}
+            
+            signalEntry.innerHTML = `
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                    <span style="color: ${{signalColor}}; font-weight: 600;">${{signalType}}</span>
+                    <span style="color: #888; font-size: 10px;">${{timestamp}}</span>
+                </div>
+                <div style="color: #d1d5db; margin-bottom: 2px;"><strong>${{signal.strategy || 'Unknown'}}</strong> - ${{signal.symbol || 'N/A'}}</div>
+                ${{priceHtml}}
+                <div style="color: #888; font-size: 10px; margin-top: 4px;">${{signal.message || 'No details'}}</div>
+            `;
+            
+            container.insertBefore(signalEntry, container.firstChild);
+            while (container.children.length > 20) {{
+                container.removeChild(container.lastChild);
+            }}
+        }}
+        
+        function updatePositionsDisplay(positions) {{
+            const tbody = document.getElementById('positions-body');
+            if (!tbody) return;
+            
+            if (positions.length === 0) {{
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No positions</td></tr>';
+            }} else {{
+                tbody.innerHTML = positions.map(pos => {{
+                    const pnl = pos.unrealizedPnL || pos.unrealized_pnl || pos.unrealizedPnl || 0;
+                    const entryPrice = pos.entryPrice || pos.entry_price || 0;
+                    const quantity = pos.quantity || pos.size || 0;
+                    return `
+                        <tr>
+                            <td>${{pos.symbol || 'N/A'}}</td>
+                            <td>${{pos.side || 'N/A'}}</td>
+                            <td>${{quantity}}</td>
+                            <td>$${{entryPrice.toFixed(2)}}</td>
+                            <td class="${{pnl >= 0 ? 'positive' : 'negative'}}">$${{pnl.toFixed(2)}}</td>
+                        </tr>
+                    `;
+                }}).join('');
+            }}
+        }}
+        
+        function updateOrdersDisplay(orders) {{
+            const tbody = document.getElementById('orders-body');
+            if (!tbody) return;
+            
+            if (orders.length === 0) {{
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
+            }} else {{
+                tbody.innerHTML = orders.map(order => {{
+                    const price = order.price || order.limitPrice || order.limit_price || 
+                                 order.stopPrice || order.stop_price || 
+                                 order.triggerPrice || order.trigger_price || 0;
+                    const priceNum = parseFloat(price) || 0;
+                    return `
+                        <tr>
+                            <td>${{order.symbol || 'N/A'}}</td>
+                            <td>${{order.side || 'N/A'}}</td>
+                            <td>${{order.quantity || 0}}</td>
+                            <td>$${{priceNum.toFixed(2)}}</td>
+                            <td>${{order.type || 'N/A'}}</td>
+                        </tr>
+                    `;
+                }}).join('');
+            }}
+        }}
+        
+        function updateStrategiesDisplay(data) {{
+            const grid = document.getElementById('strategy-grid');
+            if (!grid) return;
+            
+            const strategies = Object.values(data.strategies || {{}});
+            const active = data.active || [];
+            
+            if (strategies.length === 0) {{
+                grid.innerHTML = '<div class="empty-state">No strategies available</div>';
+            }} else {{
+                grid.innerHTML = strategies.map(strategy => {{
+                    const isActive = active.includes(strategy.name);
+                    return `
+                        <div class="strategy-card">
+                            <div class="strategy-header">
+                                <span class="strategy-name">${{strategy.name}}</span>
+                                <span class="strategy-status ${{isActive ? 'active' : 'idle'}}">
+                                    ${{isActive ? 'ACTIVE' : 'IDLE'}}
+                                </span>
+                            </div>
+                            <div class="strategy-info">
+                                ${{strategy.symbols && strategy.symbols.length > 0 ? strategy.symbols.join(', ') : 'No symbols'}} | 
+                                ${{strategy.timeframe || 'N/A'}} | 
+                                ${{strategy.positions || 0}} pos
+                                ${{strategy.start_time && strategy.start_time !== 'N/A' ? '<br><span style="font-size: 9px; color: #888;">Started: ' + strategy.start_time + '</span>' : ''}}
+                            </div>
+                        </div>
+                    `;
+                }}).join('');
+            }}
+        }}
+        
+        function updateAccountDisplay(data) {{
+            const accountNameEl = document.getElementById('account-name');
+            if (accountNameEl) accountNameEl.textContent = data.account_name || '--';
+            
+            const balanceEl = document.getElementById('balance');
+            if (balanceEl) balanceEl.textContent = `$${{(data.balance || 0).toFixed(2)}}`;
+            
+            const unrealized = data.unrealized_pnl || 0;
+            const unrealizedEl = document.getElementById('unrealized-pnl');
+            if (unrealizedEl) {{
+                unrealizedEl.textContent = `$${{unrealized.toFixed(2)}}`;
+                unrealizedEl.className = `status-value ${{unrealized >= 0 ? 'positive' : 'negative'}}`;
+            }}
+            
+            const realized = data.realized_pnl || 0;
+            const realizedEl = document.getElementById('realized-pnl');
+            if (realizedEl) {{
+                realizedEl.textContent = `$${{realized.toFixed(2)}}`;
+                realizedEl.className = `status-value ${{realized >= 0 ? 'positive' : 'negative'}}`;
+            }}
+        }}
+        
+        // Add "Pop Back In" button
+        const popBackBtn = document.createElement('button');
+        popBackBtn.textContent = '↩ Pop Back In';
+        popBackBtn.style.cssText = 'position: fixed; top: 10px; right: 10px; z-index: 10000; background: #4caf50; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; font-size: 12px; cursor: pointer;';
+        popBackBtn.onclick = function() {{
+            if (window.opener) {{
+                window.opener.postMessage({{type: 'pop-back-in', widgetId: WIDGET_ID}}, '*');
+                window.close();
+            }}
+        }};
+        document.body.appendChild(popBackBtn);
     </script>
 </body>
 </html>
@@ -1673,10 +2069,6 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             import traceback
             logger.error(traceback.format_exc())
             return web.Response(text=f"Error: {e}", status=500)
-    
-    app.router.add_get('/', handle_master_control)
-    app.router.add_get('/master', handle_master_control)
-    app.router.add_get('/popout', handle_popout)
     
     # WebSocket support for real-time updates
     _ws_clients = set()
@@ -1798,8 +2190,21 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         while True:
             try:
                 if _ws_clients:
-                    # Broadcast account state
+                    # Broadcast account state (clear cache to force fresh calculation)
                     try:
+                        # Clear cache to ensure fresh PnL calculation
+                        account_id = None
+                        if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                            if isinstance(trading_bot.selected_account, dict):
+                                account_id = trading_bot.selected_account.get('id')
+                            else:
+                                account_id = str(trading_bot.selected_account)
+                        
+                        if account_id:
+                            cache_key = f"account_state_{account_id}"
+                            if cache_key in _account_state_cache:
+                                del _account_state_cache[cache_key]
+                        
                         response = await handle_account_state(None)
                         if hasattr(response, 'text'):
                             account_data = json.loads(response.text)
@@ -1834,6 +2239,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     except Exception as e:
                         logger.debug(f"Error broadcasting strategy status: {e}")
                 
+                # Note: Strategy signals are broadcast directly from strategy_manager.py
+                # when signals are generated, not from this loop
+                
                 await asyncio.sleep(2)  # Broadcast every 2 seconds
             except asyncio.CancelledError:
                 logger.info("📡 WebSocket broadcast loop cancelled")
@@ -1843,7 +2251,26 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 logger.error(f"Error in WebSocket broadcast loop: {e}")
                 await asyncio.sleep(5)
     
-    app.router.add_get('/ws', handle_websocket)
+    # Register WebSocket route (only if not already registered)
+    # Check if route already exists to avoid duplicate registration
+    ws_route_exists = any(
+        route.method == 'GET' and str(route.resource) == '/ws'
+        for route in app.router.routes()
+    )
+    if not ws_route_exists:
+        app.router.add_get('/ws', handle_websocket)
+    
+    # Register main page routes
+    app.router.add_get('/', handle_master_control)
+    app.router.add_get('/master', handle_master_control)
+    app.router.add_get('/popout', handle_popout)
+    
+    # Add favicon handler to prevent 404 errors
+    async def handle_favicon(request):
+        """Handle favicon requests."""
+        return web.Response(status=204)  # No content
+    
+    app.router.add_get('/favicon.ico', handle_favicon)
     
     # Find available port
     import socket

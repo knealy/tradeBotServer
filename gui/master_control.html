@@ -261,6 +261,26 @@
             height: 300px;
         }
         
+        /* Strategy panel - compact and scrollable */
+        .strategy-panel .panel-content {
+            max-height: calc(100% - 40px);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+        .strategy-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+            padding: 4px;
+        }
+        .strategy-card {
+            padding: 8px;
+            background: #151515;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+        
         /* Resize handles */
         .resize-handle {
             position: absolute;
@@ -748,6 +768,7 @@
         
         <div class="customize-section">
             <button class="preset-btn" onclick="saveCustomization()" style="width: 100%; background: #4caf50; border-color: #4caf50;">💾 Save Settings</button>
+            <button class="preset-btn" onclick="saveAsDefaults()" style="width: 100%; background: #3b82f6; border-color: #3b82f6; margin-top: 8px;">💾 Save as Defaults</button>
             <button class="preset-btn" onclick="resetCustomization()" style="width: 100%; margin-top: 8px; background: #f44336; border-color: #f44336;">🔄 Reset to Default</button>
         </div>
     </div>
@@ -1058,6 +1079,10 @@
         const wsMaxReconnectAttempts = 5;
         let currentChartSymbol = SYMBOL || 'MNQ'; // Track current chart symbol
         let currentChartTimeframe = TIMEFRAME || '5m'; // Track current chart timeframe
+        
+        // Store position and order price lines (global scope for update functions)
+        let positionLines = new Map();
+        let orderLines = new Map();
         
         // Set default symbol in dropdown on page load
         window.addEventListener('load', () => {
@@ -1448,6 +1473,27 @@
                 realizedEl.textContent = `$${realized.toFixed(2)}`;
                 realizedEl.className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
             }
+            
+            // Display bracket mode warning if available
+            if (data.bracket_warning) {
+                let bracketWarningEl = document.getElementById('bracket-warning');
+                if (!bracketWarningEl) {
+                    bracketWarningEl = document.createElement('div');
+                    bracketWarningEl.id = 'bracket-warning';
+                    bracketWarningEl.style.cssText = 'background: #f44336; color: #fff; padding: 8px; border-radius: 4px; margin-top: 8px; font-size: 11px;';
+                    const accountBar = document.querySelector('.account-bar');
+                    if (accountBar) {
+                        accountBar.appendChild(bracketWarningEl);
+                    }
+                }
+                bracketWarningEl.textContent = data.bracket_warning;
+                bracketWarningEl.style.display = 'block';
+            } else {
+                const bracketWarningEl = document.getElementById('bracket-warning');
+                if (bracketWarningEl) {
+                    bracketWarningEl.style.display = 'none';
+                }
+            }
         }
         
         function updatePositionsDisplay(positions) {
@@ -1474,6 +1520,11 @@
                 `;
             }).join('');
             }
+            
+            // Update position lines on chart
+            if (typeof updatePositionLines === 'function') {
+                updatePositionLines();
+            }
         }
         
         function updateOrdersDisplay(orders) {
@@ -1484,16 +1535,27 @@
             if (orders.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
             } else {
-            tbody.innerHTML = orders.map(order => `
+            tbody.innerHTML = orders.map(order => {
+                // Get price from multiple possible fields (price, limitPrice, stopPrice, etc.)
+                const price = order.price || order.limitPrice || order.limit_price || 
+                             order.stopPrice || order.stop_price || 
+                             order.triggerPrice || order.trigger_price || 0;
+                return `
                 <tr>
                     <td>${order.symbol || 'N/A'}</td>
                     <td>${order.side || 'N/A'}</td>
                     <td>${order.quantity || 0}</td>
-                    <td>$${(order.price || 0).toFixed(2)}</td>
+                    <td>$${price ? parseFloat(price).toFixed(2) : '0.00'}</td>
                     <td>${order.type || 'N/A'}</td>
                 </tr>
-                `).join('');
+                `;
+            }).join('');
         }
+        
+            // Update order lines on chart
+            if (typeof updateOrderLines === 'function') {
+                updateOrderLines();
+            }
         }
         
         function updateStrategiesDisplay(data) {
@@ -1515,14 +1577,16 @@
                                 </span>
                     </div>
                     <div class="strategy-info">
-                                ${strategy.symbols ? strategy.symbols.join(', ') : 'No symbols'} | 
+                                ${strategy.symbols && strategy.symbols.length > 0 ? strategy.symbols.join(', ') : 'No symbols'} | 
+                                ${strategy.timeframe || 'N/A'} | 
                                 ${strategy.positions || 0} pos
+                                ${strategy.start_time && strategy.start_time !== 'N/A' ? '<br><span style="font-size: 9px; color: #888;">Started: ' + strategy.start_time + '</span>' : ''}
                     </div>
                             <div class="strategy-actions">
-                                <button class="btn-primary" onclick="startStrategy('${strategy.name}')" ${isActive ? 'disabled' : ''}>
+                                <button class="btn-primary" onclick="startStrategyByName('${strategy.name}')" ${isActive ? 'disabled' : ''}>
                             Start
                         </button>
-                                <button class="btn-danger" onclick="stopStrategy('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
+                                <button class="btn-danger" onclick="stopStrategyByName('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
                             Stop
                         </button>
                     </div>
@@ -1582,6 +1646,10 @@
                     wickUpColor: '#4caf50',
                     wickDownColor: '#f44336',
                 });
+                
+                // Clear existing lines when reinitializing
+                positionLines.clear();
+                orderLines.clear();
                 
                 // Load initial data
             // Set default symbol and timeframe in dropdowns
@@ -1662,10 +1730,107 @@
                     // Reset price scale to auto-fit new data
                     chart.priceScale('right').applyOptions({ autoScale: true });
                     
+                    // Update position and order lines after loading chart data
+                    updatePositionLines();
+                    updateOrderLines();
+                    
                     console.log(`✅ Chart loaded ${bars.length} bars for ${symbol} ${timeframe}`);
                 }
             } catch (error) {
                 console.error('Error loading chart:', error);
+            }
+        }
+        
+        // Update position lines on chart
+        async function updatePositionLines() {
+            if (!chart || !candlestickSeries) return;
+            
+            try {
+                const positions = await fetch(`${BASE_URL}/api/chart/positions`).then(r => r.json()).then(d => d.positions || []);
+                
+                // Remove old position lines
+                positionLines.forEach((line, posId) => {
+                    candlestickSeries.removePriceLine(line);
+                });
+                positionLines.clear();
+                
+                // Add new position lines
+                positions.forEach(pos => {
+                    if (!pos.symbol || pos.symbol !== currentChartSymbol) return; // Only show lines for current chart symbol
+                    
+                    const entryPrice = parseFloat(pos.entryPrice || pos.entry_price || 0);
+                    if (!entryPrice || entryPrice === 0) return;
+                    
+                    const side = (pos.side || '').toUpperCase();
+                    const color = '#ffffff'; // White for better visibility
+                    const lineStyle = LightweightCharts.LineStyle.Solid;
+                    
+                    const priceLine = {
+                        price: entryPrice,
+                        color: color,
+                        lineWidth: 2,
+                        lineStyle: lineStyle,
+                        axisLabelVisible: true,
+                        title: `${side} ${pos.quantity || 0} @ $${entryPrice.toFixed(2)}`
+                    };
+                    
+                    const line = candlestickSeries.createPriceLine(priceLine);
+                    positionLines.set(pos.position_id || pos.id, line);
+                });
+            } catch (error) {
+                console.error('Error updating position lines:', error);
+            }
+        }
+        
+        // Update order lines on chart
+        async function updateOrderLines() {
+            if (!chart || !candlestickSeries) return;
+            
+            try {
+                const orders = await fetch(`${BASE_URL}/api/chart/orders`).then(r => r.json()).then(d => d.orders || []);
+                
+                // Remove old order lines
+                orderLines.forEach((line, orderId) => {
+                    candlestickSeries.removePriceLine(line);
+                });
+                orderLines.clear();
+                
+                // Add new order lines
+                orders.forEach(order => {
+                    if (!order.symbol || order.symbol !== currentChartSymbol) return; // Only show lines for current chart symbol
+                    
+                    const price = parseFloat(order.price || order.limitPrice || order.limit_price || 
+                                            order.stopPrice || order.stop_price || 
+                                            order.triggerPrice || order.trigger_price || 0);
+                    if (!price || price === 0) return;
+                    
+                    const orderType = (order.type || '').toUpperCase();
+                    const side = (order.side || '').toUpperCase();
+                    let color = '#ff9800'; // Default orange for orders
+                    let lineStyle = LightweightCharts.LineStyle.Dotted;
+                    
+                    if (orderType.includes('STOP')) {
+                        color = '#f44336'; // Red for stop orders
+                        lineStyle = LightweightCharts.LineStyle.Dashed;
+                    } else if (orderType.includes('LIMIT')) {
+                        color = '#2196f3'; // Blue for limit orders
+                        lineStyle = LightweightCharts.LineStyle.Solid;
+                    }
+                    
+                    const priceLine = {
+                        price: price,
+                        color: color,
+                        lineWidth: 1,
+                        lineStyle: lineStyle,
+                        axisLabelVisible: true,
+                        title: `${side} ${orderType} ${order.quantity || 0} @ $${price.toFixed(2)}`
+                    };
+                    
+                    const line = candlestickSeries.createPriceLine(priceLine);
+                    orderLines.set(order.order_id || order.id, line);
+                });
+            } catch (error) {
+                console.error('Error updating order lines:', error);
             }
         }
         
@@ -1867,10 +2032,10 @@
                                         ${strategy.positions || 0} pos
                                     </div>
                                     <div class="strategy-actions">
-                                        <button class="btn-primary" onclick="startStrategy('${strategy.name}')" ${isActive ? 'disabled' : ''}>
+                                        <button class="btn-primary" onclick="startStrategyByName('${strategy.name}')" ${isActive ? 'disabled' : ''}>
                                             Start
                                         </button>
-                                        <button class="btn-danger" onclick="stopStrategy('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
+                                        <button class="btn-danger" onclick="stopStrategyByName('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
                                             Stop
                                         </button>
                                     </div>
@@ -2066,8 +2231,15 @@
             }
         }
         
-        // Strategy control
-        async function startStrategy(name) {
+        // Strategy control - start strategy by name (from strategy cards)
+        async function startStrategyByName(name) {
+            // Optimize: disable button immediately to prevent double-clicks
+            const btn = event?.target;
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Starting...';
+            }
+            
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/start`, {
                     method: 'POST',
@@ -2076,16 +2248,29 @@
                 });
                 const data = await response.json();
                 if (data.success) {
-                    updateStrategies();
+                    // Use setTimeout to avoid blocking UI
+                    setTimeout(() => updateStrategies(), 100);
                 } else {
                     alert(`❌ ${data.error || data.message}`);
                 }
             } catch (error) {
                 alert(`❌ Error: ${error.message}`);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Start';
+                }
             }
         }
         
-        async function stopStrategy(name) {
+        async function stopStrategyByName(name) {
+            // Optimize: disable button immediately to prevent double-clicks
+            const btn = event?.target;
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Stopping...';
+            }
+            
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/stop`, {
                     method: 'POST',
@@ -2094,12 +2279,18 @@
                 });
                 const data = await response.json();
                 if (data.success) {
-                    updateStrategies();
+                    // Use setTimeout to avoid blocking UI
+                    setTimeout(() => updateStrategies(), 100);
                 } else {
                     alert(`❌ ${data.error || data.message}`);
                 }
             } catch (error) {
                 alert(`❌ Error: ${error.message}`);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Stop';
+                }
             }
         }
         
@@ -2391,7 +2582,11 @@
         
         // Load saved customization on page load
         function loadCustomization() {
-            const saved = localStorage.getItem('ui_customization');
+            // Try to load defaults first, then regular settings
+            let saved = localStorage.getItem('ui_customization_defaults');
+            if (!saved) {
+                saved = localStorage.getItem('ui_customization');
+            }
             if (!saved) return;
             
             try {
@@ -2636,9 +2831,41 @@
             };
             
             localStorage.setItem('ui_customization', JSON.stringify(config));
-            alert('✅ Settings saved! They will persist across page reloads.');
+            // Also save as defaults
+            localStorage.setItem('ui_customization_defaults', JSON.stringify(config));
+            alert('✅ Settings saved as defaults! They will persist across page reloads.');
             // Close the panel after saving
             toggleCustomizePanel();
+        }
+        
+        function saveAsDefaults() {
+            const config = {
+                gridCols: parseInt(document.getElementById('grid-cols').value),
+                gridGap: parseInt(document.getElementById('grid-gap').value),
+                gridPadding: parseInt(document.getElementById('grid-padding').value),
+                panelPadding: parseInt(document.getElementById('panel-padding').value),
+                borderRadius: parseInt(document.getElementById('border-radius').value),
+                borderWidth: parseInt(document.getElementById('border-width').value),
+                bgColor: document.getElementById('bg-color').value,
+                textColor: document.getElementById('text-color').value,
+                accentColor: document.getElementById('accent-color').value,
+                fontSize: parseInt(document.getElementById('font-size').value),
+                tableFontSize: parseInt(document.getElementById('table-font-size').value),
+                btnBuyColor: document.getElementById('btn-buy-color').value,
+                btnSellColor: document.getElementById('btn-sell-color').value,
+                btnPrimaryColor: document.getElementById('btn-primary-color').value,
+                btnDangerColor: document.getElementById('btn-danger-color').value,
+                btnStartColor: document.getElementById('btn-start-color').value,
+                btnStopColor: document.getElementById('btn-stop-color').value,
+                btnBorderRadius: parseInt(document.getElementById('btn-border-radius').value),
+                btnFontSize: parseInt(document.getElementById('btn-font-size').value)
+            };
+            
+            // Save as defaults (separate from regular settings)
+            localStorage.setItem('ui_customization_defaults', JSON.stringify(config));
+            // Also update regular settings
+            localStorage.setItem('ui_customization', JSON.stringify(config));
+            alert('✅ Settings saved as defaults! They will be used on page load.');
         }
         
         function resetCustomization() {
@@ -2685,6 +2912,10 @@
             const panel = document.getElementById(panelId);
             if (!panel) return;
             
+            // Clone the panel content
+            const panelClone = panel.cloneNode(true);
+            const panelContent = panelClone.querySelector('.panel-content');
+            
             // Create popout URL with widget ID
             const popoutUrl = `${BASE_URL}/popout?widget=${panelId}&port=${SERVER_PORT}&symbol=${encodeURIComponent(SYMBOL)}&timeframe=${encodeURIComponent(TIMEFRAME)}`;
             
@@ -2703,6 +2934,62 @@
             // Store reference for communication
             if (!window.popoutWindows) window.popoutWindows = {};
             window.popoutWindows[panelId] = popoutWindow;
+            
+            // Hide the panel from dashboard
+            panel.style.display = 'none';
+            panel.setAttribute('data-popped-out', 'true');
+            
+            // Add "Pop back in" button to the hidden panel (will be shown when popped back)
+            const popBackBtn = document.createElement('button');
+            popBackBtn.textContent = '↩ Pop Back In';
+            popBackBtn.className = 'widget-btn';
+            popBackBtn.style.cssText = 'position: absolute; top: 5px; right: 5px; z-index: 1000; background: #4caf50; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; font-size: 10px; cursor: pointer;';
+            popBackBtn.onclick = () => popBackWidget(panelId);
+            panel.appendChild(popBackBtn);
+            
+            // Send widget content to popout window when it loads
+            popoutWindow.addEventListener('load', () => {
+                setTimeout(() => {
+                    if (popoutWindow && !popoutWindow.closed) {
+                        popoutWindow.postMessage({
+                            type: 'widget-content',
+                            widgetId: panelId,
+                            html: panelContent ? panelContent.innerHTML : panelClone.innerHTML
+                        }, '*');
+                    }
+                }, 100);
+            });
+            
+            // Listen for popout window close to restore panel
+            const checkClosed = setInterval(() => {
+                if (popoutWindow.closed) {
+                    clearInterval(checkClosed);
+                    popBackWidget(panelId);
+                }
+            }, 500);
+        }
+        
+        function popBackWidget(panelId) {
+            const panel = document.getElementById(panelId);
+            if (!panel) return;
+            
+            // Show the panel again
+            panel.style.display = '';
+            panel.removeAttribute('data-popped-out');
+            
+            // Remove pop back button
+            const popBackBtn = panel.querySelector('button[onclick*="popBackWidget"]');
+            if (popBackBtn) popBackBtn.remove();
+            
+            // Close popout window if still open
+            if (window.popoutWindows && window.popoutWindows[panelId]) {
+                try {
+                    window.popoutWindows[panelId].close();
+                } catch (e) {
+                    // Window already closed
+                }
+                delete window.popoutWindows[panelId];
+            }
         }
         
         // Widget reordering with drag and drop

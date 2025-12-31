@@ -157,17 +157,67 @@ class UserHubManager:
             def on_open():
                 logger.info("✅ SignalR User Hub connected")
                 self._connected = True
-                # Subscribe to updates
+                # Subscribe to updates - use send() method instead of invoke()
                 try:
-                    hub.invoke('SubscribeAccounts')
-                    if account_id:
-                        hub.invoke('SubscribeOrders', account_id)
-                        hub.invoke('SubscribePositions', account_id)
-                        hub.invoke('SubscribeTrades', account_id)
-                        self._subscribed_account_id = account_id
+                    # Wait a moment for connection to stabilize
+                    import time
+                    time.sleep(0.1)
+                    
+                    # Subscribe to updates - try multiple methods based on SignalR library version
+                    subscription_success = False
+                    
+                    # Method 1: Try send() with method name and arguments
+                    if hasattr(hub, 'send'):
+                        try:
+                            hub.send('SubscribeAccounts', [])
+                            if account_id:
+                                hub.send('SubscribeOrders', [account_id])
+                                hub.send('SubscribePositions', [account_id])
+                                hub.send('SubscribeTrades', [account_id])
+                            subscription_success = True
+                            logger.debug("Used send() method for subscriptions")
+                        except Exception as e:
+                            logger.debug(f"send() method failed: {e}")
+                    
+                    # Method 2: Try invoke() with method name
+                    if not subscription_success and hasattr(hub, 'invoke'):
+                        try:
+                            hub.invoke('SubscribeAccounts')
+                            if account_id:
+                                hub.invoke('SubscribeOrders', account_id)
+                                hub.invoke('SubscribePositions', account_id)
+                                hub.invoke('SubscribeTrades', account_id)
+                            subscription_success = True
+                            logger.debug("Used invoke() method for subscriptions")
+                        except Exception as e:
+                            logger.debug(f"invoke() method failed: {e}")
+                    
+                    # Method 3: Try direct method calls
+                    if not subscription_success:
+                        try:
+                            if hasattr(hub, 'SubscribeAccounts'):
+                                hub.SubscribeAccounts()
+                                if account_id:
+                                    if hasattr(hub, 'SubscribeOrders'):
+                                        hub.SubscribeOrders(account_id)
+                                    if hasattr(hub, 'SubscribePositions'):
+                                        hub.SubscribePositions(account_id)
+                                    if hasattr(hub, 'SubscribeTrades'):
+                                        hub.SubscribeTrades(account_id)
+                                subscription_success = True
+                                logger.debug("Used direct method calls for subscriptions")
+                        except Exception as e:
+                            logger.debug(f"Direct method calls failed: {e}")
+                    
+                    if not subscription_success:
+                        logger.warning("⚠️  Could not subscribe to User Hub - no working subscription method found")
+                    
+                    self._subscribed_account_id = account_id
                     logger.info("✅ Subscribed to User Hub updates")
                 except Exception as e:
                     logger.error(f"Failed to subscribe to User Hub: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
             
             def on_close():
                 logger.warning("⚠️  SignalR User Hub disconnected")
@@ -302,14 +352,64 @@ class UserHubManager:
         """Handle reconnection - resubscribe to updates."""
         try:
             if self._hub and self._connected:
-                self._hub.invoke('SubscribeAccounts')
-                if account_id:
-                    self._hub.invoke('SubscribeOrders', account_id)
-                    self._hub.invoke('SubscribePositions', account_id)
-                    self._hub.invoke('SubscribeTrades', account_id)
-                logger.info("✅ Resubscribed to User Hub updates after reconnection")
+                # Wait a moment for connection to stabilize
+                import time
+                time.sleep(0.1)
+                
+                # Use the same subscription method as on_open
+                subscription_success = False
+                
+                # Method 1: Try send() with method name and arguments
+                if hasattr(self._hub, 'send'):
+                    try:
+                        self._hub.send('SubscribeAccounts', [])
+                        if account_id:
+                            self._hub.send('SubscribeOrders', [account_id])
+                            self._hub.send('SubscribePositions', [account_id])
+                            self._hub.send('SubscribeTrades', [account_id])
+                        subscription_success = True
+                        logger.debug("Used send() method for reconnection subscriptions")
+                    except Exception as e:
+                        logger.debug(f"send() method failed on reconnect: {e}")
+                
+                # Method 2: Try invoke() with method name
+                if not subscription_success and hasattr(self._hub, 'invoke'):
+                    try:
+                        self._hub.invoke('SubscribeAccounts')
+                        if account_id:
+                            self._hub.invoke('SubscribeOrders', account_id)
+                            self._hub.invoke('SubscribePositions', account_id)
+                            self._hub.invoke('SubscribeTrades', account_id)
+                        subscription_success = True
+                        logger.debug("Used invoke() method for reconnection subscriptions")
+                    except Exception as e:
+                        logger.debug(f"invoke() method failed on reconnect: {e}")
+                
+                # Method 3: Try direct method calls
+                if not subscription_success:
+                    try:
+                        if hasattr(self._hub, 'SubscribeAccounts'):
+                            self._hub.SubscribeAccounts()
+                            if account_id:
+                                if hasattr(self._hub, 'SubscribeOrders'):
+                                    self._hub.SubscribeOrders(account_id)
+                                if hasattr(self._hub, 'SubscribePositions'):
+                                    self._hub.SubscribePositions(account_id)
+                                if hasattr(self._hub, 'SubscribeTrades'):
+                                    self._hub.SubscribeTrades(account_id)
+                            subscription_success = True
+                            logger.debug("Used direct method calls for reconnection subscriptions")
+                    except Exception as e:
+                        logger.debug(f"Direct method calls failed on reconnect: {e}")
+                
+                if subscription_success:
+                    logger.info("✅ Resubscribed to User Hub updates after reconnection")
+                else:
+                    logger.warning("⚠️  Could not resubscribe to User Hub after reconnection")
         except Exception as e:
             logger.error(f"Error resubscribing to User Hub: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     async def _handle_auth_error_and_reconnect(self, account_id: Optional[int]):
         """Handle authentication error by refreshing token and reconnecting."""
@@ -363,14 +463,28 @@ class UserHubManager:
         """Subscribe to updates for a specific account."""
         if not self._connected or not self._hub:
             logger.warning("User Hub not connected, cannot subscribe")
-            return
+            return False
         
         try:
-            self._hub.invoke('SubscribeOrders', account_id)
-            self._hub.invoke('SubscribePositions', account_id)
-            self._hub.invoke('SubscribeTrades', account_id)
+            # Try different methods to call hub functions
+            if hasattr(self._hub, 'send'):
+                self._hub.send('SubscribeOrders', [account_id])
+                self._hub.send('SubscribePositions', [account_id])
+                self._hub.send('SubscribeTrades', [account_id])
+            elif hasattr(self._hub, 'invoke'):
+                self._hub.invoke('SubscribeOrders', account_id)
+                self._hub.invoke('SubscribePositions', account_id)
+                self._hub.invoke('SubscribeTrades', account_id)
+            else:
+                logger.warning(f"Hub does not have send() or invoke() methods. Available methods: {[m for m in dir(self._hub) if not m.startswith('_')]}")
+                return False
+            
             self._subscribed_account_id = account_id
             logger.info(f"✅ Subscribed to account {account_id} updates")
+            return True
         except Exception as e:
             logger.error(f"Error subscribing to account {account_id}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return False
 

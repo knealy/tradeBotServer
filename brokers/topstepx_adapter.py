@@ -3700,6 +3700,34 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
                 return OrderResponse(success=False, error="Order rejected: No order ID returned", raw_response=response)
             
+            # Send Discord notification for strategy-initiated orders
+            if strategy_name and order_id and hasattr(self, '_trading_bot') and self._trading_bot:
+                try:
+                    account_name = 'Unknown'
+                    if hasattr(self._trading_bot, 'selected_account') and self._trading_bot.selected_account:
+                        if isinstance(self._trading_bot.selected_account, dict):
+                            account_name = self._trading_bot.selected_account.get('name', 'Unknown')
+                        else:
+                            account_name = str(self._trading_bot.selected_account)
+                    
+                    notification_data = {
+                        'symbol': symbol,
+                        'side': side,
+                        'quantity': quantity,
+                        'price': f"${entry_price:.2f} (Stop Entry)",
+                        'order_type': 'Bracket (Stop Entry)',
+                        'order_id': order_id,
+                        'status': 'Placed',
+                        'account_id': account_id,
+                        'stop_loss': stop_loss_price,
+                        'take_profit': take_profit_price,
+                        'strategy': strategy_name
+                    }
+                    self._trading_bot.discord_notifier.send_order_notification(notification_data, account_name)
+                    logger.info(f"📧 Discord notification sent for strategy order: {strategy_name} - {side} {quantity} {symbol}")
+                except Exception as notif_err:
+                    logger.debug(f"Could not send Discord notification for strategy order: {notif_err}")
+            
             logger.info(f"✅ OCO bracket order placed successfully with ID: {order_id}")
             print(f"✅ Python fallback: OCO bracket order placed successfully with ID: {order_id}")
             

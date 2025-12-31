@@ -373,6 +373,8 @@ class TopStepXTradingBot:
             base_url=self.base_url,
             use_rust=use_rust_flag,
         )
+        # Store reference to trading_bot in adapter for Discord notifications
+        self.broker_adapter._trading_bot = self
         logger.debug("✅ TopStepXAdapter initialized")
         
         # Initialize PositionManager (handles position modifications)
@@ -522,7 +524,7 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.debug(f"Failed processing depth message: {e}")
     
-    def _on_user_hub_account(self, data: Dict):
+    async def _on_user_hub_account(self, data: Dict):
         """Callback for User Hub account updates."""
         try:
             # Calculate PnL from account tracker if available
@@ -542,11 +544,73 @@ class TopStepXTradingBot:
                     
                     # If account state doesn't have PnL, calculate from positions
                     if unrealized_pnl == 0.0:
-                        positions = self.get_open_positions(account_id=account_id_str)
-                        if positions:
-                            for pos in positions:
-                                upnl = pos.get('unrealizedPnL') or pos.get('unrealized_pnl') or 0
-                                unrealized_pnl += float(upnl)
+                        try:
+                            # Use async method if available
+                            import asyncio
+                            try:
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    # Create task for async call
+                                    positions = asyncio.create_task(self.get_open_positions(account_id=account_id_str))
+                                else:
+                                    positions = loop.run_until_complete(self.get_open_positions(account_id=account_id_str))
+                            except RuntimeError:
+                                # No event loop, try sync call
+                                positions = []
+                            
+                            if positions and isinstance(positions, list):
+                                for pos in positions:
+                                    upnl = pos.get('unrealizedPnL') or pos.get('unrealized_pnl') or pos.get('unrealizedPnl') or 0
+                                    if upnl:
+                                        unrealized_pnl += float(upnl)
+                        except Exception as pos_err:
+                            logger.debug(f"Could not fetch positions for PnL: {pos_err}")
+                    
+                    # Also trigger account tracker update to ensure PnL is current
+                    try:
+                        if hasattr(self, 'account_tracker') and self.account_tracker:
+                            # Update unrealized PnL from current positions
+                            positions = []
+                            try:
+                                import asyncio
+                                try:
+                                    loop = asyncio.get_event_loop()
+                                    if loop.is_running():
+                                        positions_task = asyncio.create_task(self.get_open_positions(account_id=account_id_str))
+                                        # Wait a bit for result
+                                        import time
+                                        time.sleep(0.1)
+                                        if positions_task.done():
+                                            positions = positions_task.result()
+                                    else:
+                                        positions = loop.run_until_complete(self.get_open_positions(account_id=account_id_str))
+                                except RuntimeError:
+                                    pass
+                            except:
+                                pass
+                            
+                            if positions:
+                                # Get current prices for positions
+                                current_prices = {}
+                                for pos in positions:
+                                    symbol = pos.get('symbol', '')
+                                    if symbol:
+                                        try:
+                                            quote = self.get_market_quote(symbol)
+                                            if quote and 'error' not in quote:
+                                                current_prices[symbol] = float(quote.get('last') or quote.get('bid') or quote.get('ask') or 0)
+                                        except:
+                                            pass
+                                
+                                if current_prices:
+                                    self.account_tracker.update_unrealised_pnl(account_id_str, positions, current_prices)
+                                    # Re-fetch account state after update
+                                    account_state = self.account_tracker.get_state(account_id=account_id_str)
+                                    if account_state:
+                                        realized_pnl = float(account_state.get('realized_pnl', 0))
+                                        unrealized_pnl = float(account_state.get('unrealized_pnl', 0))
+                    except Exception as update_err:
+                        logger.debug(f"Could not update account tracker PnL: {update_err}")
                 except Exception as e:
                     logger.debug(f"Error calculating PnL for account update: {e}")
                     import traceback
@@ -578,6 +642,16 @@ class TopStepXTradingBot:
     def _on_user_hub_position(self, data: Dict):
         """Callback for User Hub position updates."""
         try:
+            # Update account tracker with position change to refresh PnL
+            account_id_str = str(data.get('accountId', ''))
+            if account_id_str and hasattr(self, 'account_tracker') and self.account_tracker:
+                try:
+                    # Trigger account update to recalculate PnL
+                    # This ensures PnL is refreshed after position changes
+                    self._on_user_hub_account({'id': account_id_str})
+                except Exception as update_err:
+                    logger.debug(f"Could not trigger account update after position change: {update_err}")
+            
             # Broadcast to GUI if available
             try:
                 from gui.chart_html import broadcast_update
