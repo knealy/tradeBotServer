@@ -231,8 +231,12 @@ class ContractManager:
         if not contract_id or '.' not in str(contract_id):
             return None
         
-        parts = str(contract_id).split('.')
+        # Strip any trailing dots first
+        contract_id = str(contract_id).rstrip('.')
+        parts = contract_id.split('.')
         if len(parts) >= 4:
-            return parts[-2].upper()
+            candidate = parts[-2]
+            if candidate:
+                return candidate.upper()
         return None
 

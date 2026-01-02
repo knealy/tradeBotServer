@@ -63,6 +63,42 @@ class StrategyManager:
         self.strategy_classes[name] = strategy_class
         self.available_strategies[name] = strategy_class  # Keep alias in sync
         logger.info(f"📝 Registered strategy: {name}")
+
+    async def broadcast_signal(self, signal_data: Dict[str, Any]) -> None:
+        """
+        Broadcast a strategy signal to:
+        - GUI via `gui.chart_html.broadcast_update` (WebSocket)
+        - Discord via `DiscordNotifier.send_signal_notification`
+
+        Used by StrategyManager loops AND strategies that run their own loop
+        (e.g. `SimpleCandleStrategy.run()`).
+        """
+        # Discord (best-effort)
+        try:
+            if hasattr(self.trading_bot, 'discord_notifier') and self.trading_bot.discord_notifier:
+                account_name = 'Unknown'
+                if getattr(self.trading_bot, 'selected_account', None):
+                    if isinstance(self.trading_bot.selected_account, dict):
+                        account_name = self.trading_bot.selected_account.get('name', 'Unknown')
+                    else:
+                        account_name = str(self.trading_bot.selected_account)
+                self.trading_bot.discord_notifier.send_signal_notification(
+                    signal_type=str(signal_data.get('type', 'SIGNAL')),
+                    symbol=str(signal_data.get('symbol', 'Unknown')),
+                    account_name=account_name,
+                    details=signal_data,
+                )
+        except Exception as e:
+            logger.debug(f"Could not send Discord notification for signal: {e}")
+
+        # GUI via WebSocket (best-effort)
+        try:
+            import gui.chart_html as chart_html_module
+            broadcast_func = getattr(chart_html_module, 'broadcast_update', None)
+            if broadcast_func:
+                await broadcast_func({'type': 'signal', 'data': signal_data})
+        except Exception as e:
+            logger.warning(f"Could not broadcast signal to GUI: {e}")
     
     def load_strategies(self):
         """
@@ -615,6 +651,14 @@ class StrategyManager:
         # Override symbols if provided
         if symbols:
             strategy.config.symbols = symbols
+
+        # Track start time for UI/runtime display (strategies don't set this consistently)
+        try:
+            now = datetime.now(timezone.utc)
+            setattr(strategy, "_start_time", now)
+            setattr(strategy, "start_time", now)
+        except Exception:
+            pass
         
         strategy.status = StrategyStatus.ACTIVE
         self.active_strategies.append(name)
@@ -660,6 +704,13 @@ class StrategyManager:
         strategy.status = StrategyStatus.IDLE
         self.active_strategies.remove(name)
         strategy.config.enabled = False
+
+        # Clear start time for UI
+        try:
+            setattr(strategy, "_start_time", None)
+            setattr(strategy, "start_time", None)
+        except Exception:
+            pass
         
         # Cleanup strategy
         await strategy.cleanup()

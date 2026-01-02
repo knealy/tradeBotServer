@@ -235,6 +235,14 @@ impl QueryExecutor {
         &self,
         account_id: u64,
     ) -> PyResult<Vec<Value>> {
+        // Check cache first (short TTL for open orders)
+        let cache_key = format!("open_orders:{}", account_id);
+        if let Some(cached) = self.cache.get(&cache_key) {
+            if let Some(array) = cached.as_array() {
+                return Ok(array.clone());
+            }
+        }
+
         let token = self.session_token.read()
             .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Failed to acquire session_token lock"
@@ -307,19 +315,17 @@ impl QueryExecutor {
             .cloned()
             .unwrap_or_default();
 
-        // Filter to only open orders (status == 1)
-        let open_orders: Vec<Value> = orders.into_iter()
-            .filter(|o| o.get("status").and_then(|s| s.as_u64()) == Some(1))
-            .collect();
+        // IMPORTANT:
+        // We intentionally do NOT filter by status==1 here.
+        // TopStepX "Open" searches can include related bracket child orders that are "SuspENDED"
+        // until the parent triggers. Filtering would drop those children and prevent the UI
+        // from showing bracket relationships like the TopStepX platform.
 
-        // Cache the result
-        if !open_orders.is_empty() {
-            let open_orders_value = Value::Array(open_orders.clone());
-            let cache_key = format!("open_orders:{}", account_id);
-            self.cache.set(cache_key, open_orders_value, ttl::OPEN_ORDERS);
-        }
+        // Cache the result (including empty arrays) to prevent poll storms when there are 0 orders.
+        let orders_value = Value::Array(orders.clone());
+        self.cache.set(cache_key, orders_value, ttl::OPEN_ORDERS);
 
-        Ok(open_orders)
+        Ok(orders)
     }
 
     async fn get_order_history_async(
@@ -475,11 +481,9 @@ impl QueryExecutor {
             .cloned()
             .unwrap_or_default();
 
-        // Cache the result
-        if !positions.is_empty() {
-            let positions_value = Value::Array(positions.clone());
-            self.cache.set(cache_key, positions_value, ttl::POSITIONS);
-        }
+        // Cache the result (including empty arrays) to prevent poll storms when there are 0 positions.
+        let positions_value = Value::Array(positions.clone());
+        self.cache.set(cache_key, positions_value, ttl::POSITIONS);
 
         Ok(positions)
     }

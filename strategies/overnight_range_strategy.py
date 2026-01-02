@@ -203,31 +203,51 @@ class OvernightRangeStrategy(BaseStrategy):
         return [sym.strip().upper() for sym in candidates if sym and sym.strip()]
     
     async def _execute_market_open_sequence(self, symbols: Optional[List[str]] = None) -> None:
-        """Execute the range break strategy for the configured symbols."""
+        """
+        Execute the range break strategy for the configured symbols.
+        
+        In CONTINUOUS mode: Only recalculates ranges and breakout levels.
+        The monitor_breakout_levels() task handles actual order placement when price approaches.
+        """
         trade_symbols = self._get_trade_symbols(symbols)
 
         if not trade_symbols:
             logger.warning("⚠️  No symbols configured for overnight range strategy - skipping execution")
             return
 
-        logger.info(f"🔔 Executing overnight range break strategy for symbols: {', '.join(trade_symbols)}")
+        logger.info(f"🔔 Recalculating overnight ranges and breakout levels for: {', '.join(trade_symbols)}")
 
         for symbol in trade_symbols:
             logger.info(f"📊 Processing {symbol}...")
 
             try:
-                await self.track_overnight_range(symbol)
-                result = await self.place_range_break_orders(symbol)
-
-                if result.get('success'):
-                    logger.info(f"✅ Successfully placed orders for {symbol}")
+                # Track overnight range
+                range_data = await self.track_overnight_range(symbol)
+                if not range_data:
+                    logger.warning(f"⚠️  Could not track overnight range for {symbol}")
+                    continue
+                
+                # Calculate breakout orders
+                long_order, short_order = await self.calculate_range_break_orders(symbol)
+                if long_order and short_order:
+                    # Update breakout levels for monitoring
+                    self.breakout_levels[symbol] = {
+                        "BUY": long_order,
+                        "SELL": short_order,
+                    }
+                    self.breakout_active_orders.setdefault(symbol, {})
+                    logger.info(f"✅ Updated breakout levels for {symbol}")
+                    logger.info(f"   LONG: Entry={long_order.entry_price:.2f}, SL={long_order.stop_loss:.2f}, TP={long_order.take_profit:.2f}")
+                    logger.info(f"   SHORT: Entry={short_order.entry_price:.2f}, SL={short_order.stop_loss:.2f}, TP={short_order.take_profit:.2f}")
                 else:
-                    logger.error(f"❌ Failed to place orders for {symbol}: {result.get('error')}")
+                    logger.error(f"❌ Failed to calculate orders for {symbol}")
 
             except Exception as exc:
-                logger.error(f"❌ Error executing overnight range for {symbol}: {exc}")
+                logger.error(f"❌ Error processing {symbol}: {exc}")
 
             await asyncio.sleep(1)  # Small delay between symbols
+        
+        logger.info("✅ Range recalculation complete. Monitor will place orders when price approaches levels.")
     
     async def get_tick_size(self, symbol: str) -> float:
         """
@@ -823,10 +843,14 @@ class OvernightRangeStrategy(BaseStrategy):
                 # ATR zone is inside range - use ATR * 2 or ATR * 3 instead
                 logger.info(f"  Upper ATR zone inside overnight range - using ATR*2 for TP")
                 long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
-            else:
-                # ATR zone is outside range - TARGET THE ZONE ITSELF (lower bound of upper zone)
-                logger.info(f"  Upper ATR zone outside overnight range - targeting zone at {atr_data.day_bull_price:.2f}")
+            elif atr_data.day_bull_price > range_data.high:
+                # ATR zone is ABOVE range - TARGET THE ZONE ITSELF (lower bound of upper zone)
+                logger.info(f"  Upper ATR zone above overnight range - targeting zone at {atr_data.day_bull_price:.2f}")
                 long_tp_raw = atr_data.day_bull_price  # Target the lower bound of upper zone
+            else:
+                # ATR zone is BELOW range - use ATR * 2 from entry
+                logger.info(f"  Upper ATR zone below overnight range - using ATR*2 for TP")
+                long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
             
             # Round to valid tick sizes
             long_entry = self.round_to_tick(long_entry_raw, tick_size)
@@ -853,11 +877,15 @@ class OvernightRangeStrategy(BaseStrategy):
                 # ATR zone is inside range - use ATR * 2 or ATR * 3 instead
                 logger.info(f"  Lower ATR zone inside overnight range - using ATR*2 for TP")
                 short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
-            else:
-                # ATR zone is outside range - TARGET THE LOWER BOUND of the zone (day_bear_price1)
+            elif atr_data.day_bear_price1 < range_data.low:
+                # ATR zone is BELOW range - TARGET THE LOWER BOUND of the zone (day_bear_price1)
                 # For SHORT orders, TP must be BELOW entry, so we use the lower bound of the lower zone
-                logger.info(f"  Lower ATR zone outside overnight range - targeting lower bound at {atr_data.day_bear_price1:.2f}")
+                logger.info(f"  Lower ATR zone below overnight range - targeting lower bound at {atr_data.day_bear_price1:.2f}")
                 short_tp_raw = atr_data.day_bear_price1  # Target the lower bound of lower zone (below entry)
+            else:
+                # ATR zone is ABOVE range - use ATR * 2 from entry
+                logger.info(f"  Lower ATR zone above overnight range - using ATR*2 for TP")
+                short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
             
             # Round to valid tick sizes
             short_entry = self.round_to_tick(short_entry_raw, tick_size)
@@ -1203,6 +1231,27 @@ class OvernightRangeStrategy(BaseStrategy):
         """Place a single breakout stop order (used by proactive monitor)."""
         symbol = order_template.symbol.upper()
         logger.info(f"📌 Placing {order_template.side} breakout order for {symbol} at {order_template.entry_price:.2f}")
+        
+        # Validate entry price against current market price
+        try:
+            quote = await self.trading_bot.get_market_quote(symbol)
+            current_price = self._extract_quote_price(quote)
+            
+            if current_price is not None:
+                # For BUY (LONG) stop orders: entry must be above current price
+                # For SELL (SHORT) stop orders: entry must be below current price
+                if order_template.side == "BUY" and order_template.entry_price < current_price:
+                    logger.warning(f"⚠️  LONG entry {order_template.entry_price:.2f} is below current price {current_price:.2f}, skipping stale order")
+                    return None
+                elif order_template.side == "SELL" and order_template.entry_price > current_price:
+                    logger.warning(f"⚠️  SHORT entry {order_template.entry_price:.2f} is above current price {current_price:.2f}, skipping stale order")
+                    return None
+                
+                logger.debug(f"✓ Entry price {order_template.entry_price:.2f} is valid vs current {current_price:.2f}")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not validate entry price against market: {e}")
+            # Continue anyway - let the API reject if invalid
+        
         account_id = None
         if self.trading_bot.selected_account:
             if isinstance(self.trading_bot.selected_account, dict):
@@ -1355,6 +1404,11 @@ class OvernightRangeStrategy(BaseStrategy):
                     # Find matching position
                     position_found = False
                     for pos in positions:
+                        # Safety check: ensure pos is a dict, not a string
+                        if not isinstance(pos, dict):
+                            logger.warning(f"⚠️  Skipping non-dict position: {type(pos)} - {pos}")
+                            continue
+                        
                         pos_symbol = pos.get('symbol', '').upper()
                         pos_side = "LONG" if pos.get('net_quantity', 0) > 0 else "SHORT" if pos.get('net_quantity', 0) < 0 else None
                         
@@ -1668,6 +1722,35 @@ class OvernightRangeStrategy(BaseStrategy):
         self._last_market_open_run = None
         self.is_trading = True
         
+        # Get symbols to trade
+        trade_symbols = self._get_trade_symbols(symbols)
+        
+        # 🔥 NEW: Immediately track overnight ranges and calculate breakout levels
+        # This allows the strategy to work at ANY time of day, not just at market open
+        logger.info("📊 Calculating overnight ranges and breakout levels...")
+        for symbol in trade_symbols:
+            try:
+                # Track overnight range
+                range_data = await self.track_overnight_range(symbol)
+                if not range_data:
+                    logger.warning(f"⚠️  Could not track overnight range for {symbol}")
+                    continue
+                
+                # Calculate breakout orders
+                long_order, short_order = await self.calculate_range_break_orders(symbol)
+                if long_order and short_order:
+                    # Store breakout levels for monitoring
+                    self.breakout_levels[symbol] = {
+                        "BUY": long_order,
+                        "SELL": short_order,
+                    }
+                    self.breakout_active_orders.setdefault(symbol, {})
+                    logger.info(f"✅ Breakout levels calculated for {symbol}: LONG@{long_order.entry_price:.2f}, SHORT@{short_order.entry_price:.2f}")
+                else:
+                    logger.warning(f"⚠️  Could not calculate breakout orders for {symbol}")
+            except Exception as e:
+                logger.error(f"❌ Error setting up {symbol}: {e}")
+        
         # Start background tasks
         self._tracking_task = asyncio.create_task(self.market_open_scanner())
         self._breakeven_task = asyncio.create_task(self.monitor_breakeven_stops())
@@ -1676,9 +1759,11 @@ class OvernightRangeStrategy(BaseStrategy):
             self._breakout_monitor_task = asyncio.create_task(self.monitor_breakout_levels())
 
         logger.info("🚀 Overnight Range Strategy started!")
-        logger.info(f"   Symbols: {symbols or os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES')}")
+        logger.info(f"   Symbols: {', '.join(trade_symbols)}")
         logger.info(f"   Overnight: {self.overnight_start} - {self.overnight_end} {self.timezone}")
-        logger.info(f"   Market Open: {self.market_open_time} {self.timezone}")
+        logger.info(f"   Mode: CONTINUOUS (monitors price and places orders when within threshold)")
+        logger.info(f"   Breakout Threshold: {self.breakout_proximity_percent}% (min {self.breakout_min_proximity_points} pts)")
+        logger.info(f"   Monitor Interval: {self.breakout_monitor_interval}s")
     
     async def stop(self):
         """Stop the overnight range strategy."""

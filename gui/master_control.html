@@ -597,6 +597,56 @@
         /* Loading states */
         .loading { opacity: 0.5; pointer-events: none; }
         .error { color: #f44336; font-size: 11px; }
+        
+        /* Strategy Details */
+        .strategy-details {
+            margin-top: 12px;
+            padding: 12px;
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-size: 11px;
+            line-height: 1.6;
+        }
+        
+        .strategy-detail-section {
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #222;
+        }
+        
+        .strategy-detail-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        
+        .strategy-detail-section strong {
+            color: #4caf50;
+            display: block;
+            margin-bottom: 6px;
+        }
+        
+        .btn-info {
+            background: #2196f3;
+            border: none;
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.2s;
+        }
+        
+        .btn-info:hover {
+            background: #1976d2;
+        }
+        
+        .btn-info:disabled {
+            background: #444;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
     </style>
 </head>
 <body>
@@ -781,6 +831,9 @@
                 <option value="">Loading...</option>
             </select>
     </div>
+
+    <!-- Non-blocking toast notifications (replaces alert/confirm popups) -->
+    <div id="toast-container" style="position: fixed; right: 12px; bottom: 12px; z-index: 20000; display: flex; flex-direction: column; gap: 8px; pointer-events: none;"></div>
                     <div class="status-item">
                         <div class="status-label">Balance</div>
             <div class="status-value" id="balance">$--</div>
@@ -869,8 +922,8 @@
                     <input type="checkbox" id="enable-bracket" onchange="updateBracket()">
                         <span>Bracket</span>
                     </label>
-                <input type="number" id="order-sl-ticks" placeholder="SL Ticks" style="width: 80px; display: none;">
-                <input type="number" id="order-tp-ticks" placeholder="TP Ticks" style="width: 80px; display: none;">
+                <input type="number" id="order-sl-ticks" step="0.25" placeholder="SL Price" style="width: 90px; display: none;">
+                <input type="number" id="order-tp-ticks" step="0.25" placeholder="TP Price" style="width: 90px; display: none;">
                 <button class="btn-buy" onclick="placeOrder('BUY')">BUY</button>
                 <button class="btn-sell" onclick="placeOrder('SELL')">SELL</button>
                 </div>
@@ -892,19 +945,20 @@
             </h2>
             <div class="panel-content">
             <table>
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Qty</th>
-                                <th>Entry</th>
-                                <th>P&L</th>
-                            </tr>
-                        </thead>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Qty</th>
+                        <th>Entry</th>
+                        <th>P&L</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
                 <tbody id="positions-body">
-                    <tr><td colspan="5" class="empty-state">No positions</td></tr>
+                    <tr><td colspan="6" class="empty-state">No positions</td></tr>
                 </tbody>
-                    </table>
+            </table>
             </div> <!-- End panel-content -->
                 </div>
                 
@@ -927,12 +981,13 @@
                                 <th>Qty</th>
                                 <th>Price</th>
                                 <th>Type</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                 <tbody id="orders-body">
-                    <tr><td colspan="5" class="empty-state">No orders</td></tr>
+                    <tr><td colspan="6" class="empty-state">No orders</td></tr>
                 </tbody>
-                    </table>
+            </table>
             </div> <!-- End panel-content -->
                 </div>
         
@@ -1042,14 +1097,16 @@
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
-                <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
-                    <span style="font-size: 11px; color: #888;">Filter:</span>
-                    <select id="log-level-filter" style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px;">
+                <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
+                    <span style="font-size: 11px; color: #888;">Level:</span>
+                    <select id="log-level-filter" onchange="applyLogFilters()" style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px;">
                         <option value="all">All</option>
                         <option value="INFO">INFO</option>
                         <option value="WARNING">WARNING</option>
                         <option value="ERROR">ERROR</option>
                     </select>
+                    <span style="font-size: 11px; color: #888;">Search:</span>
+                    <input type="text" id="log-search-filter" oninput="applyLogFilters()" placeholder="Filter text..." style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px; width: 150px;">
                     <button onclick="clearLogs()" style="background: #444; border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Clear</button>
                     <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; margin-left: auto;">
                         <input type="checkbox" id="auto-scroll-logs" checked>
@@ -1264,7 +1321,7 @@
                     break;
                 case 'orders':
                     if (data && data.orders) {
-                        updateOrdersDisplay(data.orders);
+                        updateOrdersDisplay(data);
                     }
                     break;
                 case 'strategies':
@@ -1291,47 +1348,81 @@
             }
         }
         
+        // Store all logs in memory for filtering
+        let allLogs = [];
+        
         function appendLog(logData) {
+            // Add to stored logs array
+            allLogs.push(logData);
+            
+            // Limit stored logs to 500 entries
+            if (allLogs.length > 500) {
+                allLogs.shift();
+            }
+            
+            // Apply filters and re-render
+            applyLogFilters();
+        }
+        
+        function applyLogFilters() {
             const container = document.getElementById('logs-container');
             const levelFilter = document.getElementById('log-level-filter')?.value || 'all';
+            const searchFilter = document.getElementById('log-search-filter')?.value.toLowerCase() || '';
             const autoScroll = document.getElementById('auto-scroll-logs')?.checked;
             
-            // Filter by log level
-            if (levelFilter !== 'all' && logData.level !== levelFilter) {
+            // If no logs yet, show connecting message
+            if (allLogs.length === 0) {
+                container.innerHTML = '<div style="color: #888;">Connecting to log stream...</div>';
                 return;
             }
             
-            // Clear initial message if it exists
-            if (container.textContent.includes('Connecting to log stream')) {
-                container.innerHTML = '';
+            // Filter logs
+            const filteredLogs = allLogs.filter(logData => {
+                // Level filter
+                if (levelFilter !== 'all' && logData.level !== levelFilter) {
+                    return false;
+                }
+                
+                // Search filter (search in message only)
+                if (searchFilter && !logData.message?.toLowerCase().includes(searchFilter)) {
+                    return false;
+                }
+                
+                return true;
+            });
+            
+            // Clear container
+            container.innerHTML = '';
+            
+            // Render filtered logs
+            filteredLogs.forEach(logData => {
+                const logEntry = document.createElement('div');
+                logEntry.style.marginBottom = '4px';
+                logEntry.style.lineHeight = '1.5';
+                
+                // Color code by level
+                let color = '#d1d5db'; // Default (INFO)
+                if (logData.level === 'WARNING') color = '#ff9800';
+                if (logData.level === 'ERROR') color = '#f44336';
+                
+                logEntry.innerHTML = `<span style="color: #666;">${logData.timestamp || ''}</span> <span style="color: ${color}; font-weight: bold;">${logData.level || 'INFO'}</span> <span style="color: ${color};">${logData.message || ''}</span>`;
+                
+                container.appendChild(logEntry);
+            });
+            
+            // Show message if no logs match filter
+            if (filteredLogs.length === 0) {
+                container.innerHTML = '<div style="color: #888;">No logs match the current filter</div>';
             }
-            
-            // Create log entry
-            const logEntry = document.createElement('div');
-            logEntry.style.marginBottom = '4px';
-            logEntry.style.lineHeight = '1.5';
-            
-            // Color code by level
-            let color = '#d1d5db'; // Default (INFO)
-            if (logData.level === 'WARNING') color = '#ff9800';
-            if (logData.level === 'ERROR') color = '#f44336';
-            
-            logEntry.innerHTML = `<span style="color: #666;">${logData.timestamp || ''}</span> <span style="color: ${color}; font-weight: bold;">${logData.level || 'INFO'}</span> <span style="color: ${color};">${logData.message || ''}</span>`;
-            
-            container.appendChild(logEntry);
             
             // Auto-scroll to bottom
             if (autoScroll) {
                 container.scrollTop = container.scrollHeight;
             }
-            
-            // Limit logs to 500 entries
-            while (container.children.length > 500) {
-                container.removeChild(container.firstChild);
-            }
         }
         
         function clearLogs() {
+            allLogs = [];
             const container = document.getElementById('logs-container');
             container.innerHTML = '<div style="color: #888;">Logs cleared</div>';
         }
@@ -1381,6 +1472,31 @@
             while (container.children.length > 20) {
                 container.removeChild(container.lastChild);
             }
+        }
+
+        // Non-blocking UI notifications (no alert/confirm)
+        function showToast(message, type = 'info', timeoutMs = 3500) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+            const bg =
+                type === 'success' ? '#0f3d2e' :
+                type === 'error' ? '#3d0f0f' :
+                type === 'warn' ? '#3d2f0f' :
+                '#111827';
+            const border =
+                type === 'success' ? '#22c55e' :
+                type === 'error' ? '#ef4444' :
+                type === 'warn' ? '#f59e0b' :
+                '#3b82f6';
+            toast.style.cssText = `pointer-events:none; background:${bg}; border:1px solid ${border}; color:#e5e7eb; padding:10px 12px; border-radius:8px; min-width:260px; max-width:420px; box-shadow:0 10px 25px rgba(0,0,0,.35); font-size:12px; line-height:1.25;`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 250ms ease';
+                setTimeout(() => toast.remove(), 260);
+            }, timeoutMs);
         }
         
         // Command Input
@@ -1502,13 +1618,14 @@
             
             const tbody = document.getElementById('positions-body');
             if (positions.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No positions</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No positions</td></tr>';
             } else {
                 tbody.innerHTML = positions.map(pos => {
                 // Handle both camelCase and snake_case field names
                 const pnl = pos.unrealizedPnL || pos.unrealized_pnl || pos.unrealizedPnl || 0;
                 const entryPrice = pos.entryPrice || pos.entry_price || 0;
                 const quantity = pos.quantity || pos.size || 0;
+                const posId = pos.id || pos.positionId || pos.position_id;
                 return `
                     <tr>
                         <td>${pos.symbol || 'N/A'}</td>
@@ -1516,6 +1633,13 @@
                         <td>${quantity}</td>
                         <td>$${entryPrice.toFixed(2)}</td>
                         <td class="${pnl >= 0 ? 'positive' : 'negative'}">$${pnl.toFixed(2)}</td>
+                        <td style="white-space: nowrap;">
+                            <button onclick="closePosition('${posId}', '${pos.symbol}')" 
+                                    style="background: #f44336; border: none; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; cursor: pointer; margin-right: 2px;"
+                                    title="Close position">
+                                ✕ Close
+                            </button>
+                        </td>
                     </tr>
                 `;
             }).join('');
@@ -1527,30 +1651,182 @@
             }
         }
         
-        function updateOrdersDisplay(orders) {
+        function updateOrdersDisplay(data) {
+            // Handle both old format (array) and new format (object with orders/groups)
+            const orders = Array.isArray(data) ? data : (data.orders || []);
+            const groups = data.groups || [];
+            
             document.getElementById('order-count').textContent = orders.length;
             document.getElementById('ord-count').textContent = orders.length;
             
             const tbody = document.getElementById('orders-body');
             if (orders.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No orders</td></tr>';
+                return;
+            }
+            
+            // If we have groups, render with bracket hierarchy
+            if (groups && groups.length > 0) {
+                let html = '';
+                
+                // Track which orders are in groups
+                const groupedOrderIds = new Set();
+                
+                // Render grouped orders (with brackets)
+                groups.forEach(group => {
+                    const parent = group.parent;
+                    if (!parent) return;
+                    
+                    const isPosition = group.type === 'position';
+                    const parentId = parent.id || parent.orderId || parent.order_id;
+                    groupedOrderIds.add(String(parentId));
+                    
+                    // Mark children as grouped too
+                    (group.children || []).forEach(child => {
+                        const childOrderId = child.id || child.orderId || child.order_id;
+                        groupedOrderIds.add(String(childOrderId));
+                    });
+                    
+                    // Render parent (either order or position)
+                    const parentPrice = parent.price || parent.limitPrice || parent.limit_price || 
+                                       parent.stopPrice || parent.stop_price || 0;
+                    const parentStatus = parent.status || 'OPEN';
+                    const parentStatusColor = parentStatus === 'OPEN' ? '#4caf50' : '#888';
+                    
+                    // For positions, show in a different style
+                    if (isPosition) {
+                        html += `
+                            <tr style="border-left: 3px solid #2196f3; background: #0d1117;">
+                                <td><strong style="color: #2196f3;">📍 ${parent.symbol || 'N/A'}</strong></td>
+                                <td>${parent.side || 'N/A'}</td>
+                                <td>${parent.quantity || 0}</td>
+                                <td>$${parentPrice ? parseFloat(parentPrice).toFixed(2) : '0.00'}</td>
+                                <td><strong style="color: #2196f3;">POSITION</strong></td>
+                                <td style="white-space: nowrap;">
+                                    <span style="color: #2196f3; font-size: 9px; font-weight: bold;">[${parentStatus}]</span>
+                                    <span style="color: #666; font-size: 9px; margin-left: 4px;">w/ brackets</span>
+                                </td>
+                            </tr>
+                        `;
+                    } else {
+                        html += `
+                            <tr style="border-left: 3px solid ${parentStatusColor};">
+                                <td><strong>${parent.symbol || 'N/A'}</strong></td>
+                                <td>${parent.side || 'N/A'}</td>
+                                <td>${parent.quantity || 0}</td>
+                                <td>$${parentPrice ? parseFloat(parentPrice).toFixed(2) : '0.00'}</td>
+                                <td><strong>${parent.type || 'N/A'}</strong></td>
+                                <td style="white-space: nowrap;">
+                                    <span style="color: ${parentStatusColor}; font-size: 9px; font-weight: bold;">[${parentStatus}]</span>
+                                    <button onclick="cancelOrder('${parentId}', '${parent.symbol}')" 
+                                            style="background: #ff9800; border: none; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 9px; cursor: pointer; margin-left: 4px;"
+                                            title="Cancel parent order">
+                                        ✕
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    }
+                    
+                    // Render child orders (brackets)
+                    (group.children || []).forEach((child, idx) => {
+                        const childPrice = child.price || child.limitPrice || child.limit_price || 
+                                          child.stopPrice || child.stop_price || 0;
+                        const childOrderId = child.id || child.orderId || child.order_id;
+                        const childStatus = child.status || 'SUSPENDED';
+                        const childStatusColor = childStatus === 'SUSPENDED' ? '#666' : 
+                                                childStatus === 'FILLED' ? '#2196f3' : '#888';
+                        
+                        // Determine if this is SL or TP based on side and type
+                        let bracketType = '';
+                        if (child.type === 'STOP' || child.type === 'STOP MARKET') {
+                            bracketType = 'SL';
+                        } else if (child.type === 'LIMIT') {
+                            bracketType = 'TP';
+                        }
+                        
+                        const isLast = idx === (group.children || []).length - 1;
+                        const connector = isLast ? '└─' : '├─';
+                        
+                        html += `
+                            <tr style="background: #1a1a1a; border-left: 3px solid ${childStatusColor};">
+                                <td style="padding-left: 24px; color: #aaa;">
+                                    <span style="color: #666;">${connector}</span> ${child.symbol || 'N/A'}
+                                </td>
+                                <td style="color: #aaa;">${child.side || 'N/A'}</td>
+                                <td style="color: #aaa;">${child.quantity || 0}</td>
+                                <td style="color: #aaa;">$${childPrice ? parseFloat(childPrice).toFixed(2) : '0.00'}</td>
+                                <td style="color: #aaa; font-size: 10px;">
+                                    ${child.type || 'N/A'}${bracketType ? ` (${bracketType})` : ''}
+                                </td>
+                                <td style="white-space: nowrap;">
+                                    <span style="color: ${childStatusColor}; font-size: 9px; font-weight: bold;">[${childStatus}]</span>
+                                    <button onclick="cancelOrder('${childOrderId}', '${child.symbol}')" 
+                                            style="background: #555; border: none; color: #aaa; padding: 2px 6px; border-radius: 3px; font-size: 9px; cursor: pointer; margin-left: 4px;"
+                                            title="Cancel bracket order">
+                                        ✕
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                });
+                
+                // Render standalone orders (not in any group)
+                orders.forEach(order => {
+                    const orderId = String(order.id || order.orderId || order.order_id || '');
+                    if (groupedOrderIds.has(orderId)) return; // Skip if already rendered in a group
+                    
+                    const price = order.price || order.limitPrice || order.limit_price || 
+                                 order.stopPrice || order.stop_price || 0;
+                    const status = order.status || 'OPEN';
+                    const statusColor = status === 'OPEN' ? '#4caf50' : '#888';
+                    
+                    html += `
+                        <tr style="border-left: 3px solid ${statusColor};">
+                            <td>${order.symbol || 'N/A'}</td>
+                            <td>${order.side || 'N/A'}</td>
+                            <td>${order.quantity || 0}</td>
+                            <td>$${price ? parseFloat(price).toFixed(2) : '0.00'}</td>
+                            <td>${order.type || 'N/A'}</td>
+                            <td style="white-space: nowrap;">
+                                <span style="color: ${statusColor}; font-size: 9px; font-weight: bold;">[${status}]</span>
+                                <button onclick="cancelOrder('${orderId}', '${order.symbol}')" 
+                                        style="background: #ff9800; border: none; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 9px; cursor: pointer; margin-left: 4px;"
+                                        title="Cancel order">
+                                    ✕
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                tbody.innerHTML = html;
             } else {
-            tbody.innerHTML = orders.map(order => {
-                // Get price from multiple possible fields (price, limitPrice, stopPrice, etc.)
-                const price = order.price || order.limitPrice || order.limit_price || 
-                             order.stopPrice || order.stop_price || 
-                             order.triggerPrice || order.trigger_price || 0;
-                return `
-                <tr>
-                    <td>${order.symbol || 'N/A'}</td>
-                    <td>${order.side || 'N/A'}</td>
-                    <td>${order.quantity || 0}</td>
-                    <td>$${price ? parseFloat(price).toFixed(2) : '0.00'}</td>
-                    <td>${order.type || 'N/A'}</td>
-                </tr>
-                `;
-            }).join('');
-        }
+                // Fallback: render flat list (no bracket grouping)
+                tbody.innerHTML = orders.map(order => {
+                    const price = order.price || order.limitPrice || order.limit_price || 
+                                 order.stopPrice || order.stop_price || 
+                                 order.triggerPrice || order.trigger_price || 0;
+                    const orderId = order.id || order.orderId || order.order_id;
+                    return `
+                    <tr>
+                        <td>${order.symbol || 'N/A'}</td>
+                        <td>${order.side || 'N/A'}</td>
+                        <td>${order.quantity || 0}</td>
+                        <td>$${price ? parseFloat(price).toFixed(2) : '0.00'}</td>
+                        <td>${order.type || 'N/A'}</td>
+                        <td style="white-space: nowrap;">
+                            <button onclick="cancelOrder('${orderId}', '${order.symbol}')" 
+                                    style="background: #ff9800; border: none; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; cursor: pointer; margin-right: 2px;"
+                                    title="Cancel order">
+                                ✕ Cancel
+                            </button>
+                        </td>
+                    </tr>
+                    `;
+                }).join('');
+            }
         
             // Update order lines on chart
             if (typeof updateOrderLines === 'function') {
@@ -1567,13 +1843,30 @@
                 grid.innerHTML = '<div class="empty-state">No strategies available</div>';
             } else {
                 grid.innerHTML = strategies.map(strategy => {
-                    const isActive = active.includes(strategy.name);
+                    const isActive = strategy.active === true || active.includes(strategy.name);
+                    // Runtime (prefer server-provided string)
+                    let runtimeLine = '';
+                    if (isActive && strategy.runtime_str) {
+                        runtimeLine = `<br><span style="font-size: 9px; color: #888;">Runtime: ${strategy.runtime_str}</span>`;
+                    } else if (isActive && strategy.start_time && strategy.start_time !== 'N/A') {
+                        // Fallback compute if needed
+                        try {
+                            const startTime = new Date(strategy.start_time);
+                            const now = new Date();
+                            const diffMs = now - startTime;
+                            const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                            const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                            runtimeLine = `<br><span style="font-size: 9px; color: #888;">Runtime: ${hours}h ${minutes}m</span>`;
+                        } catch (e) {
+                            runtimeLine = '';
+                        }
+                    }
                 return `
-                <div class="strategy-card">
+                <div class="strategy-card" id="strategy-${strategy.name}">
                     <div class="strategy-header">
                         <span class="strategy-name">${strategy.name}</span>
                                 <span class="strategy-status ${isActive ? 'active' : 'idle'}">
-                                    ${isActive ? 'ACTIVE' : 'IDLE'}
+                                    ${isActive ? '🟢 ACTIVE' : '⚪ IDLE'}
                                 </span>
                     </div>
                     <div class="strategy-info">
@@ -1581,6 +1874,7 @@
                                 ${strategy.timeframe || 'N/A'} | 
                                 ${strategy.positions || 0} pos
                                 ${strategy.start_time && strategy.start_time !== 'N/A' ? '<br><span style="font-size: 9px; color: #888;">Started: ' + strategy.start_time + '</span>' : ''}
+                                ${runtimeLine}
                     </div>
                             <div class="strategy-actions">
                                 <button class="btn-primary" onclick="startStrategyByName('${strategy.name}')" ${isActive ? 'disabled' : ''}>
@@ -1589,11 +1883,175 @@
                                 <button class="btn-danger" onclick="stopStrategyByName('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
                             Stop
                         </button>
+                                ${isActive ? `<button class="btn-info" onclick="toggleStrategyDetails('${strategy.name}')" style="background: #2196f3; border: none; color: #fff; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                            ▼ Details
+                        </button>` : ''}
                     </div>
+                    ${isActive ? `<div class="strategy-details" id="details-${strategy.name}" style="display: none;">
+                        <div style="color: #888; text-align: center; padding: 12px;">Loading details...</div>
+                    </div>` : ''}
                 </div>
             `;
                 }).join('');
             }
+        }
+        
+        // Toggle strategy details panel
+        async function toggleStrategyDetails(name) {
+            const detailsPanel = document.getElementById(`details-${name}`);
+            const btn = event?.target;
+            
+            if (!detailsPanel) return;
+            
+            if (detailsPanel.style.display === 'none') {
+                detailsPanel.style.display = 'block';
+                if (btn) btn.textContent = '▲ Details';
+                
+                // Fetch detailed info
+                try {
+                    const response = await fetch(`${BASE_URL}/api/chart/strategy/details/${name}`);
+                    const details = await response.json();
+                    
+                    if (details.error) {
+                        detailsPanel.innerHTML = `<div style="color: #f44336; padding: 12px;">Error: ${details.error}</div>`;
+                    } else {
+                        // Render details
+                        detailsPanel.innerHTML = renderStrategyDetails(details);
+                    }
+                } catch (error) {
+                    detailsPanel.innerHTML = `<div style="color: #f44336; padding: 12px;">Error loading details: ${error.message}</div>`;
+                }
+            } else {
+                detailsPanel.style.display = 'none';
+                if (btn) btn.textContent = '▼ Details';
+            }
+        }
+        
+        // Render strategy details
+        function renderStrategyDetails(details) {
+            if (details.name === 'overnight_range') {
+                // Calculate runtime
+                let runtimeStr = 'N/A';
+                if (details.start_time) {
+                    try {
+                        const startTime = new Date(details.start_time);
+                        const now = new Date();
+                        const diffMs = now - startTime;
+                        const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                        runtimeStr = `${hours}h ${minutes}m`;
+                    } catch (e) {
+                        runtimeStr = 'N/A';
+                    }
+                }
+                
+                // Format start time
+                let startTimeStr = 'N/A';
+                if (details.start_time) {
+                    try {
+                        const dt = new Date(details.start_time);
+                        startTimeStr = dt.toLocaleString('en-US', { 
+                            month: 'short', day: 'numeric', 
+                            hour: '2-digit', minute: '2-digit', second: '2-digit' 
+                        });
+                    } catch (e) {
+                        startTimeStr = details.start_time;
+                    }
+                }
+                
+                let html = `
+                    <div class="strategy-detail-section">
+                        <strong>⏰ Runtime:</strong> ${runtimeStr}
+                        <br><strong>Started:</strong> ${startTimeStr}
+                    </div>
+                `;
+                
+                // Breakout levels
+                if (details.breakout_levels && Object.keys(details.breakout_levels).length > 0) {
+                    html += `
+                        <div class="strategy-detail-section">
+                            <strong>🎯 Breakout Levels:</strong>
+                    `;
+                    for (const [symbol, levels] of Object.entries(details.breakout_levels)) {
+                        html += `
+                            <div style="margin-left: 10px; font-size: 10px;">
+                                <strong>${symbol}:</strong> 
+                                LONG @ $${levels.long_entry?.toFixed(2) || 'N/A'} | 
+                                SHORT @ $${levels.short_entry?.toFixed(2) || 'N/A'}
+                            </div>
+                        `;
+                    }
+                    html += `</div>`;
+                }
+                
+                // Overnight ranges
+                if (details.ranges && Object.keys(details.ranges).length > 0) {
+                    html += `
+                        <div class="strategy-detail-section">
+                            <strong>📊 Overnight Ranges:</strong>
+                    `;
+                    for (const [symbol, range] of Object.entries(details.ranges)) {
+                        html += `
+                            <div style="margin-left: 10px; font-size: 10px;">
+                                <strong>${symbol}:</strong> 
+                                High: $${range.high?.toFixed(2) || 'N/A'}, 
+                                Low: $${range.low?.toFixed(2) || 'N/A'}
+                                ${range.size ? ` (${range.size.toFixed(2)} pts)` : ''}
+                            </div>
+                        `;
+                    }
+                    html += `</div>`;
+                }
+                
+                // ATR data
+                if (details.atr_data && Object.keys(details.atr_data).length > 0) {
+                    html += `
+                        <div class="strategy-detail-section">
+                            <strong>📈 ATR Data:</strong>
+                    `;
+                    for (const [symbol, atr] of Object.entries(details.atr_data)) {
+                        html += `
+                            <div style="margin-left: 10px; font-size: 10px;">
+                                <strong>${symbol}:</strong> 
+                                Current=${atr.current_atr?.toFixed(2) || 'N/A'} pts, 
+                                Daily=${atr.daily_atr?.toFixed(2) || 'N/A'} pts
+                            </div>
+                        `;
+                    }
+                    html += `</div>`;
+                }
+                
+                // Risk profile
+                if (details.risk_profile) {
+                    html += `
+                        <div class="strategy-detail-section">
+                            <strong>⚖️  Risk Profile:</strong>
+                            <div style="margin-left: 10px; font-size: 10px;">
+                                Stop Loss: ${details.risk_profile.stop_atr_multiplier || 'N/A'}x ATR
+                                <br>Take Profit: ${details.risk_profile.tp_atr_multiplier || 'N/A'}x ATR or ATR zone
+                                ${details.risk_profile.breakeven_threshold ? `<br>Breakeven: +${details.risk_profile.breakeven_threshold} pts` : ''}
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Active orders
+                if (details.active_orders !== undefined) {
+                    html += `
+                        <div class="strategy-detail-section">
+                            <strong>📦 Active:</strong>
+                            <div style="margin-left: 10px; font-size: 10px;">
+                                Pending Orders: ${details.active_orders}
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                return html;
+            }
+            
+            // Default for other strategies
+            return '<div style="padding: 12px; color: #888;">Detailed info not available for this strategy type.</div>';
         }
         
         function stopHttpPolling() {
@@ -1919,6 +2377,10 @@
         
         // Update positions
         async function updatePositions() {
+            // Prevent overlapping refreshes (slow endpoints + polling can otherwise stack)
+            window.__positionsUpdateInProgress = window.__positionsUpdateInProgress || false;
+            if (window.__positionsUpdateInProgress) return;
+            window.__positionsUpdateInProgress = true;
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/positions`);
                 const data = await response.json();
@@ -1950,47 +2412,29 @@
                 }
             } catch (error) {
                 console.error('Error updating positions:', error);
+            } finally {
+                window.__positionsUpdateInProgress = false;
             }
         }
         
         // Update orders
         async function updateOrders() {
+            // Prevent overlapping refreshes (critical to avoid /api/Order/search storms)
+            window.__ordersUpdateInProgress = window.__ordersUpdateInProgress || false;
+            if (window.__ordersUpdateInProgress) return;
+            window.__ordersUpdateInProgress = true;
             try {
-                const response = await fetch(`${BASE_URL}/api/chart/orders`);
+                // include_linked defaults to false (linked lookups can be very slow)
+                const response = await fetch(`${BASE_URL}/api/chart/orders?include_linked=0`);
                 const data = await response.json();
-                if (data && data.orders) {
-                    const orders = data.orders;
-                    document.getElementById('order-count').textContent = orders.length;
-                    document.getElementById('ord-count').textContent = orders.length;
-                    
-                    const tbody = document.getElementById('orders-body');
-                    if (orders.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No orders</td></tr>';
-                    } else {
-                        tbody.innerHTML = orders.map(order => {
-                            // Handle both camelCase and snake_case, and convert numeric types
-                            const quantity = order.quantity || order.size || 0;
-                            const price = order.price || order.limitPrice || order.limit_price || order.stopPrice || order.stop_price || 0;
-                            let orderType = order.type || 'N/A';
-                            // Convert numeric type to string if needed
-                            if (typeof orderType === 'number') {
-                                const typeMap = {1: 'LIMIT', 2: 'MARKET', 4: 'STOP'};
-                                orderType = typeMap.get(orderType, orderType);
-                            }
-                            return `
-                                <tr>
-                                    <td>${order.symbol || 'N/A'}</td>
-                                    <td>${order.side || 'N/A'}</td>
-                                    <td>${quantity}</td>
-                                    <td>$${price.toFixed(2)}</td>
-                                    <td>${orderType}</td>
-                                </tr>
-                            `;
-                        }).join('');
-                    }
+                if (data) {
+                    // Use centralized updateOrdersDisplay function which handles bracket grouping
+                    updateOrdersDisplay(data);
                 }
             } catch (error) {
                 console.error('Error updating orders:', error);
+            } finally {
+                window.__ordersUpdateInProgress = false;
             }
         }
         
@@ -2150,13 +2594,13 @@
                     await updateStrategies();
                 } else {
                     console.error('Failed to switch account:', data.error);
-                    alert(`Failed to switch account: ${data.error || 'Unknown error'}`);
+                    showToast(`Failed to switch account: ${data.error || 'Unknown error'}`, 'error', 6000);
                     // Reload accounts in case the list is stale
                     await loadAccounts();
                 }
             } catch (error) {
                 console.error('Error switching account:', error);
-                alert(`Error switching account: ${error.message}`);
+                showToast(`Error switching account: ${error.message}`, 'error', 6000);
                 // Reload accounts in case of error
                 await loadAccounts();
             }
@@ -2164,50 +2608,67 @@
         
         // Order placement
         async function placeOrder(side) {
-            const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
-            const orderType = document.getElementById('order-type')?.value || 'market';
-            const qty = parseInt(document.getElementById('order-qty')?.value || 1);
-            const price = parseFloat(document.getElementById('order-price')?.value);
-            const stopPrice = parseFloat(document.getElementById('order-stop-price')?.value);
-            const trailAmount = parseFloat(document.getElementById('order-trail-amount')?.value);
-            const enableBracket = document.getElementById('enable-bracket')?.checked;
-            const slTicks = parseInt(document.getElementById('order-sl-ticks')?.value);
-            const tpTicks = parseInt(document.getElementById('order-tp-ticks')?.value);
+            // Disable order buttons to prevent double-clicks
+            const buyBtn = document.querySelector('button[onclick*="placeOrder(\'BUY\')"]');
+            const sellBtn = document.querySelector('button[onclick*="placeOrder(\'SELL\')"]');
+            if (buyBtn) buyBtn.disabled = true;
+            if (sellBtn) sellBtn.disabled = true;
             
-                const orderData = {
+            try {
+                const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
+                const orderType = document.getElementById('order-type')?.value || 'market';
+                const qty = parseInt(document.getElementById('order-qty')?.value || 1);
+                const price = parseFloat(document.getElementById('order-price')?.value);
+                const stopPrice = parseFloat(document.getElementById('order-stop-price')?.value);
+                const trailAmount = parseFloat(document.getElementById('order-trail-amount')?.value);
+                const enableBracket = document.getElementById('enable-bracket')?.checked;
+                const slPrice = parseFloat(document.getElementById('order-sl-ticks')?.value);
+                const tpPrice = parseFloat(document.getElementById('order-tp-ticks')?.value);
+                
+                    const orderData = {
                     symbol: symbol,
                     side: side,
                     quantity: qty,
                     order_type: orderType  // Backend expects 'order_type', not 'type'
                 };
                 
-            // Add price parameters based on order type
-            if (orderType === 'limit' && price) {
-                orderData.limit_price = price;  // Backend expects snake_case
-            } else if (orderType === 'stop' && stopPrice) {
-                orderData.stop_price = stopPrice;  // Backend expects snake_case
-            } else if (orderType === 'stop-limit') {
-                if (!price || !stopPrice) {
-                    alert('⚠️ Stop Limit orders require both Limit Price and Stop Price');
-                    return;
-                }
-                orderData.limit_price = price;  // Backend expects snake_case
-                orderData.stop_price = stopPrice;  // Backend expects snake_case
-            } else if (orderType === 'trailing-stop') {
-                if (!trailAmount) {
-                    alert('⚠️ Trailing Stop orders require Trail Amount');
-                    return;
-                }
-                orderData.trail_amount = trailAmount;  // Backend expects snake_case
-            }
-            
-            // Add bracket orders if enabled
-                if (enableBracket) {
-                if (slTicks) orderData.stopLossTicks = slTicks;
-                if (tpTicks) orderData.takeProfitTicks = tpTicks;
+                // Add price parameters based on order type
+                if (orderType === 'limit' && price) {
+                    orderData.limit_price = price;  // Backend expects snake_case
+                } else if (orderType === 'stop' && stopPrice) {
+                    orderData.stop_price = stopPrice;  // Backend expects snake_case
+                } else if (orderType === 'stop-limit') {
+                    if (!price || !stopPrice) {
+                        showToast('Stop Limit orders require both Limit Price and Stop Price', 'warn');
+                        return;
+                    }
+                    orderData.limit_price = price;  // Backend expects snake_case
+                    orderData.stop_price = stopPrice;  // Backend expects snake_case
+                } else if (orderType === 'trailing-stop') {
+                    if (!trailAmount) {
+                        showToast('Trailing Stop orders require Trail Amount', 'warn');
+                        return;
+                    }
+                    orderData.trail_amount = trailAmount;  // Backend expects snake_case
                 }
                 
-            try {
+                // Add bracket orders if enabled
+                if (enableBracket) {
+                    if (!slPrice || isNaN(slPrice) || slPrice <= 0) {
+                        showToast('⚠️ Bracket enabled but no valid SL Price entered!', 'warn', 4000);
+                        return;
+                    }
+                    if (!tpPrice || isNaN(tpPrice) || tpPrice <= 0) {
+                        showToast('⚠️ Bracket enabled but no valid TP Price entered!', 'warn', 4000);
+                        return;
+                    }
+                    // Backend expects these keys (absolute prices)
+                    orderData.enable_bracket = true;
+                    orderData.stop_loss_price = slPrice;
+                    orderData.take_profit_price = tpPrice;
+                    console.log(`📊 Bracket order (prices): SL=${slPrice}, TP=${tpPrice}`);
+                }
+                    
                 const response = await fetch(`${BASE_URL}/api/chart/order`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2215,19 +2676,105 @@
                 });
                 const result = await response.json();
                 if (result.success || result.orderId) {
-                    alert(`✅ Order placed: ${result.orderId || 'Pending'}`);
+                    showToast(`Order placed: ${result.orderId || 'Pending'}`, 'success');
                     // Refresh positions and orders
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
                         // WebSocket will push updates automatically
                     } else {
-                    updatePositions();
-                    updateOrders();
+                        updatePositions();
+                        updateOrders();
                     }
                 } else {
-                    alert(`❌ Order failed: ${result.error || 'Unknown error'}`);
+                    showToast(`Order failed: ${result.error || 'Unknown error'}`, 'error', 6000);
                 }
             } catch (error) {
-                alert(`❌ Error: ${error.message}`);
+                showToast(`Error: ${error.message}`, 'error', 6000);
+            } finally {
+                // Re-enable buttons after operation completes
+                if (buyBtn) buyBtn.disabled = false;
+                if (sellBtn) sellBtn.disabled = false;
+            }
+        }
+        
+        // Close Position (no confirmation, instant action)
+        async function closePosition(positionId, symbol) {
+            if (!positionId) {
+                showToast('Invalid position ID', 'error');
+                return;
+            }
+            
+            // Disable button to prevent double-clicks
+            event?.target?.setAttribute('disabled', 'true');
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/close_position`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ position_id: positionId })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    const msg = result.warning ? 
+                        `⚠️ ${result.message}` : 
+                        `✅ Position closed: ${symbol}`;
+                    showToast(msg, result.warning ? 'warn' : 'success');
+                    // Refresh positions and orders
+                    setTimeout(() => {
+                        updatePositions();
+                        updateOrders();
+                    }, 500);
+                } else {
+                    showToast(`❌ Failed to close position: ${result.error || 'Unknown error'}`, 'error', 6000);
+                }
+            } catch (error) {
+                console.error('Error closing position:', error);
+                showToast(`❌ Error: ${error.message}`, 'error', 6000);
+            } finally {
+                // Re-enable button
+                event?.target?.removeAttribute('disabled');
+            }
+        }
+        
+        // Cancel Order (no confirmation, instant action)
+        async function cancelOrder(orderId, symbol) {
+            if (!orderId) {
+                showToast('Invalid order ID', 'error');
+                return;
+            }
+            
+            // Disable button to prevent double-clicks
+            event?.target?.setAttribute('disabled', 'true');
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/cancel_order`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order_id: orderId })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    const msg = result.warning ? 
+                        `⚠️ ${result.message}` : 
+                        `✅ Order cancelled: ${symbol}`;
+                    showToast(msg, result.warning ? 'warn' : 'success');
+                    // Refresh orders
+                    setTimeout(() => {
+                        updateOrders();
+                    }, 500);
+                } else {
+                    // Handle rate limiting specifically
+                    if (result.rate_limited) {
+                        showToast(`⏳ ${result.error}`, 'warn', 8000);
+                    } else {
+                        showToast(`❌ Failed to cancel order: ${result.error || 'Unknown error'}`, 'error', 6000);
+                    }
+                }
+            } catch (error) {
+                console.error('Error cancelling order:', error);
+                showToast(`❌ Error: ${error.message}`, 'error', 6000);
+            } finally {
+                // Re-enable button
+                event?.target?.removeAttribute('disabled');
             }
         }
         
@@ -2251,10 +2798,10 @@
                     // Use setTimeout to avoid blocking UI
                     setTimeout(() => updateStrategies(), 100);
                 } else {
-                    alert(`❌ ${data.error || data.message}`);
+                    showToast(`${data.error || data.message}`, 'error', 6000);
                 }
             } catch (error) {
-                alert(`❌ Error: ${error.message}`);
+                showToast(`Error: ${error.message}`, 'error', 6000);
             } finally {
                 if (btn) {
                     btn.disabled = false;
@@ -2282,10 +2829,10 @@
                     // Use setTimeout to avoid blocking UI
                     setTimeout(() => updateStrategies(), 100);
                 } else {
-                    alert(`❌ ${data.error || data.message}`);
+                    showToast(`${data.error || data.message}`, 'error', 6000);
                 }
             } catch (error) {
-                alert(`❌ Error: ${error.message}`);
+                showToast(`Error: ${error.message}`, 'error', 6000);
             } finally {
                 if (btn) {
                     btn.disabled = false;
@@ -2296,34 +2843,46 @@
         
         // Quick actions
         async function flattenAll() {
-            if (!confirm('⚠️ Close all positions and cancel all orders?')) return;
+            // Find all flatten buttons and disable them
+            const flattenButtons = document.querySelectorAll('button[onclick*="flattenAll"]');
+            flattenButtons.forEach(btn => btn.disabled = true);
+            
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/flatten`, { method: 'POST' });
                 const data = await response.json();
                 if (data.success) {
-                    alert('✅ All positions flattened');
+                    showToast('All positions flattened', 'success');
                     refreshAll();
                 } else {
-                    alert(`❌ ${data.error || 'Flatten failed'}`);
+                    showToast(`${data.error || 'Flatten failed'}`, 'error', 6000);
                 }
             } catch (error) {
-                alert(`❌ Error: ${error.message}`);
+                showToast(`Error: ${error.message}`, 'error', 6000);
+            } finally {
+                // Re-enable buttons after operation completes
+                flattenButtons.forEach(btn => btn.disabled = false);
             }
         }
         
         async function cancelAllOrders() {
-            if (!confirm('⚠️ Cancel all open orders?')) return;
+            // Find all cancel buttons and disable them
+            const cancelButtons = document.querySelectorAll('button[onclick*="cancelAllOrders"]');
+            cancelButtons.forEach(btn => btn.disabled = true);
+            
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/cancel_all`, { method: 'POST' });
                 const data = await response.json();
                 if (data.success) {
-                    alert('✅ All orders canceled');
+                    showToast('All orders canceled', 'success');
                     updateOrders();
                 } else {
-                    alert(`❌ ${data.error || 'Cancel failed'}`);
+                    showToast(`${data.error || 'Cancel failed'}`, 'error', 6000);
                 }
             } catch (error) {
-                alert(`❌ Error: ${error.message}`);
+                showToast(`Error: ${error.message}`, 'error', 6000);
+            } finally {
+                // Re-enable buttons after operation completes
+                cancelButtons.forEach(btn => btn.disabled = false);
             }
         }
         
@@ -2338,13 +2897,16 @@
         // Strategy control functions
         async function startStrategy() {
             const strategyName = document.getElementById('strategy-select')?.value;
-            const symbols = document.getElementById('strategy-symbols')?.value;
+            let symbols = document.getElementById('strategy-symbols')?.value;
             const timeframe = document.getElementById('strategy-timeframe')?.value;
             
             if (!strategyName || !symbols) {
-                alert('Please select a strategy and enter symbols');
+                showToast('Please select a strategy and enter symbols', 'warn');
                 return;
             }
+            
+            // Normalize symbols: replace spaces with commas, remove extra commas
+            symbols = symbols.trim().replace(/[\s,]+/g, ',').replace(/,+/g, ',').replace(/^,|,$/g, '');
             
             try {
                 const command = `strategies start ${strategyName} --symbols=${symbols} --timeframe=${timeframe}`;
@@ -2359,18 +2921,17 @@
                     console.log(`✅ Started strategy: ${strategyName}`);
                     // Refresh strategies display
                     await updateStrategies();
+                    showToast(`Strategy started: ${strategyName}`, 'success');
                 } else {
-                    alert(`Failed to start strategy: ${data.error}`);
+                    showToast(`Failed to start strategy: ${data.error}`, 'error', 6000);
                 }
             } catch (error) {
                 console.error('Error starting strategy:', error);
-                alert(`Error starting strategy: ${error.message}`);
+                showToast(`Error starting strategy: ${error.message}`, 'error', 6000);
             }
         }
         
         async function stopStrategy(strategyName) {
-            if (!confirm(`Stop strategy: ${strategyName}?`)) return;
-            
             try {
                 const command = `strategies stop ${strategyName}`;
                 const response = await fetch(`${BASE_URL}/api/execute_command`, {
@@ -2384,12 +2945,13 @@
                     console.log(`✅ Stopped strategy: ${strategyName}`);
                     // Refresh strategies display
                     await updateStrategies();
+                    showToast(`Strategy stopped: ${strategyName}`, 'success');
                 } else {
-                    alert(`Failed to stop strategy: ${data.error}`);
+                    showToast(`Failed to stop strategy: ${data.error}`, 'error', 6000);
                 }
             } catch (error) {
                 console.error('Error stopping strategy:', error);
-                alert(`Error stopping strategy: ${error.message}`);
+                showToast(`Error stopping strategy: ${error.message}`, 'error', 6000);
             }
         }
         
@@ -2833,7 +3395,7 @@
             localStorage.setItem('ui_customization', JSON.stringify(config));
             // Also save as defaults
             localStorage.setItem('ui_customization_defaults', JSON.stringify(config));
-            alert('✅ Settings saved as defaults! They will persist across page reloads.');
+            showToast('Settings saved as defaults', 'success');
             // Close the panel after saving
             toggleCustomizePanel();
         }
@@ -2865,11 +3427,11 @@
             localStorage.setItem('ui_customization_defaults', JSON.stringify(config));
             // Also update regular settings
             localStorage.setItem('ui_customization', JSON.stringify(config));
-            alert('✅ Settings saved as defaults! They will be used on page load.');
+            showToast('Settings saved as defaults', 'success');
         }
         
         function resetCustomization() {
-            if (!confirm('Reset all customization to defaults?')) return;
+            // No confirm popup; just reset
             
             localStorage.removeItem('ui_customization');
             location.reload();
@@ -2927,7 +3489,7 @@
             );
             
             if (!popoutWindow) {
-                alert('Please allow pop-ups for this site to use the pop-out feature');
+                showToast('Please allow pop-ups for this site to use the pop-out feature', 'warn', 6000);
                 return;
             }
             

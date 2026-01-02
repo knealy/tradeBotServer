@@ -227,7 +227,15 @@ class UserHubManager:
                 error_text = str(err)
                 if '401' in error_text or '403' in error_text or 'Unauthorized' in error_text:
                     logger.warning("⚠️  User Hub authentication error - will reconnect with fresh token")
-                    asyncio.create_task(self._handle_auth_error_and_reconnect(account_id))
+                    # SignalR error callback can run off the main event loop thread.
+                    # Schedule reconnection safely on the captured loop when possible.
+                    try:
+                        if self._event_loop and self._event_loop.is_running():
+                            asyncio.run_coroutine_threadsafe(self._handle_auth_error_and_reconnect(account_id), self._event_loop)
+                        else:
+                            threading.Thread(target=lambda: asyncio.run(self._handle_auth_error_and_reconnect(account_id)), daemon=True).start()
+                    except Exception as e:
+                        logger.error(f"Failed to schedule auth-error reconnect: {e}")
                 else:
                     logger.error(f"User Hub error: {err}")
             
@@ -278,17 +286,28 @@ class UserHubManager:
         """Handle GatewayUserAccount event."""
         try:
             logger.debug(f"Received account update: {data}")
+            # SignalR library often passes event args as a list.
+            # Normalize payload so downstream callbacks receive dicts.
+            payloads = []
+            if isinstance(data, list):
+                # either [dict] or [dict, dict, ...]
+                payloads = [d for d in data if d is not None]
+            else:
+                payloads = [data]
+
             # Call all registered callbacks
             for callback in self._account_callbacks:
                 try:
-                    if asyncio.iscoroutinefunction(callback):
-                        if self._event_loop and self._event_loop.is_running():
-                            asyncio.create_task(callback(data))
+                    for payload in payloads:
+                        if asyncio.iscoroutinefunction(callback):
+                            if self._event_loop and self._event_loop.is_running():
+                                # Run coroutine on the captured loop (SignalR callbacks run on a non-async thread)
+                                asyncio.run_coroutine_threadsafe(callback(payload), self._event_loop)
+                            else:
+                                # Fallback: run in thread with its own loop
+                                threading.Thread(target=lambda p=payload: asyncio.run(callback(p)), daemon=True).start()
                         else:
-                            # Run in thread with new event loop
-                            threading.Thread(target=lambda: asyncio.run(callback(data)), daemon=True).start()
-                    else:
-                        callback(data)
+                            callback(payload)
                 except Exception as e:
                     logger.error(f"Error in account callback: {e}")
         except Exception as e:
@@ -298,15 +317,21 @@ class UserHubManager:
         """Handle GatewayUserPosition event."""
         try:
             logger.debug(f"Received position update: {data}")
+            payloads = []
+            if isinstance(data, list):
+                payloads = [d for d in data if d is not None]
+            else:
+                payloads = [data]
             for callback in self._position_callbacks:
                 try:
-                    if asyncio.iscoroutinefunction(callback):
-                        if self._event_loop and self._event_loop.is_running():
-                            asyncio.create_task(callback(data))
+                    for payload in payloads:
+                        if asyncio.iscoroutinefunction(callback):
+                            if self._event_loop and self._event_loop.is_running():
+                                asyncio.run_coroutine_threadsafe(callback(payload), self._event_loop)
+                            else:
+                                threading.Thread(target=lambda p=payload: asyncio.run(callback(p)), daemon=True).start()
                         else:
-                            threading.Thread(target=lambda: asyncio.run(callback(data)), daemon=True).start()
-                    else:
-                        callback(data)
+                            callback(payload)
                 except Exception as e:
                     logger.error(f"Error in position callback: {e}")
         except Exception as e:
@@ -316,15 +341,21 @@ class UserHubManager:
         """Handle GatewayUserOrder event."""
         try:
             logger.debug(f"Received order update: {data}")
+            payloads = []
+            if isinstance(data, list):
+                payloads = [d for d in data if d is not None]
+            else:
+                payloads = [data]
             for callback in self._order_callbacks:
                 try:
-                    if asyncio.iscoroutinefunction(callback):
-                        if self._event_loop and self._event_loop.is_running():
-                            asyncio.create_task(callback(data))
+                    for payload in payloads:
+                        if asyncio.iscoroutinefunction(callback):
+                            if self._event_loop and self._event_loop.is_running():
+                                asyncio.run_coroutine_threadsafe(callback(payload), self._event_loop)
+                            else:
+                                threading.Thread(target=lambda p=payload: asyncio.run(callback(p)), daemon=True).start()
                         else:
-                            threading.Thread(target=lambda: asyncio.run(callback(data)), daemon=True).start()
-                    else:
-                        callback(data)
+                            callback(payload)
                 except Exception as e:
                     logger.error(f"Error in order callback: {e}")
         except Exception as e:
@@ -334,15 +365,21 @@ class UserHubManager:
         """Handle GatewayUserTrade event."""
         try:
             logger.debug(f"Received trade update: {data}")
+            payloads = []
+            if isinstance(data, list):
+                payloads = [d for d in data if d is not None]
+            else:
+                payloads = [data]
             for callback in self._trade_callbacks:
                 try:
-                    if asyncio.iscoroutinefunction(callback):
-                        if self._event_loop and self._event_loop.is_running():
-                            asyncio.create_task(callback(data))
+                    for payload in payloads:
+                        if asyncio.iscoroutinefunction(callback):
+                            if self._event_loop and self._event_loop.is_running():
+                                asyncio.run_coroutine_threadsafe(callback(payload), self._event_loop)
+                            else:
+                                threading.Thread(target=lambda p=payload: asyncio.run(callback(p)), daemon=True).start()
                         else:
-                            threading.Thread(target=lambda: asyncio.run(callback(data)), daemon=True).start()
-                    else:
-                        callback(data)
+                            callback(payload)
                 except Exception as e:
                     logger.error(f"Error in trade callback: {e}")
         except Exception as e:

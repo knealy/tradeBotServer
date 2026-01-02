@@ -1094,12 +1094,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if not orders:
                 logger.info(f"No open orders found for account {account_id}")
                 return []
-            
-            # Filter strictly to OPEN orders (status == 1)
-            open_only = [o for o in orders if o.get("status") == 1]
-            logger.info(f"Found {len(open_only)} open orders (from {len(orders)} total)")
-            
-            return open_only
+            # IMPORTANT: do NOT filter by status==1.
+            # TopStepX "Open" search can include related bracket child orders that are "SuspENDED"
+            # until the parent triggers. Filtering would hide those brackets from the GUI.
+            logger.info(f"Found {len(orders)} open-related orders (includes suspended brackets when returned by API)")
+            return orders
             
         except Exception as e:
             logger.error(f"Failed to fetch orders: {str(e)}")
@@ -1136,10 +1135,10 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 if isinstance(order, dict):
                     orders.append(order)
         
-        # Filter strictly to OPEN orders (status == 1)
-        open_only = [o for o in orders if o.get("status") == 1]
-        logger.info(f"Found {len(open_only)} open orders via Rust (from {len(orders)} total)")
-        return open_only
+        # IMPORTANT: do NOT filter by status==1.
+        # Rust QueryExecutor already queries TopStepX "Open" search; results may include suspended bracket children.
+        logger.info(f"Found {len(orders)} open-related orders via Rust (includes suspended brackets when returned by API)")
+        return orders
     
     async def get_order_history(
         self,
@@ -3490,10 +3489,15 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Try Rust hot path first
             if self._use_rust and self._rust_executor:
                 try:
-                    return await self._place_oco_bracket_rust(
+                    rust_resp = await self._place_oco_bracket_rust(
                         symbol, side, quantity, entry_price, stop_loss_price,
                         take_profit_price, account_id, strategy_name
                     )
+                    # IMPORTANT: Rust can return `success=false` without raising (e.g. HTTP 500),
+                    # which previously prevented Python fallback from running.
+                    if rust_resp and getattr(rust_resp, "success", False):
+                        return rust_resp
+                    logger.warning(f"⚠️  Rust OCO bracket returned failure, falling back to Python: {getattr(rust_resp, 'error', None)}")
                 except Exception as e:
                     logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
                     import traceback
@@ -3730,12 +3734,18 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             logger.info(f"✅ OCO bracket order placed successfully with ID: {order_id}")
             print(f"✅ Python fallback: OCO bracket order placed successfully with ID: {order_id}")
+
+            # Attach execution-path metadata for callers (GUI/strategy logging)
+            raw = response
+            if isinstance(raw, dict):
+                raw = dict(raw)
+                raw["_execution_path"] = "python"
             
             return OrderResponse(
                 success=True,
                 order_id=str(order_id),
-                message="OCO bracket order placed successfully",
-                raw_response=response
+                message="OCO bracket order placed successfully (python)",
+                raw_response=raw if isinstance(raw, dict) else response
             )
             
         except Exception as e:
@@ -3825,13 +3835,47 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info(f"⚡ Rust OCO bracket execution: {elapsed_ms:.2f}ms")
-        
+
+        # Discord notification for strategy-initiated orders (Rust path)
+        try:
+            if strategy_name and hasattr(self, '_trading_bot') and self._trading_bot:
+                account_name = 'Unknown'
+                if getattr(self._trading_bot, 'selected_account', None):
+                    if isinstance(self._trading_bot.selected_account, dict):
+                        account_name = self._trading_bot.selected_account.get('name', 'Unknown')
+                    else:
+                        account_name = str(self._trading_bot.selected_account)
+
+                notification_data = {
+                    'symbol': symbol,
+                    'side': side,
+                    'quantity': quantity,
+                    'price': f"${entry_price:.2f} (Stop Entry)",
+                    'order_type': 'Bracket (Stop Entry)',
+                    'order_id': rust_result.get('order_id') or rust_result.get('orderId') or 'Unknown',
+                    'status': 'Placed',
+                    'account_id': account_id,
+                    'stop_loss': stop_loss_price,
+                    'take_profit': take_profit_price,
+                    'strategy': strategy_name
+                }
+                self._trading_bot.discord_notifier.send_order_notification(notification_data, account_name)
+        except Exception as notif_err:
+            logger.debug(f"Could not send Discord notification for strategy order (Rust path): {notif_err}")
+
+        # Attach execution-path metadata for callers (GUI/strategy logging)
+        raw = rust_result.get('raw_response') if isinstance(rust_result, dict) else None
+        if isinstance(raw, dict):
+            raw = dict(raw)
+            raw["_execution_path"] = "rust"
+            raw["_custom_tag"] = custom_tag
+
         return OrderResponse(
             success=rust_result.get('success', False),
             order_id=rust_result.get('order_id'),
-            message=rust_result.get('message'),
+            message=rust_result.get('message') or "OCO bracket order placed successfully (rust)",
             error=rust_result.get('error'),
-            raw_response=rust_result.get('raw_response')
+            raw_response=raw if isinstance(raw, dict) else rust_result.get('raw_response')
         )
     
     async def place_trailing_stop_order(
@@ -4447,13 +4491,24 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         from datetime import datetime
         import uuid
         
-        base_tag = f"TradingBot-v1.0-{order_type}"
+        # IMPORTANT: TopStepX appears to have a max length / validation on customTag.
+        # Too-long tags can cause opaque HTTP 500 responses (sometimes with empty body).
+        # Keep tags short, deterministic, and ASCII-safe.
+        base_tag = f"TB-{order_type}"
         if strategy_name:
-            base_tag += f"-{strategy_name}"
+            # Sanitize and shorten strategy name
+            safe = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in str(strategy_name).lower())
+            if len(safe) > 16:
+                safe = safe[:16]
+            base_tag += f"-{safe}"
         
         # Add timestamp and unique ID for uniqueness
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        unique_id = str(uuid.uuid4())[:8]
-        
-        return f"{base_tag}-{timestamp}-{unique_id}"
+        timestamp = datetime.now().strftime("%y%m%d%H%M%S")  # shorter
+        unique_id = str(uuid.uuid4())[:6]  # shorter
+
+        tag = f"{base_tag}-{timestamp}-{unique_id}"
+        # Hard cap
+        if len(tag) > 64:
+            tag = tag[:64]
+        return tag
 

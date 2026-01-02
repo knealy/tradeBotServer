@@ -11,7 +11,7 @@ This strategy is designed to be active and make trades quickly.
 import os
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
@@ -55,7 +55,7 @@ class SimpleCandleStrategy(BaseStrategy):
         
         # Strategy-specific settings
         self.candles_needed = 2  # Need 2 consecutive candles
-        self.profit_multiplier = 3.0    # Take profit at 3 * ATR
+        self.profit_multiplier = 2.0    # Take profit at 2 * ATR
         self.stop_multiplier = 1.5      # Stop loss at 1.5 * ATR
         self.atr_period = 14            # ATR period (14 bars)
         
@@ -65,6 +65,11 @@ class SimpleCandleStrategy(BaseStrategy):
         
         # Track previous EMA values per symbol to detect crosses
         self.prev_emas: Dict[str, Dict[str, float]] = {}  # {symbol: {"fast": float, "slow": float}}
+        
+        # Cache for position data (to reduce API calls)
+        self._position_cache: Optional[List[Dict]] = None
+        self._position_cache_time: float = 0
+        self._position_cache_ttl: float = 5.0  # Cache TTL in seconds
         
         # Get timeframe from environment variable or use default
         self.timeframe = os.getenv('SIMPLE_CANDLE_TIMEFRAME', "30s")
@@ -285,6 +290,107 @@ class SimpleCandleStrategy(BaseStrategy):
         Returns signal dict or None.
         """
         try:
+            # Determine current position direction for this symbol (if any)
+            # Only place orders in the direction of the current position unless flat.
+            # Use the CLI command path to check current positions (more reliable)
+            pos_side: Optional[str] = None  # "LONG" | "SHORT" | None
+            try:
+                # Get account ID
+                account_id = None
+                if isinstance(self.trading_bot.selected_account, dict):
+                    account_id = self.trading_bot.selected_account.get('id')
+                else:
+                    account_id = self.trading_bot.selected_account
+                
+                logger.info(f"🔍 Position check for {symbol}: account_id={account_id}")
+                
+                if account_id:
+                    # Use cached positions if available and fresh (reduces API calls)
+                    import time
+                    current_time = time.time()
+                    if (self._position_cache is not None and 
+                        (current_time - self._position_cache_time) < self._position_cache_ttl):
+                        positions = self._position_cache
+                        logger.debug(f"Using cached positions ({current_time - self._position_cache_time:.1f}s old)")
+                    else:
+                        # Fetch current positions directly from trading bot (same as CLI)
+                        positions = await self.trading_bot.get_open_positions(account_id=account_id)
+                        self._position_cache = positions
+                        self._position_cache_time = current_time
+                        logger.debug(f"Fetched fresh positions from API")
+                    
+                    logger.info(f"🔍 Retrieved {len(positions) if positions else 0} total positions")
+                    
+                    if positions:
+                        for i, pos in enumerate(positions):
+                            if not isinstance(pos, dict):
+                                logger.warning(f"Position {i} is not a dict: {type(pos)}")
+                                continue
+                            
+                            # Log FULL position data to debug symbol issue
+                            logger.info(f"🔍 RAW Position {i}: {pos}")
+                            
+                            pos_symbol = pos.get('symbol') or pos.get('Symbol') or pos.get('ticker') or ''
+                            logger.info(f"🔍 Position {i}: symbol='{pos_symbol}' (checking against '{symbol}')")
+                            
+                            # Check if this position matches our symbol
+                            if pos_symbol.upper() != symbol.upper():
+                                logger.debug(f"Position symbol '{pos_symbol}' doesn't match '{symbol}', skipping")
+                                continue
+                            
+                            # Get position side
+                            side_val = pos.get('side')
+                            qty = pos.get('quantity', pos.get('size', 0))
+                            
+                            logger.info(f"🔍 Matched position for {symbol}: side_val={side_val} (type={type(side_val)}), qty={qty}")
+                            
+                            # Normalize possible representations
+                            if isinstance(side_val, str):
+                                s = side_val.upper()
+                                if s in ("LONG", "BUY"):
+                                    pos_side = "LONG"
+                                elif s in ("SHORT", "SELL"):
+                                    pos_side = "SHORT"
+                            elif side_val == 0:
+                                pos_side = "LONG"
+                            elif side_val == 1:
+                                pos_side = "SHORT"
+                            elif isinstance(side_val, int):
+                                # Some brokers use other integers
+                                if side_val > 0:
+                                    pos_side = "LONG"
+                                else:
+                                    pos_side = "SHORT"
+                            
+                            # Check quantity as backup indicator
+                            if pos_side is None and qty != 0:
+                                pos_side = "LONG" if qty > 0 else "SHORT"
+                                logger.info(f"Position side determined from quantity: {pos_side}")
+                            
+                            # First match is enough
+                            if pos_side:
+                                logger.warning(f"✅ Found {pos_side} position for {symbol}: qty={qty}, side_val={side_val}")
+                                print(f"✅ POSITION DETECTED: {pos_side} {qty} {symbol} (side_val={side_val})")
+                                break
+                            else:
+                                logger.error(f"❌ Could not determine position side for {symbol}: side_val={side_val}, qty={qty}")
+                                print(f"❌ FAILED TO PARSE POSITION: symbol={symbol}, side_val={side_val}, qty={qty}")
+                    else:
+                        logger.info(f"🔍 No positions returned for account {account_id}")
+                else:
+                    logger.warning(f"🔍 No account_id available for position check")
+                    
+                if pos_side:
+                    logger.warning(f"📊 DETECTED {pos_side} POSITION for {symbol}")
+                else:
+                    logger.info(f"📊 No position detected for {symbol} - FLAT")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error checking current positions for {symbol}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                pos_side = None
+
             # Get recent bars using configured timeframe (need at least 2)
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
@@ -292,64 +398,96 @@ class SimpleCandleStrategy(BaseStrategy):
                 limit=5  # Get last 5 bars to be safe
             )
             
-            if not bars or len(bars) < self.candles_needed:
+            # New logic requires 3 bars (two consecutive "distance" conditions)
+            if not bars or len(bars) < 3:
                 return None
             
-            # Get the last 2 candles
-            last_candle = bars[-1]
-            prev_candle = bars[-2]
+            # Get the last 3 candles (two consecutive distance checks)
+            c0 = bars[-3]  # older
+            c1 = bars[-2]
+            c2 = bars[-1]  # latest
             
             # Extract OHLC data (handle different formats)
             def get_close(bar):
                 return bar.get('close', bar.get('Close', bar.get('c', 0)))
-            
+
             def get_open(bar):
                 return bar.get('open', bar.get('Open', bar.get('o', 0)))
-            
-            last_close = get_close(last_candle)
-            last_open = get_open(last_candle)
-            prev_close = get_close(prev_candle)
-            prev_open = get_open(prev_candle)
-            
-            if last_close == 0 or prev_close == 0:
+
+            def get_high(bar):
+                return bar.get('high', bar.get('High', bar.get('h', 0)))
+
+            def get_low(bar):
+                return bar.get('low', bar.get('Low', bar.get('l', 0)))
+
+            c0_high = get_high(c0)
+            c0_low = get_low(c0)
+            c1_close = get_close(c1)
+            c1_high = get_high(c1)
+            c1_low = get_low(c1)
+            c2_close = get_close(c2)
+            c2_high = get_high(c2)
+            c2_low = get_low(c2)
+
+            if c0_high == 0 or c0_low == 0 or c1_close == 0 or c2_close == 0:
                 return None
             
-            # Check for bullish pattern: 2 consecutive green candles (close > open)
-            last_bullish = last_close > last_open
-            prev_bullish = prev_close > prev_open
+            # New "distance candle" logic:
+            # - LONG signal requires 2 consecutive positive distance closes:
+            #   c1.close > c0.high AND c2.close > c1.high
+            # - SHORT signal requires 2 consecutive negative distance closes:
+            #   c1.close < c0.low  AND c2.close < c1.low
+            long_distance_ok = (c1_close > c0_high) and (c2_close > c1_high)
+            short_distance_ok = (c1_close < c0_low) and (c2_close < c1_low)
+
+            # Position-direction gating:
+            # - If flat: allow either direction
+            # - If long: allow only LONG
+            # - If short: allow only SHORT
+            allow_long = (pos_side is None) or (pos_side == "LONG")
+            allow_short = (pos_side is None) or (pos_side == "SHORT")
             
-            if last_bullish and prev_bullish:
+            # Log when signals are blocked by position gating
+            if long_distance_ok and not allow_long:
+                msg = f"🚫 LONG signal BLOCKED for {symbol} - Current position is {pos_side}, cannot add opposing orders"
+                logger.warning(msg)
+                print(msg)
+            if short_distance_ok and not allow_short:
+                msg = f"🚫 SHORT signal BLOCKED for {symbol} - Current position is {pos_side}, cannot add opposing orders"
+                logger.warning(msg)
+                print(msg)
+
+            if long_distance_ok and allow_long:
                 # 2 consecutive bullish candles = LONG signal
+                logger.info(f"LONG signal condition met for {symbol} - Current position: {pos_side or 'FLAT'}, Allow long: {allow_long}")
+                
                 # Calculate ATR for stop/profit levels
                 atr = await self.calculate_atr(symbol, self.atr_period)
                 if atr is None or atr <= 0:
                     logger.warning(f"Could not calculate ATR for {symbol}, skipping signal")
                     return None
                 
-                # Get current market quote to ensure entry price is above current bid
-                # For stop_bracket LONG: entry (stop buy) must be above current best bid
+                # Get current market quote to ensure entry price is above current market
+                # For stop_bracket LONG: entry (stop buy) must be above current market price
                 quote = await self.trading_bot.get_market_quote(symbol)
                 if quote and "error" not in quote:
-                    current_bid = quote.get('bid')
-                    current_ask = quote.get('ask')
-                    current_price = quote.get('last') or current_bid or current_ask or last_close
+                    current_bid = quote.get('bid', c2_close)
+                    current_ask = quote.get('ask', c2_close)
+                    current_last = quote.get('last', current_ask)
                     
-                    # For LONG stop order, entry must be above current bid
-                    # Use ask price as base, or bid + buffer if ask unavailable
-                    if current_ask:
-                        base_price = current_ask
-                    elif current_bid:
-                        base_price = current_bid + (2 * 0.25)  # 2 ticks above bid
-                    else:
-                        base_price = last_close + (2 * 0.25)  # Fallback to candle close + buffer
+                    # For LONG stop order, entry must be above current market
+                    # Use the highest of bid/ask/last as base
+                    current_price = max(current_bid, current_ask, current_last) if all([current_bid, current_ask]) else c2_close
                     
-                    # Entry price should be above current ask to ensure it's valid
-                    entry_price = base_price + (2 * 0.25)  # 2 ticks above ask/bid for stop buy
+                    # Entry should be at least 4 ticks above current market (0.25 tick size for MNQ)
+                    entry_price = current_price + (4 * 0.25)  # 1 point above market
+                    
+                    logger.info(f"LONG entry calc: bid={current_bid}, ask={current_ask}, last={current_last}, entry={entry_price:.2f}")
                 else:
                     # Fallback: use candle close + buffer
-                    current_price = last_close
-                    entry_price = current_price + (2 * 0.25)  # 2 ticks above for stop buy
-                    logger.warning(f"Could not get market quote for {symbol}, using candle close")
+                    current_price = c2_close
+                    entry_price = current_price + (4 * 0.25)  # 1 point above for stop buy
+                    logger.warning(f"Could not get market quote for {symbol}, using candle close: {entry_price:.2f}")
                 
                 stop_loss = entry_price - (self.stop_multiplier * atr)  # Stop loss below entry price (1.5 * ATR)
                 take_profit = entry_price + (self.profit_multiplier * atr)  # Take profit above entry price (3 * ATR)
@@ -361,45 +499,44 @@ class SimpleCandleStrategy(BaseStrategy):
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "confidence": 0.6,
-                    "reason": f"2 consecutive bullish candles (prev: {prev_close:.2f}->{prev_open:.2f}, last: {last_open:.2f}->{last_close:.2f}), ATR: {atr:.2f}"
+                    "reason": (
+                        f"2 consecutive +distance closes: c1.close({c1_close:.2f})>c0.high({c0_high:.2f}) "
+                        f"and c2.close({c2_close:.2f})>c1.high({c1_high:.2f}), ATR: {atr:.2f} "
+                        f"[POSITION: {pos_side or 'FLAT'}, ALLOWED: LONG only]"
+                    )
                 }
             
-            # Check for bearish pattern: 2 consecutive red candles (close < open)
-            last_bearish = last_close < last_open
-            prev_bearish = prev_close < prev_open
-            
-            if last_bearish and prev_bearish:
+            if short_distance_ok and allow_short:
                 # 2 consecutive bearish candles = SHORT signal
+                logger.info(f"SHORT signal condition met for {symbol} - Current position: {pos_side or 'FLAT'}, Allow short: {allow_short}")
+                
                 # Calculate ATR for stop/profit levels
                 atr = await self.calculate_atr(symbol, self.atr_period)
                 if atr is None or atr <= 0:
                     logger.warning(f"Could not calculate ATR for {symbol}, skipping signal")
                     return None
                 
-                # Get current market quote to ensure entry price is below current ask
-                # For stop_bracket SHORT: entry (stop sell) must be below current best ask
+                # Get current market quote to ensure entry price is below current market
+                # For stop_bracket SHORT: entry (stop sell) must be below current market price
                 quote = await self.trading_bot.get_market_quote(symbol)
                 if quote and "error" not in quote:
-                    current_bid = quote.get('bid')
-                    current_ask = quote.get('ask')
-                    current_price = quote.get('last') or current_ask or current_bid or last_close
+                    current_bid = quote.get('bid', c2_close)
+                    current_ask = quote.get('ask', c2_close)
+                    current_last = quote.get('last', current_bid)
                     
-                    # For SHORT stop order, entry must be below current ask
-                    # Use bid price as base, or ask - buffer if bid unavailable
-                    if current_bid:
-                        base_price = current_bid
-                    elif current_ask:
-                        base_price = current_ask - (2 * 0.25)  # 2 ticks below ask
-                    else:
-                        base_price = last_close - (2 * 0.25)  # Fallback to candle close - buffer
+                    # For SHORT stop order, entry must be below current market
+                    # Use the lowest of bid/ask/last as base
+                    current_price = min(current_bid, current_ask, current_last) if all([current_bid, current_ask]) else c2_close
                     
-                    # Entry price should be below current bid to ensure it's valid
-                    entry_price = base_price - (2 * 0.25)  # 2 ticks below bid/ask for stop sell
+                    # Entry should be at least 4 ticks below current market (0.25 tick size for MNQ)
+                    entry_price = current_price - (4 * 0.25)  # 1 point below market
+                    
+                    logger.info(f"SHORT entry calc: bid={current_bid}, ask={current_ask}, last={current_last}, entry={entry_price:.2f}")
                 else:
                     # Fallback: use candle close - buffer
-                    current_price = last_close
-                    entry_price = current_price - (2 * 0.25)  # 2 ticks below for stop sell
-                    logger.warning(f"Could not get market quote for {symbol}, using candle close")
+                    current_price = c2_close
+                    entry_price = current_price - (4 * 0.25)  # 1 point below for stop sell
+                    logger.warning(f"Could not get market quote for {symbol}, using candle close: {entry_price:.2f}")
                 
                 stop_loss = entry_price + (self.stop_multiplier * atr)  # Stop loss above entry price (1.5 * ATR)
                 take_profit = entry_price - (self.profit_multiplier * atr)  # Take profit below entry price (3 * ATR)
@@ -411,7 +548,11 @@ class SimpleCandleStrategy(BaseStrategy):
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "confidence": 0.6,
-                    "reason": f"2 consecutive bearish candles (prev: {prev_open:.2f}->{prev_close:.2f}, last: {last_open:.2f}->{last_close:.2f}), ATR: {atr:.2f}"
+                    "reason": (
+                        f"2 consecutive -distance closes: c1.close({c1_close:.2f})<c0.low({c0_low:.2f}) "
+                        f"and c2.close({c2_close:.2f})<c1.low({c1_low:.2f}), ATR: {atr:.2f} "
+                        f"[POSITION: {pos_side or 'FLAT'}, ALLOWED: SHORT only]"
+                    )
                 }
             
             return None
@@ -501,7 +642,7 @@ class SimpleCandleStrategy(BaseStrategy):
     async def manage_positions(self):
         """Manage open positions (check for exits, trailing stops, etc.)."""
         # This strategy uses bracket orders, so positions are managed automatically
-        # Just track active positions
+        # Just track active positions and refresh cache
         try:
             account_id = None
             if isinstance(self.trading_bot.selected_account, dict):
@@ -512,13 +653,21 @@ class SimpleCandleStrategy(BaseStrategy):
             if not account_id:
                 return
             
+            # Fetch and cache positions
+            import time
             positions = await self.trading_bot.get_open_positions(account_id=account_id)
+            self._position_cache = positions
+            self._position_cache_time = time.time()
+            
             if positions:
                 # Update active positions list
                 self.active_positions = [
                     pos for pos in positions 
                     if pos.get('symbol') in self.config.symbols
                 ]
+                logger.debug(f"Manage positions: {len(self.active_positions)} active for strategy symbols")
+            else:
+                self.active_positions = []
         except Exception as e:
             logger.debug(f"Error managing positions: {e}")
     
@@ -561,12 +710,20 @@ class SimpleCandleStrategy(BaseStrategy):
 
         check_interval = 10  # Check every 10 seconds (faster for 1m candles)
         loop_count = 0
+        last_position_count = 0  # Track position count changes
 
         while self.status == StrategyStatus.ACTIVE:
             try:
                 loop_count += 1
-                if loop_count % 6 == 0:  # Print status every 6 loops (every minute)
-                    print(f"🔄 Strategy running... ({len(self.active_positions)} positions)")
+                current_position_count = len(self.active_positions)
+                
+                # Only log/print on state change (position count changed) or every 30 loops (~5 minutes)
+                if current_position_count != last_position_count or loop_count % 30 == 0:
+                    logger.debug(f"🔄 Strategy running... ({current_position_count} positions)")
+                    # Only print to terminal on position changes, not every loop
+                    if current_position_count != last_position_count:
+                        print(f"🔄 Strategy running... ({current_position_count} positions)")
+                    last_position_count = current_position_count
                 
                 # Manage existing positions
                 await self.manage_positions()
@@ -595,6 +752,23 @@ class SimpleCandleStrategy(BaseStrategy):
                     if signal:
                         print(f"📊 Signal detected: {signal['action']} {signal['symbol']} - {signal['reason']}")
                         logger.info(f"📊 Signal detected: {signal['action']} {signal['symbol']} - {signal['reason']}")
+                        # Broadcast to GUI + Discord via StrategyManager helper (this strategy runs its own loop)
+                        try:
+                            if hasattr(self.trading_bot, 'strategy_manager') and self.trading_bot.strategy_manager:
+                                signal_data = {
+                                    'type': signal.get('action', 'SIGNAL'),
+                                    'strategy': self.config.name,
+                                    'symbol': signal.get('symbol', symbol),
+                                    'message': signal.get('reason', f"{signal.get('action', 'SIGNAL')} signal generated"),
+                                    'entry_price': signal.get('entry_price'),
+                                    'stop_loss': signal.get('stop_loss'),
+                                    'take_profit': signal.get('take_profit'),
+                                    'direction': signal.get('action', 'SIGNAL'),
+                                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                                }
+                                await self.trading_bot.strategy_manager.broadcast_signal(signal_data)
+                        except Exception as e:
+                            logger.debug(f"Could not broadcast strategy signal: {e}")
                         await self.execute(signal)
                 
                 # Wait before next check

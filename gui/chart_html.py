@@ -95,51 +95,42 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 if balance_data is not None:
                     balance = float(balance_data)
             
-            # Get P&L from positions (aggregate from all positions as per accountInfo.md)
+            # --- PnL ---
+            # TopStepX position payloads often *do not* include unrealizedPnL; our
+            # `handle_get_positions()` already computes accurate unrealized PnL using
+            # tick value + current quote. Reuse that to drive the account banner.
             unrealized_pnl = 0.0
             realized_pnl = 0.0
-            
-            # First, try to get PnL from account tracker (most accurate)
+
+            # **Realized PnL**: best-effort from AccountTracker state (if available)
             try:
-                if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
-                    if account_id:
-                        # Use get_state() which returns both realized and unrealized PnL
-                        account_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
-                        if account_state:
-                            # get_state() returns 'realized_pnl' and 'unrealized_pnl' (American spelling)
-                            realized_pnl = float(account_state.get('realized_pnl', 0.0) or 0.0)
-                            unrealized_pnl = float(account_state.get('unrealized_pnl', 0.0) or 0.0)
-                            logger.debug(f"Got PnL from account tracker: realized={realized_pnl}, unrealized={unrealized_pnl}")
+                if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker and account_id:
+                    state = trading_bot.account_tracker.get_state(account_id=str(account_id))
+                    if isinstance(state, dict):
+                        realized_pnl = float(state.get('realized_pnl', 0.0) or 0.0)
             except Exception as e:
-                logger.debug(f"Could not get PnL from account tracker: {e}")
-            
-            # If account tracker doesn't have PnL, aggregate from positions
-            if unrealized_pnl == 0.0:
-                try:
-                    positions = await trading_bot.get_open_positions(account_id=account_id)
-                    if positions:
-                        for pos in positions:
-                            # Try multiple field names for unrealized PnL
-                            pos_unrealized = pos.get('unrealizedPnL') or pos.get('unrealized_pnl') or pos.get('unrealizedPnl') or 0
-                            if pos_unrealized:
-                                unrealized_pnl += float(pos_unrealized)
-                        logger.debug(f"Aggregated unrealized PnL from {len(positions)} positions: {unrealized_pnl}")
-                except Exception as e:
-                    logger.debug(f"Could not aggregate PnL from positions: {e}")
-            
-            # If still no realized PnL, try to get from account tracker's daily PnL
-            if realized_pnl == 0.0:
-                try:
-                    if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
-                        if account_id:
-                            daily_pnl = trading_bot.account_tracker.get_daily_pnl(account_id=str(account_id))
-                            if daily_pnl:
-                                # Daily PnL includes both realized and unrealized, but we want only realized
-                                # For now, use daily PnL as realized (this is approximate)
-                                realized_pnl = float(daily_pnl)
-                                logger.debug(f"Got realized PnL from daily PnL: {realized_pnl}")
-                except Exception as e:
-                    logger.debug(f"Could not get realized PnL from daily PnL: {e}")
+                logger.debug(f"Could not get realized PnL from account tracker: {e}")
+
+            # **Unrealized PnL**: sum computed per-position PnL from `handle_get_positions()`
+            try:
+                pos_resp = await handle_get_positions(None)
+                pos_payload = None
+                # aiohttp Response exposes `.text` as a property with the decoded body
+                if hasattr(pos_resp, 'text') and pos_resp.text:
+                    pos_payload = json.loads(pos_resp.text)
+                elif hasattr(pos_resp, 'body') and pos_resp.body:
+                    pos_payload = json.loads(pos_resp.body.decode('utf-8'))
+
+                positions_list = (pos_payload or {}).get('positions') or []
+                for pos in positions_list:
+                    if isinstance(pos, dict):
+                        upnl = pos.get('unrealized_pnl') or pos.get('unrealizedPnL') or pos.get('unrealizedPnl') or 0.0
+                        try:
+                            unrealized_pnl += float(upnl or 0.0)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"Could not compute unrealized PnL from positions: {e}")
             
             # Get compliance status if available
             compliance = {}
@@ -302,15 +293,30 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             order_type = data.get('order_type', 'market')  # 'market', 'limit', 'stop'
             limit_price = data.get('limit_price')
             stop_price = data.get('stop_price')
-            stop_loss_price = data.get('stop_loss_price')
-            take_profit_price = data.get('take_profit_price')
-            enable_bracket = data.get('enable_bracket', False)
+            # Bracket inputs (support multiple key styles for backward compatibility)
+            enable_bracket = data.get('enable_bracket', data.get('enableBracket', False))
+            stop_loss_price = data.get('stop_loss_price', data.get('stopLossPrice'))
+            take_profit_price = data.get('take_profit_price', data.get('takeProfitPrice'))
+            stop_loss_ticks = data.get('stop_loss_ticks', data.get('stopLossTicks'))
+            take_profit_ticks = data.get('take_profit_ticks', data.get('takeProfitTicks'))
+
+            # Helpful debug log (kept INFO; very small payload)
+            try:
+                logger.info(
+                    f"📥 /api/chart/order payload: symbol={order_symbol} side={side} qty={quantity} "
+                    f"type={order_type} limit={limit_price} stop={stop_price} "
+                    f"enable_bracket={enable_bracket} sl_price={stop_loss_price} tp_price={take_profit_price} "
+                    f"sl_ticks={stop_loss_ticks} tp_ticks={take_profit_ticks}"
+                )
+            except Exception:
+                pass
             
             # Place order via trading bot
             # Check if this is a bracket order (either order_type is 'bracket' or enable_bracket is True with prices)
             # Distinguish between bracket order type (uses ticks) vs orders with bracket enabled (uses prices)
             is_bracket_order_type = (order_type == 'bracket')
             has_bracket_enabled = (enable_bracket and stop_loss_price and take_profit_price)
+            has_bracket_ticks = (enable_bracket and stop_loss_ticks is not None and take_profit_ticks is not None)
             
             if is_bracket_order_type:
                 # Standalone bracket order - expects ticks, not prices
@@ -357,6 +363,35 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     import traceback
                     logger.error(traceback.format_exc())
                     result = {'error': f'Failed to create bracket order: {str(e)}'}
+            elif has_bracket_ticks:
+                # Bracket provided in ticks (common from older UI payloads)
+                try:
+                    sl = int(stop_loss_ticks)
+                    tp = int(take_profit_ticks)
+                    if sl <= 0 or tp <= 0:
+                        result = {'error': 'Bracket ticks must be positive integers'}
+                    else:
+                        # Normalize sign conventions expected by TopStepX brackets
+                        if side and side.upper() == 'BUY':
+                            sl = -abs(sl)
+                            tp = abs(tp)
+                        else:
+                            sl = abs(sl)
+                            tp = -abs(tp)
+
+                        result = await trading_bot.place_market_order(
+                            symbol=order_symbol,
+                            side=side,
+                            quantity=quantity,
+                            order_type='market',
+                            stop_loss_ticks=sl,
+                            take_profit_ticks=tp
+                        )
+                except Exception as e:
+                    logger.error(f"Error placing market order with tick brackets: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    result = {'error': f'Failed to place market order with tick brackets: {str(e)}'}
             elif has_bracket_enabled:
                 # Order with bracket enabled - use prices directly
                 if order_type == 'market':
@@ -661,18 +696,20 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
                 if not contract_str:
                     return None
-                parts = str(contract_str).split('.')
+                # Strip any trailing dots first
+                contract_str = str(contract_str).rstrip('.')
+                parts = contract_str.split('.')
                 # ContractManager uses parts[-2] for contractId like "CON.F.US.MNQ.Z25"
                 # For symbolId like "F.US.MNQ", we want parts[-1]
                 if len(parts) >= 2:
                     # Try parts[-2] first (for contractId format like "CON.F.US.MNQ.Z25")
                     if len(parts) >= 4:
                         candidate = parts[-2]
-                        if candidate.isalpha() and candidate.isupper():
+                        if candidate and candidate.isalpha() and candidate.isupper():
                             return candidate
                     # Fallback to parts[-1] (for symbolId format like "F.US.MNQ")
                     candidate = parts[-1]
-                    if candidate.isalpha() and candidate.isupper():
+                    if candidate and candidate.isalpha() and candidate.isupper():
                         return candidate
                 return None
             
@@ -898,58 +935,86 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         try:
             # Get account ID from query or use default (handle None request for WebSocket broadcasts)
             account_id = request.query.get('account_id') if request else None
-            orders = await trading_bot.get_open_orders(account_id=account_id)
-            logger.debug(f"✅ Fetched {len(orders) if orders else 0} standalone orders for chart")
             
-            # Also fetch linked orders (stop/take profit) for all positions
-            # These are typically not returned by get_open_orders() but are linked to positions
-            try:
-                positions = await trading_bot.get_open_positions(account_id=account_id)
-                linked_orders_all = []
-                for pos in positions or []:
-                    pos_id = pos.get('id') or pos.get('position_id')
-                    if pos_id:
-                        try:
-                            linked_orders = await trading_bot.get_linked_orders(pos_id, account_id=account_id)
-                            if linked_orders and isinstance(linked_orders, list):
-                                # Include all linked orders (stop/take profit), not just AutoBracket ones
-                                linked_orders_all.extend(linked_orders)
-                        except Exception as e:
-                            logger.debug(f"Could not fetch linked orders for position {pos_id}: {e}")
-                
-                # Combine standalone orders with linked orders
-                if linked_orders_all:
-                    logger.debug(f"✅ Found {len(linked_orders_all)} linked orders (stop/take profit)")
-                    # Initialize orders list if None
-                    if orders is None:
-                        orders = []
-                    # Add linked orders to the orders list (avoid duplicates by order ID)
-                    existing_order_ids = {str(order.get('id') or order.get('orderId')) for order in orders}
-                    for linked_order in linked_orders_all:
-                        order_id = str(linked_order.get('id') or linked_order.get('orderId'))
-                        if order_id and order_id not in existing_order_ids and order_id != 'None':
-                            orders.append(linked_order)
-                            existing_order_ids.add(order_id)
-                    logger.debug(f"✅ Total orders (standalone + linked): {len(orders)}")
-            except Exception as e:
-                logger.debug(f"Could not fetch linked orders: {e}")
+            # include_linked=1 is opt-in because it can be very slow (per-position /api/Order/search calls)
+            include_linked = False
+            if request:
+                include_linked_raw = request.query.get('include_linked')
+                include_linked = str(include_linked_raw).lower() in ('1', 'true', 'yes', 'y', 'on')
+
+            # Prevent refresh storms (polling + multiple tabs) from stacking slow queries
+            import time
+            if not hasattr(handle_get_orders, "_lock"):
+                handle_get_orders._lock = asyncio.Lock()
+            if not hasattr(handle_get_orders, "_cache"):
+                handle_get_orders._cache = {}
+            cache_key = f"{account_id or 'default'}|include_linked={include_linked}"
+            cached = handle_get_orders._cache.get(cache_key)
+            now = time.monotonic()
+            cache_ttl = 2.0
+            if cached and (now - cached.get("ts", 0.0)) < cache_ttl:
+                response = web.json_response(cached["payload"])
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+
+            async with handle_get_orders._lock:
+                cached = handle_get_orders._cache.get(cache_key)
+                now = time.monotonic()
+                if cached and (now - cached.get("ts", 0.0)) < cache_ttl:
+                    response = web.json_response(cached["payload"])
+                    response.headers['Access-Control-Allow-Origin'] = '*'
+                    return response
+
+                orders = await trading_bot.get_open_orders(account_id=account_id)
+                logger.debug(f"✅ Fetched {len(orders) if orders else 0} standalone orders for chart")
+
+                # Optional linked order enrichment (slow; opt-in only)
+                if include_linked:
+                    try:
+                        positions = await trading_bot.get_open_positions(account_id=account_id)
+                        linked_orders_all = []
+                        for pos in positions or []:
+                            pos_id = pos.get('id') or pos.get('position_id')
+                            if pos_id:
+                                try:
+                                    linked_orders = await trading_bot.get_linked_orders(pos_id, account_id=account_id)
+                                    if linked_orders and isinstance(linked_orders, list):
+                                        linked_orders_all.extend(linked_orders)
+                                except Exception as e:
+                                    logger.debug(f"Could not fetch linked orders for position {pos_id}: {e}")
+
+                        if linked_orders_all:
+                            logger.debug(f"✅ Found {len(linked_orders_all)} linked orders (stop/take profit)")
+                            if orders is None:
+                                orders = []
+                            existing_order_ids = {str(order.get('id') or order.get('orderId')) for order in orders}
+                            for linked_order in linked_orders_all:
+                                order_id = str(linked_order.get('id') or linked_order.get('orderId'))
+                                if order_id and order_id not in existing_order_ids and order_id != 'None':
+                                    orders.append(linked_order)
+                                    existing_order_ids.add(order_id)
+                            logger.debug(f"✅ Total orders (standalone + linked): {len(orders)}")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch linked orders: {e}")
             
             def extract_symbol_from_contract(contract_str):
                 """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
                 if not contract_str:
                     return None
-                parts = str(contract_str).split('.')
+                # Strip any trailing dots first
+                contract_str = str(contract_str).rstrip('.')
+                parts = contract_str.split('.')
                 # ContractManager uses parts[-2] for contractId like "CON.F.US.MNQ.Z25"
                 # For symbolId like "F.US.MNQ", we want parts[-1]
                 if len(parts) >= 2:
                     # Try parts[-2] first (for contractId format like "CON.F.US.MNQ.Z25")
                     if len(parts) >= 4:
                         candidate = parts[-2]
-                        if candidate.isalpha() and candidate.isupper():
+                        if candidate and candidate.isalpha() and candidate.isupper():
                             return candidate
                     # Fallback to parts[-1] (for symbolId format like "F.US.MNQ")
                     candidate = parts[-1]
-                    if candidate.isalpha() and candidate.isupper():
+                    if candidate and candidate.isalpha() and candidate.isupper():
                         return candidate
                 return None
             
@@ -973,15 +1038,20 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         side = 'BUY' if (side == 0 or side is None) else 'SELL'
                         order_dict['side'] = side
                     
-                    # Convert status: 1 = OPEN/PENDING (TopStepX numeric)
+                    # Convert status: TopStepX numeric → readable strings
                     status = order_dict.get('status')
                     if isinstance(status, int):
                         if status == 1:
                             order_dict['status'] = 'OPEN'  # Keep as OPEN for display
                         elif status == 0:
                             order_dict['status'] = 'PENDING'
+                        elif status in (2, 3):
+                            # TopStepX may report bracket children as "Suspended" until the parent triggers
+                            order_dict['status'] = 'SUSPENDED'
                     elif isinstance(status, str) and status.upper() == 'PENDING':
                         order_dict['status'] = 'OPEN'  # Normalize to OPEN for display
+                    elif isinstance(status, str) and status.strip().lower() == 'suspended':
+                        order_dict['status'] = 'SUSPENDED'
                     
                     # Convert order type: 1 = LIMIT, 2 = MARKET, 4 = STOP
                     order_type_num = order_dict.get('type', 0)
@@ -1048,8 +1118,86 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         'contractId': getattr(order, 'contract_id', None),
                     })
             
-            response = web.json_response({'orders': orders_list})
+            # Group orders by parent/child relationships for bracket display
+            order_groups = {}
+            position_groups = {}  # Track position-linked brackets separately
+            
+            # First pass: Group orders by parentOrderId
+            for order in orders_list:
+                order_id = str(order.get('id') or order.get('orderId', ''))
+                parent_id = order.get('parentOrderId') or order.get('parent_order_id')
+                position_id = order.get('positionId') or order.get('position_id')
+                
+                # Check if this order is linked to a position (bracket order)
+                if position_id and not parent_id:
+                    # This is a bracket order linked to a position
+                    pos_key = str(position_id)
+                    if pos_key not in position_groups:
+                        position_groups[pos_key] = []
+                    position_groups[pos_key].append(order)
+                elif parent_id:
+                    # This is a child order (SL or TP) with a parent order
+                    parent_key = str(parent_id)
+                    if parent_key not in order_groups:
+                        order_groups[parent_key] = {'parent': None, 'children': []}
+                    order_groups[parent_key]['children'].append(order)
+                else:
+                    # This is a parent order (or standalone)
+                    if order_id not in order_groups:
+                        order_groups[order_id] = {'parent': None, 'children': []}
+                    order_groups[order_id]['parent'] = order
+            
+            # Convert order_groups to list format for easier frontend rendering
+            groups_list = []
+            for group_id, group_data in order_groups.items():
+                if group_data['parent']:
+                    groups_list.append({
+                        'id': group_id,
+                        'type': 'order',
+                        'parent': group_data['parent'],
+                        'children': group_data['children']
+                    })
+            
+            # Add position groups (brackets linked to positions)
+            try:
+                positions = []
+                if position_groups:
+                    positions = await trading_bot.get_open_positions(account_id=account_id)
+                for pos in positions or []:
+                    pos_id = str(pos.get('id') or pos.get('position_id') or '')
+                    if pos_id in position_groups:
+                        # Create a pseudo-order entry for the position
+                        position_entry = {
+                            'id': f'POS_{pos_id}',
+                            'symbol': pos.get('symbol'),
+                            'side': pos.get('side'),
+                            'quantity': pos.get('quantity') or pos.get('size'),
+                            'price': pos.get('entryPrice') or pos.get('entry_price') or pos.get('averagePrice'),
+                            'type': 'POSITION',
+                            'status': 'OPEN',
+                            'position_id': pos_id
+                        }
+                        groups_list.append({
+                            'id': f'POS_{pos_id}',
+                            'type': 'position',
+                            'parent': position_entry,
+                            'children': position_groups[pos_id]
+                        })
+                        logger.debug(f"✅ Grouped {len(position_groups[pos_id])} bracket orders under position {pos_id}")
+            except Exception as e:
+                logger.debug(f"Could not group position brackets: {e}")
+            
+            response = web.json_response({
+                'orders': orders_list,
+                'groups': groups_list
+            })
             response.headers['Access-Control-Allow-Origin'] = '*'
+            # Cache response for a short TTL to avoid poll storms
+            if hasattr(handle_get_orders, "_cache"):
+                handle_get_orders._cache[cache_key] = {
+                    "ts": time.monotonic(),
+                    "payload": {'orders': orders_list, 'groups': groups_list}
+                }
             return response
         except Exception as e:
             logger.error(f"❌ Error fetching orders for chart: {e}")
@@ -1214,6 +1362,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             # Get all loaded strategies
             statuses = {}
+            active_names = set(getattr(trading_bot.strategy_manager, 'active_strategies', []) or [])
             for name, strategy in trading_bot.strategy_manager.strategies.items():
                 if strategy:
                     # Get strategy config
@@ -1229,24 +1378,36 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         start_time = strategy._start_time
                     
                     # Format start time
-                    start_time_str = 'N/A'
-                    if start_time:
-                        if isinstance(start_time, str):
-                            start_time_str = start_time
-                        else:
-                            from datetime import datetime
-                            if isinstance(start_time, datetime):
-                                start_time_str = start_time.strftime('%Y-%m-%d %H:%M:%S')
-                            else:
-                                start_time_str = str(start_time)
+                    start_time_iso = None
+                    runtime_seconds = None
+                    runtime_str = None
+                    try:
+                        from datetime import datetime, timezone
+                        if isinstance(start_time, datetime):
+                            # Make timezone-aware for consistent ISO parsing in the browser
+                            dt = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
+                            start_time_iso = dt.isoformat()
+                            if name in active_names:
+                                now = datetime.now(timezone.utc)
+                                runtime_seconds = int((now - dt).total_seconds())
+                                hours = runtime_seconds // 3600
+                                minutes = (runtime_seconds % 3600) // 60
+                                runtime_str = f"{hours}h {minutes}m"
+                        elif isinstance(start_time, str) and start_time.strip():
+                            # If a strategy stored a string, pass it through and let the UI show it
+                            start_time_iso = start_time
+                    except Exception:
+                        start_time_iso = str(start_time) if start_time else None
                     
                     statuses[name] = {
                         'name': name,
                         'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
-                        'active': getattr(strategy, 'status', None) == getattr(strategy.__class__, 'Status', type('Status', (), {'ACTIVE': 'active'}))().ACTIVE if hasattr(strategy.__class__, 'Status') else False,
+                        'active': name in active_names,
                         'symbols': symbols,
                         'timeframe': timeframe,
-                        'start_time': start_time_str,
+                        'start_time': start_time_iso or 'N/A',
+                        'runtime_seconds': runtime_seconds,
+                        'runtime_str': runtime_str,
                         'positions': len(getattr(strategy, 'active_positions', [])) if hasattr(strategy, 'active_positions') else 0
                     }
             
@@ -1305,14 +1466,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             command = ' '.join(cmd_parts)
             logger.info(f"Executing strategy start command: {command}")
-            
-            # Execute via CLI parser
-            result = await parser.parse_and_execute(command, interactive=False)
-            
-            if result.get('success'):
-                response = web.json_response({'success': True, 'message': result.get('message', 'Strategy started')})
-            else:
-                response = web.json_response({'success': False, 'error': result.get('error', 'Failed to start strategy')})
+
+            # Execute via CLI parser (parse_and_execute returns handler result or raises)
+            try:
+                result = await parser.parse_and_execute(command)
+                response = web.json_response({'success': True, 'result': result, 'message': 'Strategy started'})
+            except Exception as cmd_err:
+                response = web.json_response({'success': False, 'error': str(cmd_err)}, status=400)
             
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -1339,14 +1499,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             command = f'strategies stop {strategy_name}'
             logger.info(f"Executing strategy stop command: {command}")
-            
-            # Execute via CLI parser
-            result = await parser.parse_and_execute(command, interactive=False)
-            
-            if result.get('success'):
-                response = web.json_response({'success': True, 'message': result.get('message', 'Strategy stopped')})
-            else:
-                response = web.json_response({'success': False, 'error': result.get('error', 'Failed to stop strategy')})
+
+            # Execute via CLI parser (parse_and_execute returns handler result or raises)
+            try:
+                result = await parser.parse_and_execute(command)
+                response = web.json_response({'success': True, 'result': result, 'message': 'Strategy stopped'})
+            except Exception as cmd_err:
+                response = web.json_response({'success': False, 'error': str(cmd_err)}, status=400)
             
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -1431,6 +1590,173 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
 
+    async def handle_close_position(request):
+        """Handle closing a single position."""
+        try:
+            logger.info("📥 Received close_position request")
+            data = await request.json()
+            position_id = data.get('position_id')
+            logger.info(f"Position ID to close: {position_id}")
+            
+            if not position_id:
+                logger.warning("No position_id provided")
+                response = web.json_response({'success': False, 'error': 'position_id required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            
+            # Get account_id
+            account_id = None
+            if hasattr(trading_bot, "selected_account") and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get("id")
+                else:
+                    account_id = trading_bot.selected_account
+            logger.info(f"Using account_id: {account_id}")
+            
+            # Close the position
+            try:
+                result = await trading_bot.close_position(
+                    position_id=str(position_id),
+                    account_id=account_id
+                )
+                
+                # Handle result as dict or object
+                if isinstance(result, dict):
+                    success = result.get('success', False)
+                    error_msg = result.get('error') or result.get('message', 'Unknown error')
+                else:
+                    success = getattr(result, 'success', False)
+                    error_msg = getattr(result, 'message', 'Unknown error')
+                
+                if result and success:
+                    logger.info(f"✅ Position {position_id} closed successfully")
+                    response = web.json_response({'success': True, 'message': f'Position {position_id} closed'})
+                else:
+                    # Check if error is about missing position (404) - might already be closed
+                    if '404' in str(error_msg) or 'not found' in str(error_msg).lower():
+                        logger.warning(f"⚠️ Position {position_id} not found (might already be closed)")
+                        response = web.json_response({
+                            'success': True, 
+                            'message': f'Position {position_id} not found (may already be closed)',
+                            'warning': 'Position not found in API'
+                        })
+                    else:
+                        logger.error(f"❌ Failed to close position {position_id}: {error_msg}")
+                        response = web.json_response({'success': False, 'error': error_msg}, status=400)
+            except Exception as close_error:
+                # Handle specific error cases
+                error_str = str(close_error)
+                if '404' in error_str or 'Not Found' in error_str:
+                    logger.warning(f"⚠️ Position {position_id} returned 404 (might already be closed)")
+                    response = web.json_response({
+                        'success': True,
+                        'message': f'Position {position_id} not found in API (may already be closed)',
+                        'warning': 'Position not found'
+                    })
+                else:
+                    raise  # Re-raise if it's not a 404
+            
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"❌ Error closing position: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_cancel_order(request):
+        """Handle cancelling a single order."""
+        try:
+            logger.info("📥 Received cancel_order request")
+            data = await request.json()
+            order_id = data.get('order_id')
+            logger.info(f"Order ID to cancel: {order_id}")
+            
+            if not order_id:
+                logger.warning("No order_id provided")
+                response = web.json_response({'success': False, 'error': 'order_id required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            
+            # Get account_id
+            account_id = None
+            if hasattr(trading_bot, "selected_account") and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get("id")
+                else:
+                    account_id = trading_bot.selected_account
+            logger.info(f"Using account_id: {account_id}")
+            
+            # Cancel the order
+            try:
+                result = await trading_bot.cancel_order(
+                    order_id=str(order_id),
+                    account_id=account_id
+                )
+                
+                # Handle result as dict or object
+                if isinstance(result, dict):
+                    success = result.get('success', False)
+                    error_msg = result.get('error') or result.get('message', 'Unknown error')
+                else:
+                    success = getattr(result, 'success', False)
+                    error_msg = getattr(result, 'message', 'Unknown error')
+                
+                if result and success:
+                    logger.info(f"✅ Order {order_id} cancelled successfully")
+                    response = web.json_response({'success': True, 'message': f'Order {order_id} cancelled'})
+                else:
+                    # Check for rate limiting (429) or not found (404)
+                    error_str = str(error_msg)
+                    if '429' in error_str or 'Too Many Requests' in error_str:
+                        logger.warning(f"⚠️ Rate limited when cancelling order {order_id}")
+                        response = web.json_response({
+                            'success': False, 
+                            'error': 'Rate limited by API. Please wait a moment and try again.',
+                            'rate_limited': True
+                        }, status=429)
+                    elif '404' in error_str or 'not found' in error_str.lower():
+                        logger.warning(f"⚠️ Order {order_id} not found (might already be cancelled)")
+                        response = web.json_response({
+                            'success': True,
+                            'message': f'Order {order_id} not found (may already be cancelled)',
+                            'warning': 'Order not found'
+                        })
+                    else:
+                        logger.error(f"❌ Failed to cancel order {order_id}: {error_msg}")
+                        response = web.json_response({'success': False, 'error': error_msg}, status=400)
+            except Exception as cancel_error:
+                # Handle specific error cases
+                error_str = str(cancel_error)
+                if '429' in error_str or 'Too Many Requests' in error_str:
+                    logger.warning(f"⚠️ Rate limited when cancelling order {order_id}: {error_str}")
+                    response = web.json_response({
+                        'success': False,
+                        'error': 'API rate limit exceeded. Please wait 10-15 seconds and try again.',
+                        'rate_limited': True
+                    }, status=429)
+                elif '404' in error_str or 'Not Found' in error_str:
+                    logger.warning(f"⚠️ Order {order_id} returned 404 (might already be cancelled)")
+                    response = web.json_response({
+                        'success': True,
+                        'message': f'Order {order_id} not found in API (may already be cancelled)',
+                        'warning': 'Order not found'
+                    })
+                else:
+                    raise  # Re-raise if it's not a known error
+            
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"❌ Error cancelling order: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
     app.router.add_get('/api/chart/quote', handle_quote)
     app.router.add_options('/api/chart/quote', handle_options)
     app.router.add_post('/api/chart/order', handle_place_order)
@@ -1444,8 +1770,118 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_get('/api/chart/reload', handle_reload_data)
     app.router.add_options('/api/chart/reload', handle_options)
     # Strategy endpoints
+    async def handle_strategy_details(request):
+        """Get detailed information about a specific strategy."""
+        try:
+            strategy_name = request.match_info.get('name')
+            
+            if not hasattr(trading_bot, 'strategy_manager'):
+                return web.json_response({'error': 'Strategy manager not available'}, status=404)
+            
+            # Get the strategy instance
+            strategy = trading_bot.strategy_manager.strategies.get(strategy_name)
+            if not strategy:
+                return web.json_response({'error': f'Strategy "{strategy_name}" not found'}, status=404)
+            
+            # Collect basic details
+            config = getattr(strategy, 'config', None)
+            symbols = getattr(config, 'symbols', []) if config else []
+            timeframe = getattr(config, 'timeframe', None) or getattr(strategy, 'timeframe', None) or 'N/A'
+            
+            # Get start time
+            start_time = None
+            if hasattr(strategy, 'start_time'):
+                start_time = strategy.start_time
+            elif hasattr(strategy, '_start_time'):
+                start_time = strategy._start_time
+            
+            # Format start time
+            start_time_str = None
+            if start_time:
+                from datetime import datetime
+                if isinstance(start_time, datetime):
+                    start_time_str = start_time.isoformat()
+                elif isinstance(start_time, str):
+                    start_time_str = start_time
+            
+            details = {
+                'name': strategy_name,
+                'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
+                'start_time': start_time_str,
+                'symbols': symbols,
+                'timeframe': timeframe,
+            }
+            
+            # Strategy-specific details (for overnight_range)
+            if strategy_name == 'overnight_range':
+                # Breakout levels
+                details['breakout_levels'] = {}
+                if hasattr(strategy, 'breakout_levels'):
+                    for symbol, templates in strategy.breakout_levels.items():
+                        level_info = {}
+                        if 'BUY' in templates:
+                            buy_template = templates['BUY']
+                            level_info['long_entry'] = float(buy_template.entry_price) if hasattr(buy_template, 'entry_price') else None
+                            level_info['long_stop'] = float(buy_template.stop_loss) if hasattr(buy_template, 'stop_loss') else None
+                            level_info['long_tp'] = float(buy_template.take_profit) if hasattr(buy_template, 'take_profit') else None
+                        if 'SELL' in templates:
+                            sell_template = templates['SELL']
+                            level_info['short_entry'] = float(sell_template.entry_price) if hasattr(sell_template, 'entry_price') else None
+                            level_info['short_stop'] = float(sell_template.stop_loss) if hasattr(sell_template, 'stop_loss') else None
+                            level_info['short_tp'] = float(sell_template.take_profit) if hasattr(sell_template, 'take_profit') else None
+                        details['breakout_levels'][symbol] = level_info
+                
+                # ATR data
+                details['atr_data'] = {}
+                if hasattr(strategy, 'active_ranges'):
+                    for symbol, range_data in strategy.active_ranges.items():
+                        if hasattr(range_data, 'atr_data'):
+                            atr = range_data.atr_data
+                            details['atr_data'][symbol] = {
+                                'current_atr': float(atr.current_atr) if hasattr(atr, 'current_atr') and atr.current_atr else None,
+                                'daily_atr': float(atr.daily_atr) if hasattr(atr, 'daily_atr') and atr.daily_atr else None,
+                                'day_bull_price': float(atr.day_bull_price) if hasattr(atr, 'day_bull_price') and atr.day_bull_price else None,
+                                'day_bear_price': float(atr.day_bear_price) if hasattr(atr, 'day_bear_price') and atr.day_bear_price else None,
+                            }
+                
+                # Overnight range data
+                details['ranges'] = {}
+                if hasattr(strategy, 'active_ranges'):
+                    for symbol, range_data in strategy.active_ranges.items():
+                        range_info = {}
+                        if hasattr(range_data, 'high'):
+                            range_info['high'] = float(range_data.high)
+                        if hasattr(range_data, 'low'):
+                            range_info['low'] = float(range_data.low)
+                        if hasattr(range_data, 'range_size'):
+                            range_info['size'] = float(range_data.range_size)
+                        details['ranges'][symbol] = range_info
+                
+                # Risk parameters
+                details['risk_profile'] = {
+                    'stop_atr_multiplier': float(strategy.stop_atr_multiplier) if hasattr(strategy, 'stop_atr_multiplier') else None,
+                    'tp_atr_multiplier': float(strategy.tp_atr_multiplier) if hasattr(strategy, 'tp_atr_multiplier') else None,
+                    'breakeven_threshold': float(strategy.breakeven_threshold_points) if hasattr(strategy, 'breakeven_threshold_points') else None,
+                }
+                
+                # Active orders/positions count
+                details['active_orders'] = len(strategy.breakout_active_orders) if hasattr(strategy, 'breakout_active_orders') else 0
+            
+            response = web.json_response(details)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error getting strategy details: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
     app.router.add_get('/api/chart/strategy/status', handle_strategy_status)
     app.router.add_options('/api/chart/strategy/status', handle_options)
+    app.router.add_get('/api/chart/strategy/details/{name}', handle_strategy_details)
+    app.router.add_options('/api/chart/strategy/details/{name}', handle_options)
     app.router.add_post('/api/chart/strategy/start', handle_strategy_start)
     app.router.add_options('/api/chart/strategy/start', handle_options)
     app.router.add_post('/api/chart/strategy/stop', handle_strategy_stop)
@@ -1458,6 +1894,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_options('/api/chart/flatten', handle_options)
     app.router.add_post('/api/chart/cancel_all', handle_cancel_all)
     app.router.add_options('/api/chart/cancel_all', handle_options)
+    app.router.add_post('/api/chart/close_position', handle_close_position)
+    app.router.add_options('/api/chart/close_position', handle_options)
+    app.router.add_post('/api/chart/cancel_order', handle_cancel_order)
+    app.router.add_options('/api/chart/cancel_order', handle_options)
+    logger.info("✅ Registered close_position and cancel_order routes")
     
     async def handle_get_accounts(request):
         """Handle get accounts request."""
@@ -1919,13 +2360,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             let priceHtml = '';
             if (entryPrice !== null) {{
-                priceHtml += `<div style="color: #888; font-size: 10px;">Entry: $${entryPrice.toFixed(2)}</div>`;
+                priceHtml += '<div style="color: #888; font-size: 10px;">Entry: $' + entryPrice.toFixed(2) + '</div>';
             }}
             if (stopLoss !== null) {{
-                priceHtml += `<div style="color: #f44336; font-size: 10px;">Stop: $${stopLoss.toFixed(2)}</div>`;
+                priceHtml += '<div style="color: #f44336; font-size: 10px;">Stop: $' + stopLoss.toFixed(2) + '</div>';
             }}
             if (takeProfit !== null) {{
-                priceHtml += `<div style="color: #4caf50; font-size: 10px;">Target: $${takeProfit.toFixed(2)}</div>`;
+                priceHtml += '<div style="color: #4caf50; font-size: 10px;">Target: $' + takeProfit.toFixed(2) + '</div>';
             }}
             
             signalEntry.innerHTML = `
@@ -2187,6 +2628,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         # Start log tailing in separate task
         log_task = asyncio.create_task(tail_log_file())
         
+        tick = 0
         while True:
             try:
                 if _ws_clients:
@@ -2221,28 +2663,31 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     except Exception as e:
                         logger.debug(f"Error broadcasting positions: {e}")
                     
-                    # Broadcast orders
-                    try:
-                        response = await handle_get_orders(None)
-                        if hasattr(response, 'text'):
-                            orders_data = json.loads(response.text)
-                            await broadcast_update({'type': 'orders', 'data': orders_data})
-                    except Exception as e:
-                        logger.debug(f"Error broadcasting orders: {e}")
+                    # Broadcast orders less frequently (network-heavy)
+                    if tick % 3 == 0:  # every ~6 seconds (loop sleeps 2s)
+                        try:
+                            response = await handle_get_orders(None)
+                            if hasattr(response, 'text'):
+                                orders_data = json.loads(response.text)
+                                await broadcast_update({'type': 'orders', 'data': orders_data})
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting orders: {e}")
                     
-                    # Broadcast strategy status
-                    try:
-                        response = await handle_strategy_status(None)
-                        if hasattr(response, 'text'):
-                            strategy_data = json.loads(response.text)
-                            await broadcast_update({'type': 'strategies', 'data': strategy_data})
-                    except Exception as e:
-                        logger.debug(f"Error broadcasting strategy status: {e}")
+                    # Broadcast strategy status less frequently
+                    if tick % 3 == 0:
+                        try:
+                            response = await handle_strategy_status(None)
+                            if hasattr(response, 'text'):
+                                strategy_data = json.loads(response.text)
+                                await broadcast_update({'type': 'strategies', 'data': strategy_data})
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting strategy status: {e}")
                 
                 # Note: Strategy signals are broadcast directly from strategy_manager.py
                 # when signals are generated, not from this loop
                 
-                await asyncio.sleep(2)  # Broadcast every 2 seconds
+                tick += 1
+                await asyncio.sleep(2)  # Account/positions every 2s; orders/strategies throttled above
             except asyncio.CancelledError:
                 logger.info("📡 WebSocket broadcast loop cancelled")
                 log_task.cancel()

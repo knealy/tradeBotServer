@@ -714,6 +714,13 @@ class TopStepXTradingBot:
     def _on_user_hub_order(self, data: Dict):
         """Callback for User Hub order updates."""
         try:
+            # SignalR can deliver payload as [dict] or [dict, ...]
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        self._on_user_hub_order(item)
+                return
+
             # Broadcast to GUI if available
             try:
                 from gui.chart_html import broadcast_update
@@ -744,6 +751,29 @@ class TopStepXTradingBot:
     def _on_user_hub_trade(self, data: Dict):
         """Callback for User Hub trade updates."""
         try:
+            # SignalR can deliver payload as [dict] or [dict, ...]
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        self._on_user_hub_trade(item)
+                return
+
+            # Update AccountTracker with trade PnL
+            if data.get('profitAndLoss') and hasattr(self, 'account_tracker') and self.account_tracker:
+                account_id = str(data.get('accountId', ''))
+                if account_id:
+                    try:
+                        # Update fill to track realized PnL
+                        fill_data = {
+                            'pnl': float(data.get('profitAndLoss', 0)),
+                            'commission': float(data.get('commission', 0)),
+                            'fee': float(data.get('fee', 0))
+                        }
+                        self.account_tracker.update_fill(fill_data, account_id=account_id)
+                        logger.debug(f"✅ Updated AccountTracker with trade PnL: ${fill_data['pnl']:.2f}")
+                    except Exception as e:
+                        logger.debug(f"Could not update AccountTracker with trade: {e}")
+
             # Update account PnL from trade
             if data.get('profitAndLoss'):
                 try:
@@ -2736,39 +2766,47 @@ class TopStepXTradingBot:
             # Convert Position objects to dicts for backward compatibility
             result = []
             for pos in positions:
-                if hasattr(pos, 'raw_data') and pos.raw_data:
-                    result.append(pos.raw_data)
-                else:
-                    # Convert Position dataclass to dict format
-                    try:
-                        contract_id = None
-                        if pos.symbol:
-                            try:
-                                contract_id = self.contract_manager.get_contract_id(pos.symbol)
-                            except (ValueError, AttributeError):
-                                pass
-                        
-                        result.append({
-                            'id': pos.position_id,
-                            'position_id': pos.position_id,
-                            'symbol': pos.symbol,
-                            'contractId': contract_id,
-                            'contract_id': contract_id,
-                            'side': 0 if pos.side == "LONG" else 1,
-                            'size': pos.quantity,
-                            'quantity': pos.quantity,
-                            'entryPrice': pos.entry_price,
-                            'entry_price': pos.entry_price,
-                            'currentPrice': pos.current_price,
-                            'current_price': pos.current_price,
-                            'unrealizedPnl': pos.unrealized_pnl,
-                            'unrealized_pnl': pos.unrealized_pnl,
-                            'accountId': pos.account_id,
-                            'account_id': pos.account_id
-                        })
-                    except Exception as e:
-                        logger.warning(f"Failed to convert position to dict: {e}")
-                        continue
+                # ALWAYS use Position object fields, not raw_data
+                # raw_data may be missing symbol field (extracted from contract ID)
+                try:
+                    contract_id = None
+                    if pos.symbol:
+                        try:
+                            contract_id = self.contract_manager.get_contract_id(pos.symbol)
+                        except (ValueError, AttributeError):
+                            pass
+                    
+                    # Build dict from Position object fields (symbol is properly extracted)
+                    pos_dict = {
+                        'id': pos.position_id,
+                        'position_id': pos.position_id,
+                        'symbol': pos.symbol,  # This is extracted from contract ID if needed
+                        'contractId': contract_id,
+                        'contract_id': contract_id,
+                        'side': 0 if pos.side == "LONG" else 1,
+                        'size': pos.quantity,
+                        'quantity': pos.quantity,
+                        'entryPrice': pos.entry_price,
+                        'entry_price': pos.entry_price,
+                        'currentPrice': pos.current_price,
+                        'current_price': pos.current_price,
+                        'unrealizedPnl': pos.unrealized_pnl,
+                        'unrealized_pnl': pos.unrealized_pnl,
+                        'accountId': pos.account_id,
+                        'account_id': pos.account_id
+                    }
+                    
+                    # Merge with raw_data for any additional fields
+                    if hasattr(pos, 'raw_data') and pos.raw_data:
+                        pos_dict.update(pos.raw_data)
+                        # Ensure symbol from Position object takes precedence
+                        pos_dict['symbol'] = pos.symbol
+                    
+                    result.append(pos_dict)
+                except Exception as e:
+                    logger.warning(f"Failed to convert position to dict: {e}")
+                    logger.exception(e)
+                    continue
             
             logger.info(f"Found {len(result)} open positions for account {target_account}")
             return result
@@ -4635,7 +4673,10 @@ class TopStepXTradingBot:
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
             
-            # Use TopStepXAdapter for bracket order placement
+            # Use TopStepXAdapter for bracket order placement (OCO brackets).
+            # NOTE: Some accounts are configured for "Position Brackets" (not Auto OCO).
+            # In that mode TopStepX can return HTTP 500 for OCO bracket placement.
+            # When that happens, fall back to the hybrid stop-entry + post-fill bracket logic.
             result = await self.broker_adapter.place_oco_bracket_with_stop_entry(
                 symbol=symbol,
                 side=side,
@@ -4650,15 +4691,64 @@ class TopStepXTradingBot:
             
             # Convert OrderResponse to dict for backward compatibility
             if result.success:
+                method = "unknown"
+                if isinstance(result.raw_response, dict) and result.raw_response.get("_execution_path"):
+                    method = str(result.raw_response.get("_execution_path"))
+                elif isinstance(result.message, str):
+                    # Best-effort: derive from message if present
+                    msg_lower = result.message.lower()
+                    if "rust" in msg_lower:
+                        method = "rust"
+                    elif "python" in msg_lower:
+                        method = "python"
+
                 return {
                     "success": True,
                     "orderId": result.order_id,
                     "message": result.message,
+                    "method": method,
                     **({"raw_response": result.raw_response} if result.raw_response else {})
                 }
             else:
                 error_msg = result.error or "Unknown error"
+
+                # Persist last bracket-related error for GUI feedback
+                try:
+                    self._last_bracket_error = error_msg
+                except Exception:
+                    pass
+
                 logger.error(f"Stop bracket order failed: {error_msg}")
+
+                # Hybrid fallback for accounts without Auto OCO Brackets, or when TopStepX returns 500
+                err_lower = str(error_msg).lower()
+                if (
+                    "position brackets" in err_lower
+                    or "auto oco" in err_lower
+                    or "http 500" in err_lower
+                    or "internal server error" in err_lower
+                ):
+                    logger.warning("⚠️ OCO bracket failed; attempting hybrid stop-entry + post-fill bracket fallback")
+                    hybrid = await self._stop_bracket_hybrid(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=entry_price,
+                        stop_loss_price=stop_loss_price,
+                        take_profit_price=take_profit_price,
+                        account_id=target_account,
+                        enable_breakeven=enable_breakeven,
+                        strategy_name=strategy_name,
+                    )
+                    # If hybrid worked, return it
+                    if isinstance(hybrid, dict) and "error" not in hybrid:
+                        if "method" not in hybrid:
+                            hybrid["method"] = "hybrid_auto_bracket"
+                        return {"success": True, **hybrid}
+                    # Otherwise surface hybrid error (more actionable)
+                    if isinstance(hybrid, dict) and hybrid.get("error"):
+                        return {"success": False, "error": f"{error_msg} | Hybrid fallback failed: {hybrid.get('error')}"}
+
                 return {"success": False, "error": error_msg}
             
         except Exception as e:

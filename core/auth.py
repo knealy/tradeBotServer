@@ -189,7 +189,20 @@ class AuthManager:
                 response.raise_for_status()
             except requests.exceptions.HTTPError as e:
                 status_code = response.status_code
+                # Include server response body (TopStepX often puts the real reason here)
+                body_text = ""
+                try:
+                    body_text = (response.text or "").strip()
+                except Exception:
+                    body_text = ""
+
                 error_msg = f"HTTP {status_code}: {str(e)}"
+                if body_text:
+                    # Keep it single-line for logs; preserve full body in return payload.
+                    snippet = body_text.replace("\n", " ")
+                    if len(snippet) > 600:
+                        snippet = snippet[:600] + "…"
+                    error_msg = f"{error_msg} | body: {snippet}"
                 
                 # Provide more context for 500 errors
                 if status_code == 500:
@@ -207,7 +220,7 @@ class AuthManager:
                         pass
                 
                 logger.error(error_msg)
-                return {"error": error_msg, "status_code": status_code}
+                return {"error": error_msg, "status_code": status_code, "response_text": body_text}
             
             # Parse JSON response
             try:

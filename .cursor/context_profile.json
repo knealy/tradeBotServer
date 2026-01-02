@@ -4,6 +4,85 @@
   "description": "Context profile for common problems, fixes, and patterns in the tradeBotServer codebase",
   
   "common_problems": {
+    "gui_account_pnl_zero": {
+      "problem": "Master GUI account banner shows $0.00 unrealized/realized PnL even with open positions",
+      "symptoms": [
+        "Account bar unrealized/realized stays at $0.00 during session",
+        "Positions widget shows non-zero PnL but banner stays zero"
+      ],
+      "root_causes": [
+        "TopStepX position payload often does not include unrealizedPnL fields",
+        "Account banner endpoint aggregated non-existent fields instead of computing PnL",
+        "Correct PnL computation existed in /api/chart/positions but banner didn't reuse it"
+      ],
+      "solutions": [
+        {
+          "file": "gui/chart_html.py",
+          "method": "handle_account_state",
+          "fix": "Compute unrealized PnL by summing per-position computed PnL from handle_get_positions() (which fetches quotes + uses tick/point values). Realized PnL from AccountTracker.get_state() when available."
+        }
+      ],
+      "prevention": [
+        "Prefer computing PnL from entry price + current quote + tick/point values over trusting API fields",
+        "Reuse canonical formatting/normalization path (handle_get_positions) for consistent UI"
+      ]
+    },
+    "strategy_signals_not_in_gui": {
+      "problem": "Strategy signals execute (orders placed) but Strategy Signals widget shows nothing",
+      "symptoms": [
+        "Signal feed remains 'No signals yet...' while strategies log signals",
+        "No 'signal' WebSocket messages received by frontend"
+      ],
+      "root_causes": [
+        "Some strategies (e.g. SimpleCandleStrategy) run their own loop and bypass StrategyManager._run_strategy broadcast path",
+        "Signals were only broadcast from StrategyManager._run_strategy, not from self-loop strategies"
+      ],
+      "solutions": [
+        {
+          "file": "strategies/strategy_manager.py",
+          "fix": "Add StrategyManager.broadcast_signal() helper that broadcasts to GUI via gui.chart_html.broadcast_update and sends Discord signal notification."
+        },
+        {
+          "file": "strategies/simple_candle_strategy.py",
+          "fix": "Call trading_bot.strategy_manager.broadcast_signal(...) when a signal is detected in the strategy's own loop."
+        }
+      ],
+      "prevention": [
+        "Any strategy that runs its own loop must call a common broadcast helper when signals are generated",
+        "Keep all signal broadcasting in one helper to avoid drift between strategies"
+      ]
+    },
+    "strategy_orders_no_discord": {
+      "problem": "Strategy-initiated orders do not trigger Discord order notifications",
+      "symptoms": [
+        "Signals appear in logs but no Discord order notifications",
+        "Manual CLI orders notify but strategy orders do not"
+      ],
+      "root_causes": [
+        "Strategy order placement did not pass strategy_name down to adapter/order executor",
+        "Rust hot path didn't send strategy-order notifications even when Python fallback did"
+      ],
+      "solutions": [
+        {
+          "file": "strategies/strategy_base.py",
+          "method": "place_bracket_order",
+          "fix": "Pass strategy_name=self.config.name into trading_bot.place_oco_bracket_with_stop_entry so adapter can attribute strategy orders."
+        },
+        {
+          "file": "brokers/topstepx_adapter.py",
+          "method": "_place_oco_bracket_rust",
+          "fix": "Send Discord order notification on Rust hot path when strategy_name is provided."
+        },
+        {
+          "file": "trading_bot.py",
+          "fix": "Set adapter back-reference self.broker_adapter._trading_bot = self so adapter can access DiscordNotifier."
+        }
+      ],
+      "prevention": [
+        "Ensure all order placement methods accept and propagate strategy_name",
+        "Implement Discord notifications in both Python fallback and Rust hot paths"
+      ]
+    },
     "jwt_token_expiration": {
       "problem": "JWT tokens expire causing 500 errors on API calls, especially /api/Order/place",
       "symptoms": [
@@ -232,6 +311,11 @@
         "Slow API warnings (5+ seconds)",
         "High API usage"
       ],
+      "root_causes": [
+        "Overlapping polling calls (async fetches stack up when endpoints are slow)",
+        "Order/position endpoints performing expensive per-position linked-order lookups on every poll",
+        "Multiple tabs polling simultaneously"
+      ],
       "solutions": [
         {
           "area": "Frontend polling intervals",
@@ -244,15 +328,25 @@
         },
         {
           "area": "Backend optimization",
-          "fix": "Use balances from list_accounts() instead of individual calls",
-          "fix": "Add React Query staleTime for better caching"
+          "fixes": [
+            "Make expensive linked-order enrichment opt-in (include_linked=1) instead of default",
+            "Add short TTL caching + a request lock to /api/chart/orders to prevent refresh storms"
+          ]
+        },
+        {
+          "area": "Backend optimization",
+          "fixes": [
+            "Use balances from list_accounts() instead of individual calls",
+            "Add React Query staleTime for better caching"
+          ]
         }
       ],
       "prevention": [
         "Use appropriate polling intervals (not too frequent)",
         "Leverage React Query caching",
         "Use WebSocket for real-time updates when possible",
-        "Cache API responses on backend"
+        "Cache API responses on backend",
+        "Guard against overlapping refreshes (in-progress locks on frontend)"
       ]
     },
     
@@ -275,8 +369,10 @@
         },
         {
           "file": "frontend/src/components/TradingChart.tsx",
-          "fix": "Relax timeframe matching in WebSocket updates",
-          "fix": "Add timeframe subscription request"
+          "fixes": [
+            "Relax timeframe matching in WebSocket updates",
+            "Add timeframe subscription request"
+          ]
         }
       ],
       "prevention": [
@@ -436,6 +532,7 @@
       "Hardcoding contract IDs as integers (TopStepX uses strings like 'CON.F.US.MNQ.Z25')"
     ],
     "prefer": [
+      "Reuse existing CLI/adaptor hot paths for GUI and API routes (delegate to trading_bot + TopStepXAdapter instead of re-implementing logic in gui/chart_html.py)",
       "Use _ensure_valid_token() for token management",
       "Handle async operations in async callers",
       "Remove None values from JSON before sending",
@@ -1211,6 +1308,45 @@
         "Command execution should provide helpful error messages with available commands",
         "Auto-refresh data after successful commands improves UX",
         "Grid layouts benefit from uniform, compact spacing (10px gaps, 10px padding)"
+      ]
+    },
+    {
+      "date": "2025-12-31",
+      "issue": "Overnight range strategy only executing at market open (9:30 AM EST), not throughout the day",
+      "fix": "✅ FIXED! Modified strategy to operate in CONTINUOUS MODE: (1) **Immediate Initialization**: When strategy starts (any time of day), immediately calculates overnight ranges and breakout levels. (2) **Continuous Monitoring**: `monitor_breakout_levels()` task checks price every 15 seconds and places orders when price approaches breakout levels (within 10% threshold). (3) **ATR Zone Logic Fix**: Fixed bug where ATR zones below/above range were incorrectly used as profit targets, causing invalid orders (TP must be above entry for LONG, below for SHORT). (4) **Market Open Recalculation**: At 9:30 AM EST, recalculates ranges with fresh data and updates breakout levels.",
+      "files": [
+        "strategies/overnight_range_strategy.py",
+        "test_overnight_manual.py",
+        "docs/OVERNIGHT_RANGE_CONTINUOUS_MODE.md"
+      ],
+      "impact": "CRITICAL - Strategy now works 24/5 during market hours, not just at market open. Can start strategy anytime and it will monitor continuously, placing orders when price approaches breakout levels. Eliminates need to start exactly at 9:30 AM EST.",
+      "lessons_learned": [
+        "Breakout monitoring feature already existed but only activated after market open sequence",
+        "Strategy can calculate ranges and levels immediately when started, not just at scheduled times",
+        "ATR zones can be inside, above, or below overnight range - must check direction, not just 'outside'",
+        "For LONG orders: TP must be > entry. If ATR zone is below range, use ATR*2 from entry instead",
+        "For SHORT orders: TP must be < entry. If ATR zone is above range, use ATR*2 from entry instead",
+        "Threshold calculation: max(range_size * 0.10, 5.0) ensures minimum 5 pt buffer",
+        "Grace period (MARKET_OPEN_GRACE_MINUTES=5) prevents late execution - extend to 120 for 2-hour window",
+        "Continuous monitoring provides more trading opportunities throughout the day"
+      ]
+    },
+    {
+      "date": "2025-12-31",
+      "issue": "Multiple GUI and strategy errors: 'str' object error, order price validation, missing UI features",
+      "fix": "✅ CRITICAL ERRORS FIXED: (1) **'str' object error**: Added isinstance() check before calling .get() on positions list items in monitor_plain_stop_fills(). (2) **Order price validation**: Added current price check before placing breakout orders to prevent stale SELL STOP orders above market or LONG STOP orders below market. (3) **Continuous monitoring validation**: Validates entry prices against current quote before submission.",
+      "files": [
+        "strategies/overnight_range_strategy.py",
+        "docs/PROBLEMS_SOLVED_DEC31.md"
+      ],
+      "impact": "CRITICAL - Strategy now runs without crashes. Order placement errors reduced. Continuous monitoring operates reliably 24/5.",
+      "lessons_learned": [
+        "Always validate that list items are the expected type before accessing dict methods",
+        "For SELL STOP orders (SHORT entry): entry price must be BELOW current market bid",
+        "For BUY STOP orders (LONG entry): entry price must be ABOVE current market ask",
+        "Overnight calculations can become stale if market moves significantly before order placement",
+        "Add current price validation before placing any stop orders to prevent API rejections",
+        "TopStepX API error 'Order price outside allowed range' indicates stale stop order prices"
       ]
     }
   ],

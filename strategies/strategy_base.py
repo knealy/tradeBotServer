@@ -458,6 +458,8 @@ class BaseStrategy(ABC):
         logger.info(f"📝 {self.config.name}: Placing bracket order via verified path")
         logger.info(f"   {side} {quantity} {symbol} @ {entry_price:.2f}, SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}")
         
+        # IMPORTANT: pass `strategy_name` so downstream (adapter/Rust/Python)
+        # can attribute orders and send Discord notifications for strategy orders.
         result = await self.trading_bot.place_oco_bracket_with_stop_entry(
             symbol=symbol,
             side=side,
@@ -465,7 +467,8 @@ class BaseStrategy(ABC):
             entry_price=entry_price,
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,
-            enable_breakeven=enable_breakeven
+            enable_breakeven=enable_breakeven,
+            strategy_name=self.config.name
         )
         
         if result.get("error"):

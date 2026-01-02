@@ -256,6 +256,30 @@
     ]
   },
   "critical_insights": {
+    "gui_signal_broadcasting": {
+      "description": "GUI strategy signals only appear if they are explicitly broadcast to the chart server WebSocket.",
+      "key_points": [
+        "Strategies that run their own loop (e.g. SimpleCandleStrategy.run) bypass StrategyManager._run_strategy",
+        "Add a shared broadcast helper (StrategyManager.broadcast_signal) and call it from self-loop strategies",
+        "Broadcast format must be {type:'signal', data:{...}} to match master_control.html handler"
+      ]
+    },
+    "strategy_order_notifications": {
+      "description": "Discord order notifications for strategy orders require propagating strategy_name through the order placement stack.",
+      "key_points": [
+        "BaseStrategy.place_bracket_order must pass strategy_name=self.config.name to trading_bot.place_oco_bracket_with_stop_entry",
+        "TopStepXAdapter must handle notifications on both Python fallback and Rust hot path",
+        "Adapter needs a trading_bot back-reference (broker_adapter._trading_bot) to access DiscordNotifier"
+      ]
+    },
+    "account_pnl_source_of_truth": {
+      "description": "TopStepX position payloads may not include unrealizedPnL; compute PnL from quotes + tick/point values.",
+      "key_points": [
+        "Use computed positions path (handle_get_positions) as canonical PnL computation",
+        "Account banner should sum per-position computed PnL, not rely on missing API fields",
+        "Use short TTL caching (≈1s) for UI responsiveness"
+      ]
+    },
     "bracket_mode_understanding": {
       "description": "Order verification must be conditional based on bracket mode",
       "key_points": [

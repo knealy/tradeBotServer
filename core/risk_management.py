@@ -53,6 +53,7 @@ class RiskManager:
         "RTY": 50.0,   # $50 per point
         "CL": 1000.0,  # $1000 per point
         "GC": 100.0,   # $100 per point
+        "MGC": 10.0,   # $10 per point (Micro Gold)
         "SI": 50.0,    # $50 per point
         "NG": 10000.0, # $10,000 per point
         "ZB": 1000.0,  # $1000 per point

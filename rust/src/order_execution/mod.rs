@@ -560,6 +560,7 @@ impl AsyncOrderExecutor {
             ))?;
         
         // Handle empty response - treat as success if status is successful
+        // Also preserve response body text for better error messages when non-2xx.
         let response_json: serde_json::Value = if response_text.trim().is_empty() {
             if status.is_success() {
                 serde_json::json!({
@@ -570,7 +571,8 @@ impl AsyncOrderExecutor {
             } else {
                 serde_json::json!({
                     "success": false,
-                    "error": format!("Request failed with status {}", status)
+                    "error": format!("Request failed with status {}", status),
+                    "status": status.as_u16()
                 })
             }
         } else {
