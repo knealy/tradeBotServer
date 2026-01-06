@@ -196,6 +196,32 @@ class AuthManager:
                 except Exception:
                     body_text = ""
 
+                # Handle 429 errors with exponential backoff (if rate limiter available)
+                if status_code == 429:
+                    # Extract endpoint from URL for tracking
+                    endpoint_key = endpoint.split('?')[0]  # Remove query params
+                    if hasattr(self, 'rate_limiter') and self.rate_limiter:
+                        self.rate_limiter.record_429_error(endpoint_key)
+                        backoff_delay = self.rate_limiter.get_backoff_delay(endpoint_key)
+                        logger.warning(f"⏳ HTTP 429 Too Many Requests for {endpoint}. Waiting {backoff_delay:.2f}s before retry...")
+                        import time
+                        time.sleep(backoff_delay)
+                        # Retry the request once after backoff
+                        try:
+                            if method.upper() == "POST":
+                                cleaned_data = {k: v for k, v in data.items() if v is not None} if data else None
+                                response = self._http_session.post(url, json=cleaned_data, headers=request_headers, timeout=timeout)
+                            else:
+                                response = self._http_session.request(method=method, url=url, headers=request_headers, timeout=timeout)
+                            response.raise_for_status()
+                            # Success after retry - reset backoff
+                            self.rate_limiter.reset_429_backoff(endpoint_key)
+                        except requests.exceptions.HTTPError as retry_e:
+                            # Still failed after retry
+                            error_msg = f"HTTP 429: Too Many Requests (retry failed: {str(retry_e)})"
+                            logger.error(f"❌ {error_msg} for {endpoint}")
+                            return {"error": error_msg, "status_code": 429, "response_text": body_text}
+
                 error_msg = f"HTTP {status_code}: {str(e)}"
                 if body_text:
                     # Keep it single-line for logs; preserve full body in return payload.

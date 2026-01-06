@@ -257,13 +257,36 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         logger.info(f"⚡ Rust execution: {elapsed_ms:.2f}ms")
         
         # Convert Rust response to OrderResponse
-        return OrderResponse(
+        order_response = OrderResponse(
             success=rust_result.get('success', False),
             order_id=rust_result.get('order_id'),
             message=rust_result.get('message'),
             error=rust_result.get('error'),
             raw_response=rust_result.get('raw_response')
         )
+        
+        # Record audit trail if order was successful
+        if order_response.success and order_response.order_id:
+            try:
+                from core.order_audit import record_order_audit
+                strategy_name = kwargs.get('strategy_name')
+                execution_method = 'rust'  # This is Rust path
+                order_type_val = kwargs.get('order_type', 'market')
+                entry_trigger = 'market' if order_type_val == 'market' else 'limit' if order_type_val == 'limit' else 'stop'
+                
+                record_order_audit(
+                    order_id=str(order_response.order_id),
+                    strategy_name=strategy_name,
+                    execution_method=execution_method,
+                    entry_trigger=entry_trigger,
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity
+                )
+            except Exception as audit_err:
+                logger.debug(f"Could not record audit trail: {audit_err}")
+        
+        return order_response
     
     async def _place_market_order_python(
         self,
@@ -447,6 +470,26 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             )
         
         logger.info(f"✅ Order placed successfully with ID: {order_id}")
+        
+        # Record audit trail
+        try:
+            from core.order_audit import record_order_audit
+            # Extract metadata from kwargs if available
+            strategy_name = kwargs.get('strategy_name')
+            execution_method = 'python'  # This is Python path
+            entry_trigger = 'market' if order_type == 'market' else 'limit' if order_type == 'limit' else 'stop'
+            
+            record_order_audit(
+                order_id=str(order_id),
+                strategy_name=strategy_name,
+                execution_method=execution_method,
+                entry_trigger=entry_trigger,
+                symbol=symbol,
+                side=side,
+                quantity=quantity
+            )
+        except Exception as audit_err:
+            logger.debug(f"Could not record audit trail: {audit_err}")
         
         return OrderResponse(
             success=True,

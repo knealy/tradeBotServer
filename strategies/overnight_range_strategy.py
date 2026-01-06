@@ -143,6 +143,7 @@ class OvernightRangeStrategy(BaseStrategy):
         # Order placement
         self.range_break_offset = float(os.getenv('RANGE_BREAK_OFFSET', '0.25'))  # Offset from range extremes
         self.default_quantity = int(os.getenv('STRATEGY_QUANTITY', '1'))  # Position size
+        self.max_quantity_per_instrument = int(os.getenv('MAX_QUANTITY_PER_INSTRUMENT', '10'))  # Max contracts per symbol
         self.breakout_monitor_enabled = os.getenv('BREAKOUT_MONITOR_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
         self.breakout_proximity_percent = float(os.getenv('BREAKOUT_PROXIMITY_PERCENT', '10.0'))
         self.breakout_min_proximity_points = float(os.getenv('BREAKOUT_MIN_PROXIMITY_POINTS', '5.0'))
@@ -179,6 +180,7 @@ class OvernightRangeStrategy(BaseStrategy):
         logger.info(f"   Market Open: {self.market_open_time} {self.timezone}")
         logger.info(f"   ATR Period: {self.atr_period} bars ({self.atr_timeframe})")
         logger.info(f"   Stop: {self.stop_atr_multiplier}x ATR, TP: {self.tp_atr_multiplier}x ATR")
+        logger.info(f"   Max Quantity per Instrument: {self.max_quantity_per_instrument} contracts")
         if self.breakeven_enabled:
             logger.info(f"   Breakeven: ENABLED (+{self.breakeven_profit_points} pts to trigger)")
         else:
@@ -333,6 +335,43 @@ class OvernightRangeStrategy(BaseStrategy):
         else:
             # Three or more decimal places
             return round(rounded, 4)
+    
+    async def get_current_position_quantity(self, symbol: str) -> int:
+        """
+        Get the total current position quantity for a symbol (absolute value).
+        
+        Args:
+            symbol: Trading symbol (e.g., "MES", "MNQ")
+        
+        Returns:
+            Total absolute position quantity (0 if no position)
+        """
+        try:
+            positions = await self.trading_bot.get_open_positions()
+            if not positions:
+                return 0
+            
+            total_quantity = 0
+            symbol_upper = symbol.upper()
+            
+            for pos in positions:
+                # Handle Position objects (with attributes) or dicts
+                if hasattr(pos, 'symbol'):
+                    pos_symbol = (getattr(pos, 'symbol', '') or '').upper()
+                    net_qty = getattr(pos, 'net_quantity', 0) or getattr(pos, 'quantity', 0) or 0
+                elif isinstance(pos, dict):
+                    pos_symbol = pos.get('symbol', '').upper()
+                    net_qty = pos.get('net_quantity', 0) or pos.get('quantity', 0) or 0
+                else:
+                    continue
+                
+                if pos_symbol == symbol_upper:
+                    total_quantity += abs(net_qty)
+            
+            return total_quantity
+        except Exception as e:
+            logger.warning(f"⚠️  Error getting position quantity for {symbol}: {e}")
+            return 0
     
     async def check_market_conditions(self, symbol: str, range_data: OvernightRange, atr_data: ATRData) -> Tuple[bool, str]:
         """
@@ -499,23 +538,60 @@ class OvernightRangeStrategy(BaseStrategy):
                     # Cache expired, remove it
                     del self._atr_cache[symbol][cache_key]
             
-            # Fetch historical bars for ATR calculation
-            # Need period + 1 bars to calculate true range (requires previous close)
+            def _bar_time_utc(bar: Dict) -> Optional[datetime]:
+                """Parse a bar timestamp into a timezone-aware UTC datetime."""
+                ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
+                if not ts:
+                    return None
+                if isinstance(ts, datetime):
+                    dt = ts
+                elif hasattr(ts, 'to_pydatetime'):
+                    # pandas Timestamp-like
+                    try:
+                        dt = ts.to_pydatetime()
+                    except Exception:
+                        dt = datetime.fromtimestamp(ts.timestamp(), tz=timezone.utc)
+                elif isinstance(ts, str):
+                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    # epoch seconds or ms
+                    if ts > 1e12:
+                        dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                    else:
+                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                else:
+                    return None
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+
+            # Fetch a deeper history window for Wilder smoothing to better match TradingView/PineScript.
+            # With only period+1 bars, Wilder ATR degenerates into just an SMA and will differ from ta.atr().
+            atr_history_bars = int(os.getenv("ATR_HISTORY_BARS", "200"))
+            intraday_limit = max(period + 1, atr_history_bars)
+
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
                 timeframe=timeframe,
-                limit=period + 1
+                limit=intraday_limit
             )
             
             if not bars or len(bars) < period + 1:
                 logger.error(f"Insufficient bars for ATR calculation: {len(bars) if bars else 0} bars")
                 return None
+
+            # IMPORTANT: broker historical data is often returned newest-first.
+            # ATR requires chronological order (oldest->newest).
+            bars_sorted = sorted(
+                bars,
+                key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc)
+            )
             
-            # Calculate True Range for each bar
+            # Calculate True Range for each bar (chronological)
             true_ranges = []
-            for i in range(1, len(bars)):
-                current_bar = bars[i]
-                prev_bar = bars[i - 1]
+            for i in range(1, len(bars_sorted)):
+                current_bar = bars_sorted[i]
+                prev_bar = bars_sorted[i - 1]
                 
                 high = current_bar.get('high', current_bar.get('h', 0))
                 low = current_bar.get('low', current_bar.get('l', 0))
@@ -532,28 +608,39 @@ class OvernightRangeStrategy(BaseStrategy):
                 )
                 true_ranges.append(tr)
             
-            # Calculate ATR as simple moving average of True Range
-            current_atr = sum(true_ranges[-period:]) / period
+            # Calculate ATR using Wilder's Smoothing (matches PineScript ta.atr())
+            # PineScript ta.atr() uses Wilder's smoothing, not simple moving average
+            # Formula: First ATR = SMA of first period TR values
+            #          Subsequent ATR = ((Previous ATR * (period - 1)) + Current TR) / period
+            if len(true_ranges) < period:
+                logger.error(f"Insufficient true ranges for ATR: {len(true_ranges)} < {period}")
+                return None
             
-            # OPTIMIZATION: Use current_atr as daily_atr approximation to avoid extra API call
-            # Daily ATR is typically similar to current timeframe ATR for micro futures
-            # This saves one API call per ATR calculation
-            daily_atr = current_atr  # Use current ATR as daily ATR approximation
+            # First ATR = Simple Average of first period TR values
+            current_atr = sum(true_ranges[:period]) / period
             
-            # Only fetch daily bars if we need more accuracy (can be enabled via env var)
-            use_daily_bars = os.getenv('OVERNIGHT_USE_DAILY_ATR', 'false').lower() == 'true'
-            if use_daily_bars:
+            # Apply Wilder's smoothing for remaining TR values
+            for tr in true_ranges[period:]:
+                current_atr = ((current_atr * (period - 1)) + tr) / period
+            
+            # ALWAYS calculate daily ATR from daily bars using Wilder's smoothing (required for accurate zone calculations)
+            daily_atr = current_atr  # Default fallback
+            try:
                 daily_bars = await self.trading_bot.get_historical_data(
                     symbol=symbol,
                     timeframe='1d',
-                    limit=period + 1
+                    limit=max(period + 1, atr_history_bars)
                 )
                 
                 if daily_bars and len(daily_bars) >= period + 1:
+                    daily_bars_sorted = sorted(
+                        daily_bars,
+                        key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc)
+                    )
                     daily_true_ranges = []
-                    for i in range(1, len(daily_bars)):
-                        current_bar = daily_bars[i]
-                        prev_bar = daily_bars[i - 1]
+                    for i in range(1, len(daily_bars_sorted)):
+                        current_bar = daily_bars_sorted[i]
+                        prev_bar = daily_bars_sorted[i - 1]
                         
                         high = current_bar.get('high', current_bar.get('h', 0))
                         low = current_bar.get('low', current_bar.get('l', 0))
@@ -562,52 +649,130 @@ class OvernightRangeStrategy(BaseStrategy):
                         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
                         daily_true_ranges.append(tr)
                     
-                    daily_atr = sum(daily_true_ranges[-period:]) / period
+                    if daily_true_ranges and len(daily_true_ranges) >= period:
+                        # Calculate daily ATR using Wilder's smoothing (matches PineScript)
+                        daily_atr = sum(daily_true_ranges[:period]) / period  # First ATR = SMA
+                        for tr in daily_true_ranges[period:]:
+                            daily_atr = ((daily_atr * (period - 1)) + tr) / period  # Wilder's smoothing
+                        logger.info(f"Daily ATR (Wilder's) calculated from {len(daily_bars_sorted)} daily bars: {daily_atr:.2f}")
+                    else:
+                        logger.warning(f"Could not calculate daily ATR from daily bars, using current ATR approximation")
+                else:
+                    logger.warning(f"Insufficient daily bars for ATR: {len(daily_bars) if daily_bars else 0}, using current ATR approximation")
+            except Exception as e:
+                logger.warning(f"Error fetching daily bars for ATR calculation: {e}, using current ATR approximation")
             
             # Get current price for ATR zones
-            current_price = bars[-1].get('close', bars[-1].get('c', 0))
+            current_price = bars_sorted[-1].get('close', bars_sorted[-1].get('c', 0))
             
             # Calculate ATR zones
             atr_zone_high = current_price + daily_atr
             atr_zone_low = current_price - daily_atr
             
-            # Get market open price (9:30am candle open)
-            # This is used for daily ATR zone calculations
+            # Get market open price (9:30am 30-minute candle open) - CRITICAL for accurate zone calculations
+            # PineScript uses: open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0)
+            # This gets the 30-minute timeframe open price at market open, NOT the 1-minute bar
             market_open_price = 0.0
             now = datetime.now(self.timezone)
             open_hour, open_min = map(int, self.market_open_time.split(':'))
             market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
             
-            # Fetch a few 1-minute bars around market open to get the open price
+            # Fetch 30-minute bars to get the "market open" price used by PineScript's:
+            # open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0)
+            #
+            # IMPORTANT: Use the 30m bar whose timestamp matches the configured market open time (09:30 local).
+            # This matches the prior behavior you validated.
             try:
-                # Get bars from around market open
+                # Convert market open time to UTC for API request
+                if pytz:
+                    market_open_utc = market_open_today.astimezone(pytz.UTC)
+                else:
+                    market_open_utc = market_open_today.astimezone(timezone.utc)
+                
+                # Fetch 30-minute bars from today (need enough to find the 9:30am bar)
+                # Get bars from early morning today to now
+                start_of_day_utc = market_open_today.replace(hour=0, minute=0).astimezone(pytz.UTC if pytz else timezone.utc)
+                end_time_utc = now.astimezone(pytz.UTC) if pytz else now.astimezone(timezone.utc)
+                
                 open_bars = await self.trading_bot.get_historical_data(
                     symbol=symbol,
-                    timeframe='1m',
-                    limit=10
+                    timeframe='30m',
+                    start_time=start_of_day_utc,
+                    end_time=end_time_utc,
+                    limit=20  # Should be enough to cover the day
                 )
                 
                 if open_bars and len(open_bars) > 0:
-                    # Find the bar closest to market open time
-                    # For now, use the most recent bar's open (this will be updated in real-time)
-                    # In production, you'd want to specifically find the 9:30am bar
-                    market_open_price = open_bars[-1].get('open', open_bars[-1].get('o', current_price))
+                    market_open_price = None
+
+                    open_bars_sorted = sorted(
+                        open_bars,
+                        key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc)
+                    )
+
+                    def _bar_time_local_min(bar: Dict) -> Optional[datetime]:
+                        dt_utc = _bar_time_utc(bar)
+                        if not dt_utc:
+                            return None
+                        return dt_utc.astimezone(self.timezone).replace(second=0, microsecond=0)
+
+                    # 1) Preferred: bar timestamp match at market open (09:30)
+                    for bar in open_bars_sorted:
+                        bt = _bar_time_local_min(bar)
+                        if bt == market_open_today:
+                            market_open_price = bar.get('open', bar.get('o', 0))
+                            logger.info(
+                                f"Market open price (30m) for {symbol}: "
+                                f"{bt.strftime('%Y-%m-%d %H:%M')} @ {market_open_price:.2f}"
+                            )
+                            break
+
+                    # 2) Fallback: closest bar to market open timestamp
+                    if market_open_price is None:
+                        def _dist_seconds(target: datetime, bar: Dict) -> float:
+                            bt = _bar_time_local_min(bar)
+                            if not bt:
+                                return float("inf")
+                            return abs((bt - target).total_seconds())
+
+                        best_bar = min(open_bars_sorted, key=lambda b: _dist_seconds(market_open_today, b))
+                        bt = _bar_time_local_min(best_bar)
+                        market_open_price = best_bar.get('open', best_bar.get('o', 0))
+                        logger.warning(
+                            f"Market open price fallback (closest 30m bar) for {symbol}: "
+                            f"{bt.strftime('%Y-%m-%d %H:%M') if bt else 'unknown'} @ {market_open_price:.2f}"
+                        )
+                    
+                    # Final fallback: use current price if we couldn't find market open bar
+                    if market_open_price is None or market_open_price == 0:
+                        logger.warning(f"Could not find 9:30am 30m bar for {symbol}, using current price as fallback")
+                        market_open_price = current_price
                 else:
+                    logger.warning(f"No 30m bars returned for market open lookup for {symbol}, using current price")
                     market_open_price = current_price
-            except:
+            except Exception as e:
+                logger.warning(f"Error fetching 30m market open price for {symbol}: {e}, using current price as fallback")
                 market_open_price = current_price
             
-            # Calculate daily ATR zones (PineScript formula)
-            # day_dist = dailyATR * 0.5
+            # Calculate daily ATR zones.
+            #
+            # NOTE: Your observed "correct" zones line up with using 0.618 as the nearer bound
+            # and ~0.786 as the farther bound (vs the older 0.5/0.618 pairing).
+            # Keep `day_dist = daily_atr * 0.5` (dailyATR/2), but use fib multipliers 0.618 / 0.786.
             day_dist = daily_atr * 0.5
+            zone_near_mult = float(os.getenv("ATR_ZONE_NEAR_MULT", "0.618"))
+            zone_far_mult = float(os.getenv("ATR_ZONE_FAR_MULT", "0.786"))
+            if zone_far_mult < zone_near_mult:
+                # Safety: enforce ordering
+                zone_near_mult, zone_far_mult = zone_far_mult, zone_near_mult
             
-            # Upper zone: open_price + (dailyATR/2) * 0.5 to open_price + (dailyATR/2) * 0.618
-            day_bull_price = market_open_price + day_dist * 0.5  # Lower bound of upper zone
-            day_bull_price1 = market_open_price + day_dist * 0.618  # Upper bound of upper zone
+            # Upper zone: open + (dailyATR/2) * near .. open + (dailyATR/2) * far
+            day_bull_price = market_open_price + day_dist * zone_near_mult  # Lower bound of upper zone
+            day_bull_price1 = market_open_price + day_dist * zone_far_mult  # Upper bound of upper zone
             
-            # Lower zone: open_price - (dailyATR/2) * 0.5 to open_price - (dailyATR/2) * 0.618
-            day_bear_price = market_open_price - day_dist * 0.5  # Upper bound of lower zone
-            day_bear_price1 = market_open_price - day_dist * 0.618  # Lower bound of lower zone
+            # Lower zone: open - (dailyATR/2) * far .. open - (dailyATR/2) * near
+            day_bear_price = market_open_price - day_dist * zone_near_mult  # Upper bound (closer to open)
+            day_bear_price1 = market_open_price - day_dist * zone_far_mult  # Lower bound (farther from open)
             
             atr_data = ATRData(
                 current_atr=current_atr,
@@ -622,10 +787,11 @@ class OvernightRangeStrategy(BaseStrategy):
                 day_bear_price1=day_bear_price1
             )
             
-            logger.debug(f"ATR calculated for {symbol}: Current={current_atr:.2f}, Daily={daily_atr:.2f}")
-            logger.debug(f"  Market Open: {market_open_price:.2f}")
-            logger.debug(f"  Upper ATR Zone: [{day_bull_price:.2f}, {day_bull_price1:.2f}]")
-            logger.debug(f"  Lower ATR Zone: [{day_bear_price1:.2f}, {day_bear_price:.2f}]")
+            logger.info(f"ATR calculated for {symbol}: Current={current_atr:.2f}, Daily={daily_atr:.2f}")
+            logger.info(f"  Market Open (30m): {market_open_price:.2f}")
+            logger.info(f"  day_dist = daily_atr * 0.5 = {daily_atr:.2f} * 0.5 = {day_dist:.2f}")
+            logger.info(f"  Upper ATR Zone: [{day_bull_price:.2f}, {day_bull_price1:.2f}]")
+            logger.info(f"  Lower ATR Zone: [{day_bear_price1:.2f}, {day_bear_price:.2f}]")
             
             # Cache the result
             if symbol not in self._atr_cache:
@@ -733,14 +899,34 @@ class OvernightRangeStrategy(BaseStrategy):
                 if not ts:
                     continue
                 
-                # Parse timestamp
-                if isinstance(ts, str):
+                # Parse timestamp - handle multiple formats including pandas Timestamp
+                # Check for datetime/Timestamp objects first to avoid type comparison errors
+                if isinstance(ts, datetime):
+                    # Already a datetime object
+                    bar_time = ts
+                elif hasattr(ts, 'to_pydatetime'):
+                    # pandas Timestamp - convert to datetime
+                    try:
+                        bar_time = ts.to_pydatetime()
+                    except AttributeError:
+                        # Might be a different Timestamp-like object
+                        bar_time = datetime.fromtimestamp(ts.timestamp(), tz=timezone.utc)
+                elif isinstance(ts, str):
                     bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                elif ts > 1e12:
-                    bar_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                elif isinstance(ts, (int, float)):
+                    # Numeric timestamp - only do numeric comparison for numeric types
+                    if ts > 1e12:
+                        bar_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                    else:
+                        bar_time = datetime.fromtimestamp(ts, tz=timezone.utc)
                 else:
-                    bar_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    # Unknown type, skip this bar
+                    logger.warning(f"Unknown timestamp type: {type(ts)}, value: {ts}")
+                    continue
                 
+                # Ensure timezone-aware and convert to strategy timezone
+                if bar_time.tzinfo is None:
+                    bar_time = bar_time.replace(tzinfo=timezone.utc)
                 bar_time = bar_time.astimezone(self.timezone)
                 
                 # Track first and last bar times for debugging
@@ -1230,7 +1416,20 @@ class OvernightRangeStrategy(BaseStrategy):
     async def _place_single_breakout_order(self, order_template: RangeBreakOrder) -> Optional[str]:
         """Place a single breakout stop order (used by proactive monitor)."""
         symbol = order_template.symbol.upper()
-        logger.info(f"📌 Placing {order_template.side} breakout order for {symbol} at {order_template.entry_price:.2f}")
+        
+        # Check current position quantity - skip if at or above max
+        current_qty = await self.get_current_position_quantity(symbol)
+        if current_qty >= self.max_quantity_per_instrument:
+            logger.warning(f"⚠️  Max quantity reached for {symbol}: {current_qty}/{self.max_quantity_per_instrument} contracts - skipping order")
+            return None
+        
+        # Get tick size and round prices to valid tick increments BEFORE validation
+        tick_size = await self.get_tick_size(symbol)
+        entry_price = self.round_to_tick(order_template.entry_price, tick_size)
+        stop_loss_price = self.round_to_tick(order_template.stop_loss, tick_size)
+        take_profit_price = self.round_to_tick(order_template.take_profit, tick_size)
+        
+        logger.info(f"📌 Placing {order_template.side} breakout order for {symbol} at {entry_price:.2f} (tick_size={tick_size}, current_qty={current_qty}/{self.max_quantity_per_instrument})")
         
         # Validate entry price against current market price
         try:
@@ -1240,14 +1439,14 @@ class OvernightRangeStrategy(BaseStrategy):
             if current_price is not None:
                 # For BUY (LONG) stop orders: entry must be above current price
                 # For SELL (SHORT) stop orders: entry must be below current price
-                if order_template.side == "BUY" and order_template.entry_price < current_price:
-                    logger.warning(f"⚠️  LONG entry {order_template.entry_price:.2f} is below current price {current_price:.2f}, skipping stale order")
+                if order_template.side == "BUY" and entry_price < current_price:
+                    logger.warning(f"⚠️  LONG entry {entry_price:.2f} is below current price {current_price:.2f}, skipping stale order")
                     return None
-                elif order_template.side == "SELL" and order_template.entry_price > current_price:
-                    logger.warning(f"⚠️  SHORT entry {order_template.entry_price:.2f} is above current price {current_price:.2f}, skipping stale order")
+                elif order_template.side == "SELL" and entry_price > current_price:
+                    logger.warning(f"⚠️  SHORT entry {entry_price:.2f} is above current price {current_price:.2f}, skipping stale order")
                     return None
                 
-                logger.debug(f"✓ Entry price {order_template.entry_price:.2f} is valid vs current {current_price:.2f}")
+                logger.debug(f"✓ Entry price {entry_price:.2f} is valid vs current {current_price:.2f}")
         except Exception as e:
             logger.warning(f"⚠️  Could not validate entry price against market: {e}")
             # Continue anyway - let the API reject if invalid
@@ -1263,9 +1462,9 @@ class OvernightRangeStrategy(BaseStrategy):
             symbol=symbol,
             side=order_template.side,
             quantity=order_template.quantity,
-            entry_price=order_template.entry_price,
-            stop_loss_price=order_template.stop_loss,
-            take_profit_price=order_template.take_profit,
+            entry_price=entry_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             account_id=account_id,
             strategy_name=self.config.name  # Add strategy name for tracking
         )
@@ -1295,6 +1494,13 @@ class OvernightRangeStrategy(BaseStrategy):
                                      existing_orders: List[Dict], tick_size: float) -> None:
         """Ensure there is an active breakout stop order near the target level."""
         symbol = symbol.upper()
+        
+        # Check current position quantity - skip if at or above max
+        current_qty = await self.get_current_position_quantity(symbol)
+        if current_qty >= self.max_quantity_per_instrument:
+            logger.debug(f"⚠️  Max quantity reached for {symbol}: {current_qty}/{self.max_quantity_per_instrument} contracts - skipping order")
+            return
+        
         tolerance = max(self.breakout_order_tolerance_points, tick_size)
         # Check existing orders from API
         for order in existing_orders:
@@ -1325,6 +1531,18 @@ class OvernightRangeStrategy(BaseStrategy):
             try:
                 if not self.breakout_levels:
                     await asyncio.sleep(self.breakout_monitor_interval)
+                    continue
+                
+                # Check if market has opened (prevent orders before 09:30 ET)
+                now = datetime.now(self.timezone)
+                open_hour, open_min = map(int, self.market_open_time.split(':'))
+                market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+                
+                if now < market_open_today:
+                    # Before market open - wait until market opens
+                    time_until_open = (market_open_today - now).total_seconds()
+                    logger.debug(f"⏰ Waiting for market open ({time_until_open/60:.1f}m away) - skipping order placement")
+                    await asyncio.sleep(min(self.breakout_monitor_interval, 60))  # Check at least once per minute
                     continue
 
                 open_orders = await self.trading_bot.get_open_orders()
@@ -1388,6 +1606,10 @@ class OvernightRangeStrategy(BaseStrategy):
                 orders_to_monitor = []
                 for symbol, sides in self.breakout_active_orders.items():
                     for side, order_data in sides.items():
+                        # Safety check: ensure order_data is a dict, not a string (order ID)
+                        if not isinstance(order_data, dict):
+                            logger.debug(f"⚠️  Skipping non-dict order_data for {symbol} {side}: {type(order_data)} - {order_data}")
+                            continue
                         if order_data.get('needs_brackets') and order_data.get('monitoring'):
                             orders_to_monitor.append((symbol, side, order_data))
                 
@@ -1399,18 +1621,35 @@ class OvernightRangeStrategy(BaseStrategy):
                 if not positions:
                     continue
                 
+                # Ensure positions is a list
+                if not isinstance(positions, list):
+                    logger.warning(f"⚠️  Positions is not a list: {type(positions)} - {positions}")
+                    continue
+                
                 # Check each monitored order
                 for symbol, side, order_data in orders_to_monitor:
                     # Find matching position
                     position_found = False
                     for pos in positions:
-                        # Safety check: ensure pos is a dict, not a string
-                        if not isinstance(pos, dict):
-                            logger.warning(f"⚠️  Skipping non-dict position: {type(pos)} - {pos}")
+                        # Safety check: ensure pos is a dict or has dict-like attributes, not a string
+                        if isinstance(pos, str):
+                            logger.warning(f"⚠️  Skipping string position: {pos}")
                             continue
                         
-                        pos_symbol = pos.get('symbol', '').upper()
-                        pos_side = "LONG" if pos.get('net_quantity', 0) > 0 else "SHORT" if pos.get('net_quantity', 0) < 0 else None
+                        # Handle Position objects (with attributes) or dicts
+                        if hasattr(pos, 'symbol'):
+                            # Position object with attributes
+                            pos_symbol = (getattr(pos, 'symbol', '') or '').upper()
+                            net_qty = getattr(pos, 'net_quantity', 0) or getattr(pos, 'quantity', 0) or 0
+                            pos_side = "LONG" if net_qty > 0 else "SHORT" if net_qty < 0 else None
+                        elif isinstance(pos, dict):
+                            # Dict with keys
+                            pos_symbol = pos.get('symbol', '').upper()
+                            net_qty = pos.get('net_quantity', 0) or pos.get('quantity', 0) or 0
+                            pos_side = "LONG" if net_qty > 0 else "SHORT" if net_qty < 0 else None
+                        else:
+                            logger.warning(f"⚠️  Skipping unknown position type: {type(pos)} - {pos}")
+                            continue
                         
                         if pos_symbol == symbol.upper() and pos_side == side:
                             position_found = True

@@ -81,6 +81,7 @@ class BacktestPosition:
     entry_price: float
     entry_time: datetime
     current_price: float
+    entry_bar_index: int = 0  # Bar index when position was opened
     unrealized_pnl: float = 0.0
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None

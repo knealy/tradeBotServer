@@ -16,13 +16,15 @@ import argparse
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+import pandas as pd
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest import HistoricalDataLoader, BacktestEngine, PerformanceMetrics, MonteCarloSimulator
 from core.backtest.models import OrderSide, OrderType
+from core.backtest.strategy_replay import StrategyReplayEngine
 from brokers.topstepx_adapter import TopStepXAdapter
 from core.auth import AuthManager
 
@@ -55,6 +57,7 @@ class BacktestExecutor:
         initial_capital: float = 50000.0,
         use_sample_data: bool = False,
         csv_file: Optional[str] = None,
+        slippage_ticks: float = 0.5,
         **strategy_params
     ) -> Dict[str, Any]:
         """
@@ -84,55 +87,132 @@ class BacktestExecutor:
         
         # Load historical data
         if csv_file:
-            # Load from CSV file
+            # Load from CSV file (from history command export)
             print(f"\n📊 Loading data from CSV: {csv_file}")
             data = self.loader.load_from_csv(
                 filepath=csv_file,
                 symbol=symbol
             )
-            print(f"✅ Loaded {len(data)} bars from CSV")
+            if isinstance(data, pd.DataFrame):
+                print(f"✅ Loaded {len(data)} bars from CSV")
+                # Convert DataFrame to list of dicts for replay mode
+                data_dicts = []
+                for idx, row in data.iterrows():
+                    data_dicts.append({
+                        'timestamp': idx if isinstance(idx, datetime) else pd.to_datetime(idx),
+                        'open': float(row.get('open', row.get('Open', 0))),
+                        'high': float(row.get('high', row.get('High', 0))),
+                        'low': float(row.get('low', row.get('Low', 0))),
+                        'close': float(row.get('close', row.get('Close', 0))),
+                        'volume': int(row.get('volume', row.get('Volume', 0)))
+                    })
+                data = data_dicts
+            else:
+                print(f"✅ Loaded {len(data)} bars from CSV")
         elif use_sample_data or not self.loader.broker_adapter:
             print(f"\n📊 Generating sample data...")
-            data = self.loader.get_sample_data(
+            data_df = self.loader.get_sample_data(
                 symbol=symbol,
                 days=days or 30,
                 timeframe=timeframe
             )
-            print(f"✅ Generated {len(data)} bars of sample data")
+            print(f"✅ Generated {len(data_df)} bars of sample data")
+            # Convert DataFrame to list of dicts for replay mode
+            data = []
+            for idx, row in data_df.iterrows():
+                data.append({
+                    'timestamp': idx if isinstance(idx, datetime) else pd.to_datetime(idx),
+                    'open': float(row.get('open', row.get('Open', 0))),
+                    'high': float(row.get('high', row.get('High', 0))),
+                    'low': float(row.get('low', row.get('Low', 0))),
+                    'close': float(row.get('close', row.get('Close', 0))),
+                    'volume': int(row.get('volume', row.get('Volume', 0)))
+                })
         else:
+            # Use broker adapter to fetch real historical data
+            if not self.loader.broker_adapter:
+                print("❌ No broker adapter available - cannot load real historical data")
+                print("   Use --sample for sample data or provide --csv file")
+                return None
+            
             # Calculate date range
             if days and not start_date:
                 end_date = end_date or datetime.now()
                 start_date = end_date - timedelta(days=days)
             
-            print(f"\n📊 Loading historical data from API...")
-            print(f"   Period: {start_date.date() if start_date else 'N/A'} to {end_date.date() if end_date else 'N/A'}")
+            if not start_date or not end_date:
+                print("❌ Start and end dates are required for API data loading")
+                print("   Use --start and --end or --days")
+                return None
             
-            data = await self.loader.load_from_api(
+            print(f"\n📊 Loading historical data from TopStepX API...")
+            print(f"   Period: {start_date.date()} to {end_date.date()}")
+            print(f"   Symbol: {symbol}, Timeframe: {timeframe}")
+            
+            # Use broker adapter's get_historical_data (returns List[Bar])
+            bars = await self.loader.broker_adapter.get_historical_data(
                 symbol=symbol,
                 timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date
+                start_time=start_date,
+                end_time=end_date,
+                limit=20000  # API max
             )
-            print(f"✅ Loaded {len(data)} bars from API")
+            
+            if not bars:
+                print("❌ No data returned from API")
+                return None
+            
+            print(f"✅ Loaded {len(bars)} bars from API")
+            
+            # Convert Bar objects to list of dicts for replay mode
+            data = []
+            for bar in bars:
+                data.append({
+                    'timestamp': bar.timestamp,
+                    'open': float(bar.open),
+                    'high': float(bar.high),
+                    'low': float(bar.low),
+                    'close': float(bar.close),
+                    'volume': int(bar.volume or 0)
+                })
         
-        # Validate data
-        if not self.loader.validate_data(data):
-            print("❌ Data validation failed!")
+        # Validate data (skip for replay mode if data is list of dicts)
+        if isinstance(data, pd.DataFrame):
+            if not self.loader.validate_data(data):
+                print("❌ Data validation failed!")
+                return None
+            # Add indicators if needed (only for DataFrame)
+            data = self.loader.add_indicators(data, indicators=['ema_89', 'ema_233', 'atr_14', 'rsi_14', 'sma_20'])
+        elif isinstance(data, list):
+            # For replay mode with list of dicts, basic validation
+            if not data or len(data) < 2:
+                print("❌ Insufficient data for backtest!")
+                return None
+            print(f"✅ Data validated: {len(data)} bars")
+        else:
+            print(f"❌ Invalid data type: {type(data)}")
             return None
         
-        # Add indicators if needed
-        data = self.loader.add_indicators(data, indicators=['ema_89', 'ema_233', 'atr_14', 'rsi_14', 'sma_20'])
-        
-        # Get strategy function
+        # Check if this is a replay mode strategy (class-based)
         strategy_func = self._get_strategy_function(strategy_name, **strategy_params)
         
-        # Run backtest
+        if strategy_func is None:
+            # This is a class-based strategy - use replay mode
+            return await self._run_strategy_replay(
+                strategy_name=strategy_name,
+                symbol=symbol,
+                bars=data,
+                initial_capital=initial_capital,
+                slippage_ticks=slippage_ticks,
+                **strategy_params
+            )
+        
+        # Run traditional function-based backtest
         print(f"\n🔬 Running backtest...")
         engine = BacktestEngine(
             initial_capital=initial_capital,
             commission_per_contract=2.50,
-            slippage_ticks=0.5,
+            slippage_ticks=slippage_ticks,
             point_value=self._get_point_value(symbol)
         )
         
@@ -292,18 +372,30 @@ class BacktestExecutor:
     def _get_strategy_function(self, strategy_name: str, **params):
         """Get strategy function based on name."""
         
-        # Available strategies
-        available_strategies = ['ma_crossover', 'rsi_mean_reversion', 'ema_trend']
+        # Available function-based strategies
+        function_strategies = ['ma_crossover', 'rsi_mean_reversion', 'ema_trend']
+        
+        # Available class-based strategies (for replay mode)
+        class_strategies = ['simple_candle', 'overnight_range', 'mean_reversion', 
+                           'trend_following', 'trend_scalping', 'simple_momentum']
+        
+        all_strategies = function_strategies + class_strategies
         
         # Validate strategy name
-        if strategy_name not in available_strategies:
+        if strategy_name not in all_strategies:
             print(f"\n❌ ERROR: Unknown strategy '{strategy_name}'")
-            print(f"\n📋 Available strategies:")
-            print(f"   - ma_crossover (Moving Average Crossover)")
-            print(f"   - rsi_mean_reversion (RSI Mean Reversion)")
-            print(f"   - ema_trend (EMA Trend Following)")
-            print(f"\nExample: python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --csv=<file>")
-            raise ValueError(f"Unknown strategy: {strategy_name}. Available: {', '.join(available_strategies)}")
+            print(f"\n📋 Available function-based strategies:")
+            for s in function_strategies:
+                print(f"   - {s}")
+            print(f"\n📋 Available class-based strategies (use --replay flag):")
+            for s in class_strategies:
+                print(f"   - {s}")
+            print(f"\nExample: python core/backtest_executor.py --strategy=simple_candle --symbol=MNQ --start=2025-12-01 --end=2025-12-07 --replay")
+            raise ValueError(f"Unknown strategy: {strategy_name}. Available: {', '.join(all_strategies)}")
+        
+        # Return None for class-based strategies (handled separately in replay mode)
+        if strategy_name in class_strategies:
+            return None  # Signal to use replay mode
         
         # Filter params for each strategy (only pass relevant parameters)
         if strategy_name == "ma_crossover":
@@ -415,6 +507,174 @@ class BacktestExecutor:
             'GC': 0.10
         }
         return tick_sizes.get(symbol.upper(), 0.25)
+    
+    async def _run_strategy_replay(
+        self,
+        strategy_name: str,
+        symbol: str,
+        bars: List[Dict],
+        initial_capital: float = 50000.0,
+        slippage_ticks: float = 0.5,
+        **strategy_params
+    ) -> Dict[str, Any]:
+        """
+        Run backtest using actual strategy class (replay mode).
+        
+        Args:
+            strategy_name: Strategy class name
+            symbol: Trading symbol
+            bars: List of historical bar dicts
+            initial_capital: Starting capital
+            slippage_ticks: Slippage in ticks
+            **strategy_params: Strategy parameters
+            
+        Returns:
+            Dict with backtest results
+        """
+        print(f"\n🔄 Running strategy replay mode: {strategy_name}")
+        print(f"   This uses the actual strategy class code (same as live trading)")
+        
+        # Import strategy class
+        strategy_class = self._get_strategy_class(strategy_name)
+        if not strategy_class:
+            return None
+        
+        # Create trading bot instance for strategy
+        # Use broker adapter's trading bot if available, otherwise create mock
+        trading_bot = None
+        if hasattr(self.loader, 'broker_adapter') and self.loader.broker_adapter:
+            # Try to get trading bot from broker adapter if it has one
+            if hasattr(self.loader.broker_adapter, '_trading_bot') and self.loader.broker_adapter._trading_bot:
+                trading_bot = self.loader.broker_adapter._trading_bot
+            elif self.trading_bot:
+                trading_bot = self.trading_bot
+        
+        if not trading_bot:
+            # Create mock trading bot with broker adapter for historical data
+            trading_bot = self._create_mock_trading_bot(bars, broker_adapter=self.loader.broker_adapter)
+        
+        # Create strategy instance
+        strategy = strategy_class(trading_bot=trading_bot)
+        
+        # Apply strategy params if any
+        if strategy_params:
+            for key, value in strategy_params.items():
+                if hasattr(strategy, key):
+                    setattr(strategy, key, value)
+        
+        # Create replay engine
+        replay_engine = StrategyReplayEngine(
+            strategy_instance=strategy,
+            trading_bot=trading_bot,
+            initial_capital=initial_capital,
+            commission_per_contract=2.50,
+            slippage_ticks=slippage_ticks,
+            point_value=self._get_point_value(symbol)
+        )
+        
+        # Run replay
+        result = await replay_engine.replay(
+            symbol=symbol,
+            bars=bars,
+            tick_size=self._get_tick_size(symbol)
+        )
+        
+        # Print results
+        print("\n" + PerformanceMetrics.generate_report(result))
+        
+        # Cache results
+        cache_key = f"{strategy_name}_{symbol}_replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.results_cache[cache_key] = result
+        
+        return {
+            'result': result,
+            'cache_key': cache_key,
+            'data': bars
+        }
+    
+    def _get_strategy_class(self, strategy_name: str):
+        """Get strategy class by name."""
+        try:
+            if strategy_name == 'simple_candle':
+                from strategies.simple_candle_strategy import SimpleCandleStrategy
+                return SimpleCandleStrategy
+            elif strategy_name == 'overnight_range':
+                from strategies.overnight_range_strategy import OvernightRangeStrategy
+                return OvernightRangeStrategy
+            elif strategy_name == 'mean_reversion':
+                from strategies.mean_reversion_strategy import MeanReversionStrategy
+                return MeanReversionStrategy
+            elif strategy_name == 'trend_following':
+                from strategies.trend_following_strategy import TrendFollowingStrategy
+                return TrendFollowingStrategy
+            elif strategy_name == 'trend_scalping':
+                from strategies.trend_scalping_strategy import TrendScalpingStrategy
+                return TrendScalpingStrategy
+            elif strategy_name == 'simple_momentum':
+                from strategies.simple_momentum_strategy import SimpleMomentumStrategy
+                return SimpleMomentumStrategy
+            else:
+                return None
+        except ImportError as e:
+            logger.error(f"Failed to import strategy {strategy_name}: {e}")
+            return None
+    
+    def _create_mock_trading_bot(self, bars: List[Dict], broker_adapter=None):
+        """Create a minimal trading bot mock for strategy replay."""
+        class MockTradingBot:
+            def __init__(self, bars, broker_adapter=None):
+                self.bars = bars
+                self.selected_account = {'id': 'backtest_account'}
+                self.broker_adapter = broker_adapter
+            
+            async def get_historical_data(self, symbol, timeframe=None, limit=None, **kwargs):
+                """Return bars for strategy analysis."""
+                # Return bars up to current point (handled by replay engine)
+                # The replay engine updates self.bars as it progresses
+                return self.bars[-limit:] if limit else self.bars
+            
+            async def get_market_quote(self, symbol):
+                """Return mock quote from latest bar."""
+                if self.bars:
+                    last_bar = self.bars[-1]
+                    close_price = float(last_bar.get('close', last_bar.get('c', 0)))
+                    return {
+                        'bid': close_price,
+                        'ask': close_price,
+                        'last': close_price
+                    }
+                return {'bid': 0, 'ask': 0, 'last': 0}
+            
+            async def get_open_positions(self, account_id=None):
+                """Return empty positions (managed by replay engine)."""
+                return []
+            
+            async def calculate_atr(self, symbol, period=None):
+                """Calculate ATR from bars if available."""
+                if self.bars and len(self.bars) >= (period or 14):
+                    highs = [float(b.get('high', b.get('h', 0))) for b in self.bars[-(period or 14):]]
+                    lows = [float(b.get('low', b.get('l', 0))) for b in self.bars[-(period or 14):]]
+                    closes = [float(b.get('close', b.get('c', 0))) for b in self.bars[-(period or 14):]]
+                    # Simple ATR calculation
+                    trs = []
+                    for i in range(1, len(highs)):
+                        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                        trs.append(tr)
+                    return sum(trs) / len(trs) if trs else 3.0
+                return 3.0  # Default ATR
+            
+            async def calculate_ema(self, symbol, period):
+                """Calculate EMA from bars if available."""
+                if self.bars and len(self.bars) >= period:
+                    closes = [float(b.get('close', b.get('c', 0))) for b in self.bars[-period:]]
+                    # Simple EMA: weighted average (more weight on recent)
+                    weights = [i+1 for i in range(len(closes))]
+                    weighted_sum = sum(c * w for c, w in zip(closes, weights))
+                    weight_sum = sum(weights)
+                    return weighted_sum / weight_sum if weight_sum > 0 else None
+                return None
+        
+        return MockTradingBot(bars, broker_adapter=broker_adapter)
 
 
 async def main():
@@ -440,10 +700,14 @@ async def main():
                        help='Use generated sample data')
     parser.add_argument('--csv', type=str,
                        help='Path to CSV file with historical data (exported from history command)')
+    parser.add_argument('--replay', action='store_true',
+                       help='Use replay mode (for class-based strategies like simple_candle)')
     
     # Backtest parameters
     parser.add_argument('--capital', type=float, default=50000.0,
                        help='Initial capital (default: 50000)')
+    parser.add_argument('--slippage-ticks', type=float, default=0.5,
+                       help='Slippage in ticks (default: 0.5)')
     
     # Monte Carlo
     parser.add_argument('--monte-carlo', type=int,
@@ -475,8 +739,37 @@ async def main():
     start_date = datetime.strptime(args.start, '%Y-%m-%d') if args.start else None
     end_date = datetime.strptime(args.end, '%Y-%m-%d') if args.end else None
     
-    # Create executor
-    executor = BacktestExecutor()
+    # Create executor with broker adapter for real data
+    broker_adapter = None
+    if not args.sample and not args.csv:
+        # Initialize broker adapter for real API data
+        try:
+            from core.auth import AuthManager
+            from brokers.topstepx_adapter import TopStepXAdapter
+            from core.rate_limiter import RateLimiter
+            
+            print("\n🔐 Initializing broker adapter for real historical data...")
+            auth_manager = AuthManager()
+            rate_limiter = RateLimiter(max_calls=60, period=60)
+            
+            # Authenticate
+            auth_success = await auth_manager.authenticate()
+            if not auth_success:
+                print("⚠️  Authentication failed. Falling back to sample data.")
+                print("   Tip: Use --sample flag to skip authentication, or --csv to use CSV file")
+                args.sample = True  # Auto-fallback to sample data
+            else:
+                broker_adapter = TopStepXAdapter(
+                    auth_manager=auth_manager,
+                    rate_limiter=rate_limiter
+                )
+                print("✅ Broker adapter initialized")
+        except Exception as e:
+            print(f"⚠️  Could not initialize broker adapter: {e}")
+            print("   Falling back to sample data. Use --sample or --csv for alternatives")
+            args.sample = True  # Auto-fallback to sample data
+    
+    executor = BacktestExecutor(broker_adapter=broker_adapter)
     
     # Strategy parameters
     strategy_params = {
@@ -524,6 +817,7 @@ async def main():
             initial_capital=args.capital,
             use_sample_data=args.sample,
             csv_file=args.csv,
+            slippage_ticks=args.slippage_ticks,
             **strategy_params
         )
         

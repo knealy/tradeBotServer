@@ -671,10 +671,26 @@ class TopStepXTradingBot:
                     'entryPrice': data.get('averagePrice', 0),
                     'creationTimestamp': data.get('creationTimestamp')
                 }
-                broadcast_update({
-                    'type': 'positions',
-                    'data': {'positions': [position_data]}
-                })
+                # Position updates are critical - broadcast immediately (create task since this is sync method)
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(broadcast_update({
+                            'type': 'position_opened' if data.get('size', 0) > 0 else 'position_closed',
+                            'data': {'positions': [position_data]}
+                        }, immediate=True))
+                    else:
+                        loop.run_until_complete(broadcast_update({
+                            'type': 'position_opened' if data.get('size', 0) > 0 else 'position_closed',
+                            'data': {'positions': [position_data]}
+                        }, immediate=True))
+                except RuntimeError:
+                    # No event loop, create new one
+                    asyncio.run(broadcast_update({
+                        'type': 'position_opened' if data.get('size', 0) > 0 else 'position_closed',
+                        'data': {'positions': [position_data]}
+                    }, immediate=True))
                 
                 # Also trigger account update to refresh PnL
                 account_id = str(data.get('accountId', ''))
@@ -692,17 +708,33 @@ class TopStepXTradingBot:
                             if isinstance(self.selected_account, dict):
                                 balance = float(self.selected_account.get('balance', 0.0))
                         
-                        # Broadcast account update with updated PnL
-                        broadcast_update({
-                            'type': 'account',
-                            'data': {
-                                'account_id': account_id,
-                                'account_name': self.selected_account.get('name', '') if hasattr(self, 'selected_account') and self.selected_account else '',
-                                'balance': balance,
-                                'unrealized_pnl': unrealized_pnl,
-                                'realized_pnl': realized_pnl
-                            }
-                        })
+                        # Broadcast account update with updated PnL (queue for batching, not critical)
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.create_task(broadcast_update({
+                                    'type': 'account',
+                                    'data': {
+                                        'account_id': account_id,
+                                        'account_name': self.selected_account.get('name', '') if hasattr(self, 'selected_account') and self.selected_account else '',
+                                        'balance': balance,
+                                        'unrealized_pnl': unrealized_pnl,
+                                        'realized_pnl': realized_pnl
+                                    }
+                                }, immediate=False))
+                            else:
+                                loop.run_until_complete(broadcast_update({
+                                    'type': 'account',
+                                    'data': {
+                                        'account_id': account_id,
+                                        'account_name': self.selected_account.get('name', '') if hasattr(self, 'selected_account') and self.selected_account else '',
+                                        'balance': balance,
+                                        'unrealized_pnl': unrealized_pnl,
+                                        'realized_pnl': realized_pnl
+                                    }
+                                }, immediate=False))
+                        except RuntimeError:
+                            pass  # No event loop available
                         logger.debug(f"📡 Updated account PnL after position change: Unrealized: ${unrealized_pnl:.2f}, Realized: ${realized_pnl:.2f}")
                     except Exception as e:
                         logger.debug(f"Error updating account PnL after position change: {e}")
@@ -739,10 +771,32 @@ class TopStepXTradingBot:
                     'filledPrice': data.get('filledPrice'),
                     'customTag': data.get('customTag')
                 }
-                broadcast_update({
-                    'type': 'orders',
-                    'data': {'orders': [order_data]}
-                })
+                # Determine if this is a critical event (filled, canceled) that needs immediate broadcast
+                status = data.get('status')
+                is_critical = status in [2, 3, 4]  # Filled, Canceled, Rejected
+                
+                event_type = 'order_filled' if status == 2 else 'order_canceled' if status == 3 else 'order_rejected' if status == 4 else 'order_updated'
+                
+                # Call with immediate flag for critical events (create task since this is sync method)
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(broadcast_update({
+                            'type': event_type,
+                            'data': {'orders': [order_data]}
+                        }, immediate=is_critical))
+                    else:
+                        loop.run_until_complete(broadcast_update({
+                            'type': event_type,
+                            'data': {'orders': [order_data]}
+                        }, immediate=is_critical))
+                except RuntimeError:
+                    # No event loop, create new one
+                    asyncio.run(broadcast_update({
+                        'type': event_type,
+                        'data': {'orders': [order_data]}
+                    }, immediate=is_critical))
             except Exception as e:
                 logger.debug(f"Could not broadcast order update to GUI: {e}")
         except Exception as e:

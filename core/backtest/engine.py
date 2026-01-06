@@ -249,8 +249,8 @@ class BacktestEngine:
                     pnl_percent=(pnl / pos.entry_price / qty_to_close) * 100,
                     commission=commission,
                     slippage=filled_order.slippage * qty_to_close * self.point_value,
-                    bars_held=0,  # Calculate later
-                    exit_reason="signal",
+                    bars_held=max(0, self.current_bar_index - getattr(pos, "entry_bar_index", 0)),
+                    exit_reason=getattr(filled_order, "exit_reason", "signal"),
                     max_favorable_excursion=pos.max_favorable_excursion,
                     max_adverse_excursion=pos.max_adverse_excursion
                 )
@@ -289,6 +289,7 @@ class BacktestEngine:
                 quantity=filled_order.quantity,
                 entry_price=filled_order.filled_price,
                 entry_time=filled_order.filled_timestamp,
+                entry_bar_index=self.current_bar_index,
                 current_price=current_price
             )
     

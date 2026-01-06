@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from core.trend_detector import TrendDetector
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,23 @@ class SimpleCandleStrategy(BaseStrategy):
         
         # Track previous EMA values per symbol to detect crosses
         self.prev_emas: Dict[str, Dict[str, float]] = {}  # {symbol: {"fast": float, "slow": float}}
+        
+        # Trend detection (optional filter - VERY conservative to start)
+        self.use_trend_filter = os.getenv('USE_TREND_FILTER', 'true').lower() == 'true'
+        if self.use_trend_filter:
+            # VERY conservative: min_score=40 (out of 100)
+            # This will only block the most choppy markets
+            self.trend_detector = TrendDetector(
+                ema_fast_period=self.ema_fast_period,
+                ema_slow_period=self.ema_slow_period,
+                atr_period=self.atr_period,
+                min_trend_score=30,  # VERY conservative - only block extreme chop
+                lookback_bars=10
+            )
+            logger.info(f"✅ Trend filter ENABLED (min_score=40 - very conservative)")
+        else:
+            self.trend_detector = None
+            logger.info(f"⚠️  Trend filter DISABLED")
         
         # Cache for position data (to reduce API calls)
         self._position_cache: Optional[List[Dict]] = None
@@ -186,6 +204,52 @@ class SimpleCandleStrategy(BaseStrategy):
             import traceback
             logger.error(traceback.format_exc())
             return None
+    
+    async def check_ema_distance(self, symbol: str, threshold: float = 20.0) -> bool:
+        """
+        Check if EMA distance (separation) exceeds threshold.
+        
+        When EMAs are too far apart, it may indicate extreme trend extension
+        or potential reversal, so we flatten positions as a risk management measure.
+        
+        Args:
+            symbol: Trading symbol
+            threshold: Distance threshold in points (default: 20.0)
+        
+        Returns:
+            True if distance >= threshold, False otherwise
+        """
+        try:
+            # Calculate current EMAs
+            fast_ema = await self.calculate_ema(symbol, self.ema_fast_period)
+            slow_ema = await self.calculate_ema(symbol, self.ema_slow_period)
+            
+            if fast_ema is None or slow_ema is None:
+                return False
+            
+            # Calculate absolute distance
+            distance = abs(fast_ema - slow_ema)
+            
+            if distance >= threshold:
+                direction = "LONG" if fast_ema > slow_ema else "SHORT"
+                logger.warning(
+                    f"🛑 EMA DISTANCE EXCEEDED for {symbol}: "
+                    f"Distance={distance:.2f} points (threshold={threshold}), "
+                    f"Fast EMA={fast_ema:.2f}, Slow EMA={slow_ema:.2f}, Direction={direction}"
+                )
+                print(
+                    f"🛑 EMA DISTANCE EXCEEDED: {distance:.2f} points >= {threshold} "
+                    f"({direction} direction) for {symbol}"
+                )
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking EMA distance for {symbol}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     
     async def flatten_all(self, symbol: str = None):
         """
@@ -327,8 +391,9 @@ class SimpleCandleStrategy(BaseStrategy):
                                 logger.warning(f"Position {i} is not a dict: {type(pos)}")
                                 continue
                             
-                            # Log FULL position data to debug symbol issue
-                            logger.info(f"🔍 RAW Position {i}: {pos}")
+                            # Log FULL position data to debug symbol and side issues
+                            logger.warning(f"🔍 RAW Position {i} (FULL DATA): {pos}")
+                            print(f"🔍 RAW Position {i}: {pos}")
                             
                             pos_symbol = pos.get('symbol') or pos.get('Symbol') or pos.get('ticker') or ''
                             logger.info(f"🔍 Position {i}: symbol='{pos_symbol}' (checking against '{symbol}')")
@@ -338,34 +403,87 @@ class SimpleCandleStrategy(BaseStrategy):
                                 logger.debug(f"Position symbol '{pos_symbol}' doesn't match '{symbol}', skipping")
                                 continue
                             
-                            # Get position side
+                            # Get position side - check multiple sources
                             side_val = pos.get('side')
                             qty = pos.get('quantity', pos.get('size', 0))
+                            pos_type = pos.get('type')  # Type field might indicate direction
                             
-                            logger.info(f"🔍 Matched position for {symbol}: side_val={side_val} (type={type(side_val)}), qty={qty}")
+                            # Also check if Position object already converted side to string
+                            side_str = pos.get('side') if isinstance(pos.get('side'), str) else None
                             
-                            # Normalize possible representations
-                            if isinstance(side_val, str):
-                                s = side_val.upper()
+                            logger.info(f"🔍 Matched position for {symbol}: side_val={side_val} (type={type(side_val)}), qty={qty}, pos_type={pos_type}, side_str={side_str}")
+                            
+                            # Priority 1: Check type field (TopStepX may use type: 1=LONG, 2=SHORT)
+                            if pos_type is not None:
+                                if pos_type == 1:
+                                    pos_side = "LONG"
+                                    logger.info(f"Position side determined from type field: {pos_side} (type={pos_type})")
+                                elif pos_type == 2:
+                                    pos_side = "SHORT"
+                                    logger.info(f"Position side determined from type field: {pos_side} (type={pos_type})")
+                            
+                            # Priority 2: Check if side is already a string (most reliable)
+                            if pos_side is None and side_str:
+                                s = side_str.upper()
                                 if s in ("LONG", "BUY"):
                                     pos_side = "LONG"
                                 elif s in ("SHORT", "SELL"):
                                     pos_side = "SHORT"
-                            elif side_val == 0:
-                                pos_side = "LONG"
-                            elif side_val == 1:
-                                pos_side = "SHORT"
-                            elif isinstance(side_val, int):
-                                # Some brokers use other integers
-                                if side_val > 0:
-                                    pos_side = "LONG"
-                                else:
-                                    pos_side = "SHORT"
                             
-                            # Check quantity as backup indicator
-                            if pos_side is None and qty != 0:
-                                pos_side = "LONG" if qty > 0 else "SHORT"
-                                logger.info(f"Position side determined from quantity: {pos_side}")
+                            # Priority 3: Determine side from side_val
+                            # NOTE: TopStepX convention is 0=LONG, 1=SHORT, but if type field exists and conflicts,
+                            # we trust type field more. If type is missing, use side_val.
+                            side_val_side = None
+                            if isinstance(side_val, str):
+                                s = side_val.upper()
+                                if s in ("LONG", "BUY"):
+                                    side_val_side = "LONG"
+                                elif s in ("SHORT", "SELL"):
+                                    side_val_side = "SHORT"
+                            elif isinstance(side_val, int):
+                                # Standard TopStepX: 0=LONG, 1=SHORT
+                                if side_val == 0:
+                                    side_val_side = "LONG"
+                                elif side_val == 1:
+                                    side_val_side = "SHORT"
+                                else:
+                                    # Unknown integer - try to infer
+                                    if side_val > 0:
+                                        side_val_side = "LONG"
+                                    else:
+                                        side_val_side = "SHORT"
+                            
+                            # If type field exists and conflicts with side_val, trust type
+                            if pos_side and side_val_side and pos_side != side_val_side:
+                                logger.warning(f"⚠️  CONFLICT: type={pos_type} says {pos_side}, but side_val={side_val} says {side_val_side}. Using type field ({pos_side}).")
+                                print(f"⚠️  CONFLICT: type={pos_type} ({pos_side}) vs side_val={side_val} ({side_val_side}). Using {pos_side}.")
+                            elif pos_side is None and side_val_side:
+                                pos_side = side_val_side
+                            
+                            # Priority 4: Check quantity sign (negative = SHORT, positive = LONG)
+                            # BUT: TopStepX uses side_val as primary, quantity is always positive
+                            # So: side_val=1 with qty=17 means SHORT 17, not LONG 17
+                            qty_side = None
+                            if qty != 0:
+                                if qty < 0:
+                                    qty_side = "SHORT"
+                                else:
+                                    # Positive quantity: use side_val to determine direction
+                                    # If side_val says SHORT, it's SHORT even with positive qty
+                                    if side_val_side:
+                                        qty_side = side_val_side
+                                    else:
+                                        qty_side = "LONG"  # Default to LONG for positive qty
+                                logger.info(f"Quantity-based side: {qty_side} (qty={qty}, side_val={side_val})")
+                            
+                            # Final determination: pos_side should already be set from type or side_val
+                            # If still None, use quantity as last resort
+                            if pos_side is None:
+                                if qty_side:
+                                    pos_side = qty_side
+                                    logger.info(f"Position side determined from quantity as fallback: {pos_side}")
+                                else:
+                                    logger.error(f"❌ Could not determine position side: side_val={side_val}, qty={qty}, type={pos_type}")
                             
                             # First match is enough
                             if pos_side:
@@ -392,15 +510,62 @@ class SimpleCandleStrategy(BaseStrategy):
                 pos_side = None
 
             # Get recent bars using configured timeframe (need at least 2)
+            # Need more bars for trend detection
+            bars_needed = max(50, self.ema_slow_period * 2)  # Enough for trend analysis
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
                 timeframe=self.timeframe,
-                limit=5  # Get last 5 bars to be safe
+                limit=bars_needed
             )
             
             # New logic requires 3 bars (two consecutive "distance" conditions)
             if not bars or len(bars) < 3:
                 return None
+            
+            # Check trend quality if filter is enabled
+            if self.use_trend_filter and self.trend_detector:
+                try:
+                    # Calculate EMAs for trend detection
+                    fast_ema = await self.calculate_ema(symbol, self.ema_fast_period)
+                    slow_ema = await self.calculate_ema(symbol, self.ema_slow_period)
+                    
+                    if fast_ema and slow_ema:
+                        trend_score = await self.trend_detector.calculate_trend_quality(
+                            symbol=symbol,
+                            bars=bars,
+                            fast_ema=fast_ema,
+                            slow_ema=slow_ema
+                        )
+                        
+                        # Log trend quality (only if below threshold to reduce noise)
+                        if not trend_score.is_trending:
+                            logger.warning(
+                                f"🚫 CHOPPY MARKET: Trend score {trend_score.total_score}/100 "
+                                f"(EMA sep: {trend_score.ema_separation_score}, "
+                                f"Dir: {trend_score.direction_consistency_score}, "
+                                f"Mom: {trend_score.momentum_score}, "
+                                f"ATR: {trend_score.atr_expansion_score}, "
+                                f"Candles: {trend_score.candle_consistency_score}) - "
+                                f"Skipping trade"
+                            )
+                            print(
+                                f"🚫 CHOPPY: Score {trend_score.total_score}/100 "
+                                f"(min: {self.trend_detector.min_trend_score}) - Trade BLOCKED"
+                            )
+                            return None  # Block trade in choppy market
+                        else:
+                            # Log occasionally for trending markets (every 10th check)
+                            import random
+                            if random.randint(1, 10) == 1:  # 10% chance to log
+                                logger.info(
+                                    f"🟢 TRENDING: Score {trend_score.total_score}/100 "
+                                    f"({trend_score.trend_direction or 'NEUTRAL'}) - Trade allowed"
+                                )
+                    else:
+                        logger.debug(f"Could not calculate EMAs for trend detection, allowing trade")
+                except Exception as e:
+                    logger.warning(f"Error in trend detection, allowing trade: {e}")
+                    # On error, allow trade (fail open)
             
             # Get the last 3 candles (two consecutive distance checks)
             c0 = bars[-3]  # older
@@ -734,6 +899,16 @@ class SimpleCandleStrategy(BaseStrategy):
                     if cross_type:
                         logger.warning(f"🛑 EMA CROSS DETECTED ({cross_type}) for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
                         print(f"🛑 EMA CROSS DETECTED ({cross_type}) for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
+                        await self.flatten_all(symbol)
+                        # Continue to next symbol after flattening
+                        continue
+                
+                # Check for EMA distance >= 20 points and flatten if detected
+                for symbol in self.config.symbols:
+                    distance_exceeded = await self.check_ema_distance(symbol, threshold=20.0)
+                    if distance_exceeded:
+                        logger.warning(f"🛑 EMA DISTANCE >= 20 points for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
+                        print(f"🛑 EMA DISTANCE >= 20 points for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
                         await self.flatten_all(symbol)
                         # Continue to next symbol after flattening
                         continue

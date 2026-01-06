@@ -2514,6 +2514,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     # WebSocket support for real-time updates
     _ws_clients = set()
     _ws_broadcast_task = None
+    _ws_broadcast_queue = asyncio.Queue(maxsize=10)  # Batch updates queue
+    _ws_batch_processor_task = None
     
     async def handle_websocket(request):
         """Handle WebSocket connections for real-time updates."""
@@ -2541,23 +2543,91 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         
         return ws
     
-    async def broadcast_update(data: dict):
-        """Broadcast update to all connected WebSocket clients."""
+    async def broadcast_update(data: dict, immediate: bool = False):
+        """
+        Broadcast update to all connected WebSocket clients.
+        
+        Args:
+            data: Update data to broadcast
+            immediate: If True, send immediately. If False, queue for batching (default: False)
+        """
         if not _ws_clients:
             return
         
-        # Send to all clients, remove dead connections
-        dead_clients = set()
-        for client in _ws_clients:
+        # Check WebSocket connection state before sending
+        if immediate:
+            # Send immediately (for critical updates like order fills)
+            dead_clients = set()
+            for client in _ws_clients:
+                try:
+                    if hasattr(client, 'closed') and client.closed:
+                        dead_clients.add(client)
+                        continue
+                    await client.send_json(data)
+                except Exception as e:
+                    logger.debug(f"Failed to send to client: {e}")
+                    dead_clients.add(client)
+            
+            # Clean up dead connections
+            for client in dead_clients:
+                _ws_clients.discard(client)
+        else:
+            # Queue for batching (non-critical updates)
             try:
-                await client.send_json(data)
+                _ws_broadcast_queue.put_nowait(data)
+            except asyncio.QueueFull:
+                # Queue full, drop oldest and add new
+                try:
+                    _ws_broadcast_queue.get_nowait()
+                    _ws_broadcast_queue.put_nowait(data)
+                except asyncio.QueueEmpty:
+                    pass
+    
+    async def _process_broadcast_batch():
+        """Process batched WebSocket updates every 500ms."""
+        while True:
+            try:
+                updates = []
+                # Collect all queued updates
+                while not _ws_broadcast_queue.empty():
+                    try:
+                        update = _ws_broadcast_queue.get_nowait()
+                        updates.append(update)
+                    except asyncio.QueueEmpty:
+                        break
+                
+                # Send batched updates if any
+                if updates and _ws_clients:
+                    # Merge updates by type (keep latest of each type)
+                    merged = {}
+                    for update in updates:
+                        update_type = update.get('type', 'unknown')
+                        merged[update_type] = update
+                    
+                    # Send merged updates
+                    dead_clients = set()
+                    for client in _ws_clients:
+                        try:
+                            if client.closed:
+                                dead_clients.add(client)
+                                continue
+                            # Send all merged updates
+                            for update in merged.values():
+                                await client.send_json(update)
+                        except Exception as e:
+                            logger.debug(f"Failed to send batch to client: {e}")
+                            dead_clients.add(client)
+                    
+                    # Clean up dead connections
+                    for client in dead_clients:
+                        _ws_clients.discard(client)
+                
+                await asyncio.sleep(0.5)  # Batch every 500ms
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.debug(f"Failed to send to client: {e}")
-                dead_clients.add(client)
-        
-        # Clean up dead connections
-        for client in dead_clients:
-            _ws_clients.discard(client)
+                logger.error(f"Error in broadcast batch processor: {e}")
+                await asyncio.sleep(1)
     
     # Make broadcast_update globally accessible for strategy signals
     # Store it in the module namespace so it can be imported
@@ -2650,16 +2720,17 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         response = await handle_account_state(None)
                         if hasattr(response, 'text'):
                             account_data = json.loads(response.text)
-                            await broadcast_update({'type': 'account', 'data': account_data})
+                            # Queue for batching (non-critical)
+                            await broadcast_update({'type': 'account', 'data': account_data}, immediate=False)
                     except Exception as e:
                         logger.debug(f"Error broadcasting account state: {e}")
                     
-                    # Broadcast positions
+                    # Broadcast positions (queue for batching)
                     try:
                         response = await handle_get_positions(None)
                         if hasattr(response, 'text'):
                             positions_data = json.loads(response.text)
-                            await broadcast_update({'type': 'positions', 'data': positions_data})
+                            await broadcast_update({'type': 'positions', 'data': positions_data}, immediate=False)
                     except Exception as e:
                         logger.debug(f"Error broadcasting positions: {e}")
                     
@@ -2669,7 +2740,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             response = await handle_get_orders(None)
                             if hasattr(response, 'text'):
                                 orders_data = json.loads(response.text)
-                                await broadcast_update({'type': 'orders', 'data': orders_data})
+                                await broadcast_update({'type': 'orders', 'data': orders_data}, immediate=False)
                         except Exception as e:
                             logger.debug(f"Error broadcasting orders: {e}")
                     
@@ -2679,12 +2750,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             response = await handle_strategy_status(None)
                             if hasattr(response, 'text'):
                                 strategy_data = json.loads(response.text)
-                                await broadcast_update({'type': 'strategies', 'data': strategy_data})
+                                await broadcast_update({'type': 'strategies', 'data': strategy_data}, immediate=False)
                         except Exception as e:
                             logger.debug(f"Error broadcasting strategy status: {e}")
                 
-                # Note: Strategy signals are broadcast directly from strategy_manager.py
-                # when signals are generated, not from this loop
+                # Note: Strategy signals and critical events (order_filled, position_opened) 
+                # are broadcast immediately via SignalR callbacks, not from this loop
                 
                 tick += 1
                 await asyncio.sleep(2)  # Account/positions every 2s; orders/strategies throttled above
@@ -2735,8 +2806,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     _chart_server_symbol = symbol
     _chart_server_timeframe = timeframe
     
-    # Start WebSocket broadcast loop
+    # Start WebSocket broadcast loop and batch processor
     _ws_broadcast_task = asyncio.create_task(websocket_broadcast_loop())
+    _ws_batch_processor_task = asyncio.create_task(_process_broadcast_batch())
     
     logger.info(f"📡 Chart server started on http://127.0.0.1:{port}")
     logger.info(f"📡 WebSocket endpoint: ws://127.0.0.1:{port}/ws")
