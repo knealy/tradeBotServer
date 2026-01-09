@@ -102,14 +102,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             unrealized_pnl = 0.0
             realized_pnl = 0.0
 
-            # **Realized PnL**: best-effort from AccountTracker state (if available)
-            try:
-                if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker and account_id:
+            # **Realized PnL**: Get from AccountTracker (manual calculation)
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker and account_id:
+                try:
                     state = trading_bot.account_tracker.get_state(account_id=str(account_id))
                     if isinstance(state, dict):
+                        # AccountTracker returns 'realized_pnl' (already converted from 'realised_PnL')
                         realized_pnl = float(state.get('realized_pnl', 0.0) or 0.0)
-            except Exception as e:
-                logger.debug(f"Could not get realized PnL from account tracker: {e}")
+                        logger.debug(f"Retrieved realized PnL from account tracker: ${realized_pnl:.2f}")
+                except Exception as e:
+                    logger.debug(f"Could not get realized PnL from account tracker: {e}")
 
             # **Unrealized PnL**: sum computed per-position PnL from `handle_get_positions()`
             try:
@@ -823,8 +825,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             unrealized_pnl = 0.0
                     
                     # Fetch linked orders to get stopLoss/takeProfit if not already present
+                    # DISABLED BY DEFAULT - This causes slow Order/search calls for each position
                     # Only use linked orders that are explicitly bracket-linked (not standalone orders)
-                    if not pos_dict.get('stopLoss') and not pos_dict.get('stop_loss'):
+                    # Set include_linked=1 in query params to enable this (slower but more complete)
+                    fetch_linked = False  # Disabled by default to avoid slow Order/search calls
+                    if fetch_linked and not pos_dict.get('stopLoss') and not pos_dict.get('stop_loss'):
                         try:
                             pos_id = pos_dict.get('id') or pos_dict.get('position_id')
                             if pos_id:
@@ -1518,32 +1523,31 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             return response
     
     async def handle_flatten(request):
-        """Handle flatten command - close all positions and cancel all orders."""
+        """Handle flatten command - close all positions and cancel all orders. OPTIMIZED FOR SPEED."""
         try:
-            # Call trading bot's flatten_all_positions method
-            result = await trading_bot.flatten_all_positions(interactive=False)
-            
-            # Parse result based on format (could be dict or string)
-            if isinstance(result, dict):
-                response = web.json_response(result)
-            elif isinstance(result, str):
-                # Try to parse JSON string
-                import json
-                try:
-                    result_dict = json.loads(result)
-                    response = web.json_response(result_dict)
-                except json.JSONDecodeError:
-                    response = web.json_response({'success': False, 'error': result})
-            else:
-                response = web.json_response({'success': True, 'message': 'Flatten completed'})
-            
+            # Return immediately, process in background for speed
+            response = web.json_response({'success': True, 'message': 'Flatten initiated'})
             response.headers['Access-Control-Allow-Origin'] = '*'
+            
+            # Process flatten in background (don't wait)
+            asyncio.create_task(_flatten_background())
+            
             return response
         except Exception as e:
-            logger.error(f"Error flattening positions: {e}")
+            logger.error(f"Error initiating flatten: {e}")
             response = web.json_response({'success': False, 'error': str(e)}, status=500)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
+    
+    async def _flatten_background():
+        """Background task to actually flatten positions."""
+        try:
+            result = await trading_bot.flatten_all_positions(interactive=False)
+            # Broadcast update via WebSocket
+            await broadcast_update({'type': 'flatten_complete', 'data': result}, immediate=True)
+        except Exception as e:
+            logger.error(f"Error in background flatten: {e}")
+            await broadcast_update({'type': 'error', 'data': {'message': f'Flatten error: {str(e)}'}}, immediate=True)
     
     async def handle_cancel_all(request):
         """Handle cancel all orders command."""
@@ -1613,6 +1617,47 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     account_id = trading_bot.selected_account
             logger.info(f"Using account_id: {account_id}")
             
+            # Get position details BEFORE closing to calculate P&L
+            position_details = None
+            realized_pnl = 0.0
+            try:
+                position_details = await trading_bot.get_position_details(position_id, account_id=account_id)
+                if position_details:
+                    # Calculate realized P&L from position details
+                    entry_price = float(position_details.get('entryPrice') or position_details.get('entry_price') or 0)
+                    quantity = float(position_details.get('size') or position_details.get('quantity') or 0)
+                    side = position_details.get('side', 0)  # 0 = LONG, 1 = SHORT
+                    symbol = position_details.get('symbol', '')
+                    
+                    # Get current market price for exit
+                    try:
+                        quote = await trading_bot.get_market_quote(symbol) if symbol else None
+                        if quote and 'error' not in quote:
+                            if side == 0:  # LONG
+                                exit_price = float(quote.get('bid') or quote.get('last') or entry_price)
+                            else:  # SHORT
+                                exit_price = float(quote.get('ask') or quote.get('last') or entry_price)
+                            
+                            # Get tick value for symbol
+                            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                                tick_value = trading_bot.account_tracker._get_tick_value(symbol)
+                            else:
+                                # Fallback tick values
+                                tick_value = 2.0 if 'MNQ' in symbol.upper() else 5.0
+                            
+                            # Calculate P&L
+                            if side == 0:  # LONG
+                                price_diff = exit_price - entry_price
+                            else:  # SHORT
+                                price_diff = entry_price - exit_price
+                            
+                            realized_pnl = price_diff * tick_value * quantity
+                            logger.info(f"📊 Calculated realized P&L for position {position_id}: ${realized_pnl:.2f} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, qty: {quantity})")
+                    except Exception as pnl_err:
+                        logger.warning(f"Could not calculate P&L before close: {pnl_err}")
+            except Exception as details_err:
+                logger.warning(f"Could not get position details before close: {details_err}")
+            
             # Close the position
             try:
                 result = await trading_bot.close_position(
@@ -1630,7 +1675,38 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 
                 if result and success:
                     logger.info(f"✅ Position {position_id} closed successfully")
-                    response = web.json_response({'success': True, 'message': f'Position {position_id} closed'})
+                    
+                    # Update account tracker with realized P&L if we calculated it
+                    if realized_pnl != 0 and hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker and account_id:
+                        try:
+                            fill_data = {
+                                'pnl': realized_pnl,
+                                'commission': 0.0,  # Will be updated when trade data comes in
+                                'fee': 0.0
+                            }
+                            trading_bot.account_tracker.update_from_fill(str(account_id), fill_data)
+                            logger.info(f"✅ Updated account tracker with realized P&L: ${realized_pnl:.2f}")
+                        except Exception as tracker_err:
+                            logger.warning(f"Could not update account tracker: {tracker_err}")
+                    
+                    # Clear account state cache to force refresh
+                    if account_id:
+                        cache_key = f"account_state_{account_id}"
+                        if cache_key in _account_state_cache:
+                            del _account_state_cache[cache_key]
+                            logger.debug(f"Cleared account state cache for {account_id}")
+                    
+                    # Broadcast account update immediately
+                    try:
+                        account_state_resp = await handle_account_state(None)
+                        if hasattr(account_state_resp, 'text'):
+                            account_data = json.loads(account_state_resp.text)
+                            await broadcast_update({'type': 'account', 'data': account_data}, immediate=True)
+                            logger.debug("📡 Broadcasted account state update after position close")
+                    except Exception as broadcast_err:
+                        logger.debug(f"Could not broadcast account update: {broadcast_err}")
+                    
+                    response = web.json_response({'success': True, 'message': f'Position {position_id} closed', 'realized_pnl': realized_pnl})
                 else:
                     # Check if error is about missing position (404) - might already be closed
                     if '404' in str(error_msg) or 'not found' in str(error_msg).lower():
@@ -2065,6 +2141,605 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     
     app.router.add_post('/api/execute_command', handle_execute_command)
     app.router.add_options('/api/execute_command', handle_options)
+    
+    # Enhanced P&L tracking with historical data
+    async def handle_pnl_history(request):
+        """Get P&L history for equity curve visualization."""
+        try:
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
+            # Get time period from query (default: 24 hours)
+            # Handle None request (when called from WebSocket broadcast loop)
+            period_hours = 24
+            if request and hasattr(request, 'query'):
+                period_hours = int(request.query.get('period', 24))
+            
+            # Get current account state
+            account_state_resp = await handle_account_state(None)
+            account_state = {}
+            if hasattr(account_state_resp, 'text') and account_state_resp.text:
+                account_state = json.loads(account_state_resp.text)
+            elif hasattr(account_state_resp, 'body') and account_state_resp.body:
+                account_state = json.loads(account_state_resp.body.decode('utf-8'))
+            
+            current_balance = float(account_state.get('balance', 0))
+            unrealized_pnl = float(account_state.get('unrealized_pnl', 0))
+            realized_pnl = float(account_state.get('realized_pnl', 0))
+            
+            # Try to get historical data from database if available
+            pnl_history = []
+            if hasattr(trading_bot, 'database') and trading_bot.database:
+                try:
+                    from datetime import datetime, timedelta, timezone
+                    start_time = datetime.now(timezone.utc) - timedelta(hours=period_hours)
+                    
+                    # Query trade history for realized P&L over time
+                    with trading_bot.database.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT 
+                                exit_time as timestamp,
+                                SUM(pnl) OVER (ORDER BY exit_time) as cumulative_realized_pnl
+                            FROM trade_history
+                            WHERE account_id = %s 
+                                AND exit_time >= %s
+                                AND exit_time IS NOT NULL
+                            ORDER BY exit_time
+                        """, (str(account_id), start_time))
+                        
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            pnl_history.append({
+                                'timestamp': row[0].isoformat() if row[0] else None,
+                                'realized_pnl': float(row[1] or 0),
+                                'unrealized_pnl': 0.0,  # Historical unrealized not tracked
+                                'total_pnl': float(row[1] or 0),
+                                'balance': current_balance  # Approximate
+                            })
+                except Exception as e:
+                    logger.debug(f"Could not fetch P&L history from database: {e}")
+            
+            # Add current state as latest point
+            from datetime import datetime, timezone
+            pnl_history.append({
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'realized_pnl': realized_pnl,
+                'unrealized_pnl': unrealized_pnl,
+                'total_pnl': realized_pnl + unrealized_pnl,
+                'balance': current_balance
+            })
+            
+            # Calculate equity curve (balance over time)
+            equity_curve = []
+            starting_balance = current_balance - (realized_pnl + unrealized_pnl)
+            for i, point in enumerate(pnl_history):
+                equity_curve.append({
+                    'timestamp': point['timestamp'],
+                    'equity': starting_balance + point['total_pnl'],
+                    'realized_pnl': point['realized_pnl'],
+                    'unrealized_pnl': point.get('unrealized_pnl', 0),
+                    'drawdown': 0.0  # Calculate if we have peak
+                })
+            
+            # Calculate drawdown
+            if equity_curve:
+                peak_equity = equity_curve[0]['equity']
+                for point in equity_curve:
+                    if point['equity'] > peak_equity:
+                        peak_equity = point['equity']
+                    point['drawdown'] = peak_equity - point['equity']
+            
+            result = {
+                'account_id': account_id,
+                'current': {
+                    'balance': current_balance,
+                    'realized_pnl': realized_pnl,
+                    'unrealized_pnl': unrealized_pnl,
+                    'total_pnl': realized_pnl + unrealized_pnl
+                },
+                'equity_curve': equity_curve,
+                'pnl_history': pnl_history,
+                'period_hours': period_hours
+            }
+            
+            response = web.json_response(result)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching P&L history: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    # Performance metrics endpoint
+    async def handle_performance_metrics(request):
+        """Get comprehensive performance metrics."""
+        try:
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
+            # Get period from query (default: 30 days)
+            # Handle None request (when called from WebSocket broadcast loop)
+            period_days = 30
+            if request and hasattr(request, 'query'):
+                period_days = int(request.query.get('period', 30))
+            
+            # Get current account state
+            account_state_resp = await handle_account_state(None)
+            account_state = {}
+            if hasattr(account_state_resp, 'text') and account_state_resp.text:
+                account_state = json.loads(account_state_resp.text)
+            elif hasattr(account_state_resp, 'body') and account_state_resp.body:
+                account_state = json.loads(account_state_resp.body.decode('utf-8'))
+            
+            # Get realized PnL from account tracker (manual calculation)
+            realized_pnl = float(account_state.get('realized_pnl', 0))
+            unrealized_pnl = float(account_state.get('unrealized_pnl', 0))
+            
+            # Get realized PnL from account tracker if not in account_state
+            if realized_pnl == 0 and hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker and account_id:
+                try:
+                    tracker_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
+                    if isinstance(tracker_state, dict):
+                        realized_pnl = float(tracker_state.get('realized_pnl', 0.0) or 0.0)
+                        logger.debug(f"Performance metrics: Retrieved realized PnL from tracker: ${realized_pnl:.2f}")
+                except Exception as e:
+                    logger.debug(f"Could not get realized PnL from tracker in metrics: {e}")
+            
+            # Initialize metrics
+            metrics = {
+                'account_id': account_id,
+                'period_days': period_days,
+                'current': {
+                    'balance': float(account_state.get('balance', 0)),
+                    'realized_pnl': realized_pnl,
+                    'unrealized_pnl': unrealized_pnl,
+                    'total_pnl': realized_pnl + unrealized_pnl
+                },
+                'trades': {
+                    'total': 0,
+                    'winning': 0,
+                    'losing': 0,
+                    'win_rate': 0.0,
+                    'avg_win': 0.0,
+                    'avg_loss': 0.0,
+                    'profit_factor': 0.0,
+                    'largest_win': 0.0,
+                    'largest_loss': 0.0
+                },
+                'performance': {
+                    'sharpe_ratio': 0.0,
+                    'sortino_ratio': 0.0,
+                    'max_drawdown': 0.0,
+                    'current_drawdown': 0.0,
+                    'recovery_factor': 0.0
+                },
+                'by_strategy': {},
+                'by_symbol': {},
+                'by_hour': {}
+            }
+            
+            # Get trade statistics using trading_bot's 'trades' command
+            # This uses the same consolidation and calculation logic as the CLI command
+            try:
+                from core.cli_command_parser import CLICommandParser
+                parser = CLICommandParser(trading_bot)
+                
+                # Execute 'trades' command (uses current trading session by default)
+                # This will consolidate orders into trades and calculate statistics
+                trades_result = await parser._handle_trades([])
+                
+                if trades_result and 'statistics' in trades_result:
+                    stats = trades_result['statistics']
+                    trades_list = trades_result.get('trades', [])
+                    
+                    # Map statistics from trades command to metrics format
+                    metrics['trades']['total'] = stats.get('total_trades', 0)
+                    metrics['trades']['winning'] = stats.get('winning_trades', 0)
+                    metrics['trades']['losing'] = stats.get('losing_trades', 0)
+                    # Win rate is already a percentage (0-100) from _calculate_trade_statistics
+                    win_rate_pct = stats.get('win_rate', 0.0)
+                    metrics['trades']['win_rate'] = win_rate_pct / 100.0 if win_rate_pct > 1 else win_rate_pct
+                    metrics['trades']['avg_win'] = stats.get('average_win', 0.0)
+                    metrics['trades']['avg_loss'] = abs(stats.get('average_loss', 0.0))  # Make positive for display
+                    metrics['trades']['largest_win'] = stats.get('largest_win', 0.0)
+                    metrics['trades']['largest_loss'] = stats.get('largest_loss', 0.0)
+                    
+                    # Calculate profit factor from statistics
+                    # Profit factor = (average_win * winning_trades) / (average_loss * losing_trades)
+                    total_wins = stats.get('average_win', 0.0) * stats.get('winning_trades', 0)
+                    total_losses = abs(stats.get('average_loss', 0.0)) * stats.get('losing_trades', 0)
+                    if total_losses > 0:
+                        metrics['trades']['profit_factor'] = total_wins / total_losses
+                    elif total_wins > 0:
+                        metrics['trades']['profit_factor'] = float('inf')  # All wins, no losses
+                    
+                    # Process trades for additional breakdowns (by strategy, symbol, hour)
+                    for trade in trades_list:
+                        pnl = float(trade.get('pnl', 0) or 0)
+                        symbol = trade.get('symbol', 'UNKNOWN')
+                        strategy = trade.get('strategy') or 'manual'
+                        
+                        # Track by strategy
+                        if strategy not in metrics['by_strategy']:
+                            metrics['by_strategy'][strategy] = {'trades': 0, 'pnl': 0.0, 'wins': 0, 'losses': 0}
+                        metrics['by_strategy'][strategy]['trades'] += 1
+                        metrics['by_strategy'][strategy]['pnl'] += pnl
+                        if pnl > 0:
+                            metrics['by_strategy'][strategy]['wins'] += 1
+                        else:
+                            metrics['by_strategy'][strategy]['losses'] += 1
+                        
+                        # Track by symbol
+                        if symbol not in metrics['by_symbol']:
+                            metrics['by_symbol'][symbol] = {'trades': 0, 'pnl': 0.0, 'wins': 0, 'losses': 0}
+                        metrics['by_symbol'][symbol]['trades'] += 1
+                        metrics['by_symbol'][symbol]['pnl'] += pnl
+                        if pnl > 0:
+                            metrics['by_symbol'][symbol]['wins'] += 1
+                        else:
+                            metrics['by_symbol'][symbol]['losses'] += 1
+                        
+                        # Track by hour
+                        exit_time = trade.get('exit_time')
+                        if exit_time:
+                            try:
+                                from datetime import datetime
+                                if isinstance(exit_time, str):
+                                    dt = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
+                                else:
+                                    dt = exit_time
+                                exit_hour = dt.hour
+                                
+                                if exit_hour not in metrics['by_hour']:
+                                    metrics['by_hour'][exit_hour] = {'trades': 0, 'wins': 0, 'losses': 0}
+                                metrics['by_hour'][exit_hour]['trades'] += 1
+                                if pnl > 0:
+                                    metrics['by_hour'][exit_hour]['wins'] += 1
+                                else:
+                                    metrics['by_hour'][exit_hour]['losses'] += 1
+                            except Exception as e:
+                                logger.debug(f"Could not parse exit_time for hour tracking: {e}")
+                    
+                    # Calculate win rates for strategies, symbols, and hours
+                    for key in ['by_strategy', 'by_symbol']:
+                        for name, data in metrics[key].items():
+                            if data['trades'] > 0:
+                                data['win_rate'] = data['wins'] / data['trades']
+                    
+                    for hour, data in metrics['by_hour'].items():
+                        if data['trades'] > 0:
+                            data['win_rate'] = data['wins'] / data['trades']
+                    
+                    logger.debug(f"Performance metrics: Using trades command statistics - {metrics['trades']['total']} trades, {metrics['trades']['win_rate']*100:.1f}% win rate")
+                    
+            except Exception as trades_err:
+                logger.debug(f"Could not get trades statistics from trading_bot command: {trades_err}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                # Fallback: try database if available
+                if hasattr(trading_bot, 'database') and trading_bot.database:
+                    try:
+                        from datetime import datetime, timedelta, timezone
+                        start_time = datetime.now(timezone.utc) - timedelta(days=period_days)
+                        
+                        with trading_bot.database.get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT 
+                                    strategy_name,
+                                    symbol,
+                                    pnl,
+                                    exit_time,
+                                    EXTRACT(HOUR FROM exit_time) as exit_hour
+                                FROM trade_history
+                                WHERE account_id = %s 
+                                    AND exit_time >= %s
+                                    AND exit_time IS NOT NULL
+                                    AND pnl IS NOT NULL
+                                ORDER BY exit_time
+                            """, (str(account_id), start_time))
+                            
+                            rows = cursor.fetchall()
+                            wins = []
+                            losses = []
+                            
+                            for row in rows:
+                                strategy = row[0] or 'manual'
+                                symbol = row[1] or 'unknown'
+                                pnl = float(row[2] or 0)
+                                exit_hour = int(row[4]) if row[4] else None
+                                
+                                metrics['trades']['total'] += 1
+                                if pnl > 0:
+                                    metrics['trades']['winning'] += 1
+                                    wins.append(pnl)
+                                elif pnl < 0:
+                                    metrics['trades']['losing'] += 1
+                                    losses.append(abs(pnl))
+                                
+                                # Track by strategy, symbol, hour (same as above)
+                                if strategy not in metrics['by_strategy']:
+                                    metrics['by_strategy'][strategy] = {'trades': 0, 'pnl': 0.0, 'wins': 0, 'losses': 0}
+                                metrics['by_strategy'][strategy]['trades'] += 1
+                                metrics['by_strategy'][strategy]['pnl'] += pnl
+                                if pnl > 0:
+                                    metrics['by_strategy'][strategy]['wins'] += 1
+                                else:
+                                    metrics['by_strategy'][strategy]['losses'] += 1
+                                
+                                if symbol not in metrics['by_symbol']:
+                                    metrics['by_symbol'][symbol] = {'trades': 0, 'pnl': 0.0, 'wins': 0, 'losses': 0}
+                                metrics['by_symbol'][symbol]['trades'] += 1
+                                metrics['by_symbol'][symbol]['pnl'] += pnl
+                                if pnl > 0:
+                                    metrics['by_symbol'][symbol]['wins'] += 1
+                                else:
+                                    metrics['by_symbol'][symbol]['losses'] += 1
+                                
+                                if exit_hour is not None:
+                                    if exit_hour not in metrics['by_hour']:
+                                        metrics['by_hour'][exit_hour] = {'trades': 0, 'wins': 0, 'losses': 0}
+                                    metrics['by_hour'][exit_hour]['trades'] += 1
+                                    if pnl > 0:
+                                        metrics['by_hour'][exit_hour]['wins'] += 1
+                                    else:
+                                        metrics['by_hour'][exit_hour]['losses'] += 1
+                                
+                                if pnl > metrics['trades']['largest_win']:
+                                    metrics['trades']['largest_win'] = pnl
+                                if pnl < metrics['trades']['largest_loss']:
+                                    metrics['trades']['largest_loss'] = pnl
+                            
+                            if metrics['trades']['total'] > 0:
+                                metrics['trades']['win_rate'] = metrics['trades']['winning'] / metrics['trades']['total']
+                            
+                            if wins:
+                                metrics['trades']['avg_win'] = sum(wins) / len(wins)
+                            if losses:
+                                metrics['trades']['avg_loss'] = sum(losses) / len(losses)
+                            
+                            total_wins = sum(wins) if wins else 0
+                            total_losses = sum(losses) if losses else 0
+                            if total_losses > 0:
+                                metrics['trades']['profit_factor'] = total_wins / total_losses
+                            
+                            for key in ['by_strategy', 'by_symbol']:
+                                for name, data in metrics[key].items():
+                                    if data['trades'] > 0:
+                                        data['win_rate'] = data['wins'] / data['trades']
+                            
+                            for hour, data in metrics['by_hour'].items():
+                                if data['trades'] > 0:
+                                    data['win_rate'] = data['wins'] / data['trades']
+                    except Exception as db_err:
+                        logger.debug(f"Could not fetch performance metrics from database fallback: {db_err}")
+            
+            # Get strategy performance if available
+            if hasattr(trading_bot, 'strategy_manager') and trading_bot.strategy_manager:
+                try:
+                    for strategy_name, strategy in trading_bot.strategy_manager.strategies.items():
+                        if hasattr(strategy, 'metrics'):
+                            metrics['by_strategy'][strategy_name] = {
+                                'trades': strategy.metrics.total_trades,
+                                'wins': strategy.metrics.winning_trades,
+                                'losses': strategy.metrics.losing_trades,
+                                'win_rate': strategy.metrics.win_rate,
+                                'pnl': strategy.metrics.total_pnl,
+                                'profit_factor': strategy.metrics.profit_factor,
+                                'avg_win': strategy.metrics.avg_win,
+                                'avg_loss': strategy.metrics.avg_loss
+                            }
+                except Exception as e:
+                    logger.debug(f"Could not get strategy metrics: {e}")
+            
+            response = web.json_response(metrics)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching performance metrics: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_risk_metrics(request):
+        """Get real-time risk metrics - DLL, MLL, drawdown, position exposure."""
+        try:
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
+            if not account_id:
+                response = web.json_response({'error': 'No account selected'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            
+            # Get account state and compliance
+            account_state = {}
+            compliance = {}
+            
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                try:
+                    account_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
+                    compliance = trading_bot.account_tracker.check_compliance(account_id=str(account_id))
+                except Exception as e:
+                    logger.debug(f"Error getting risk metrics: {e}")
+            
+            # Get positions for exposure calculation
+            positions = []
+            try:
+                pos_resp = await handle_get_positions(None)
+                if hasattr(pos_resp, 'text'):
+                    pos_data = json.loads(pos_resp.text)
+                    positions = pos_data.get('positions', [])
+            except Exception as e:
+                logger.debug(f"Error getting positions for risk metrics: {e}")
+            
+            # Calculate position exposure by symbol
+            position_exposure = {}
+            for pos in positions:
+                symbol = pos.get('symbol', 'UNKNOWN')
+                qty = abs(float(pos.get('quantity', 0) or pos.get('size', 0)))
+                if symbol not in position_exposure:
+                    position_exposure[symbol] = 0
+                position_exposure[symbol] += qty
+            
+            # Calculate current drawdown
+            current_balance = float(account_state.get('current_balance', 0) or account_state.get('balance', 0))
+            starting_balance = float(account_state.get('starting_balance', current_balance))
+            highest_balance = float(account_state.get('highest_balance', current_balance))
+            current_drawdown = current_balance - highest_balance if highest_balance > 0 else 0
+            max_drawdown = float(account_state.get('max_drawdown', 0))
+            
+            # Calculate percentages
+            dll_limit = float(compliance.get('dll_limit', 0) or 0)
+            dll_used = float(compliance.get('dll_used', 0) or 0)
+            dll_remaining = float(compliance.get('dll_remaining', dll_limit) or 0)
+            dll_percentage = (dll_used / dll_limit * 100) if dll_limit > 0 else 0
+            
+            mll_limit = float(compliance.get('mll_limit', 0) or 0)
+            mll_used = float(compliance.get('mll_used', 0) or 0)
+            mll_remaining = float(compliance.get('mll_remaining', mll_limit) or 0)
+            mll_percentage = (mll_used / mll_limit * 100) if mll_limit > 0 else 0
+            
+            # Risk per trade (average)
+            risk_per_trade = 0.0
+            if hasattr(trading_bot, 'risk_manager') and trading_bot.risk_manager:
+                try:
+                    # Get default risk per trade from risk manager
+                    risk_per_trade = getattr(trading_bot.risk_manager, 'risk_per_trade', 0.0)
+                except:
+                    pass
+            
+            risk_metrics = {
+                'account_id': account_id,
+                'dll_limit': dll_limit,
+                'dll_used': dll_used,
+                'dll_remaining': dll_remaining,
+                'dll_percentage': min(100, max(0, dll_percentage)),
+                'dll_violated': compliance.get('dll_violated', False),
+                'mll_limit': mll_limit,
+                'mll_used': mll_used,
+                'mll_remaining': mll_remaining,
+                'mll_percentage': min(100, max(0, mll_percentage)),
+                'mll_violated': compliance.get('mll_violated', False),
+                'current_drawdown': current_drawdown,
+                'max_drawdown': max_drawdown,
+                'current_balance': current_balance,
+                'starting_balance': starting_balance,
+                'highest_balance': highest_balance,
+                'position_exposure': position_exposure,
+                'risk_per_trade': risk_per_trade,
+                'is_compliant': compliance.get('is_compliant', True),
+                'violations': compliance.get('violations', []),
+                'warnings': []
+            }
+            
+            # Add warnings for approaching limits
+            if dll_percentage >= 80:
+                risk_metrics['warnings'].append(f"⚠️ Approaching DLL: {dll_percentage:.1f}% used")
+            if mll_percentage >= 80:
+                risk_metrics['warnings'].append(f"⚠️ Approaching MLL: {mll_percentage:.1f}% used")
+            if current_drawdown < -500:
+                risk_metrics['warnings'].append(f"⚠️ Significant drawdown: ${abs(current_drawdown):.2f}")
+            
+            response = web.json_response(risk_metrics)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching risk metrics: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    async def handle_compliance_status(request):
+        """Get compliance status with detailed information."""
+        try:
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
+            if not account_id:
+                response = web.json_response({'error': 'No account selected'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            
+            compliance = {}
+            account_state = {}
+            
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                try:
+                    compliance = trading_bot.account_tracker.check_compliance(account_id=str(account_id))
+                    account_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
+                except Exception as e:
+                    logger.debug(f"Error getting compliance: {e}")
+            
+            # Calculate consistency ratio (best day P&L vs total P&L)
+            best_day_pnl = float(account_state.get('best_day_pnl', 0) or 0)
+            total_pnl = float(account_state.get('total_pnl', 0) or account_state.get('net_PnL', 0) or 0)
+            consistency_ratio = (best_day_pnl / total_pnl) if total_pnl > 0 else 0
+            consistency_compliant = consistency_ratio < 0.5  # Best day should be < 50% of total
+            
+            compliance_status = {
+                'account_id': account_id,
+                'dll_compliant': not compliance.get('dll_violated', False),
+                'mll_compliant': not compliance.get('mll_violated', False),
+                'consistency_compliant': consistency_compliant,
+                'is_compliant': compliance.get('is_compliant', True),
+                'best_day_pnl': best_day_pnl,
+                'total_pnl': total_pnl,
+                'consistency_ratio': consistency_ratio,
+                'violations': compliance.get('violations', []),
+                'warnings': []
+            }
+            
+            # Add warnings
+            if not compliance_status['dll_compliant']:
+                compliance_status['warnings'].append("🚨 DLL Violation: Daily loss limit exceeded")
+            if not compliance_status['mll_compliant']:
+                compliance_status['warnings'].append("🚨 MLL Violation: Maximum loss limit exceeded")
+            if not compliance_status['consistency_compliant']:
+                compliance_status['warnings'].append(f"⚠️ Consistency: Best day ({best_day_pnl:.2f}) is {(consistency_ratio*100):.1f}% of total P&L")
+            
+            response = web.json_response(compliance_status)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error fetching compliance status: {e}")
+            response = web.json_response({'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+    
+    # Register new endpoints
+    app.router.add_get('/api/chart/pnl/history', handle_pnl_history)
+    app.router.add_options('/api/chart/pnl/history', handle_options)
+    app.router.add_get('/api/chart/performance/metrics', handle_performance_metrics)
+    app.router.add_options('/api/chart/performance/metrics', handle_options)
+    app.router.add_get('/api/chart/risk/metrics', handle_risk_metrics)
+    app.router.add_options('/api/chart/risk/metrics', handle_options)
+    app.router.add_get('/api/chart/compliance/status', handle_compliance_status)
+    app.router.add_options('/api/chart/compliance/status', handle_options)
     
     # Serve master control HTML
     async def handle_master_control(request):
@@ -2725,17 +3400,18 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     except Exception as e:
                         logger.debug(f"Error broadcasting account state: {e}")
                     
-                    # Broadcast positions (queue for batching)
-                    try:
-                        response = await handle_get_positions(None)
-                        if hasattr(response, 'text'):
-                            positions_data = json.loads(response.text)
-                            await broadcast_update({'type': 'positions', 'data': positions_data}, immediate=False)
-                    except Exception as e:
-                        logger.debug(f"Error broadcasting positions: {e}")
+                    # Broadcast positions less frequently (reduces Order/search calls from linked orders)
+                    if tick % 2 == 0:  # every ~4 seconds (loop sleeps 2s) - reduced from every tick
+                        try:
+                            response = await handle_get_positions(None)
+                            if hasattr(response, 'text'):
+                                positions_data = json.loads(response.text)
+                                await broadcast_update({'type': 'positions', 'data': positions_data}, immediate=False)
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting positions: {e}")
                     
-                    # Broadcast orders less frequently (network-heavy)
-                    if tick % 3 == 0:  # every ~6 seconds (loop sleeps 2s)
+                    # Broadcast orders even less frequently (network-heavy, causes slow Order/search)
+                    if tick % 5 == 0:  # every ~10 seconds (loop sleeps 2s) - reduced from every 3 ticks
                         try:
                             response = await handle_get_orders(None)
                             if hasattr(response, 'text'):
@@ -2753,6 +3429,58 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                 await broadcast_update({'type': 'strategies', 'data': strategy_data}, immediate=False)
                         except Exception as e:
                             logger.debug(f"Error broadcasting strategy status: {e}")
+                    
+                    # Broadcast P&L history for equity curve (less frequently)
+                    if tick % 5 == 0:  # every ~10 seconds
+                        try:
+                            response = await handle_pnl_history(None)
+                            if hasattr(response, 'text'):
+                                pnl_data = json.loads(response.text)
+                                await broadcast_update({'type': 'pnl_history', 'data': pnl_data}, immediate=False)
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting P&L history: {e}")
+                    
+                    # Broadcast performance metrics (even less frequently)
+                    if tick % 10 == 0:  # every ~20 seconds
+                        try:
+                            response = await handle_performance_metrics(None)
+                            if hasattr(response, 'text'):
+                                perf_data = json.loads(response.text)
+                                await broadcast_update({'type': 'performance_metrics', 'data': perf_data}, immediate=False)
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting performance metrics: {e}")
+                    
+                    # Broadcast risk metrics (critical for account protection)
+                    if tick % 2 == 0:  # every ~4 seconds
+                        try:
+                            response = await handle_risk_metrics(None)
+                            if hasattr(response, 'text'):
+                                risk_data = json.loads(response.text)
+                                await broadcast_update({'type': 'risk_metrics', 'data': risk_data}, immediate=False)
+                                
+                                # Check for violations and alert immediately
+                                if risk_data.get('dll_violated') or risk_data.get('mll_violated'):
+                                    await broadcast_update({
+                                        'type': 'compliance_violation',
+                                        'data': {
+                                            'message': '🚨 Compliance Violation Detected!',
+                                            'violations': risk_data.get('violations', []),
+                                            'dll_violated': risk_data.get('dll_violated'),
+                                            'mll_violated': risk_data.get('mll_violated')
+                                        }
+                                    }, immediate=True)
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting risk metrics: {e}")
+                    
+                    # Broadcast compliance status (less frequently)
+                    if tick % 5 == 0:  # every ~10 seconds
+                        try:
+                            response = await handle_compliance_status(None)
+                            if hasattr(response, 'text'):
+                                compliance_data = json.loads(response.text)
+                                await broadcast_update({'type': 'compliance_status', 'data': compliance_data}, immediate=False)
+                        except Exception as e:
+                            logger.debug(f"Error broadcasting compliance status: {e}")
                 
                 # Note: Strategy signals and critical events (order_filled, position_opened) 
                 # are broadcast immediately via SignalR callbacks, not from this loop

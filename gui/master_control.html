@@ -5,18 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Master Trading Control - Unified Dashboard</title>
     <style>
+        /* CSS Variables for Consistent Styling */
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --bg-tertiary: #151515;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888;
+            --border-color: #333;
+            --accent-color: #3b82f6;
+            --positive-color: #4caf50;
+            --negative-color: #f44336;
+            --warning-color: #ff9800;
+        }
+        
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0a0a0a;
-            color: #e0e0e0;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             overflow-x: hidden;
         }
         
         /* Header */
         .header {
-            background: #1a1a1a;
-            border-bottom: 1px solid #333;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
             padding: 12px 20px;
             display: flex;
             justify-content: space-between;
@@ -187,8 +201,8 @@
         
         /* Account Status Bar */
         .account-bar {
-            background: #1a1a1a;
-            border-bottom: 1px solid #333;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
             padding: 16px 20px;
             display: flex;
             gap: 32px;
@@ -200,25 +214,32 @@
             flex-direction: column;
             gap: 4px;
         }
-        .status-label { color: #888; font-size: 11px; text-transform: uppercase; }
-        .status-value { color: #fff; font-weight: 600; font-size: 16px; }
-        .status-value.positive { color: #4caf50; }
-        .status-value.negative { color: #f44336; }
+        .status-label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; }
+        .status-value { color: var(--text-primary); font-weight: 600; font-size: 16px; }
+        .status-value.positive { color: var(--positive-color); }
+        .status-value.negative { color: var(--negative-color); }
         
         /* Main Dashboard - Flexible Layout with Resizable Widgets */
         .dashboard {
             display: flex;
             flex-wrap: wrap;
-            gap: 8px;
-            padding: 8px;
+            gap: 12px;
+            padding: 12px;
             width: 100%;
             align-items: flex-start;
             align-content: flex-start;
+            min-height: 100vh;
+        }
+        
+        /* Ensure panels don't overlap */
+        .panel {
+            position: relative;
+            z-index: 1;
         }
         
         /* Panels - Independent sizing */
         .panel {
-            background: #1a1a1a;
+            background: var(--bg-secondary);
             border: 2px solid transparent;
             border-radius: 4px;
             padding: 8px;
@@ -654,7 +675,11 @@
     <div class="header">
         <h1>🎯 Master Trading Control</h1>
         <div style="display: flex; gap: 12px; align-items: center;">
+            <button class="customize-btn" onclick="toggleKeyboardShortcuts()" title="Toggle Keyboard Shortcuts" id="shortcuts-toggle" style="background: #4caf50;">⌨️ Shortcuts ON</button>
+            <button class="customize-btn" onclick="toggleAlerts()" title="Toggle Audio Alerts" id="alerts-toggle" style="background: #4caf50;">🔔 Alerts ON</button>
+            <button class="customize-btn" onclick="toggleDesktopNotifications()" title="Toggle Desktop Notifications" id="notifications-toggle" style="background: #666;">📬 Notifications OFF</button>
             <button class="customize-btn" onclick="toggleCustomizePanel()">⚙️ Customize UI</button>
+            <button class="customize-btn" onclick="showShortcutsHelp()" title="Show Keyboard Shortcuts Help (?)">❓ Help</button>
             <div class="connection-status" id="connection-status">Connecting...</div>
         </div>
     </div>
@@ -897,8 +922,8 @@
                     <select id="chart-refresh-rate" style="width: 70px;">
                         <option value="1">1x/s</option>
                         <option value="3">3x/s</option>
-                        <option value="6" selected>6x/s</option>
-                        <option value="12">12x/s</option>
+                        <option value="6">6x/s</option>
+                        <option value="12" selected>12x/s</option>
                         <option value="18">18x/s</option>
                         <option value="24">24x/s</option>
                         </select>
@@ -924,8 +949,9 @@
                     </label>
                 <input type="number" id="order-sl-ticks" step="0.25" placeholder="SL Price" style="width: 90px; display: none;">
                 <input type="number" id="order-tp-ticks" step="0.25" placeholder="TP Price" style="width: 90px; display: none;">
-                <button class="btn-buy" onclick="placeOrder('BUY')">BUY</button>
-                <button class="btn-sell" onclick="placeOrder('SELL')">SELL</button>
+                <button class="btn-buy" onclick="placeOrder('BUY')" id="buy-btn">BUY</button>
+                <button class="btn-sell" onclick="placeOrder('SELL')" id="sell-btn">SELL</button>
+                <button class="btn-danger" onclick="quickFlatten()" style="padding: 6px 10px; background: #dc2626;" title="Quick Flatten (F key)">⚡ FLATTEN</button>
                 </div>
                 
             <!-- Chart Container -->
@@ -952,11 +978,12 @@
                         <th>Qty</th>
                         <th>Entry</th>
                         <th>P&L</th>
+                        <th>Risk</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="positions-body">
-                    <tr><td colspan="6" class="empty-state">No positions</td></tr>
+                    <tr><td colspan="7" class="empty-state">No positions</td></tr>
                 </tbody>
             </table>
             </div> <!-- End panel-content -->
@@ -1057,11 +1084,21 @@
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
+                <div style="margin-bottom: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <input type="text" id="signal-filter-input" placeholder="Filter by strategy/symbol..." 
+                           style="flex: 1; min-width: 150px; padding: 4px 8px; background: #0a0a0a; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-size: 11px;">
+                    <select id="signal-type-filter" style="padding: 4px 8px; background: #0a0a0a; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-size: 11px;">
+                        <option value="all">All Types</option>
+                        <option value="BUY">BUY/LONG</option>
+                        <option value="SELL">SELL/SHORT</option>
+                        <option value="EXIT">EXIT</option>
+                    </select>
+                    <button onclick="clearSignalFeed()" style="padding: 4px 8px; background: #333; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; font-size: 11px; cursor: pointer;">Clear</button>
+                </div>
                 <div id="signal-feed-container" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; max-height: 300px; overflow-y: auto;">
                     <div style="color: #888; font-size: 11px; text-align: center;">No signals yet...</div>
-                    </div>
-                    </div>
                 </div>
+            </div>
 
         <!-- Command Input Panel -->
         <div class="panel command-panel" id="command-panel">
@@ -1085,6 +1122,46 @@
                     </div>
                     </div>
                 </div>
+
+        <!-- Risk Metrics Panel (NEW - High Priority) -->
+        <div class="panel strategy-panel" id="risk-panel" style="min-width: 300px;">
+            <h2 onclick="togglePanel('risk-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">⚠️ Risk & Compliance</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('risk-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+                <div id="risk-metrics-widget" style="padding: 12px;">
+                    <div style="color: var(--text-secondary); text-align: center;">Loading risk metrics...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Metrics Panel -->
+        <div class="panel strategy-panel" id="performance-panel" style="min-width: 300px;">
+            <h2 onclick="togglePanel('performance-panel')">
+                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
+                <span class="panel-header-text">📊 Performance Metrics</span>
+                <div class="widget-controls">
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('performance-panel')" title="Pop out">⤢</button>
+                </div>
+                <span class="collapse-btn">−</span>
+            </h2>
+            <div class="panel-content">
+                <div id="performance-metrics-widget" style="padding: 12px;">
+                    <div style="color: var(--text-secondary); text-align: center;">Loading metrics...</div>
+                </div>
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                    <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Equity Curve (24h)</div>
+                    <div id="pnl-chart" style="min-height: 60px; background: var(--bg-tertiary); border-radius: 4px; padding: 8px;">
+                        <div style="color: var(--text-secondary); text-align: center; font-size: 10px;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- Terminal Logs Panel -->
         <div class="panel logs-panel" id="logs-panel">
@@ -1141,13 +1218,617 @@
         let positionLines = new Map();
         let orderLines = new Map();
         
+        // ========== KEYBOARD SHORTCUTS ==========
+        let keyboardShortcutsEnabled = localStorage.getItem('keyboard-shortcuts-enabled') !== 'false';
+        
+        function initKeyboardShortcuts() {
+            updateShortcutsToggleButton();
+            document.addEventListener('keydown', handleKeyboardShortcut);
+        }
+        
+        function handleKeyboardShortcut(e) {
+            // Ignore if shortcuts disabled
+            if (!keyboardShortcutsEnabled) return;
+            
+            // Ignore if typing in input fields (except Escape)
+            if ((e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') && e.key !== 'Escape') {
+                return;
+            }
+            
+            switch(e.key.toLowerCase()) {
+                case 'b':
+                    e.preventDefault();
+                    placeOrder('BUY');
+                    break;
+                case 's':
+                    e.preventDefault();
+                    placeOrder('SELL');
+                    break;
+                case 'f':
+                    e.preventDefault();
+                    quickFlatten();
+                    break;
+                case 'c':
+                    e.preventDefault();
+                    cancelAllOrders();
+                    break;
+                case 'r':
+                    e.preventDefault();
+                    refreshAll();
+                    break;
+                case '?':
+                    e.preventDefault();
+                    showShortcutsHelp();
+                    break;
+                case 'escape':
+                    // Close any modals
+                    const modals = document.querySelectorAll('.modal, .popout-window');
+                    modals.forEach(m => m.remove());
+                    break;
+            }
+        }
+        
+        function toggleKeyboardShortcuts() {
+            keyboardShortcutsEnabled = !keyboardShortcutsEnabled;
+            localStorage.setItem('keyboard-shortcuts-enabled', keyboardShortcutsEnabled);
+            updateShortcutsToggleButton();
+            showToast(`Keyboard shortcuts ${keyboardShortcutsEnabled ? 'enabled' : 'disabled'}`, 'info', 2000);
+        }
+        
+        function updateShortcutsToggleButton() {
+            const btn = document.getElementById('shortcuts-toggle');
+            if (btn) {
+                btn.textContent = keyboardShortcutsEnabled ? '⌨️ Shortcuts ON' : '⌨️ Shortcuts OFF';
+                btn.style.background = keyboardShortcutsEnabled ? '#4caf50' : '#666';
+            }
+        }
+        
+        function showShortcutsHelp() {
+            const help = `
+⚡ Speed Trading Shortcuts:
+• B - Quick BUY (market order)
+• S - Quick SELL (market order)
+• F - Quick Flatten all positions
+• C - Cancel all orders
+• R - Refresh all data
+• Esc - Close modals
+            `.trim();
+            showToast(help, 'info', 6000);
+        }
+        
+        // ========== AUDIO & VISUAL ALERTS ==========
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let alertEnabled = localStorage.getItem('alerts-enabled') !== 'false';
+        let desktopNotificationsEnabled = localStorage.getItem('desktop-notifications-enabled') === 'true';
+        
+        // Request notification permission
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission().then(permission => {
+                if (permission === 'granted') {
+                    desktopNotificationsEnabled = true;
+                    localStorage.setItem('desktop-notifications-enabled', 'true');
+                }
+            });
+        }
+        
+        function playAlert(type = 'info') {
+            if (!alertEnabled) return;
+            
+            const frequencies = {
+                'success': 800,
+                'error': 400,
+                'warning': 600,
+                'info': 500,
+                'fill': 1000,
+                'order': 700,
+                'stop_triggered': 300,
+                'take_profit': 1200
+            };
+            
+            const freq = frequencies[type] || 500;
+            
+            try {
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = freq;
+                oscillator.type = type === 'error' ? 'sawtooth' : 'sine';
+                
+                // Different patterns for different alert types
+                if (type === 'fill' || type === 'take_profit') {
+                    // Double beep for fills
+                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.15);
+                    
+                    setTimeout(() => {
+                        const osc2 = audioContext.createOscillator();
+                        const gain2 = audioContext.createGain();
+                        osc2.connect(gain2);
+                        gain2.connect(audioContext.destination);
+                        osc2.frequency.value = freq * 1.2;
+                        osc2.type = 'sine';
+                        gain2.gain.setValueAtTime(0.3, audioContext.currentTime);
+                        gain2.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+                        osc2.start(audioContext.currentTime);
+                        osc2.stop(audioContext.currentTime + 0.15);
+                    }, 150);
+                } else {
+                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.2);
+                }
+            } catch (e) {
+                console.warn('Audio alert failed:', e);
+            }
+        }
+        
+        function showDesktopNotification(title, message, type = 'info') {
+            if (!desktopNotificationsEnabled || !('Notification' in window)) return;
+            if (Notification.permission !== 'granted') return;
+            
+            const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
+            
+            try {
+                new Notification(`${icon} ${title}`, {
+                    body: message,
+                    icon: '/favicon.ico', // Fallback if icon not available
+                    badge: '/favicon.ico',
+                    tag: `trading-${type}-${Date.now()}`,
+                    requireInteraction: type === 'error'
+                });
+            } catch (e) {
+                console.warn('Desktop notification failed:', e);
+            }
+        }
+        
+        function flashAlert(type = 'info') {
+            const flash = document.createElement('div');
+            flash.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 4px;
+                z-index: 10000;
+                pointer-events: none;
+                transition: opacity 0.3s;
+            `;
+            
+            const colors = {
+                'success': '#4caf50',
+                'error': '#f44336',
+                'warning': '#ff9800',
+                'info': '#3b82f6',
+                'fill': '#22c55e'
+            };
+            
+            flash.style.background = colors[type] || colors.info;
+            document.body.appendChild(flash);
+            
+            setTimeout(() => {
+                flash.style.opacity = '0';
+                setTimeout(() => flash.remove(), 300);
+            }, 500);
+        }
+        
+        function toggleAlerts() {
+            alertEnabled = !alertEnabled;
+            localStorage.setItem('alerts-enabled', alertEnabled);
+            showToast(`Audio alerts ${alertEnabled ? 'enabled' : 'disabled'}`, 'info', 2000);
+            
+            // Update button
+            const btn = document.getElementById('alerts-toggle');
+            if (btn) {
+                btn.textContent = alertEnabled ? '🔔 Alerts ON' : '🔔 Alerts OFF';
+                btn.style.background = alertEnabled ? '#4caf50' : '#666';
+            }
+        }
+        
+        function updateNotificationButton() {
+            const btn = document.getElementById('notifications-toggle');
+            if (btn) {
+                btn.textContent = desktopNotificationsEnabled ? '📬 Notifications ON' : '📬 Notifications OFF';
+                btn.style.background = desktopNotificationsEnabled ? '#4caf50' : '#666';
+            }
+        }
+        
+        function toggleDesktopNotifications() {
+            if (!('Notification' in window)) {
+                showToast('Desktop notifications not supported', 'warning', 2000);
+                return;
+            }
+            
+            if (Notification.permission === 'denied') {
+                showToast('Notifications blocked. Please enable in browser settings.', 'error', 3000);
+                return;
+            }
+            
+            if (Notification.permission === 'default') {
+                Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                        desktopNotificationsEnabled = true;
+                        localStorage.setItem('desktop-notifications-enabled', 'true');
+                        showToast('Desktop notifications enabled', 'success', 2000);
+                    } else {
+                        desktopNotificationsEnabled = false;
+                        localStorage.setItem('desktop-notifications-enabled', 'false');
+                        showToast('Desktop notifications disabled', 'info', 2000);
+                    }
+                    updateNotificationButton();
+                });
+            } else {
+                desktopNotificationsEnabled = !desktopNotificationsEnabled;
+                localStorage.setItem('desktop-notifications-enabled', desktopNotificationsEnabled);
+                showToast(`Desktop notifications ${desktopNotificationsEnabled ? 'enabled' : 'disabled'}`, 'info', 2000);
+                updateNotificationButton();
+            }
+        }
+        
+        // Initialize button states on load
+        document.addEventListener('DOMContentLoaded', () => {
+            const alertsBtn = document.getElementById('alerts-toggle');
+            if (alertsBtn) {
+                alertsBtn.textContent = alertEnabled ? '🔔 Alerts ON' : '🔔 Alerts OFF';
+                alertsBtn.style.background = alertEnabled ? '#4caf50' : '#666';
+            }
+            updateNotificationButton();
+        });
+        
+        // ========== RISK METRICS ==========
+        let riskMetricsData = null;
+        let complianceData = null;
+        
+        async function loadRiskMetrics() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/risk/metrics`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.error) return;
+                riskMetricsData = data;
+                updateRiskMetricsWidget(data);
+            } catch (e) {
+                console.error('Error loading risk metrics:', e);
+            }
+        }
+        
+        async function loadComplianceStatus() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/compliance/status`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.error) return;
+                complianceData = data;
+                updateComplianceWidget(data);
+            } catch (e) {
+                console.error('Error loading compliance status:', e);
+            }
+        }
+        
+        function updateRiskMetricsWidget(data) {
+            const widget = document.getElementById('risk-metrics-widget');
+            if (!widget || !data) return;
+            
+            const dllPct = data.dll_percentage || 0;
+            const mllPct = data.mll_percentage || 0;
+            const dllColor = dllPct >= 80 ? '#f44336' : dllPct >= 60 ? '#ff9800' : '#4caf50';
+            const mllColor = mllPct >= 80 ? '#f44336' : mllPct >= 60 ? '#ff9800' : '#4caf50';
+            
+            // Position exposure summary
+            const exposureHtml = Object.keys(data.position_exposure || {}).length > 0
+                ? Object.entries(data.position_exposure).map(([sym, qty]) => 
+                    `<span style="color: #888; font-size: 10px;">${sym}: ${qty}</span>`
+                ).join(' | ')
+                : '<span style="color: #888; font-size: 10px;">No positions</span>';
+            
+            widget.innerHTML = `
+                <div style="display: grid; gap: 12px; font-size: 11px;">
+                    <!-- DLL Progress -->
+                    <div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span style="color: #888;">Daily Loss Limit</span>
+                            <span style="color: ${dllColor}; font-weight: 600;">${dllPct.toFixed(1)}%</span>
+                        </div>
+                        <div style="background: #222; border-radius: 4px; height: 8px; overflow: hidden; position: relative;">
+                            <div style="background: ${dllColor}; height: 100%; width: ${Math.min(100, dllPct)}%; transition: width 0.3s;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 2px; font-size: 9px; color: #666;">
+                            <span>Used: $${(data.dll_used || 0).toFixed(2)}</span>
+                            <span>Remaining: $${(data.dll_remaining || 0).toFixed(2)}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- MLL Progress -->
+                    <div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span style="color: #888;">Max Loss Limit</span>
+                            <span style="color: ${mllColor}; font-weight: 600;">${mllPct.toFixed(1)}%</span>
+                        </div>
+                        <div style="background: #222; border-radius: 4px; height: 8px; overflow: hidden; position: relative;">
+                            <div style="background: ${mllColor}; height: 100%; width: ${Math.min(100, mllPct)}%; transition: width 0.3s;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 2px; font-size: 9px; color: #666;">
+                            <span>Used: $${(data.mll_used || 0).toFixed(2)}</span>
+                            <span>Remaining: $${(data.mll_remaining || 0).toFixed(2)}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Drawdown -->
+                    <div style="padding-top: 8px; border-top: 1px solid #222;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span style="color: #888;">Current Drawdown</span>
+                            <span style="color: ${data.current_drawdown < 0 ? '#f44336' : '#4caf50'}; font-weight: 600;">
+                                $${(data.current_drawdown || 0).toFixed(2)}
+                            </span>
+                        </div>
+                        <div style="font-size: 9px; color: #666;">
+                            Max: $${(data.max_drawdown || 0).toFixed(2)}
+                        </div>
+                    </div>
+                    
+                    <!-- Position Exposure -->
+                    <div style="padding-top: 8px; border-top: 1px solid #222;">
+                        <div style="color: #888; margin-bottom: 4px;">Position Exposure</div>
+                        <div>${exposureHtml}</div>
+                    </div>
+                    
+                    <!-- Warnings -->
+                    ${(data.warnings || []).length > 0 ? `
+                        <div style="padding-top: 8px; border-top: 1px solid #222;">
+                            ${data.warnings.map(w => `<div style="color: #ff9800; font-size: 10px; margin-bottom: 4px;">${w}</div>`).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        
+        function updateComplianceWidget(data) {
+            // Update compliance indicators in risk widget
+            if (!data) return;
+            
+            const widget = document.getElementById('risk-metrics-widget');
+            if (!widget) return;
+            
+            // Add compliance status badge
+            const isCompliant = data.is_compliant && data.dll_compliant && data.mll_compliant;
+            const statusColor = isCompliant ? '#4caf50' : '#f44336';
+            const statusText = isCompliant ? '✅ COMPLIANT' : '🚨 VIOLATION';
+            
+            // Find or create compliance status element
+            let statusEl = widget.querySelector('.compliance-status');
+            if (!statusEl) {
+                statusEl = document.createElement('div');
+                statusEl.className = 'compliance-status';
+                statusEl.style.cssText = 'padding-top: 8px; border-top: 1px solid #222; margin-top: 8px;';
+                widget.appendChild(statusEl);
+            }
+            
+            statusEl.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="color: #888;">Compliance Status</span>
+                    <span style="color: ${statusColor}; font-weight: 600; font-size: 12px;">${statusText}</span>
+                </div>
+                ${(data.violations || []).length > 0 ? `
+                    <div style="color: #f44336; font-size: 10px; margin-top: 4px;">
+                        ${data.violations.map(v => `<div>• ${v}</div>`).join('')}
+                    </div>
+                ` : ''}
+                ${(data.warnings || []).length > 0 ? `
+                    <div style="color: #ff9800; font-size: 10px; margin-top: 4px;">
+                        ${data.warnings.map(w => `<div>⚠️ ${w}</div>`).join('')}
+                    </div>
+                ` : ''}
+            `;
+        }
+        
+        // ========== PERFORMANCE METRICS ==========
+        let performanceData = null;
+        let pnlHistory = [];
+        
+        async function loadPerformanceMetrics() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/performance/metrics`);
+                if (!response.ok) {
+                    console.error('Performance metrics response not OK:', response.status, response.statusText);
+                    return;
+                }
+                const data = await response.json();
+                if (data.error) {
+                    console.error('Performance metrics error:', data.error);
+                    return;
+                }
+                console.log('📈 Loaded performance metrics:', data);
+                performanceData = data;
+                updatePerformanceWidget(data);
+            } catch (e) {
+                console.error('Error loading performance metrics:', e);
+            }
+        }
+        
+        async function loadPnlHistory() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/pnl/history?period=24`);
+                if (!response.ok) {
+                    console.error('P&L history response not OK:', response.status, response.statusText);
+                    return;
+                }
+                const data = await response.json();
+                if (data.error) {
+                    console.error('P&L history error:', data.error);
+                    return;
+                }
+                console.log('📊 Loaded P&L history:', data);
+                pnlHistory = data.equity_curve || [];
+                updatePnlChart();
+            } catch (e) {
+                console.error('Error loading P&L history:', e);
+            }
+        }
+        
+        function updatePerformanceWidget(data) {
+            const widget = document.getElementById('performance-metrics-widget');
+            if (!widget) {
+                console.warn('Performance metrics widget not found');
+                return;
+            }
+            
+            if (!data) {
+                widget.innerHTML = '<div style="color: var(--text-secondary); text-align: center;">No data available</div>';
+                return;
+            }
+            
+            const current = data.current || {};
+            const trades = data.trades || {};
+            const perf = data.performance || {};
+            
+            // Show current P&L even if no trades
+            const hasTrades = trades.total > 0;
+            
+            widget.innerHTML = `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 11px;">
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Total P&L</div>
+                        <div style="font-size: 18px; font-weight: 600; color: ${(current.total_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}">
+                            $${(current.total_pnl || 0).toFixed(2)}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Realized P&L</div>
+                        <div style="font-size: 16px; font-weight: 600; color: ${(current.realized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}">
+                            $${(current.realized_pnl || 0).toFixed(2)}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Unrealized P&L</div>
+                        <div style="font-size: 16px; font-weight: 600; color: ${(current.unrealized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}">
+                            $${(current.unrealized_pnl || 0).toFixed(2)}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Win Rate</div>
+                        <div style="font-size: 16px; font-weight: 600; color: ${hasTrades && trades.win_rate >= 0.5 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'}">
+                            ${hasTrades ? (trades.win_rate * 100).toFixed(1) + '%' : 'N/A'}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Total Trades</div>
+                        <div style="font-size: 16px; font-weight: 600;">${trades.total || 0}</div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Profit Factor</div>
+                        <div style="font-size: 16px; font-weight: 600; color: ${hasTrades && trades.profit_factor >= 1 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'}">
+                            ${hasTrades && trades.profit_factor ? trades.profit_factor.toFixed(2) : 'N/A'}
+                        </div>
+                    </div>
+                    ${hasTrades ? `
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Avg Win</div>
+                        <div style="font-size: 14px; font-weight: 600; color: var(--positive-color)">
+                            $${trades.avg_win ? trades.avg_win.toFixed(2) : '0.00'}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Avg Loss</div>
+                        <div style="font-size: 14px; font-weight: 600; color: var(--negative-color)">
+                            $${trades.avg_loss ? trades.avg_loss.toFixed(2) : '0.00'}
+                        </div>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        
+        function updatePnlChart() {
+            // This will be enhanced with a charting library later
+            const chartEl = document.getElementById('pnl-chart');
+            if (!chartEl) {
+                console.warn('P&L chart element not found');
+                return;
+            }
+            
+            if (!pnlHistory || pnlHistory.length === 0) {
+                chartEl.innerHTML = '<div style="color: var(--text-secondary); text-align: center; font-size: 10px;">No P&L history available</div>';
+                return;
+            }
+            
+            // Simple text display for now
+            const latest = pnlHistory[pnlHistory.length - 1];
+            if (latest) {
+                const current = performanceData?.current || {};
+                chartEl.innerHTML = `
+                    <div style="font-size: 11px; color: var(--text-secondary);">
+                        <div style="margin-bottom: 4px;">
+                            <span style="color: var(--text-primary);">Equity:</span> 
+                            <span style="color: ${latest.equity >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">
+                                $${latest.equity ? latest.equity.toFixed(2) : '0.00'}
+                            </span>
+                        </div>
+                        <div style="margin-bottom: 4px;">
+                            <span style="color: var(--text-primary);">Drawdown:</span> 
+                            <span style="color: var(--negative-color); font-weight: 600;">
+                                $${latest.drawdown ? latest.drawdown.toFixed(2) : '0.00'}
+                            </span>
+                        </div>
+                        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
+                            <div style="font-size: 10px; color: var(--text-secondary);">
+                                Total P&L: <span style="color: ${(current.total_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'};">
+                                    $${current.total_pnl ? current.total_pnl.toFixed(2) : '0.00'}
+                                </span>
+                            </div>
+                            <div style="font-size: 10px; color: var(--text-secondary); margin-top: 2px;">
+                                Realized: <span style="color: ${(current.realized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'};">
+                                    $${current.realized_pnl ? current.realized_pnl.toFixed(2) : '0.00'}
+                                </span>
+                            </div>
+                            <div style="font-size: 10px; color: var(--text-secondary); margin-top: 2px;">
+                                Unrealized: <span style="color: ${(current.unrealized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'};">
+                                    $${current.unrealized_pnl ? current.unrealized_pnl.toFixed(2) : '0.00'}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                chartEl.innerHTML = '<div style="color: var(--text-secondary); text-align: center; font-size: 10px;">No data points</div>';
+            }
+        }
+        
         // Set default symbol in dropdown on page load
         window.addEventListener('load', () => {
+            initKeyboardShortcuts();
             const symbolSelect = document.getElementById('chart-symbol-select');
             if (symbolSelect && SYMBOL) {
                 symbolSelect.value = SYMBOL;
                 currentChartSymbol = SYMBOL;
             }
+            
+            // FORCE chart refresh rate to 12x on load
+            const refreshRateSelect = document.getElementById('chart-refresh-rate');
+            if (refreshRateSelect) {
+                refreshRateSelect.value = '12';
+                Array.from(refreshRateSelect.options).forEach(opt => opt.removeAttribute('selected'));
+                const option12 = refreshRateSelect.querySelector('option[value="12"]');
+                if (option12) option12.setAttribute('selected', 'selected');
+            }
+            
+            // Load performance metrics
+            loadPerformanceMetrics();
+            loadPnlHistory();
+            // Load risk metrics (critical for account protection)
+            loadRiskMetrics();
+            loadComplianceStatus();
+            
+            // Refresh every 30 seconds
+            setInterval(loadPerformanceMetrics, 30000);
+            setInterval(loadPnlHistory, 30000);
+            // Refresh risk metrics more frequently (every 5 seconds)
+            setInterval(loadRiskMetrics, 5000);
+            setInterval(loadComplianceStatus, 10000);
         });
         
         // Toggle panel collapse/expand
@@ -1164,7 +1845,7 @@
         
         // Restore panel states from localStorage
         function restorePanelStates() {
-            ['chart-panel', 'positions-panel', 'orders-panel', 'strategy-panel', 'signal-feed-panel', 'command-panel', 'logs-panel'].forEach(panelId => {
+            ['chart-panel', 'positions-panel', 'orders-panel', 'strategy-panel', 'signal-feed-panel', 'command-panel', 'logs-panel', 'performance-panel'].forEach(panelId => {
                 const collapsed = localStorage.getItem(`panel-${panelId}-collapsed`) === 'true';
                 if (collapsed) {
                     const panel = document.getElementById(panelId);
@@ -1312,11 +1993,22 @@
                 case 'account':
                     if (data && !data.error) {
                         updateAccountDisplay(data);
+                        // Reload performance metrics when account state changes (especially P&L)
+                        loadPerformanceMetrics();
+                        // Check for significant P&L changes
+                        const totalPnl = (data.realized_pnl || 0) + (data.unrealized_pnl || 0);
+                        if (Math.abs(totalPnl) > 100) {
+                            playAlert(totalPnl > 0 ? 'success' : 'error');
+                        }
                     }
                     break;
                 case 'positions':
                     if (data && data.positions) {
                         updatePositionsDisplay(data.positions);
+                        // Alert on new position
+                        if (data.positions.length > 0) {
+                            playAlert('info');
+                        }
                     }
                     break;
                 case 'orders':
@@ -1332,12 +2024,120 @@
                 case 'log':
                     if (data) {
                         appendLog(data);
+                        // Audio alert for errors
+                        if (data.level === 'ERROR') {
+                            playAlert('error');
+                            showToast(data.message || 'Error occurred', 'error');
+                        } else if (data.level === 'WARNING') {
+                            playAlert('warning');
+                        }
                     }
                     break;
                 case 'signal':
                     if (data) {
                         console.log('📡 Received strategy signal:', data);
                         addSignal(data);
+                        playAlert('info');
+                        const signalType = data.type || data.direction || 'SIGNAL';
+                        const message = `${data.strategy || 'Strategy'}: ${signalType} ${data.symbol || ''}`;
+                        showToast(message, 'info');
+                        // Only show desktop notification for BUY/SELL signals, not info signals
+                        if (signalType === 'BUY' || signalType === 'SELL' || signalType === 'LONG' || signalType === 'SHORT') {
+                            showDesktopNotification('Trading Signal', message, 'info');
+                        }
+                    }
+                    break;
+                case 'pnl_history':
+                    if (data) {
+                        console.log('📊 Received P&L history:', data);
+                        pnlHistory = data.equity_curve || [];
+                        updatePnlChart();
+                    }
+                    break;
+                case 'performance_metrics':
+                    if (data) {
+                        console.log('📈 Received performance metrics:', data);
+                        performanceData = data;
+                        updatePerformanceWidget(data);
+                    }
+                    break;
+                case 'risk_metrics':
+                    if (data) {
+                        console.log('⚠️ Received risk metrics:', data);
+                        riskMetricsData = data;
+                        updateRiskMetricsWidget(data);
+                        
+                        // Alert if approaching limits
+                        if (data.dll_percentage >= 80 || data.mll_percentage >= 80) {
+                            playAlert('warning');
+                            flashAlert('warning');
+                            if (data.dll_percentage >= 90 || data.mll_percentage >= 90) {
+                                showDesktopNotification('Risk Alert', `Approaching limit: ${data.dll_percentage >= 90 ? 'DLL' : 'MLL'} at ${Math.max(data.dll_percentage, data.mll_percentage).toFixed(1)}%`, 'warning');
+                            }
+                        }
+                    }
+                    break;
+                case 'compliance_status':
+                    if (data) {
+                        console.log('✅ Received compliance status:', data);
+                        complianceData = data;
+                        updateComplianceWidget(data);
+                        
+                        // Alert on violations
+                        if (!data.is_compliant || data.violations?.length > 0) {
+                            playAlert('error');
+                            flashAlert('error');
+                            showDesktopNotification('🚨 Compliance Violation', data.violations?.join(', ') || 'Compliance violation detected', 'error');
+                        }
+                    }
+                    break;
+                case 'compliance_violation':
+                    if (data) {
+                        playAlert('error');
+                        flashAlert('error');
+                        showToast(`🚨 ${data.message || 'Compliance Violation!'}`, 'error', 10000);
+                        showDesktopNotification('Compliance Violation', data.message || 'Compliance violation detected', 'error');
+                    }
+                    break;
+                case 'order_filled':
+                case 'position_fill':
+                    if (data) {
+                        playAlert('fill');
+                        flashAlert('fill');
+                        const message = `Order filled: ${data.symbol || ''} ${data.side || ''} ${data.quantity || ''}`;
+                        showToast(message, 'success');
+                        showDesktopNotification('Order Filled', message, 'success');
+                    }
+                    break;
+                case 'stop_triggered':
+                    if (data) {
+                        playAlert('stop_triggered');
+                        flashAlert('error');
+                        const message = `Stop loss triggered: ${data.symbol || ''}`;
+                        showToast(message, 'error');
+                        showDesktopNotification('Stop Loss', message, 'error');
+                    }
+                    break;
+                case 'take_profit_hit':
+                    if (data) {
+                        playAlert('take_profit');
+                        flashAlert('success');
+                        const message = `Take profit hit: ${data.symbol || ''}`;
+                        showToast(message, 'success');
+                        showDesktopNotification('Take Profit', message, 'success');
+                    }
+                    break;
+                    if (data) {
+                        playAlert(data.type === 'stop_triggered' ? 'error' : 'success');
+                        showToast(`${data.type === 'stop_triggered' ? 'Stop loss' : 'Take profit'} hit: ${data.symbol || ''}`, 
+                                 data.type === 'stop_triggered' ? 'error' : 'success');
+                    }
+                    break;
+                case 'risk_alert':
+                case 'compliance_violation':
+                    if (data) {
+                        playAlert('error');
+                        showToast(data.message || 'Risk/Compliance Alert', 'error', 8000);
                     }
                     break;
                 case 'pong':
@@ -1428,6 +2228,8 @@
         }
         
         // Strategy Signal Feed
+        let signalHistory = []; // Store all signals for filtering
+        
         function addSignal(signal) {
             console.log('🎯 addSignal called with:', signal);
             const container = document.getElementById('signal-feed-container');
@@ -1436,43 +2238,131 @@
                 return;
             }
             
-            // Clear placeholder if this is first signal
-            if (container.children.length === 1 && container.firstChild.textContent.includes('No signals')) {
-                container.innerHTML = '';
+            // Add to history
+            signalHistory.unshift(signal);
+            // Limit history to 100 signals
+            if (signalHistory.length > 100) {
+                signalHistory = signalHistory.slice(0, 100);
             }
             
-            const signalEntry = document.createElement('div');
-            signalEntry.style.marginBottom = '8px';
-            signalEntry.style.padding = '8px';
-            signalEntry.style.background = '#1a1a1a';
-            signalEntry.style.border = '1px solid #333';
-            signalEntry.style.borderRadius = '4px';
-            signalEntry.style.fontSize = '11px';
-            
-            // Use signal timestamp if available, otherwise use current time
-            const timestamp = signal.timestamp ? new Date(signal.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
-            const signalType = signal.type || signal.direction || 'SIGNAL';
-            const signalColor = signalType === 'BUY' || signalType === 'LONG' ? '#4caf50' : signalType === 'SELL' || signalType === 'SHORT' ? '#f44336' : '#ff9800';
-            
-            signalEntry.innerHTML = `
-                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                    <span style="color: ${signalColor}; font-weight: 600;">${signalType}</span>
-                    <span style="color: #888; font-size: 10px;">${timestamp}</span>
-                </div>
-                <div style="color: #d1d5db; margin-bottom: 2px;"><strong>${signal.strategy || 'Unknown'}</strong> - ${signal.symbol || 'N/A'}</div>
-                ${signal.entry_price ? `<div style="color: #888; font-size: 10px;">Entry: $${parseFloat(signal.entry_price).toFixed(2)}</div>` : ''}
-                ${signal.stop_loss ? `<div style="color: #f44336; font-size: 10px;">Stop: $${parseFloat(signal.stop_loss).toFixed(2)}</div>` : ''}
-                ${signal.take_profit ? `<div style="color: #4caf50; font-size: 10px;">Target: $${parseFloat(signal.take_profit).toFixed(2)}</div>` : ''}
-                <div style="color: #888; font-size: 10px; margin-top: 4px;">${signal.message || 'No details'}</div>
-            `;
-            
-            container.insertBefore(signalEntry, container.firstChild);
-            
-            // Limit to last 20 signals
-            while (container.children.length > 20) {
-                container.removeChild(container.lastChild);
-            }
+            // Apply filters and render
+            renderSignals();
         }
+        
+        function renderSignals() {
+            const container = document.getElementById('signal-feed-container');
+            if (!container) return;
+            
+            const filterText = (document.getElementById('signal-filter-input')?.value || '').toLowerCase();
+            const filterType = document.getElementById('signal-type-filter')?.value || 'all';
+            
+            // Filter signals
+            const filtered = signalHistory.filter(signal => {
+                const matchesText = !filterText || 
+                    (signal.strategy || '').toLowerCase().includes(filterText) ||
+                    (signal.symbol || '').toLowerCase().includes(filterText) ||
+                    (signal.message || '').toLowerCase().includes(filterText);
+                
+                const signalType = signal.type || signal.direction || '';
+                const matchesType = filterType === 'all' ||
+                    (filterType === 'BUY' && (signalType === 'BUY' || signalType === 'LONG')) ||
+                    (filterType === 'SELL' && (signalType === 'SELL' || signalType === 'SHORT')) ||
+                    (filterType === 'EXIT' && (signalType === 'EXIT' || signalType === 'CLOSE'));
+                
+                return matchesText && matchesType;
+            });
+            
+            // Clear container
+            if (filtered.length === 0) {
+                container.innerHTML = '<div style="color: #888; font-size: 11px; text-align: center;">No signals match filter...</div>';
+                return;
+            }
+            
+            container.innerHTML = '';
+            
+            // Render filtered signals
+            filtered.slice(0, 50).forEach(signal => {
+                const signalEntry = document.createElement('div');
+                signalEntry.style.marginBottom = '8px';
+                signalEntry.style.padding = '10px';
+                signalEntry.style.background = '#1a1a1a';
+                signalEntry.style.border = '1px solid #333';
+                signalEntry.style.borderRadius = '4px';
+                signalEntry.style.fontSize = '11px';
+                signalEntry.style.transition = 'all 0.2s';
+                signalEntry.style.cursor = 'pointer';
+                
+                // Hover effect
+                signalEntry.onmouseenter = () => {
+                    signalEntry.style.background = '#222';
+                    signalEntry.style.borderColor = '#444';
+                };
+                signalEntry.onmouseleave = () => {
+                    signalEntry.style.background = '#1a1a1a';
+                    signalEntry.style.borderColor = '#333';
+                };
+                
+                const timestamp = signal.timestamp ? new Date(signal.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+                const signalType = signal.type || signal.direction || 'SIGNAL';
+                const signalColor = signalType === 'BUY' || signalType === 'LONG' ? '#4caf50' : 
+                                   signalType === 'SELL' || signalType === 'SHORT' ? '#f44336' : '#ff9800';
+                
+                // Calculate risk/reward if available
+                let riskReward = '';
+                if (signal.entry_price && signal.stop_loss && signal.take_profit) {
+                    const entry = parseFloat(signal.entry_price);
+                    const stop = parseFloat(signal.stop_loss);
+                    const target = parseFloat(signal.take_profit);
+                    const risk = Math.abs(entry - stop);
+                    const reward = Math.abs(target - entry);
+                    if (risk > 0) {
+                        const rr = (reward / risk).toFixed(2);
+                        riskReward = `<span style="color: #888; font-size: 10px;">R:R ${rr}</span>`;
+                    }
+                }
+                
+                signalEntry.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span style="color: ${signalColor}; font-weight: 600; font-size: 12px;">${signalType}</span>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            ${riskReward}
+                            <span style="color: #888; font-size: 10px;">${timestamp}</span>
+                        </div>
+                    </div>
+                    <div style="color: #d1d5db; margin-bottom: 4px; font-weight: 500;">
+                        <strong>${signal.strategy || 'Unknown'}</strong> - ${signal.symbol || 'N/A'}
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 4px; font-size: 10px;">
+                        ${signal.entry_price ? `<div style="color: #888;">Entry: <span style="color: #e0e0e0;">$${parseFloat(signal.entry_price).toFixed(2)}</span></div>` : '<div></div>'}
+                        ${signal.quantity ? `<div style="color: #888;">Qty: <span style="color: #e0e0e0;">${signal.quantity}</span></div>` : '<div></div>'}
+                        ${signal.stop_loss ? `<div style="color: #f44336;">Stop: <span style="color: #ff6b6b;">$${parseFloat(signal.stop_loss).toFixed(2)}</span></div>` : '<div></div>'}
+                        ${signal.take_profit ? `<div style="color: #4caf50;">Target: <span style="color: #51cf66;">$${parseFloat(signal.take_profit).toFixed(2)}</span></div>` : '<div></div>'}
+                    </div>
+                    ${signal.message ? `<div style="color: #888; font-size: 10px; margin-top: 4px; padding-top: 4px; border-top: 1px solid #222;">${signal.message}</div>` : ''}
+                    ${signal.confidence ? `<div style="color: #888; font-size: 9px; margin-top: 2px;">Confidence: ${(parseFloat(signal.confidence) * 100).toFixed(0)}%</div>` : ''}
+                `;
+                
+                container.appendChild(signalEntry);
+            });
+        }
+        
+        function clearSignalFeed() {
+            signalHistory = [];
+            renderSignals();
+        }
+        
+        // Filter event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            const filterInput = document.getElementById('signal-filter-input');
+            const filterType = document.getElementById('signal-type-filter');
+            
+            if (filterInput) {
+                filterInput.addEventListener('input', renderSignals);
+            }
+            if (filterType) {
+                filterType.addEventListener('change', renderSignals);
+            }
+        });
 
         // Non-blocking UI notifications (no alert/confirm)
         function showToast(message, type = 'info', timeoutMs = 3500) {
@@ -1618,14 +2508,43 @@
             
             const tbody = document.getElementById('positions-body');
             if (positions.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No positions</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No positions</td></tr>';
             } else {
                 tbody.innerHTML = positions.map(pos => {
                 // Handle both camelCase and snake_case field names
                 const pnl = pos.unrealizedPnL || pos.unrealized_pnl || pos.unrealizedPnl || 0;
                 const entryPrice = pos.entryPrice || pos.entry_price || 0;
+                const currentPrice = pos.currentPrice || pos.current_price || entryPrice;
                 const quantity = pos.quantity || pos.size || 0;
                 const posId = pos.id || pos.positionId || pos.position_id;
+                const stopLoss = pos.stopLoss || pos.stop_loss;
+                const takeProfit = pos.takeProfit || pos.take_profit;
+                
+                // Calculate risk metrics (dollar risk)
+                let riskHtml = '<span style="color: #666; font-size: 9px;">N/A</span>';
+                if (stopLoss && entryPrice && quantity) {
+                    const riskPoints = Math.abs(entryPrice - stopLoss);
+                    // Estimate dollar risk (simplified - would need symbol-specific point values)
+                    // For micro contracts: ~$2 per point per contract
+                    const pointValue = 2.0; // Default for micro contracts
+                    const estimatedRisk = riskPoints * quantity * pointValue;
+                    riskHtml = `<span style="color: #f44336; font-size: 9px;" title="Estimated dollar risk">$${estimatedRisk.toFixed(0)}</span>`;
+                }
+                
+                // Calculate distance to stop/target (points)
+                let distanceHtml = '';
+                if (stopLoss && currentPrice) {
+                    const distToStop = Math.abs(currentPrice - stopLoss);
+                    distanceHtml += `<div style="color: #f44336; font-size: 9px;">SL: ${distToStop.toFixed(2)}</div>`;
+                }
+                if (takeProfit && currentPrice) {
+                    const distToTP = Math.abs(takeProfit - currentPrice);
+                    distanceHtml += `<div style="color: #4caf50; font-size: 9px;">TP: ${distToTP.toFixed(2)}</div>`;
+                }
+                if (!distanceHtml) {
+                    distanceHtml = '<span style="color: #666; font-size: 9px;">-</span>';
+                }
+                
                 return `
                     <tr>
                         <td>${pos.symbol || 'N/A'}</td>
@@ -1633,11 +2552,15 @@
                         <td>${quantity}</td>
                         <td>$${entryPrice.toFixed(2)}</td>
                         <td class="${pnl >= 0 ? 'positive' : 'negative'}">$${pnl.toFixed(2)}</td>
+                        <td style="font-size: 9px; line-height: 1.3;">
+                            ${riskHtml}
+                            ${distanceHtml}
+                        </td>
                         <td style="white-space: nowrap;">
                             <button onclick="closePosition('${posId}', '${pos.symbol}')" 
-                                    style="background: #f44336; border: none; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; cursor: pointer; margin-right: 2px;"
-                                    title="Close position">
-                                ✕ Close
+                                    style="background: #f44336; border: none; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; cursor: pointer; margin-right: 2px; font-weight: 600;"
+                                    title="Quick Close (one-click)">
+                                ⚡ Close
                             </button>
                         </td>
                     </tr>
@@ -1820,7 +2743,7 @@
                             <button onclick="cancelOrder('${orderId}', '${order.symbol}')" 
                                     style="background: #ff9800; border: none; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; cursor: pointer; margin-right: 2px;"
                                     title="Cancel order">
-                                ✕ Cancel
+                                ⚡ Cancel
                             </button>
                         </td>
                     </tr>
@@ -2125,9 +3048,21 @@
             
             loadChartData();
                 
-            // Set up auto-refresh
-            const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 6);
+            // Set up auto-refresh - FORCE 12x as default
+            const refreshRateSelect = document.getElementById('chart-refresh-rate');
+            if (refreshRateSelect) {
+                // Explicitly set to 12 if not already set or if value is empty/0
+                if (!refreshRateSelect.value || refreshRateSelect.value === '0' || refreshRateSelect.value === '') {
+                    refreshRateSelect.value = '12';
+                }
+                // Also ensure the selected attribute is set
+                Array.from(refreshRateSelect.options).forEach(opt => opt.removeAttribute('selected'));
+                const option12 = refreshRateSelect.querySelector('option[value="12"]');
+                if (option12) option12.setAttribute('selected', 'selected');
+            }
+            const rate = parseInt(refreshRateSelect?.value || 12);
             updateIntervals.chart = setInterval(updateChart, 1000 / rate);
+            console.log(`✅ Chart initialized with refresh rate: ${rate}x/s`);
             
             // Resize handler - debounced to prevent excessive updates
             let resizeTimeout;
@@ -2332,7 +3267,7 @@
             await loadChartData();
             
             // Restart update interval with current refresh rate
-            const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 6);
+            const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 12);
             if (rate > 0) {
                 updateIntervals.chart = setInterval(updateChart, 1000 / rate);
                 console.log(`✅ Chart auto-refresh restarted at ${rate}x/s`);
@@ -2606,34 +3541,39 @@
             }
         }
         
-        // Order placement
+        // Order placement - OPTIMIZED FOR SPEED
         async function placeOrder(side) {
-            // Disable order buttons to prevent double-clicks
+            // Immediate visual feedback
             const buyBtn = document.querySelector('button[onclick*="placeOrder(\'BUY\')"]');
             const sellBtn = document.querySelector('button[onclick*="placeOrder(\'SELL\')"]');
             if (buyBtn) buyBtn.disabled = true;
             if (sellBtn) sellBtn.disabled = true;
             
-            try {
-                const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
-                const orderType = document.getElementById('order-type')?.value || 'market';
-                const qty = parseInt(document.getElementById('order-qty')?.value || 1);
-                const price = parseFloat(document.getElementById('order-price')?.value);
-                const stopPrice = parseFloat(document.getElementById('order-stop-price')?.value);
-                const trailAmount = parseFloat(document.getElementById('order-trail-amount')?.value);
-                const enableBracket = document.getElementById('enable-bracket')?.checked;
-                const slPrice = parseFloat(document.getElementById('order-sl-ticks')?.value);
-                const tpPrice = parseFloat(document.getElementById('order-tp-ticks')?.value);
-                
+            // Show immediate feedback
+            showToast(`Placing ${side} order...`, 'info', 2000);
+            
+            // Fire order immediately (don't wait for response)
+            const orderPromise = (async () => {
+                try {
+                    const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
+                    const orderType = document.getElementById('order-type')?.value || 'market';
+                    const qty = parseInt(document.getElementById('order-qty')?.value || 1);
+                    const price = parseFloat(document.getElementById('order-price')?.value);
+                    const stopPrice = parseFloat(document.getElementById('order-stop-price')?.value);
+                    const trailAmount = parseFloat(document.getElementById('order-trail-amount')?.value);
+                    const enableBracket = document.getElementById('enable-bracket')?.checked;
+                    const slPrice = parseFloat(document.getElementById('order-sl-ticks')?.value);
+                    const tpPrice = parseFloat(document.getElementById('order-tp-ticks')?.value);
+                    
                     const orderData = {
-                    symbol: symbol,
-                    side: side,
-                    quantity: qty,
-                    order_type: orderType  // Backend expects 'order_type', not 'type'
-                };
-                
-                // Add price parameters based on order type
-                if (orderType === 'limit' && price) {
+                        symbol: symbol,
+                        side: side,
+                        quantity: qty,
+                        order_type: orderType
+                    };
+                    
+                    // Add price parameters based on order type
+                    if (orderType === 'limit' && price) {
                     orderData.limit_price = price;  // Backend expects snake_case
                 } else if (orderType === 'stop' && stopPrice) {
                     orderData.stop_price = stopPrice;  // Backend expects snake_case
@@ -2669,113 +3609,131 @@
                     console.log(`📊 Bracket order (prices): SL=${slPrice}, TP=${tpPrice}`);
                 }
                     
-                const response = await fetch(`${BASE_URL}/api/chart/order`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(orderData)
-                });
-                const result = await response.json();
-                if (result.success || result.orderId) {
-                    showToast(`Order placed: ${result.orderId || 'Pending'}`, 'success');
-                    // Refresh positions and orders
-                    if (websocket && websocket.readyState === WebSocket.OPEN) {
-                        // WebSocket will push updates automatically
+                    const response = await fetch(`${BASE_URL}/api/chart/order`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(orderData)
+                    });
+                    const result = await response.json();
+                    if (result.success || result.orderId) {
+                        showToast(`✅ ${side} order placed`, 'success', 2000);
+                        playAlert('fill');
+                        flashAlert('success');
+                        // WebSocket will update automatically, no need to poll
                     } else {
-                        updatePositions();
-                        updateOrders();
+                        showToast(`❌ Order failed: ${result.error || 'Unknown error'}`, 'error', 4000);
+                        playAlert('error');
                     }
-                } else {
-                    showToast(`Order failed: ${result.error || 'Unknown error'}`, 'error', 6000);
+                } catch (error) {
+                    showToast(`❌ Error: ${error.message}`, 'error', 4000);
+                    playAlert('error');
+                } finally {
+                    // Re-enable buttons quickly
+                    if (buyBtn) buyBtn.disabled = false;
+                    if (sellBtn) sellBtn.disabled = false;
                 }
-            } catch (error) {
-                showToast(`Error: ${error.message}`, 'error', 6000);
-            } finally {
-                // Re-enable buttons after operation completes
-                if (buyBtn) buyBtn.disabled = false;
-                if (sellBtn) sellBtn.disabled = false;
-            }
+            })();
+            
+            // Don't await - fire and forget for speed
+            // Buttons will be re-enabled when promise completes
         }
         
         // Close Position (no confirmation, instant action)
+        // Close Position - OPTIMIZED FOR SPEED (one-click, no confirmation)
         async function closePosition(positionId, symbol) {
             if (!positionId) {
                 showToast('Invalid position ID', 'error');
                 return;
             }
             
-            // Disable button to prevent double-clicks
-            event?.target?.setAttribute('disabled', 'true');
+            // Immediate feedback
+            showToast(`Closing ${symbol}...`, 'info', 1500);
+            playAlert('warning');
             
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/close_position`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ position_id: positionId })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    const msg = result.warning ? 
-                        `⚠️ ${result.message}` : 
-                        `✅ Position closed: ${symbol}`;
-                    showToast(msg, result.warning ? 'warn' : 'success');
-                    // Refresh positions and orders
-                    setTimeout(() => {
-                        updatePositions();
-                        updateOrders();
-                    }, 500);
-                } else {
-                    showToast(`❌ Failed to close position: ${result.error || 'Unknown error'}`, 'error', 6000);
+            // Disable button to prevent double-clicks
+            const btn = event?.target;
+            if (btn) btn.disabled = true;
+            
+            // Fire and forget for speed
+            (async () => {
+                try {
+                    const response = await fetch(`${BASE_URL}/api/chart/close_position`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ position_id: positionId })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        const msg = result.warning ? 
+                            `⚠️ ${result.message}` : 
+                            `✅ ${symbol} closed`;
+                        showToast(msg, result.warning ? 'warn' : 'success', 2000);
+                        playAlert('success');
+                        flashAlert('success');
+                        // WebSocket will update automatically
+                    } else {
+                        showToast(`❌ ${result.error || 'Close failed'}`, 'error', 4000);
+                        playAlert('error');
+                    }
+                } catch (error) {
+                    console.error('Error closing position:', error);
+                    showToast(`❌ Error: ${error.message}`, 'error', 4000);
+                    playAlert('error');
+                } finally {
+                    if (btn) btn.disabled = false;
                 }
-            } catch (error) {
-                console.error('Error closing position:', error);
-                showToast(`❌ Error: ${error.message}`, 'error', 6000);
-            } finally {
-                // Re-enable button
-                event?.target?.removeAttribute('disabled');
-            }
+            })();
         }
         
-        // Cancel Order (no confirmation, instant action)
+        // Cancel Order - OPTIMIZED FOR SPEED (one-click, no confirmation)
         async function cancelOrder(orderId, symbol) {
             if (!orderId) {
                 showToast('Invalid order ID', 'error');
                 return;
             }
             
-            // Disable button to prevent double-clicks
-            event?.target?.setAttribute('disabled', 'true');
+            // Immediate feedback
+            showToast(`Canceling ${symbol}...`, 'info', 1500);
+            playAlert('warning');
             
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/cancel_order`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ order_id: orderId })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    const msg = result.warning ? 
-                        `⚠️ ${result.message}` : 
-                        `✅ Order cancelled: ${symbol}`;
-                    showToast(msg, result.warning ? 'warn' : 'success');
-                    // Refresh orders
-                    setTimeout(() => {
-                        updateOrders();
-                    }, 500);
-                } else {
-                    // Handle rate limiting specifically
-                    if (result.rate_limited) {
-                        showToast(`⏳ ${result.error}`, 'warn', 8000);
+            // Disable button to prevent double-clicks
+            const btn = event?.target;
+            if (btn) btn.disabled = true;
+            
+            // Fire and forget for speed
+            (async () => {
+                try {
+                    const response = await fetch(`${BASE_URL}/api/chart/cancel_order`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ order_id: orderId })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        const msg = result.warning ? 
+                            `⚠️ ${result.message}` : 
+                            `✅ ${symbol} cancelled`;
+                        showToast(msg, result.warning ? 'warn' : 'success', 2000);
+                        playAlert('success');
+                        flashAlert('success');
+                        // WebSocket will update automatically
                     } else {
-                        showToast(`❌ Failed to cancel order: ${result.error || 'Unknown error'}`, 'error', 6000);
+                        // Handle rate limiting specifically
+                        if (result.rate_limited) {
+                            showToast(`⏳ ${result.error}`, 'warn', 8000);
+                        } else {
+                            showToast(`❌ ${result.error || 'Cancel failed'}`, 'error', 4000);
+                            playAlert('error');
+                        }
                     }
+                } catch (error) {
+                    console.error('Error cancelling order:', error);
+                    showToast(`❌ Error: ${error.message}`, 'error', 4000);
+                    playAlert('error');
+                } finally {
+                    if (btn) btn.disabled = false;
                 }
-            } catch (error) {
-                console.error('Error cancelling order:', error);
-                showToast(`❌ Error: ${error.message}`, 'error', 6000);
-            } finally {
-                // Re-enable button
-                event?.target?.removeAttribute('disabled');
-            }
+            })();
         }
         
         // Strategy control - start strategy by name (from strategy cards)
@@ -2842,48 +3800,79 @@
         }
         
         // Quick actions
+        // Quick flatten - even faster, no confirmation
+        function quickFlatten() {
+            flattenAll();
+        }
+        
+        // Flatten all - OPTIMIZED FOR SPEED
         async function flattenAll() {
-            // Find all flatten buttons and disable them
             const flattenButtons = document.querySelectorAll('button[onclick*="flattenAll"]');
             flattenButtons.forEach(btn => btn.disabled = true);
             
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/flatten`, { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast('All positions flattened', 'success');
-                    refreshAll();
-                } else {
-                    showToast(`${data.error || 'Flatten failed'}`, 'error', 6000);
+            // Immediate feedback
+            showToast('Flattening all positions...', 'info', 2000);
+            playAlert('warning');
+            
+            // Fire and forget for speed
+            (async () => {
+                try {
+                    const response = await fetch(`${BASE_URL}/api/chart/flatten`, { 
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        showToast('✅ All positions flattened', 'success', 2000);
+                        playAlert('success');
+                        flashAlert('success');
+                        // WebSocket will update automatically
+                    } else {
+                        showToast(`❌ ${data.error || 'Flatten failed'}`, 'error', 4000);
+                        playAlert('error');
+                    }
+                } catch (error) {
+                    showToast(`❌ Error: ${error.message}`, 'error', 4000);
+                    playAlert('error');
+                } finally {
+                    flattenButtons.forEach(btn => btn.disabled = false);
                 }
-            } catch (error) {
-                showToast(`Error: ${error.message}`, 'error', 6000);
-            } finally {
-                // Re-enable buttons after operation completes
-                flattenButtons.forEach(btn => btn.disabled = false);
-            }
+            })();
         }
         
+        // Cancel all orders - OPTIMIZED FOR SPEED
         async function cancelAllOrders() {
-            // Find all cancel buttons and disable them
             const cancelButtons = document.querySelectorAll('button[onclick*="cancelAllOrders"]');
             cancelButtons.forEach(btn => btn.disabled = true);
             
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/cancel_all`, { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast('All orders canceled', 'success');
-                    updateOrders();
-                } else {
-                    showToast(`${data.error || 'Cancel failed'}`, 'error', 6000);
+            // Immediate feedback
+            showToast('Canceling all orders...', 'info', 2000);
+            playAlert('warning');
+            
+            // Fire and forget for speed
+            (async () => {
+                try {
+                    const response = await fetch(`${BASE_URL}/api/chart/cancel_all`, { 
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        showToast('✅ All orders canceled', 'success', 2000);
+                        playAlert('success');
+                        flashAlert('success');
+                        // WebSocket will update automatically
+                    } else {
+                        showToast(`❌ ${data.error || 'Cancel failed'}`, 'error', 4000);
+                        playAlert('error');
+                    }
+                } catch (error) {
+                    showToast(`❌ Error: ${error.message}`, 'error', 4000);
+                    playAlert('error');
+                } finally {
+                    cancelButtons.forEach(btn => btn.disabled = false);
                 }
-            } catch (error) {
-                showToast(`Error: ${error.message}`, 'error', 6000);
-            } finally {
-                // Re-enable buttons after operation completes
-                cancelButtons.forEach(btn => btn.disabled = false);
-            }
+            })();
         }
         
         function refreshAll() {
@@ -3094,6 +4083,10 @@
             updateOrders();
             updateStrategies();
             
+            // Load risk metrics (critical for account protection)
+            loadRiskMetrics();
+            loadComplianceStatus();
+            
             // Connection status (will be updated by WebSocket)
             const connectionStatusEl = document.getElementById('connection-status');
             if (connectionStatusEl) {
@@ -3123,7 +4116,7 @@
                     clearInterval(updateIntervals.chart);
                     updateIntervals.chart = null;
                 }
-                const rate = parseInt(e.target.value || 6);
+                const rate = parseInt(e.target.value || 12);
                 if (rate > 0) {
                     updateIntervals.chart = setInterval(updateChart, 1000 / rate);
                     console.log(`✅ Chart refresh rate changed to ${rate}x/s`);

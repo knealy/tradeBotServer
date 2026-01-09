@@ -58,6 +58,11 @@ class StrategyReplayEngine:
         self._original_place_bracket_order = None
         self._original_place_market_order = None
         
+        # Track original trading bot methods
+        self._original_trading_bot_place_oco = None
+        self._original_trading_bot_place_stop = None
+        self._original_trading_bot_place_limit = None
+        
         # Track current bar data for strategy
         self._current_bars: List[Dict] = []
         self._current_symbol: Optional[str] = None
@@ -109,6 +114,9 @@ class StrategyReplayEngine:
         
         # Intercept strategy's order placement methods
         self._intercept_strategy_methods()
+        
+        # Also intercept trading bot's order placement methods (for strategies that call them directly)
+        self._intercept_trading_bot_methods()
         
         try:
             # Run strategy on each bar
@@ -261,6 +269,7 @@ class StrategyReplayEngine:
         finally:
             # Restore original methods
             self._restore_strategy_methods()
+            self._restore_trading_bot_methods()
     
     def _bars_to_dataframe(self, bars: List[Dict]) -> pd.DataFrame:
         """Convert bar dicts to pandas DataFrame."""
@@ -302,6 +311,32 @@ class StrategyReplayEngine:
             self.strategy.place_bracket_order = self._original_place_bracket_order
         if self._original_place_market_order:
             self.strategy.place_market_order = self._original_place_market_order
+    
+    def _intercept_trading_bot_methods(self):
+        """Intercept trading bot's order placement methods for backtest simulation."""
+        # Intercept place_oco_bracket_with_stop_entry
+        if hasattr(self.trading_bot, 'place_oco_bracket_with_stop_entry'):
+            self._original_trading_bot_place_oco = self.trading_bot.place_oco_bracket_with_stop_entry
+            self.trading_bot.place_oco_bracket_with_stop_entry = self._simulate_place_oco_bracket
+        
+        # Intercept place_stop_order
+        if hasattr(self.trading_bot, 'place_stop_order'):
+            self._original_trading_bot_place_stop = self.trading_bot.place_stop_order
+            self.trading_bot.place_stop_order = self._simulate_place_stop_order
+        
+        # Intercept place_limit_order
+        if hasattr(self.trading_bot, 'place_limit_order'):
+            self._original_trading_bot_place_limit = self.trading_bot.place_limit_order
+            self.trading_bot.place_limit_order = self._simulate_place_limit_order
+    
+    def _restore_trading_bot_methods(self):
+        """Restore original trading bot methods."""
+        if self._original_trading_bot_place_oco:
+            self.trading_bot.place_oco_bracket_with_stop_entry = self._original_trading_bot_place_oco
+        if self._original_trading_bot_place_stop:
+            self.trading_bot.place_stop_order = self._original_trading_bot_place_stop
+        if self._original_trading_bot_place_limit:
+            self.trading_bot.place_limit_order = self._original_trading_bot_place_limit
     
     async def _simulate_place_bracket_order(
         self,
@@ -382,6 +417,115 @@ class StrategyReplayEngine:
             'success': True,
             'orderId': order_id,
             'message': 'Market order simulated in backtest',
+            'method': 'backtest_simulation'
+        }
+    
+    async def _simulate_place_oco_bracket(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        account_id: Optional[str] = None,
+        enable_breakeven: bool = False,
+        strategy_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Simulate OCO bracket order with stop entry in backtest.
+        
+        This intercepts trading_bot.place_oco_bracket_with_stop_entry calls
+        and simulates execution using the BacktestEngine.
+        """
+        logger.debug(f"📝 Simulating OCO bracket order: {side} {quantity} {symbol} @ {entry_price:.2f}")
+        
+        # Convert side to OrderSide
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        
+        # Place stop order for entry
+        entry_order_id = self.backtest_engine.place_order(
+            symbol=symbol,
+            side=order_side,
+            quantity=quantity,
+            order_type=OrderType.STOP,
+            stop_price=entry_price,
+            price=entry_price
+        )
+        
+        # Track bracket orders for stop loss and take profit
+        # These will be placed when entry order fills
+        entry_order = None
+        for order in self.backtest_engine.pending_orders:
+            if order.order_id == entry_order_id:
+                entry_order = order
+                # Store bracket prices in order (we'll use these when entry fills)
+                entry_order.stop_loss_price = stop_loss_price
+                entry_order.take_profit_price = take_profit_price
+                break
+        
+        return {
+            'success': True,
+            'orderId': entry_order_id,
+            'message': 'OCO bracket order simulated in backtest',
+            'method': 'backtest_simulation'
+        }
+    
+    async def _simulate_place_stop_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        stop_price: float,
+        account_id: Optional[str] = None,
+        reduce_only: bool = False,
+        strategy_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Simulate stop order placement in backtest."""
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        
+        order_id = self.backtest_engine.place_order(
+            symbol=symbol,
+            side=order_side,
+            quantity=quantity,
+            order_type=OrderType.STOP,
+            stop_price=stop_price,
+            price=stop_price
+        )
+        
+        return {
+            'success': True,
+            'orderId': order_id,
+            'message': 'Stop order simulated in backtest',
+            'method': 'backtest_simulation'
+        }
+    
+    async def _simulate_place_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        limit_price: float,
+        account_id: Optional[str] = None,
+        reduce_only: bool = False,
+        strategy_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Simulate limit order placement in backtest."""
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        
+        order_id = self.backtest_engine.place_order(
+            symbol=symbol,
+            side=order_side,
+            quantity=quantity,
+            order_type=OrderType.LIMIT,
+            limit_price=limit_price,
+            price=limit_price
+        )
+        
+        return {
+            'success': True,
+            'orderId': order_id,
+            'message': 'Limit order simulated in backtest',
             'method': 'backtest_simulation'
         }
     

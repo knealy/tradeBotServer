@@ -15,7 +15,7 @@ import asyncio
 import argparse
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import pandas as pd
 
@@ -624,14 +624,88 @@ class BacktestExecutor:
         class MockTradingBot:
             def __init__(self, bars, broker_adapter=None):
                 self.bars = bars
-                self.selected_account = {'id': 'backtest_account'}
+                self.selected_account = {'id': 'backtest_account', 'name': 'BACKTEST_PRAC_ACCOUNT'}
                 self.broker_adapter = broker_adapter
             
-            async def get_historical_data(self, symbol, timeframe=None, limit=None, **kwargs):
-                """Return bars for strategy analysis."""
-                # Return bars up to current point (handled by replay engine)
-                # The replay engine updates self.bars as it progresses
-                return self.bars[-limit:] if limit else self.bars
+            def _parse_bar_timestamp(self, bar: Dict) -> Optional[datetime]:
+                """Parse a bar timestamp into a timezone-aware UTC datetime."""
+                ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
+                if not ts:
+                    return None
+                if isinstance(ts, datetime):
+                    dt = ts
+                elif hasattr(ts, 'to_pydatetime'):
+                    # pandas Timestamp-like
+                    try:
+                        dt = ts.to_pydatetime()
+                    except Exception:
+                        dt = datetime.fromtimestamp(ts.timestamp(), tz=timezone.utc)
+                elif isinstance(ts, str):
+                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    # epoch seconds or ms
+                    if ts > 1e12:
+                        dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                    else:
+                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                else:
+                    return None
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            
+            async def get_historical_data(self, symbol, timeframe=None, limit=None, start_time=None, end_time=None, **kwargs):
+                """Return bars for strategy analysis, filtered by time range if provided."""
+                # Start with all bars
+                filtered_bars = self.bars
+                
+                # Filter by time range if provided
+                if start_time or end_time:
+                    filtered_bars = []
+                    
+                    # Get time range of available bars for debugging
+                    if self.bars:
+                        first_bar_time = self._parse_bar_timestamp(self.bars[0])
+                        last_bar_time = self._parse_bar_timestamp(self.bars[-1])
+                        logger.debug(f"Mock bot: Available bars range: {first_bar_time} to {last_bar_time}")
+                        logger.debug(f"Mock bot: Requested range: {start_time} to {end_time}")
+                    
+                    for bar in self.bars:
+                        bar_time = self._parse_bar_timestamp(bar)
+                        if not bar_time:
+                            continue
+                        
+                        # Normalize start_time and end_time to UTC for comparison
+                        if start_time:
+                            if start_time.tzinfo is None:
+                                start_time_utc = start_time.replace(tzinfo=timezone.utc)
+                            else:
+                                start_time_utc = start_time.astimezone(timezone.utc)
+                            if bar_time < start_time_utc:
+                                continue
+                        
+                        if end_time:
+                            if end_time.tzinfo is None:
+                                end_time_utc = end_time.replace(tzinfo=timezone.utc)
+                            else:
+                                end_time_utc = end_time.astimezone(timezone.utc)
+                            if bar_time > end_time_utc:
+                                continue
+                        
+                        filtered_bars.append(bar)
+                    
+                    logger.debug(f"Mock bot: Filtered {len(filtered_bars)} bars from {len(self.bars)} total bars")
+                    
+                    # Sort by timestamp (oldest first)
+                    filtered_bars.sort(key=lambda b: self._parse_bar_timestamp(b) or datetime.min.replace(tzinfo=timezone.utc))
+                else:
+                    # No time filter - just sort by timestamp
+                    filtered_bars.sort(key=lambda b: self._parse_bar_timestamp(b) or datetime.min.replace(tzinfo=timezone.utc))
+                
+                # Apply limit (take last N bars if limit specified, otherwise all)
+                if limit:
+                    return filtered_bars[-limit:]
+                return filtered_bars
             
             async def get_market_quote(self, symbol):
                 """Return mock quote from latest bar."""
@@ -673,6 +747,97 @@ class BacktestExecutor:
                     weight_sum = sum(weights)
                     return weighted_sum / weight_sum if weight_sum > 0 else None
                 return None
+            
+            async def get_available_contracts(self):
+                """Return mock contract info for backtest."""
+                # Return default contract info for common symbols
+                return [
+                    {'name': 'MNQ', 'tickSize': 0.25},
+                    {'name': 'MES', 'tickSize': 0.25},
+                    {'name': 'ES', 'tickSize': 0.25},
+                    {'name': 'NQ', 'tickSize': 0.25},
+                ]
+            
+            async def list_accounts(self):
+                """Return mock account list for backtest."""
+                # Return a mock PRAC account for backtest
+                return [
+                    {'id': 'backtest_account', 'name': 'BACKTEST_PRAC_ACCOUNT', 'type': 'PRAC'}
+                ]
+            
+            async def place_oco_bracket_with_stop_entry(
+                self,
+                symbol: str,
+                side: str,
+                quantity: int,
+                entry_price: float,
+                stop_loss_price: float,
+                take_profit_price: float,
+                account_id: Optional[str] = None,
+                enable_breakeven: bool = False,
+                strategy_name: Optional[str] = None
+            ) -> Dict[str, Any]:
+                """
+                Mock OCO bracket order placement for backtest.
+                
+                In backtest mode, orders are simulated by the replay engine.
+                This method returns a success response so the strategy can continue.
+                The actual order simulation is handled by the StrategyReplayEngine.
+                """
+                # Generate a mock order ID
+                import uuid
+                mock_order_id = str(uuid.uuid4())[:8]
+                
+                logger.debug(f"Mock order placement: {side} {quantity} {symbol} @ {entry_price:.2f} (orderId: {mock_order_id})")
+                
+                return {
+                    'success': True,
+                    'orderId': mock_order_id,
+                    'message': 'Order simulated in backtest (replay engine will handle execution)',
+                    'method': 'backtest_mock'
+                }
+            
+            async def place_stop_order(
+                self,
+                symbol: str,
+                side: str,
+                quantity: int,
+                stop_price: float,
+                account_id: Optional[str] = None,
+                reduce_only: bool = False,
+                strategy_name: Optional[str] = None
+            ) -> Dict[str, Any]:
+                """Mock stop order placement for backtest."""
+                import uuid
+                mock_order_id = str(uuid.uuid4())[:8]
+                logger.debug(f"Mock stop order: {side} {quantity} {symbol} @ {stop_price:.2f} (orderId: {mock_order_id})")
+                return {
+                    'success': True,
+                    'orderId': mock_order_id,
+                    'message': 'Stop order simulated in backtest',
+                    'method': 'backtest_mock'
+                }
+            
+            async def place_limit_order(
+                self,
+                symbol: str,
+                side: str,
+                quantity: int,
+                limit_price: float,
+                account_id: Optional[str] = None,
+                reduce_only: bool = False,
+                strategy_name: Optional[str] = None
+            ) -> Dict[str, Any]:
+                """Mock limit order placement for backtest."""
+                import uuid
+                mock_order_id = str(uuid.uuid4())[:8]
+                logger.debug(f"Mock limit order: {side} {quantity} {symbol} @ {limit_price:.2f} (orderId: {mock_order_id})")
+                return {
+                    'success': True,
+                    'orderId': mock_order_id,
+                    'message': 'Limit order simulated in backtest',
+                    'method': 'backtest_mock'
+                }
         
         return MockTradingBot(bars, broker_adapter=broker_adapter)
 

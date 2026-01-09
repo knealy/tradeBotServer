@@ -373,7 +373,11 @@ class StrategyManager:
             config.max_dll_usage_percent = float(settings['max_dll_usage_percent'])
     
     def _apply_strategy_specific_settings(self, strategy: BaseStrategy, settings: Dict[str, Any]) -> None:
-        """Apply strategy-specific parameters (e.g., overnight time range, ATR settings)."""
+        """Apply strategy-specific parameters (e.g., overnight time range, ATR settings).
+        
+        NOTE: Environment variables take precedence over database settings.
+        Only apply database settings if the corresponding env var is not set.
+        """
         if not settings:
             return
         
@@ -382,29 +386,42 @@ class StrategyManager:
         # Overnight Range Strategy specific settings
         if 'overnightrange' in strategy_name or strategy_name == 'overnight_range':
             import pytz
+            import os
+            
+            # Only apply database settings if env vars are not set (env vars take precedence)
+            # This ensures .env file changes are respected even if database has old values
             if 'overnight_start_time' in settings:
-                strategy.overnight_start = str(settings['overnight_start_time'])
+                if os.getenv('OVERNIGHT_START_TIME'):
+                    logger.info(f"🌍 Using OVERNIGHT_START_TIME from .env ({os.getenv('OVERNIGHT_START_TIME')}) instead of database ({settings['overnight_start_time']})")
+                else:
+                    strategy.overnight_start = str(settings['overnight_start_time'])
             if 'overnight_end_time' in settings:
-                strategy.overnight_end = str(settings['overnight_end_time'])
+                if os.getenv('OVERNIGHT_END_TIME'):
+                    logger.info(f"🌍 Using OVERNIGHT_END_TIME from .env ({os.getenv('OVERNIGHT_END_TIME')}) instead of database ({settings['overnight_end_time']})")
+                else:
+                    strategy.overnight_end = str(settings['overnight_end_time'])
             if 'market_open_time' in settings:
-                strategy.market_open_time = str(settings['market_open_time'])
-            if 'strategy_timezone' in settings:
+                if os.getenv('MARKET_OPEN_TIME'):
+                    logger.info(f"🌍 Using MARKET_OPEN_TIME from .env ({os.getenv('MARKET_OPEN_TIME')}) instead of database ({settings['market_open_time']})")
+                else:
+                    strategy.market_open_time = str(settings['market_open_time'])
+            if 'strategy_timezone' in settings and not os.getenv('STRATEGY_TIMEZONE'):
                 strategy.timezone = pytz.timezone(str(settings['strategy_timezone']))
-            if 'atr_period' in settings:
+            if 'atr_period' in settings and not os.getenv('ATR_PERIOD'):
                 strategy.atr_period = int(settings['atr_period'])
-            if 'atr_timeframe' in settings:
+            if 'atr_timeframe' in settings and not os.getenv('ATR_TIMEFRAME'):
                 strategy.atr_timeframe = str(settings['atr_timeframe'])
-            if 'stop_atr_multiplier' in settings:
+            if 'stop_atr_multiplier' in settings and not os.getenv('STOP_ATR_MULTIPLIER'):
                 strategy.stop_atr_multiplier = float(settings['stop_atr_multiplier'])
-            if 'tp_atr_multiplier' in settings:
+            if 'tp_atr_multiplier' in settings and not os.getenv('TP_ATR_MULTIPLIER'):
                 strategy.tp_atr_multiplier = float(settings['tp_atr_multiplier'])
-            if 'breakeven_enabled' in settings:
+            if 'breakeven_enabled' in settings and not os.getenv('BREAKEVEN_ENABLED'):
                 strategy.breakeven_enabled = bool(settings['breakeven_enabled'])
-            if 'breakeven_profit_points' in settings:
+            if 'breakeven_profit_points' in settings and not os.getenv('BREAKEVEN_PROFIT_POINTS'):
                 strategy.breakeven_profit_points = float(settings['breakeven_profit_points'])
-            if 'range_break_offset' in settings:
+            if 'range_break_offset' in settings and not os.getenv('RANGE_BREAK_OFFSET'):
                 strategy.range_break_offset = float(settings['range_break_offset'])
-            logger.debug(f"Applied overnight_range specific settings to {strategy_name}")
+            logger.debug(f"Applied overnight_range specific settings to {strategy_name} (env vars take precedence)")
     
     def _save_strategy_state(
         self,

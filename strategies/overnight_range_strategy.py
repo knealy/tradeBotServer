@@ -373,6 +373,86 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.warning(f"⚠️  Error getting position quantity for {symbol}: {e}")
             return 0
     
+    async def get_pending_entry_order_quantity(self, symbol: str, open_orders: Optional[List[Dict]] = None) -> int:
+        """
+        Get the total quantity of pending entry orders for a symbol.
+        
+        This counts only entry orders (stop orders that will open positions), 
+        NOT bracket SL/TP orders which are reduce-only.
+        
+        Args:
+            symbol: Trading symbol (e.g., "MES", "MNQ")
+            open_orders: Optional list of open orders (if None, fetches from API)
+        
+        Returns:
+            Total quantity of pending entry orders
+        """
+        try:
+            symbol_upper = symbol.upper()
+            
+            if open_orders is None:
+                orders = await self.trading_bot.get_open_orders()
+                orders_list = orders if isinstance(orders, list) else []
+            else:
+                orders_list = open_orders
+            
+            total_quantity = 0
+            
+            for order in orders_list:
+                # Get symbol from order
+                order_symbol = order.get('symbol', '')
+                if not order_symbol:
+                    # Try to get from contractId
+                    contract_id = order.get('contractId')
+                    if contract_id and hasattr(self.trading_bot, '_get_symbol_from_contract_id'):
+                        order_symbol = self.trading_bot._get_symbol_from_contract_id(contract_id)
+                
+                if not order_symbol or order_symbol.upper() != symbol_upper:
+                    continue
+                
+                # Only count entry orders (stop orders that will open positions)
+                # Exclude reduce-only orders (SL/TP brackets)
+                is_reduce_only = order.get('reduceOnly') or order.get('reduce_only', False)
+                
+                # Check customTag for bracket identification
+                custom_tag = order.get('customTag') or order.get('custom_tag') or ''
+                is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag) or 'AutoBracket' in str(custom_tag)
+                
+                # Entry orders are stop orders (type 4) that are:
+                # 1. NOT reduce-only
+                # 2. NOT bracket SL/TP orders (identified by customTag)
+                order_type = order.get('type') or order.get('raw_type')
+                is_entry_order = (
+                    order_type in (4, "4", "Stop", "stop") and
+                    not is_reduce_only and
+                    not is_bracket_sl_tp
+                )
+                
+                if is_entry_order:
+                    qty = order.get('quantity') or order.get('size') or 0
+                    if qty:
+                        total_quantity += abs(int(qty))
+            
+            return total_quantity
+        except Exception as e:
+            logger.warning(f"⚠️  Error getting pending entry order quantity for {symbol}: {e}")
+            return 0
+    
+    async def get_total_exposure(self, symbol: str, open_orders: Optional[List[Dict]] = None) -> int:
+        """
+        Get total exposure (positions + pending entry orders) for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            open_orders: Optional list of open orders (if None, fetches from API)
+        
+        Returns:
+            Total exposure: positions + pending entry orders
+        """
+        position_qty = await self.get_current_position_quantity(symbol)
+        pending_qty = await self.get_pending_entry_order_quantity(symbol, open_orders)
+        return position_qty + pending_qty
+    
     async def check_market_conditions(self, symbol: str, range_data: OvernightRange, atr_data: ATRData) -> Tuple[bool, str]:
         """
         Check if market conditions are favorable for trading (OPTIONAL filters).
@@ -669,19 +749,13 @@ class OvernightRangeStrategy(BaseStrategy):
             atr_zone_high = current_price + daily_atr
             atr_zone_low = current_price - daily_atr
             
-            # Get market open price (9:30am 30-minute candle open) - CRITICAL for accurate zone calculations
-            # PineScript uses: open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0)
-            # This gets the 30-minute timeframe open price at market open, NOT the 1-minute bar
+            # Get market open price (exact 9:30am 1-minute candle open) - CRITICAL for accurate zone calculations
+            # Use 1-minute bars to get the exact market open time, not a fallback
             market_open_price = 0.0
             now = datetime.now(self.timezone)
             open_hour, open_min = map(int, self.market_open_time.split(':'))
             market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
             
-            # Fetch 30-minute bars to get the "market open" price used by PineScript's:
-            # open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0)
-            #
-            # IMPORTANT: Use the 30m bar whose timestamp matches the configured market open time (09:30 local).
-            # This matches the prior behavior you validated.
             try:
                 # Convert market open time to UTC for API request
                 if pytz:
@@ -689,17 +763,17 @@ class OvernightRangeStrategy(BaseStrategy):
                 else:
                     market_open_utc = market_open_today.astimezone(timezone.utc)
                 
-                # Fetch 30-minute bars from today (need enough to find the 9:30am bar)
-                # Get bars from early morning today to now
-                start_of_day_utc = market_open_today.replace(hour=0, minute=0).astimezone(pytz.UTC if pytz else timezone.utc)
-                end_time_utc = now.astimezone(pytz.UTC) if pytz else now.astimezone(timezone.utc)
+                # Fetch 1-minute bars around market open time (get a window to ensure we capture it)
+                # Get bars from 30 minutes before market open to 30 minutes after
+                start_time_utc = (market_open_today - timedelta(minutes=30)).astimezone(pytz.UTC if pytz else timezone.utc)
+                end_time_utc = (market_open_today + timedelta(minutes=30)).astimezone(pytz.UTC if pytz else timezone.utc)
                 
                 open_bars = await self.trading_bot.get_historical_data(
                     symbol=symbol,
-                    timeframe='30m',
-                    start_time=start_of_day_utc,
+                    timeframe='1m',
+                    start_time=start_time_utc,
                     end_time=end_time_utc,
-                    limit=20  # Should be enough to cover the day
+                    limit=60  # 60 minutes should be enough
                 )
                 
                 if open_bars and len(open_bars) > 0:
@@ -716,18 +790,18 @@ class OvernightRangeStrategy(BaseStrategy):
                             return None
                         return dt_utc.astimezone(self.timezone).replace(second=0, microsecond=0)
 
-                    # 1) Preferred: bar timestamp match at market open (09:30)
+                    # Find the exact 1-minute bar at market open time (e.g., 09:30:00)
                     for bar in open_bars_sorted:
                         bt = _bar_time_local_min(bar)
-                        if bt == market_open_today:
+                        if bt and bt == market_open_today:
                             market_open_price = bar.get('open', bar.get('o', 0))
                             logger.info(
-                                f"Market open price (30m) for {symbol}: "
-                                f"{bt.strftime('%Y-%m-%d %H:%M')} @ {market_open_price:.2f}"
+                                f"Market open price (1m) for {symbol}: "
+                                f"{bt.strftime('%Y-%m-%d %H:%M:%S')} @ {market_open_price:.2f}"
                             )
                             break
-
-                    # 2) Fallback: closest bar to market open timestamp
+                    
+                    # If exact match not found, try to find the closest bar within 1 minute
                     if market_open_price is None:
                         def _dist_seconds(target: datetime, bar: Dict) -> float:
                             bt = _bar_time_local_min(bar)
@@ -737,21 +811,32 @@ class OvernightRangeStrategy(BaseStrategy):
 
                         best_bar = min(open_bars_sorted, key=lambda b: _dist_seconds(market_open_today, b))
                         bt = _bar_time_local_min(best_bar)
-                        market_open_price = best_bar.get('open', best_bar.get('o', 0))
-                        logger.warning(
-                            f"Market open price fallback (closest 30m bar) for {symbol}: "
-                            f"{bt.strftime('%Y-%m-%d %H:%M') if bt else 'unknown'} @ {market_open_price:.2f}"
-                        )
+                        dist_seconds = _dist_seconds(market_open_today, best_bar)
+                        
+                        # Only use if within 1 minute (60 seconds) of market open
+                        if dist_seconds <= 60:
+                            market_open_price = best_bar.get('open', best_bar.get('o', 0))
+                            logger.info(
+                                f"Market open price (1m, closest within 1min) for {symbol}: "
+                                f"{bt.strftime('%Y-%m-%d %H:%M:%S') if bt else 'unknown'} @ {market_open_price:.2f} "
+                                f"(offset: {dist_seconds:.0f}s)"
+                            )
+                        else:
+                            logger.warning(
+                                f"Could not find 1m bar near market open for {symbol} "
+                                f"(closest was {dist_seconds:.0f}s away), using current price"
+                            )
+                            market_open_price = current_price
                     
                     # Final fallback: use current price if we couldn't find market open bar
                     if market_open_price is None or market_open_price == 0:
-                        logger.warning(f"Could not find 9:30am 30m bar for {symbol}, using current price as fallback")
+                        logger.warning(f"Could not find market open 1m bar for {symbol}, using current price as fallback")
                         market_open_price = current_price
                 else:
-                    logger.warning(f"No 30m bars returned for market open lookup for {symbol}, using current price")
+                    logger.warning(f"No 1m bars returned for market open lookup for {symbol}, using current price")
                     market_open_price = current_price
             except Exception as e:
-                logger.warning(f"Error fetching 30m market open price for {symbol}: {e}, using current price as fallback")
+                logger.warning(f"Error fetching 1m market open price for {symbol}: {e}, using current price as fallback")
                 market_open_price = current_price
             
             # Calculate daily ATR zones.
@@ -788,7 +873,7 @@ class OvernightRangeStrategy(BaseStrategy):
             )
             
             logger.info(f"ATR calculated for {symbol}: Current={current_atr:.2f}, Daily={daily_atr:.2f}")
-            logger.info(f"  Market Open (30m): {market_open_price:.2f}")
+            logger.info(f"  Market Open (1m): {market_open_price:.2f}")
             logger.info(f"  day_dist = daily_atr * 0.5 = {daily_atr:.2f} * 0.5 = {day_dist:.2f}")
             logger.info(f"  Upper ATR Zone: [{day_bull_price:.2f}, {day_bull_price1:.2f}]")
             logger.info(f"  Lower ATR Zone: [{day_bear_price1:.2f}, {day_bear_price:.2f}]")
@@ -825,8 +910,53 @@ class OvernightRangeStrategy(BaseStrategy):
         """
         try:
             symbol = symbol.upper()
-            # Get current time in strategy timezone
-            now = datetime.now(self.timezone)
+            
+            # In backtest mode, use the date from available bars instead of current system date
+            # This ensures we analyze overnight sessions that exist in the backtest data
+            now = None
+            try:
+                # Try to get recent bars to determine the "current" date in backtest context
+                recent_bars = await self.trading_bot.get_historical_data(
+                    symbol=symbol,
+                    timeframe='1m',
+                    limit=1  # Just need the latest bar to get the date
+                )
+                if recent_bars and len(recent_bars) > 0:
+                    # Get timestamp from the latest bar
+                    latest_bar = recent_bars[-1]
+                    bar_ts = latest_bar.get('timestamp') or latest_bar.get('time') or latest_bar.get('t')
+                    if bar_ts:
+                        # Parse timestamp
+                        if isinstance(bar_ts, datetime):
+                            bar_dt = bar_ts
+                        elif hasattr(bar_ts, 'to_pydatetime'):
+                            bar_dt = bar_ts.to_pydatetime()
+                        elif isinstance(bar_ts, str):
+                            bar_dt = datetime.fromisoformat(bar_ts.replace('Z', '+00:00'))
+                        elif isinstance(bar_ts, (int, float)):
+                            if bar_ts > 1e12:
+                                bar_dt = datetime.fromtimestamp(bar_ts / 1000, tz=timezone.utc)
+                            else:
+                                bar_dt = datetime.fromtimestamp(bar_ts, tz=timezone.utc)
+                        else:
+                            bar_dt = None
+                        
+                        if bar_dt:
+                            # Convert to strategy timezone
+                            if bar_dt.tzinfo is None:
+                                bar_dt = bar_dt.replace(tzinfo=timezone.utc)
+                            if pytz:
+                                now = bar_dt.astimezone(self.timezone)
+                            else:
+                                now = bar_dt.astimezone(self.timezone)
+                            logger.debug(f"Using backtest date from bars: {now} (bar timestamp: {bar_ts})")
+            except Exception as e:
+                logger.debug(f"Could not determine date from bars: {e}, using current system date")
+            
+            # Fall back to current system date if we couldn't get it from bars (live trading)
+            if now is None:
+                now = datetime.now(self.timezone)
+                logger.debug(f"Using current system date: {now}")
             
             # Parse configured session times
             start_hour, start_min = map(int, self.overnight_start.split(':'))
@@ -834,28 +964,49 @@ class OvernightRangeStrategy(BaseStrategy):
             start_clock = time(start_hour, start_min)
             end_clock = time(end_hour, end_min)
             
-            # Determine the most recent completed session end
+            # Determine the most recent completed session
+            # For sessions that cross midnight (e.g., 18:00 -> 09:30):
+            #   - Session starts yesterday 6pm, ends today 9:30am
+            # For sessions within same day (e.g., 09:30 -> 18:00):
+            #   - Session starts today 9:30am, ends today 6pm
             if end_clock <= start_clock:
                 # Session crosses midnight (e.g., 18:00 -> 09:30)
                 if now.time() >= end_clock:
+                    # We're past the end time today, so the session that just ended was:
+                    # Start: yesterday at start_clock, End: today at end_clock
                     end_date = now.date()
+                    start_date = end_date - timedelta(days=1)
                 else:
+                    # We're before the end time today, so the session that just ended was:
+                    # Start: day before yesterday at start_clock, End: yesterday at end_clock
                     end_date = (now - timedelta(days=1)).date()
-                start_date = end_date - timedelta(days=1)
+                    start_date = end_date - timedelta(days=1)
             else:
-                # Session contained within same calendar day (e.g., 20:00 -> 22:15)
+                # Session contained within same calendar day (e.g., 09:30 -> 18:00)
                 if now.time() >= end_clock:
+                    # We're past the end time today, so the session that just ended was:
+                    # Start: today at start_clock, End: today at end_clock
                     end_date = now.date()
+                    start_date = now.date()  # Same day
                 else:
+                    # We're before the end time today, so the session that just ended was:
+                    # Start: yesterday at start_clock, End: yesterday at end_clock
                     end_date = (now - timedelta(days=1)).date()
-                start_date = end_date
+                    start_date = (now - timedelta(days=1)).date()  # Same day
             
             end_time = self.timezone.localize(datetime.combine(end_date, end_clock))
             start_time = self.timezone.localize(datetime.combine(start_date, start_clock))
             
-            # Safety: if start_time is equal to end_time (zero duration), skip
+            # Safety: if start_time is equal to or after end_time, something went wrong
             if start_time >= end_time:
-                start_time -= timedelta(days=1)
+                logger.error(f"⚠️  Invalid session time range: start={start_time} >= end={end_time}. This should not happen!")
+                # For same-day sessions, ensure start is before end on the same day
+                if end_clock > start_clock:
+                    # Same day session - both should be on end_date
+                    start_time = self.timezone.localize(datetime.combine(end_date, start_clock))
+                else:
+                    # Crosses midnight - start should be day before end
+                    start_time = self.timezone.localize(datetime.combine(end_date - timedelta(days=1), start_clock))
             
             # Calculate how many 1-minute bars we need
             session_duration = end_time - start_time
@@ -1025,14 +1176,17 @@ class OvernightRangeStrategy(BaseStrategy):
             long_stop_raw = long_entry_raw - (atr_data.current_atr * self.stop_atr_multiplier)
             
             # Determine TP target based on whether ATR zone is inside range
+            # Use MIDPOINT of ATR zone (halfway between closest and farthest points)
+            upper_zone_midpoint = (atr_data.day_bull_price + atr_data.day_bull_price1) / 2.0
+            
             if upper_zone_inside:
-                # ATR zone is inside range - use ATR * 2 or ATR * 3 instead
+                # ATR zone is inside range - use ATR * 2
                 logger.info(f"  Upper ATR zone inside overnight range - using ATR*2 for TP")
                 long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
             elif atr_data.day_bull_price > range_data.high:
-                # ATR zone is ABOVE range - TARGET THE ZONE ITSELF (lower bound of upper zone)
-                logger.info(f"  Upper ATR zone above overnight range - targeting zone at {atr_data.day_bull_price:.2f}")
-                long_tp_raw = atr_data.day_bull_price  # Target the lower bound of upper zone
+                # ATR zone is ABOVE range - TARGET THE MIDPOINT of the zone
+                logger.info(f"  Upper ATR zone above overnight range - targeting zone midpoint at {upper_zone_midpoint:.2f} (zone: [{atr_data.day_bull_price:.2f}, {atr_data.day_bull_price1:.2f}])")
+                long_tp_raw = upper_zone_midpoint
             else:
                 # ATR zone is BELOW range - use ATR * 2 from entry
                 logger.info(f"  Upper ATR zone below overnight range - using ATR*2 for TP")
@@ -1059,15 +1213,18 @@ class OvernightRangeStrategy(BaseStrategy):
             short_stop_raw = short_entry_raw + (atr_data.current_atr * self.stop_atr_multiplier)
             
             # Determine TP target based on whether ATR zone is inside range
+            # Use MIDPOINT of ATR zone (halfway between closest and farthest points)
+            lower_zone_midpoint = (atr_data.day_bear_price + atr_data.day_bear_price1) / 2.0
+            
             if lower_zone_inside:
-                # ATR zone is inside range - use ATR * 2 or ATR * 3 instead
+                # ATR zone is inside range - use ATR * 2
                 logger.info(f"  Lower ATR zone inside overnight range - using ATR*2 for TP")
                 short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
             elif atr_data.day_bear_price1 < range_data.low:
-                # ATR zone is BELOW range - TARGET THE LOWER BOUND of the zone (day_bear_price1)
-                # For SHORT orders, TP must be BELOW entry, so we use the lower bound of the lower zone
-                logger.info(f"  Lower ATR zone below overnight range - targeting lower bound at {atr_data.day_bear_price1:.2f}")
-                short_tp_raw = atr_data.day_bear_price1  # Target the lower bound of lower zone (below entry)
+                # ATR zone is BELOW range - TARGET THE MIDPOINT of the zone
+                # For SHORT orders, TP must be BELOW entry, so we use the midpoint of the lower zone
+                logger.info(f"  Lower ATR zone below overnight range - targeting zone midpoint at {lower_zone_midpoint:.2f} (zone: [{atr_data.day_bear_price1:.2f}, {atr_data.day_bear_price:.2f}])")
+                short_tp_raw = lower_zone_midpoint
             else:
                 # ATR zone is ABOVE range - use ATR * 2 from entry
                 logger.info(f"  Lower ATR zone above overnight range - using ATR*2 for TP")
@@ -1136,6 +1293,17 @@ class OvernightRangeStrategy(BaseStrategy):
             symbol = symbol.upper()
             logger.info(f"🚀 Placing range break orders for {symbol}...")
             
+            # Check total exposure (positions + pending orders) BEFORE placing orders - CRITICAL
+            open_orders = await self.trading_bot.get_open_orders()
+            orders_list = open_orders if isinstance(open_orders, list) else []
+            total_exposure = await self.get_total_exposure(symbol, orders_list)
+            
+            if total_exposure >= self.max_quantity_per_instrument:
+                position_qty = await self.get_current_position_quantity(symbol)
+                pending_qty = await self.get_pending_entry_order_quantity(symbol, orders_list)
+                logger.warning(f"⚠️  Max quantity reached for {symbol}: {total_exposure}/{self.max_quantity_per_instrument} contracts (pos={position_qty} + pending={pending_qty}) - skipping order placement")
+                return {"success": False, "error": f"Max quantity reached: {total_exposure}/{self.max_quantity_per_instrument}"}
+            
             # Calculate orders
             long_order, short_order = await self.calculate_range_break_orders(symbol)
             if not long_order or not short_order:
@@ -1161,41 +1329,52 @@ class OvernightRangeStrategy(BaseStrategy):
                     account_id = self.trading_bot.selected_account
                     account_name = str(account_id)
             
-            # Validate account selection - ensure PRAC account is used
+            # Validate account selection - ensure PRAC account is used (skip in backtest mode)
             if account_id:
                 account_id_str = str(account_id)
                 account_name_upper = account_name.upper()
                 
-                # Check if account name contains PRAC or PRACTICE
-                is_prac_account = 'PRAC' in account_name_upper or 'PRACTICE' in account_name_upper
+                # Skip validation in backtest mode
+                is_backtest = (
+                    'BACKTEST' in account_name_upper or 
+                    account_id_str == 'backtest_account' or
+                    hasattr(self.trading_bot, 'bars')  # Mock trading bot has bars attribute
+                )
                 
-                if not is_prac_account:
-                    logger.error(f"⚠️  WARNING: Strategy attempting to use non-PRAC account: {account_name} (ID: {account_id_str})")
-                    logger.error(f"⚠️  This should be a PRAC/PRACTICE account. Checking for PRAC account...")
-                    
-                    # Try to find PRAC account
-                    try:
-                        accounts = await self.trading_bot.list_accounts()
-                        prac_account = None
-                        for acc in accounts:
-                            acc_name = acc.get('name', '').upper()
-                            if 'PRAC' in acc_name or 'PRACTICE' in acc_name:
-                                prac_account = acc
-                                break
-                        
-                        if prac_account:
-                            account_id = prac_account.get('id')
-                            account_name = prac_account.get('name', 'Unknown')
-                            logger.warning(f"✅ Found PRAC account: {account_name} (ID: {account_id}), switching to it")
-                            self.trading_bot.selected_account = prac_account
-                        else:
-                            logger.error(f"❌ No PRAC account found! Available accounts: {[acc.get('name') for acc in accounts]}")
-                            return {"success": False, "error": f"No PRAC account found. Current account: {account_name}"}
-                    except Exception as acc_err:
-                        logger.error(f"❌ Failed to validate account: {acc_err}")
-                        return {"success": False, "error": f"Account validation failed: {acc_err}"}
+                if is_backtest:
+                    logger.debug(f"Backtest mode detected - skipping account validation")
+                    # Use the backtest account as-is
                 else:
-                    logger.info(f"✅ Using PRAC account: {account_name} (ID: {account_id})")
+                    # Check if account name contains PRAC or PRACTICE
+                    is_prac_account = 'PRAC' in account_name_upper or 'PRACTICE' in account_name_upper
+                    
+                    if not is_prac_account:
+                        logger.error(f"⚠️  WARNING: Strategy attempting to use non-PRAC account: {account_name} (ID: {account_id_str})")
+                        logger.error(f"⚠️  This should be a PRAC/PRACTICE account. Checking for PRAC account...")
+                        
+                        # Try to find PRAC account
+                        try:
+                            accounts = await self.trading_bot.list_accounts()
+                            prac_account = None
+                            for acc in accounts:
+                                acc_name = acc.get('name', '').upper()
+                                if 'PRAC' in acc_name or 'PRACTICE' in acc_name:
+                                    prac_account = acc
+                                    break
+                            
+                            if prac_account:
+                                account_id = prac_account.get('id')
+                                account_name = prac_account.get('name', 'Unknown')
+                                logger.warning(f"✅ Found PRAC account: {account_name} (ID: {account_id}), switching to it")
+                                self.trading_bot.selected_account = prac_account
+                            else:
+                                logger.error(f"❌ No PRAC account found! Available accounts: {[acc.get('name') for acc in accounts]}")
+                                return {"success": False, "error": f"No PRAC account found. Current account: {account_name}"}
+                        except Exception as acc_err:
+                            logger.error(f"❌ Failed to validate account: {acc_err}")
+                            return {"success": False, "error": f"Account validation failed: {acc_err}"}
+                    else:
+                        logger.info(f"✅ Using PRAC account: {account_name} (ID: {account_id})")
             else:
                 logger.error("❌ No account selected for strategy execution")
                 return {"success": False, "error": "No account selected"}
@@ -1398,16 +1577,37 @@ class OvernightRangeStrategy(BaseStrategy):
     def _order_matches_breakout(self, order: Dict, side: str, target_price: float, tolerance: float) -> bool:
         """Check if an existing order already covers a breakout level."""
         try:
-            order_type = order.get("type")
+            # Get order type - handle both string and numeric types
+            order_type = order.get("type") or order.get("raw_type")
             if order_type not in (4, "4", "Stop", "stop"):
                 return False
+            
+            # Check if it's a reduce-only order (SL/TP brackets) - skip those
+            is_reduce_only = order.get("reduceOnly") or order.get("reduce_only", False)
+            custom_tag = order.get('customTag') or order.get('custom_tag') or ''
+            is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag) or 'AutoBracket' in str(custom_tag)
+            
+            if is_reduce_only or is_bracket_sl_tp:
+                return False  # Don't match SL/TP brackets, only entry orders
+            
+            # Check side
             raw_side = order.get("side", -1)
             order_side = "BUY" if raw_side in (0, "0", "buy", "BUY") else "SELL"
             if order_side != side:
                 return False
-            order_price = order.get("stopPrice") or order.get("price") or order.get("limitPrice")
+            
+            # Get order price - check multiple possible fields
+            order_price = (order.get("stopPrice") or order.get("price") or 
+                          order.get("limitPrice") or order.get("stop_price"))
+            
+            # For bracket orders, check the entry price in bracket structure
+            if order_price is None:
+                bracket = order.get("bracket") or {}
+                order_price = bracket.get("entryPrice") or bracket.get("stopPrice")
+            
             if order_price is None:
                 return False
+            
             order_price = float(order_price)
             return abs(order_price - target_price) <= tolerance
         except Exception:
@@ -1417,10 +1617,15 @@ class OvernightRangeStrategy(BaseStrategy):
         """Place a single breakout stop order (used by proactive monitor)."""
         symbol = order_template.symbol.upper()
         
-        # Check current position quantity - skip if at or above max
-        current_qty = await self.get_current_position_quantity(symbol)
-        if current_qty >= self.max_quantity_per_instrument:
-            logger.warning(f"⚠️  Max quantity reached for {symbol}: {current_qty}/{self.max_quantity_per_instrument} contracts - skipping order")
+        # Check total exposure (positions + pending orders) - CRITICAL
+        open_orders = await self.trading_bot.get_open_orders()
+        orders_list = open_orders if isinstance(open_orders, list) else []
+        total_exposure = await self.get_total_exposure(symbol, orders_list)
+        
+        if total_exposure >= self.max_quantity_per_instrument:
+            position_qty = await self.get_current_position_quantity(symbol)
+            pending_qty = await self.get_pending_entry_order_quantity(symbol, orders_list)
+            logger.warning(f"⚠️  Max quantity reached for {symbol}: {total_exposure}/{self.max_quantity_per_instrument} contracts (pos={position_qty} + pending={pending_qty}) - skipping order")
             return None
         
         # Get tick size and round prices to valid tick increments BEFORE validation
@@ -1429,7 +1634,10 @@ class OvernightRangeStrategy(BaseStrategy):
         stop_loss_price = self.round_to_tick(order_template.stop_loss, tick_size)
         take_profit_price = self.round_to_tick(order_template.take_profit, tick_size)
         
-        logger.info(f"📌 Placing {order_template.side} breakout order for {symbol} at {entry_price:.2f} (tick_size={tick_size}, current_qty={current_qty}/{self.max_quantity_per_instrument})")
+        # Get exposure breakdown for logging
+        position_qty = await self.get_current_position_quantity(symbol)
+        pending_qty = await self.get_pending_entry_order_quantity(symbol, orders_list)
+        logger.info(f"📌 Placing {order_template.side} breakout order for {symbol} at {entry_price:.2f} (tick_size={tick_size}, exposure={total_exposure}/{self.max_quantity_per_instrument} [pos={position_qty} + pending={pending_qty}])")
         
         # Validate entry price against current market price
         try:
@@ -1495,20 +1703,59 @@ class OvernightRangeStrategy(BaseStrategy):
         """Ensure there is an active breakout stop order near the target level."""
         symbol = symbol.upper()
         
-        # Check current position quantity - skip if at or above max
-        current_qty = await self.get_current_position_quantity(symbol)
-        if current_qty >= self.max_quantity_per_instrument:
-            logger.debug(f"⚠️  Max quantity reached for {symbol}: {current_qty}/{self.max_quantity_per_instrument} contracts - skipping order")
+        # Check total exposure (positions + pending orders) - CRITICAL
+        total_exposure = await self.get_total_exposure(symbol, existing_orders)
+        if total_exposure >= self.max_quantity_per_instrument:
+            position_qty = await self.get_current_position_quantity(symbol)
+            pending_qty = await self.get_pending_entry_order_quantity(symbol, existing_orders)
+            logger.debug(f"⚠️  Max quantity reached for {symbol}: {total_exposure}/{self.max_quantity_per_instrument} contracts (pos={position_qty} + pending={pending_qty}) - skipping order")
             return
         
+        # Check for exact duplicate order at same price (tight tolerance)
         tolerance = max(self.breakout_order_tolerance_points, tick_size)
-        # Check existing orders from API
         for order in existing_orders:
             if self._order_matches_breakout(order, side, order_template.entry_price, tolerance):
                 order_id = str(order.get("id"))
                 self.breakout_active_orders.setdefault(symbol, {})[side] = order_id
-                logger.debug(f"🔁 Existing {side} breakout order already working for {symbol} (ID {order_id})")
+                logger.debug(f"🔁 Existing {side} breakout order already working for {symbol} at {order_template.entry_price:.2f} (ID {order_id}) - skipping duplicate")
                 return
+        
+        # Count ALL pending entry orders for this symbol/side (not just matching price)
+        # This prevents excessive orders even if prices are slightly different
+        symbol_side_entry_orders = []
+        for order in existing_orders:
+            order_symbol = order.get('symbol', '').upper()
+            if not order_symbol:
+                contract_id = order.get('contractId')
+                if contract_id and hasattr(self.trading_bot, '_get_symbol_from_contract_id'):
+                    order_symbol = self.trading_bot._get_symbol_from_contract_id(contract_id)
+            
+            if order_symbol != symbol:
+                continue
+            
+            raw_side = order.get("side", -1)
+            order_side = "BUY" if raw_side in (0, "0", "buy", "BUY") else "SELL"
+            if order_side == side:
+                # Check if it's an entry order (not reduce-only, not bracket SL/TP)
+                is_reduce_only = order.get('reduceOnly') or order.get('reduce_only', False)
+                custom_tag = order.get('customTag') or order.get('custom_tag') or ''
+                is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag)
+                order_type = order.get('type') or order.get('raw_type')
+                
+                # Entry orders: stop orders (type 4) that are not reduce-only and not bracket SL/TP
+                is_entry_order = (
+                    order_type in (4, "4", "Stop", "stop") and 
+                    not is_reduce_only and 
+                    not is_bracket_sl_tp
+                )
+                
+                if is_entry_order:
+                    symbol_side_entry_orders.append(order)
+        
+        # Limit to max 2 pending entry orders per symbol/side to prevent spam
+        if len(symbol_side_entry_orders) >= 2:
+            logger.debug(f"⚠️  Too many pending {side} entry orders for {symbol} ({len(symbol_side_entry_orders)}) - skipping")
+            return
 
         # Remove stale cached order id if it exists but no matching order
         if symbol in self.breakout_active_orders:
@@ -1527,6 +1774,9 @@ class OvernightRangeStrategy(BaseStrategy):
             f"min={self.breakout_min_proximity_points} pts, interval={self.breakout_monitor_interval}s)"
         )
 
+        # Cache open orders to reduce API calls (refresh every 30 seconds)
+        orders_cache = {"orders": [], "timestamp": None, "ttl": 30}
+        
         while self.is_trading:
             try:
                 if not self.breakout_levels:
@@ -1545,8 +1795,16 @@ class OvernightRangeStrategy(BaseStrategy):
                     await asyncio.sleep(min(self.breakout_monitor_interval, 60))  # Check at least once per minute
                     continue
 
-                open_orders = await self.trading_bot.get_open_orders()
-                orders_list = open_orders if isinstance(open_orders, list) else []
+                # Use cached orders if available, otherwise fetch fresh
+                cache_age = (datetime.now() - orders_cache["timestamp"]).total_seconds() if orders_cache["timestamp"] else float('inf')
+                if cache_age >= orders_cache["ttl"]:
+                    open_orders = await self.trading_bot.get_open_orders()
+                    orders_list = open_orders if isinstance(open_orders, list) else []
+                    orders_cache["orders"] = orders_list
+                    orders_cache["timestamp"] = datetime.now()
+                else:
+                    orders_list = orders_cache["orders"]
+                
                 orders_by_symbol = self._group_orders_by_symbol(orders_list)
 
                 for symbol, templates in self.breakout_levels.items():
@@ -1997,6 +2255,56 @@ class OvernightRangeStrategy(BaseStrategy):
         if self.breakout_monitor_enabled:
             self._breakout_monitor_task = asyncio.create_task(self.monitor_breakout_levels())
 
+        # Print comprehensive initial configuration to terminal
+        print("\n" + "="*80)
+        print("🎯 OVERNIGHT RANGE STRATEGY - INITIAL CONFIGURATION")
+        print("="*80)
+        print(f"📊 Symbols: {', '.join(trade_symbols)}")
+        print(f"⏰ Session Time: {self.overnight_start} - {self.overnight_end} {self.timezone}")
+        print(f"🚪 Market Open: {self.market_open_time} {self.timezone}")
+        print(f"📈 ATR Period: {self.atr_period} bars ({self.atr_timeframe})")
+        print(f"🛑 Stop Loss: {self.stop_atr_multiplier}x ATR")
+        print(f"🎯 Take Profit: {self.tp_atr_multiplier}x ATR")
+        print(f"📦 Position Size: {self.default_quantity} contract(s) per order")
+        print(f"🔢 Max Quantity per Instrument: {self.max_quantity_per_instrument} contracts")
+        print(f"💰 Breakeven: {'ENABLED' if self.breakeven_enabled else 'DISABLED'} (+{self.breakeven_profit_points} pts)")
+        print(f"📏 Range Break Offset: {self.range_break_offset} points")
+        print(f"⚙️  Mode: CONTINUOUS (monitors price and places orders when within threshold)")
+        print(f"📊 Breakout Threshold: {self.breakout_proximity_percent}% (min {self.breakout_min_proximity_points} pts)")
+        print(f"⏱️  Monitor Interval: {self.breakout_monitor_interval}s")
+        
+        # Print calculated breakout levels for each symbol
+        print("\n📊 CALCULATED BREAKOUT LEVELS:")
+        print("-"*80)
+        for symbol in trade_symbols:
+            if symbol in self.breakout_levels:
+                long_order = self.breakout_levels[symbol].get("BUY")
+                short_order = self.breakout_levels[symbol].get("SELL")
+                if long_order and short_order:
+                    range_data = long_order.range_data
+                    atr_data = long_order.atr_data
+                    # Calculate zone midpoints for display
+                    upper_zone_midpoint = (atr_data.day_bull_price + atr_data.day_bull_price1) / 2.0
+                    lower_zone_midpoint = (atr_data.day_bear_price + atr_data.day_bear_price1) / 2.0
+                    
+                    print(f"\n{symbol}:")
+                    print(f"  📊 Range: High={range_data.high:.2f}, Low={range_data.low:.2f}, Size={range_data.range_size:.2f} pts")
+                    print(f"  📈 ATR: Current={atr_data.current_atr:.2f}, Daily={atr_data.daily_atr:.2f}")
+                    print(f"  🎯 Market Open Price: {atr_data.market_open_price:.2f}")
+                    print(f"  📍 Daily ATR Zones:")
+                    print(f"     🟢 Upper Zone: [{atr_data.day_bull_price:.2f}, {atr_data.day_bull_price1:.2f}] (midpoint: {upper_zone_midpoint:.2f})")
+                    print(f"     🔴 Lower Zone: [{atr_data.day_bear_price1:.2f}, {atr_data.day_bear_price:.2f}] (midpoint: {lower_zone_midpoint:.2f})")
+                    print(f"  🟢 LONG:  Entry={long_order.entry_price:.2f}, SL={long_order.stop_loss:.2f}, TP={long_order.take_profit:.2f}")
+                    print(f"           Risk={long_order.entry_price - long_order.stop_loss:.2f} pts, Reward={long_order.take_profit - long_order.entry_price:.2f} pts")
+                    print(f"  🔴 SHORT: Entry={short_order.entry_price:.2f}, SL={short_order.stop_loss:.2f}, TP={short_order.take_profit:.2f}")
+                    print(f"           Risk={short_order.stop_loss - short_order.entry_price:.2f} pts, Reward={short_order.entry_price - short_order.take_profit:.2f} pts")
+                else:
+                    print(f"\n{symbol}: ⚠️  Breakout levels not calculated")
+            else:
+                print(f"\n{symbol}: ⚠️  No breakout levels available")
+        
+        print("\n" + "="*80 + "\n")
+        
         logger.info("🚀 Overnight Range Strategy started!")
         logger.info(f"   Symbols: {', '.join(trade_symbols)}")
         logger.info(f"   Overnight: {self.overnight_start} - {self.overnight_end} {self.timezone}")

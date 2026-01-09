@@ -823,7 +823,7 @@ class TopStepXTradingBot:
                             'commission': float(data.get('commission', 0)),
                             'fee': float(data.get('fee', 0))
                         }
-                        self.account_tracker.update_fill(fill_data, account_id=account_id)
+                        self.account_tracker.update_from_fill(account_id, fill_data)
                         logger.debug(f"✅ Updated AccountTracker with trade PnL: ${fill_data['pnl']:.2f}")
                     except Exception as e:
                         logger.debug(f"Could not update AccountTracker with trade: {e}")
@@ -3601,6 +3601,324 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.error(f"Failed to fetch order history: {str(e)}")
             return []
+    
+    async def get_today_stats(self, account_id: str = None) -> Dict:
+        """
+        Get today's trading statistics from TopStepX Statistics API.
+        
+        This provides authoritative realized P&L and trade statistics directly from TopStepX.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            
+        Returns:
+            Dict: Today's statistics including totalPnL, totalTrades, winningTrades, etc.
+        """
+        try:
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            if not target_account:
+                logger.error("No account selected for today stats")
+                return {}
+            
+            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
+            endpoints_to_try = [
+                "/Statistics/todaystats",  # Try without /api/ first (matches user's doc format)
+                "/api/Statistics/todaystats"  # Fallback to /api/ prefix
+            ]
+            
+            response = None
+            last_error = None
+            for endpoint_path in endpoints_to_try:
+                try:
+                    response = self._make_curl_request(
+                        method="POST",
+                        endpoint=endpoint_path,
+                        data={"tradingAccountId": int(target_account)},
+                        suppress_errors=True
+                    )
+                    # If successful (no error key), break
+                    if "error" not in response:
+                        break
+                    last_error = response.get('error', '')
+                    # If 404, try next endpoint; otherwise return error
+                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    if '404' not in last_error and 'Not Found' not in last_error:
+                        break
+                    continue
+            
+            # Check for errors
+            if response and "error" in response:
+                error_msg = str(response.get('error', ''))
+                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
+                logger.debug(f"Tried endpoints: {endpoints_to_try}")
+                return {}
+            elif not response:
+                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
+                return {}
+            
+            return response if isinstance(response, dict) else {}
+        except Exception as e:
+            # Suppress 404 errors - they're expected for practice accounts
+            error_str = str(e)
+            if '404' not in error_str and 'Not Found' not in error_str:
+                logger.debug(f"Error fetching today stats: {e}")
+            return {}
+    
+    async def get_trade_statistics(self, account_id: str = None, 
+                                   start_date: str = None, end_date: str = None) -> Dict:
+        """
+        Get trade statistics for a date range from TopStepX Statistics API.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            start_date: Start date in ISO format (defaults to today)
+            end_date: End date in ISO format (defaults to today)
+            
+        Returns:
+            Dict: Statistics including totalPnL, totalTrades, winningTrades, losingTrades, winRate, etc.
+        """
+        try:
+            from datetime import datetime, timezone
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            if not target_account:
+                logger.error("No account selected for trade statistics")
+                return {}
+            
+            # Default to today if not provided
+            if not start_date:
+                start_date = datetime.now(timezone.utc).isoformat()
+            if not end_date:
+                end_date = datetime.now(timezone.utc).isoformat()
+            
+            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
+            endpoints_to_try = [
+                "/Statistics/daystats",  # Try without /api/ first (matches user's doc format)
+                "/api/Statistics/daystats"  # Fallback to /api/ prefix
+            ]
+            
+            response = None
+            last_error = None
+            for endpoint_path in endpoints_to_try:
+                try:
+                    response = self._make_curl_request(
+                        method="POST",
+                        endpoint=endpoint_path,
+                        data={
+                            "tradingAccountId": int(target_account),
+                            "startTradeDay": start_date,
+                            "endTradeDay": end_date
+                        },
+                        suppress_errors=True
+                    )
+                    # If successful (no error key), break
+                    if "error" not in response:
+                        break
+                    last_error = response.get('error', '')
+                    # If 404, try next endpoint; otherwise return error
+                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    if '404' not in last_error and 'Not Found' not in last_error:
+                        break
+                    continue
+            
+            # Check for errors
+            if response and "error" in response:
+                error_msg = str(response.get('error', ''))
+                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
+                logger.debug(f"Tried endpoints: {endpoints_to_try}")
+                return {}
+            elif not response:
+                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
+                return {}
+            
+            # API returns a list, get the first item or aggregate if multiple days
+            if isinstance(response, list):
+                if len(response) == 1:
+                    return response[0]
+                elif len(response) > 1:
+                    # Aggregate multiple days
+                    total_pnl = sum(d.get('totalPnL', 0) for d in response)
+                    total_trades = sum(d.get('totalTrades', 0) for d in response)
+                    winning_trades = sum(d.get('winningTrades', 0) for d in response)
+                    losing_trades = sum(d.get('losingTrades', 0) for d in response)
+                    total_fees = sum(d.get('totalFees', 0) for d in response)
+                    
+                    return {
+                        'totalPnL': total_pnl,
+                        'totalTrades': total_trades,
+                        'winningTrades': winning_trades,
+                        'losingTrades': losing_trades,
+                        'winRate': winning_trades / total_trades if total_trades > 0 else 0,
+                        'totalFees': total_fees
+                    }
+                else:
+                    return {}
+            
+            return response if isinstance(response, dict) else {}
+        except Exception as e:
+            logger.debug(f"Error fetching trade statistics: {e}")
+            return {}
+    
+    async def get_trades_from_api(self, account_id: str = None,
+                                  start_date: str = None, end_date: str = None) -> List[Dict]:
+        """
+        Get individual trades from TopStepX Statistics API.
+        
+        This provides authoritative trade data with realized P&L directly from TopStepX.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            start_date: Start date in ISO format (defaults to today)
+            end_date: End date in ISO format (defaults to today)
+            
+        Returns:
+            List[Dict]: List of trades with profitAndLoss, entryPrice, exitPrice, etc.
+        """
+        try:
+            from datetime import datetime, timezone
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            if not target_account:
+                logger.error("No account selected for trades")
+                return []
+            
+            # Default to today if not provided
+            if not start_date:
+                start_date = datetime.now(timezone.utc).isoformat()
+            if not end_date:
+                end_date = datetime.now(timezone.utc).isoformat()
+            
+            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
+            endpoints_to_try = [
+                "/Statistics/trades",  # Try without /api/ first (matches user's doc format)
+                "/api/Statistics/trades"  # Fallback to /api/ prefix
+            ]
+            
+            response = None
+            last_error = None
+            for endpoint_path in endpoints_to_try:
+                try:
+                    response = self._make_curl_request(
+                        method="POST",
+                        endpoint=endpoint_path,
+                        data={
+                            "tradingAccountId": int(target_account),
+                            "startTradeDay": start_date,
+                            "endTradeDay": end_date
+                        },
+                        suppress_errors=True
+                    )
+                    # If successful (no error key), break
+                    if "error" not in response:
+                        break
+                    last_error = response.get('error', '')
+                    # If 404, try next endpoint; otherwise return error
+                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    if '404' not in last_error and 'Not Found' not in last_error:
+                        break
+                    continue
+            
+            # Check for errors
+            if response and "error" in response:
+                error_msg = str(response.get('error', ''))
+                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
+                logger.debug(f"Tried endpoints: {endpoints_to_try}")
+                return []
+            elif not response:
+                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
+                return []
+            
+            return response if isinstance(response, list) else []
+        except Exception as e:
+            # Suppress 404 errors - they're expected for practice accounts
+            error_str = str(e)
+            if '404' not in error_str and 'Not Found' not in error_str:
+                logger.debug(f"Error fetching trades from API: {e}")
+            return []
+    
+    async def get_profit_factor(self, account_id: str = None,
+                               start_date: str = None, end_date: str = None) -> Dict:
+        """
+        Get profit factor from TopStepX Statistics API.
+        
+        Args:
+            account_id: Account ID (uses selected account if not provided)
+            start_date: Start date in ISO format (defaults to today)
+            end_date: End date in ISO format (defaults to today)
+            
+        Returns:
+            Dict: {totalProfit, totalLoss} for calculating profit factor
+        """
+        try:
+            from datetime import datetime, timezone
+            target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
+            if not target_account:
+                logger.error("No account selected for profit factor")
+                return {'totalProfit': 0, 'totalLoss': 0}
+            
+            # Default to today if not provided
+            if not start_date:
+                start_date = datetime.now(timezone.utc).isoformat()
+            if not end_date:
+                end_date = datetime.now(timezone.utc).isoformat()
+            
+            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
+            endpoints_to_try = [
+                "/Statistics/profitFactor",  # Try without /api/ first (matches user's doc format)
+                "/api/Statistics/profitFactor"  # Fallback to /api/ prefix
+            ]
+            
+            response = None
+            last_error = None
+            for endpoint_path in endpoints_to_try:
+                try:
+                    response = self._make_curl_request(
+                        method="POST",
+                        endpoint=endpoint_path,
+                        data={
+                            "tradingAccountId": int(target_account),
+                            "startTradeDay": start_date,
+                            "endTradeDay": end_date
+                        },
+                        suppress_errors=True
+                    )
+                    # If successful (no error key), break
+                    if "error" not in response:
+                        break
+                    last_error = response.get('error', '')
+                    # If 404, try next endpoint; otherwise return error
+                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    if '404' not in last_error and 'Not Found' not in last_error:
+                        break
+                    continue
+            
+            # Check for errors
+            if response and "error" in response:
+                error_msg = str(response.get('error', ''))
+                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
+                logger.debug(f"Tried endpoints: {endpoints_to_try}")
+                return {'totalProfit': 0, 'totalLoss': 0}
+            elif not response:
+                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
+                return {'totalProfit': 0, 'totalLoss': 0}
+            
+            return response if isinstance(response, dict) else {'totalProfit': 0, 'totalLoss': 0}
+        except Exception as e:
+            # Suppress 404 errors - they're expected for practice accounts
+            error_str = str(e)
+            if '404' not in error_str and 'Not Found' not in error_str:
+                logger.debug(f"Error fetching profit factor: {e}")
+            return {'totalProfit': 0, 'totalLoss': 0}
     
     # ============================================================================
     # NATIVE TOPSTEPX API METHODS - BRACKET ORDER SYSTEM

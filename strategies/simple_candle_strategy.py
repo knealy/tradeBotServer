@@ -43,8 +43,8 @@ class SimpleCandleStrategy(BaseStrategy):
                 max_daily_trades=30,  # Allow many trades for testing
                 preferred_conditions=[],
                 avoid_conditions=[],
-                trading_start_time="09:30",
-                trading_end_time="16:00",
+                trading_start_time="16:30",
+                trading_end_time="23:00",
                 no_trade_start="",
                 no_trade_end="",
                 respect_dll=True,
