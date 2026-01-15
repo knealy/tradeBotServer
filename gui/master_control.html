@@ -1704,8 +1704,12 @@ Speed Trading Shortcuts:
                 const pnl = parseFloat(trade.pnl || 0);
                 const points = parseFloat(trade.points || 0);
                 const cumulativePnl = parseFloat(trade.cumulative_pnl || 0);
-                const entryTime = trade.entry_time ? new Date(trade.entry_time).toLocaleString() : 'N/A';
-                const exitTime = trade.exit_time ? new Date(trade.exit_time).toLocaleString() : 'N/A';
+                const entryTimeValue = trade.entry_time || trade.entryTime || trade.timestamp || trade.creationTimestamp;
+                const exitTimeValue = trade.exit_time || trade.exitTime || trade.timestamp || trade.creationTimestamp;
+                const entryTime = entryTimeValue ? new Date(entryTimeValue).toLocaleString() : 'N/A';
+                const exitTime = exitTimeValue ? new Date(exitTimeValue).toLocaleString() : 'N/A';
+                const maxRu = trade.max_ru !== undefined ? trade.max_ru : trade.maxRu;
+                const maxDd = trade.max_dd !== undefined ? trade.max_dd : trade.maxDd;
                 const side = (trade.side || '').toUpperCase();
                 const sideColor = side === 'LONG' || side === 'BUY' ? 'var(--positive-color)' : 'var(--negative-color)';
                 
@@ -1719,8 +1723,8 @@ Speed Trading Shortcuts:
                         <td style="padding: 6px 4px; text-align: right; color: var(--text-primary);">${parseFloat(trade.exit_price || 0).toFixed(2)}</td>
                         <td style="padding: 6px 4px; text-align: right; color: ${points >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${points >= 0 ? '+' : ''}${points.toFixed(2)}</td>
                         <td style="padding: 6px 4px; text-align: right; color: ${pnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</td>
-                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${trade.max_ru ? '$' + parseFloat(trade.max_ru).toFixed(2) : '—'}</td>
-                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${trade.max_dd ? '$' + parseFloat(trade.max_dd).toFixed(2) : '—'}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${maxRu !== null && maxRu !== undefined ? '$' + parseFloat(maxRu).toFixed(2) : '—'}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${maxDd !== null && maxDd !== undefined ? '$' + parseFloat(maxDd).toFixed(2) : '—'}</td>
                         <td style="padding: 6px 4px; text-align: right; color: ${cumulativePnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${cumulativePnl >= 0 ? '+' : ''}$${Math.abs(cumulativePnl).toFixed(2)}</td>
                     </tr>
                 `;
@@ -2006,8 +2010,8 @@ Speed Trading Shortcuts:
             setInterval(loadPerformanceMetrics, 30000);
             setInterval(loadPnlHistory, 30000);
             setInterval(loadTradesTable, 30000); // Refresh trades every 30 seconds
-            // Refresh risk metrics more frequently (every 5 seconds)
-            setInterval(loadRiskMetrics, 5000);
+            // Refresh risk metrics (every 15 seconds)
+            setInterval(loadRiskMetrics, 15000);
         });
         
         // Toggle panel collapse/expand

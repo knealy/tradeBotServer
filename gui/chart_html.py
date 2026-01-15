@@ -74,7 +74,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     # Cache for account state to reduce slow API calls
     _account_state_cache = {}
     _account_state_cache_time = {}
-    _account_state_cache_ttl = 10000  # 10 seconds cache TTL
+    _account_state_cache_ttl = 10.0  # seconds
     
     async def handle_account_state(request):
         """Get account state - balance, P&L, compliance - fast path via AccountTracker."""
@@ -89,29 +89,119 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             if not account_id:
                 return web.json_response({'error': 'No account selected'}, status=200)
 
+            import time
+            cache_key = str(account_id)
+            cached = _account_state_cache.get(cache_key)
+            cached_ts = _account_state_cache_time.get(cache_key, 0.0)
+            now = time.monotonic()
+            if cached and (now - cached_ts) < _account_state_cache_ttl:
+                response = web.json_response(cached)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+
             # FAST PATH: Try AccountTracker first (it's memory-only, no API calls)
+            tracker_state = None
             if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
-                state = trading_bot.account_tracker.get_state(account_id=str(account_id))
-                if state:
-                    # Success - return tracker state
-                    response = web.json_response(state)
-                    response.headers['Access-Control-Allow-Origin'] = '*'
-                    return response
+                tracker_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
 
             # Basic info from bot if tracker not available
+            account_name = None
+            account_type = None
             balance = 0.0
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
                 if isinstance(trading_bot.selected_account, dict):
-                    balance = float(trading_bot.selected_account.get('balance', 0.0))
-            
+                    account_name = trading_bot.selected_account.get('name') or trading_bot.selected_account.get('accountName')
+                    account_type = trading_bot.selected_account.get('accountType') or trading_bot.selected_account.get('type')
+                    balance = float(trading_bot.selected_account.get('balance', trading_bot.selected_account.get('currentBalance', 0.0)))
+
+            starting_balance = float(tracker_state.get('starting_balance', 0.0) if tracker_state else 0.0)
+            highest_eod_balance = float(tracker_state.get('highest_eod_balance', 0.0) if tracker_state else 0.0)
+            realized_pnl = float(tracker_state.get('realized_pnl', 0.0) if tracker_state else 0.0)
+            unrealized_pnl = float(tracker_state.get('unrealized_pnl', 0.0) if tracker_state else 0.0)
+            total_pnl = float(tracker_state.get('total_pnl', realized_pnl + unrealized_pnl) if tracker_state else (realized_pnl + unrealized_pnl))
+            current_balance = float(tracker_state.get('current_balance', 0.0) if tracker_state else 0.0)
+            daily_loss_limit = float(tracker_state.get('daily_loss_limit', 0.0) if tracker_state else 0.0)
+            maximum_loss_limit = float(tracker_state.get('maximum_loss_limit', 0.0) if tracker_state else 0.0)
+
+            if not account_name and tracker_state:
+                account_name = tracker_state.get('account_name')
+            if not account_type and tracker_state:
+                account_type = tracker_state.get('account_type')
+
+            # If tracker hasn't been populated with realized PnL yet, derive it from trades stats
+            if (realized_pnl == 0.0 or total_pnl == 0.0) and account_id:
+                try:
+                    if not hasattr(handle_account_state, "_trade_stats_cache"):
+                        handle_account_state._trade_stats_cache = {}
+                    if not hasattr(handle_account_state, "_trade_stats_cache_time"):
+                        handle_account_state._trade_stats_cache_time = {}
+                    stats_cached = handle_account_state._trade_stats_cache.get(cache_key)
+                    stats_cached_ts = handle_account_state._trade_stats_cache_time.get(cache_key, 0.0)
+                    if not stats_cached or (now - stats_cached_ts) > 30.0:
+                        from core.cli_command_parser import CLICommandParser
+                        parser = CLICommandParser(trading_bot)
+                        trades_result = await parser._handle_trades([])
+                        stats = trades_result.get('statistics', {}) if isinstance(trades_result, dict) else {}
+                        trades_list = trades_result.get('trades', []) if isinstance(trades_result, dict) else []
+                        total_pnl_stat = stats.get('total_pnl', None)
+                        if total_pnl_stat is None:
+                            total_pnl_stat = sum(float(t.get('pnl', 0) or 0) for t in trades_list)
+                        stats_cached = {
+                            'total_pnl': float(total_pnl_stat or 0.0),
+                            'trades_count': len(trades_list)
+                        }
+                        handle_account_state._trade_stats_cache[cache_key] = stats_cached
+                        handle_account_state._trade_stats_cache_time[cache_key] = now
+                    if stats_cached:
+                        realized_pnl = float(stats_cached.get('total_pnl', realized_pnl))
+                except Exception as e:
+                    logger.debug(f"Could not derive realized PnL from trades: {e}")
+
+            # If unrealized PnL missing, compute from positions
+            if unrealized_pnl == 0.0:
+                try:
+                    pos_resp = await handle_get_positions(None)
+                    pos_data = {}
+                    if hasattr(pos_resp, 'text') and pos_resp.text:
+                        pos_data = json.loads(pos_resp.text)
+                    elif hasattr(pos_resp, 'body') and pos_resp.body:
+                        pos_data = json.loads(pos_resp.body.decode('utf-8'))
+                    positions = pos_data.get('positions', [])
+                    if positions:
+                        unrealized_pnl = sum(
+                            float(p.get('unrealized_pnl', p.get('unrealizedPnL', p.get('unrealizedPnl', 0))) or 0)
+                            for p in positions
+                        )
+                except Exception as e:
+                    logger.debug(f"Could not compute unrealized PnL from positions: {e}")
+
+            total_pnl = realized_pnl + unrealized_pnl
+            if current_balance == 0.0 and starting_balance > 0:
+                current_balance = starting_balance + total_pnl
+            if current_balance == 0.0 and balance:
+                current_balance = balance
+            if starting_balance == 0.0 and current_balance:
+                starting_balance = current_balance - total_pnl
+            if highest_eod_balance == 0.0 and starting_balance:
+                highest_eod_balance = starting_balance
+
             data = {
                 'account_id': account_id,
-                'balance': balance,
-                'unrealized_pnl': 0.0,
-                'realized_pnl': 0.0,
-                'total_pnl': 0.0
+                'account_name': account_name or 'Unknown',
+                'account_type': account_type or 'unknown',
+                'balance': current_balance,
+                'starting_balance': starting_balance,
+                'highest_eod_balance': highest_eod_balance,
+                'realized_pnl': realized_pnl,
+                'unrealized_pnl': unrealized_pnl,
+                'total_pnl': total_pnl,
+                'daily_loss_limit': daily_loss_limit,
+                'maximum_loss_limit': maximum_loss_limit
             }
             
+            _account_state_cache[cache_key] = data
+            _account_state_cache_time[cache_key] = now
+
             response = web.json_response(data)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -1346,6 +1436,22 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     logger.debug(f"Found {len(process_states)} strategy executor processes")
                     for process in process_states:
                         if process.get('status') == 'running':
+                            # Ignore stale heartbeats to avoid false positives
+                            try:
+                                from datetime import datetime, timezone
+                                heartbeat_ttl_seconds = 90
+                                last_heartbeat = process.get('last_heartbeat')
+                                last_dt = None
+                                if isinstance(last_heartbeat, datetime):
+                                    last_dt = last_heartbeat
+                                elif isinstance(last_heartbeat, str) and last_heartbeat:
+                                    last_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+                                if last_dt:
+                                    last_dt = last_dt if last_dt.tzinfo else last_dt.replace(tzinfo=timezone.utc)
+                                    if (datetime.now(timezone.utc) - last_dt).total_seconds() > heartbeat_ttl_seconds:
+                                        continue
+                            except Exception:
+                                pass
                             metadata = process.get('metadata', {})
                             if isinstance(metadata, str):
                                 import json
@@ -2809,6 +2915,18 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     compliance = trading_bot.account_tracker.check_compliance(account_id=str(account_id))
                 except Exception as e:
                     logger.debug(f"Error getting risk metrics: {e}")
+
+            # Prefer the unified account state (includes derived PnL)
+            account_state_resp = None
+            account_state_data = {}
+            try:
+                account_state_resp = await handle_account_state(None)
+                if hasattr(account_state_resp, 'text') and account_state_resp.text:
+                    account_state_data = json.loads(account_state_resp.text)
+                elif hasattr(account_state_resp, 'body') and account_state_resp.body:
+                    account_state_data = json.loads(account_state_resp.body.decode('utf-8'))
+            except Exception as e:
+                logger.debug(f"Error getting unified account state for risk metrics: {e}")
             
             # Get positions for exposure calculation
             positions = []
@@ -2830,21 +2948,47 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 position_exposure[symbol] += qty
             
             # Calculate current drawdown
-            current_balance = float(account_state.get('current_balance', 0) or account_state.get('balance', 0))
-            starting_balance = float(account_state.get('starting_balance', current_balance))
-            highest_balance = float(account_state.get('highest_balance', current_balance))
+            current_balance = float(
+                account_state_data.get('balance', 0)
+                or account_state.get('current_balance', 0)
+                or account_state.get('balance', 0)
+            )
+            starting_balance = float(
+                account_state_data.get('starting_balance', 0)
+                or account_state.get('starting_balance', current_balance)
+                or current_balance
+            )
+            highest_balance = float(
+                account_state_data.get('highest_eod_balance', 0)
+                or account_state.get('highest_eod_balance', 0)
+                or account_state.get('highest_balance', current_balance)
+                or starting_balance
+            )
             current_drawdown = current_balance - highest_balance if highest_balance > 0 else 0
             max_drawdown = float(account_state.get('max_drawdown', 0))
             
             # Calculate percentages
-            dll_limit = float(compliance.get('dll_limit', 0) or 0)
-            dll_used = float(compliance.get('dll_used', 0) or 0)
-            dll_remaining = float(compliance.get('dll_remaining', dll_limit) or 0)
+            dll_limit = float(
+                compliance.get('dll_limit', 0)
+                or account_state_data.get('daily_loss_limit', 0)
+                or 0
+            )
+            total_pnl = float(
+                account_state_data.get('total_pnl', 0)
+                or (account_state_data.get('realized_pnl', 0) + account_state_data.get('unrealized_pnl', 0))
+            )
+            dll_used = abs(min(0.0, total_pnl))
+            dll_remaining = max(0.0, dll_limit + total_pnl) if dll_limit > 0 else 0.0
             dll_percentage = (dll_used / dll_limit * 100) if dll_limit > 0 else 0
             
-            mll_limit = float(compliance.get('mll_limit', 0) or 0)
-            mll_used = float(compliance.get('mll_used', 0) or 0)
-            mll_remaining = float(compliance.get('mll_remaining', mll_limit) or 0)
+            mll_limit = float(
+                compliance.get('mll_limit', 0)
+                or account_state_data.get('maximum_loss_limit', 0)
+                or 0
+            )
+            trailing_loss = max(0.0, highest_balance - current_balance) if highest_balance > 0 else 0.0
+            mll_used = trailing_loss
+            mll_remaining = max(0.0, mll_limit - trailing_loss) if mll_limit > 0 else 0.0
             mll_percentage = (mll_used / mll_limit * 100) if mll_limit > 0 else 0
             
             # Risk per trade (average)
@@ -2862,12 +3006,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 'dll_used': dll_used,
                 'dll_remaining': dll_remaining,
                 'dll_percentage': min(100, max(0, dll_percentage)),
-                'dll_violated': compliance.get('dll_violated', False),
+                'dll_violated': total_pnl <= -dll_limit if dll_limit > 0 else False,
                 'mll_limit': mll_limit,
                 'mll_used': mll_used,
                 'mll_remaining': mll_remaining,
                 'mll_percentage': min(100, max(0, mll_percentage)),
-                'mll_violated': compliance.get('mll_violated', False),
+                'mll_violated': (current_balance <= (highest_balance - mll_limit)) if mll_limit > 0 and highest_balance > 0 else False,
                 'current_drawdown': current_drawdown,
                 'max_drawdown': max_drawdown,
                 'current_balance': current_balance,
@@ -2981,17 +3125,35 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             sorted_trades = sorted(trades, key=lambda x: x.get('exit_time', '') or x.get('entry_time', ''))
             
             for idx, trade in enumerate(sorted_trades):
+                # Normalize commonly used fields across API variants
+                entry_time = trade.get('entry_time') or trade.get('entryTime') or trade.get('timestamp') or trade.get('creationTimestamp')
+                exit_time = trade.get('exit_time') or trade.get('exitTime') or trade.get('timestamp') or trade.get('creationTimestamp')
+                entry_price = trade.get('entry_price') or trade.get('entryPrice') or trade.get('price') or trade.get('avgPrice')
+                exit_price = trade.get('exit_price') or trade.get('exitPrice') or trade.get('price') or trade.get('avgPrice')
+                if entry_price is None:
+                    entry_price = 0
+                if exit_price is None:
+                    exit_price = entry_price
+
                 # Calculate points
-                points = calculate_trade_points(trade)
+                trade_with_prices = dict(trade)
+                trade_with_prices['entry_price'] = entry_price
+                trade_with_prices['exit_price'] = exit_price
+                points = calculate_trade_points(trade_with_prices)
                 
                 # Calculate cumulative P&L
                 pnl = float(trade.get('pnl', 0) or 0)
                 cumulative_pnl += pnl
                 
-                # For Max RU/DD, we'd need intra-trade price data which isn't available
-                # from order history alone. Set to None for now (can be enhanced later with tick data)
-                max_ru = None  # Maximum adverse excursion (worst intra-trade drawdown)
-                max_dd = None  # Maximum favorable excursion (best intra-trade profit)
+                # Max RU/DD: use available API fields if present
+                max_ru = (
+                    trade.get('max_ru') or trade.get('maxRu') or trade.get('max_runup') or
+                    trade.get('maxRunup') or trade.get('maxRunningUnrealized') or trade.get('max_unrealized')
+                )
+                max_dd = (
+                    trade.get('max_dd') or trade.get('maxDd') or trade.get('max_drawdown') or
+                    trade.get('maxDrawdown') or trade.get('maxAdverseExcursion')
+                )
                 
                 # Convert datetime objects to ISO format strings for JSON serialization
                 serialized_trade = {}
@@ -3000,14 +3162,20 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         serialized_trade[key] = value.isoformat()
                     else:
                         serialized_trade[key] = value
+
+                # Ensure normalized fields are present for UI rendering
+                serialized_trade['entry_time'] = entry_time or serialized_trade.get('entry_time') or ''
+                serialized_trade['exit_time'] = exit_time or serialized_trade.get('exit_time') or ''
+                serialized_trade['entry_price'] = float(entry_price) if entry_price is not None else 0.0
+                serialized_trade['exit_price'] = float(exit_price) if exit_price is not None else 0.0
                 
                 # Enhanced trade object
                 enhanced_trade = {
                     **serialized_trade,  # Include all original fields (with datetime converted to strings)
                     'trade_number': len(sorted_trades) - idx,  # Reverse order (newest first)
                     'points': round(points, 2),
-                    'max_ru': max_ru,
-                    'max_dd': max_dd,
+                    'max_ru': float(max_ru) if max_ru is not None else None,
+                    'max_dd': float(max_dd) if max_dd is not None else None,
                     'cumulative_pnl': round(cumulative_pnl, 2),
                     'cumulative_equity': round(starting_balance + cumulative_pnl, 2)
                 }
