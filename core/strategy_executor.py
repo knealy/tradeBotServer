@@ -140,6 +140,14 @@ class StrategyExecutor:
             logger.error("❌ Authentication failed")
             return
         
+        # Start event bus for real-time event-driven updates
+        if hasattr(self.trading_bot, 'event_bus') and self.trading_bot.event_bus:
+            try:
+                await self.trading_bot.event_bus.start()
+                logger.info("📡 Event bus started for strategy executor")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not start event bus: {e}")
+        
         # Switch account if provided
         if account_id:
             success = await self.trading_bot.switch_account(str(account_id))
@@ -190,6 +198,14 @@ class StrategyExecutor:
         except KeyboardInterrupt:
             logger.info("🛑 Stopping strategy executor...")
         finally:
+            # Stop event bus
+            if hasattr(self.trading_bot, 'event_bus') and self.trading_bot.event_bus:
+                try:
+                    await self.trading_bot.event_bus.stop()
+                    logger.info("📡 Event bus stopped")
+                except Exception as e:
+                    logger.debug(f"Could not stop event bus: {e}")
+            
             # Stop all strategies
             for strategy_name in list(self.running_strategies.keys()):
                 await self.stop_strategy(strategy_name)
