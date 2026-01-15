@@ -7,8 +7,8 @@ ensuring identical logic between backtest and production.
 
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime, timezone
 import pandas as pd
 
 from .engine import BacktestEngine
@@ -66,12 +66,17 @@ class StrategyReplayEngine:
         # Track current bar data for strategy
         self._current_bars: List[Dict] = []
         self._current_symbol: Optional[str] = None
+        self._replay_timeframe: Optional[str] = None
+        # Cache passthrough historical requests that are stable within a trading day (e.g., 1d)
+        # Keyed by (symbol, timeframe, limit, start_iso, end_day_iso)
+        self._passthrough_cache: Dict[Tuple[str, str, int, str, str], List[Dict]] = {}
     
     async def replay(
         self,
         symbol: str,
         bars: List[Dict],
-        tick_size: float = 0.25
+        tick_size: float = 0.25,
+        replay_timeframe: Optional[str] = None
     ) -> BacktestResult:
         """
         Replay strategy on historical bars.
@@ -108,6 +113,7 @@ class StrategyReplayEngine:
         
         self._current_symbol = symbol
         self._current_bars = bars
+        self._replay_timeframe = replay_timeframe
         
         # Convert bars to DataFrame for BacktestEngine
         df = self._bars_to_dataframe(bars)
@@ -213,6 +219,13 @@ class StrategyReplayEngine:
                     # Update mock trading bot's bars to current set
                     if hasattr(self.trading_bot, 'bars'):
                         self.trading_bot.bars = current_bars_for_strategy
+                    
+                    # Store current bar timestamp so strategy can use it for date determination
+                    # This is critical for strategies that need to know the current date in backtest mode
+                    if hasattr(self.trading_bot, '_current_bar_timestamp'):
+                        self.trading_bot._current_bar_timestamp = timestamp
+                    else:
+                        setattr(self.trading_bot, '_current_bar_timestamp', timestamp)
                     
                     # Call strategy analyze (it will use trading_bot.get_historical_data internally)
                     # Also mock get_open_positions / get_market_quote so the strategy behaves like live
@@ -545,9 +558,33 @@ class StrategyReplayEngine:
         original_get_open_positions = getattr(self.trading_bot, "get_open_positions", None)
         original_get_market_quote = getattr(self.trading_bot, "get_market_quote", None)
         
-        # Mock get_historical_data to return only bars up to current point
-        # This is a plain function (not bound method), so no 'self' parameter
-        # Parameter names MUST match the keyword arguments passed by strategies
+        def _parse_dt(value) -> Optional[datetime]:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            if isinstance(value, str):
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            if isinstance(value, (int, float)):
+                # Assume seconds epoch
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            return None
+
+        def _bar_time_utc(bar: Dict) -> Optional[datetime]:
+            return _parse_dt(bar.get("timestamp") or bar.get("time") or bar.get("t"))
+
+        def _current_replay_time_utc() -> Optional[datetime]:
+            ts = getattr(self.trading_bot, "_current_bar_timestamp", None) or self.backtest_engine.current_timestamp
+            dt = _parse_dt(ts)
+            return dt.astimezone(timezone.utc) if dt else None
+
+        # Mock get_historical_data:
+        # - If strategy asks for the replay timeframe, serve from bars_list (no look-ahead).
+        # - For other timeframes (e.g., 1m/5m/1d), delegate to the underlying get_historical_data
+        #   but cap end_time to the current replay bar timestamp to prevent look-ahead.
+        # This is a plain function (not bound method), so no 'self' parameter.
+        # Parameter names MUST match the keyword arguments passed by strategies.
         async def mock_get_historical_data(
             symbol: str,
             timeframe: str = "1m",
@@ -556,14 +593,72 @@ class StrategyReplayEngine:
             end_time: Optional[datetime] = None
         ) -> List[Dict]:
             """Mock that returns historical bars only up to current replay position."""
-            if symbol.upper() == replay_symbol.upper():
-                # Return bars up to current point (last N bars if limit specified)
-                if limit and limit < len(bars_list):
-                    return bars_list[-limit:]
-                return bars_list
-            # If different symbol requested (shouldn't happen in backtest)
-            logger.warning(f"Backtest requested different symbol: {symbol} != {replay_symbol}")
-            return []
+            if symbol.upper() != replay_symbol.upper():
+                # If different symbol requested (shouldn't happen in backtest)
+                logger.warning(f"Backtest requested different symbol: {symbol} != {replay_symbol}")
+                return []
+
+            tf = (timeframe or "1m").lower()
+            replay_tf = (self._replay_timeframe or "").lower()
+            cur_utc = _current_replay_time_utc()
+
+            # Serve replay timeframe directly from bars_list
+            if replay_tf and tf == replay_tf:
+                filtered = []
+                start_utc = start_time.astimezone(timezone.utc) if (start_time and start_time.tzinfo) else start_time
+                end_utc = end_time.astimezone(timezone.utc) if (end_time and end_time.tzinfo) else end_time
+                for b in bars_list:
+                    bt = _bar_time_utc(b)
+                    if not bt:
+                        continue
+                    bt = bt.astimezone(timezone.utc)
+                    if cur_utc and bt > cur_utc:
+                        continue
+                    if start_utc and bt < start_utc:
+                        continue
+                    if end_utc and bt > end_utc:
+                        continue
+                    filtered.append(b)
+                if limit and limit < len(filtered):
+                    return filtered[-limit:]
+                return filtered
+
+            # Delegate other timeframes to underlying data source (adapter / higher-res history)
+            if original_get_historical is None:
+                return []
+
+            # Cap end_time to current replay timestamp to avoid look-ahead
+            effective_end = end_time
+            if effective_end is None and cur_utc is not None:
+                effective_end = cur_utc
+            elif effective_end is not None and cur_utc is not None:
+                eff_end_utc = effective_end.astimezone(timezone.utc) if effective_end.tzinfo else effective_end.replace(tzinfo=timezone.utc)
+                if eff_end_utc > cur_utc:
+                    effective_end = cur_utc
+
+            # Optional caching for daily bars (stable within a trading day)
+            start_iso = (effective_end - (effective_end - effective_end)).isoformat() if False else ""  # placeholder for type checker
+            start_iso = start_time.isoformat() if isinstance(start_time, datetime) else ""
+            end_day_iso = ""
+            if effective_end is not None:
+                end_dt = effective_end.astimezone(timezone.utc) if effective_end.tzinfo else effective_end.replace(tzinfo=timezone.utc)
+                end_day_iso = end_dt.date().isoformat()
+
+            cache_key = (symbol.upper(), tf, int(limit or 0), start_iso, end_day_iso)
+            if tf.endswith("d") and cache_key in self._passthrough_cache:
+                return self._passthrough_cache[cache_key]
+
+            result = await original_get_historical(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                start_time=start_time,
+                end_time=effective_end
+            )
+
+            if tf.endswith("d"):
+                self._passthrough_cache[cache_key] = result or []
+            return result or []
 
         async def mock_get_open_positions(account_id=None):
             """

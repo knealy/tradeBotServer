@@ -301,16 +301,28 @@ export default function Strategies() {
                       const normalizedStatus = (strategy.status || '').toLowerCase()
                       const isRunning = strategy.is_running ?? ['running', 'active', 'started'].includes(normalizedStatus)
                       const isEnabled = strategy.enabled ?? ['running', 'active', 'enabled', 'started'].includes(normalizedStatus)
+                      const startedExternally = (strategy as any).started_externally ?? false
                       const badgeClasses = isRunning
-                        ? 'bg-green-500/20 text-green-400'
+                        ? (startedExternally ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400')
                         : isEnabled
                         ? 'bg-blue-500/20 text-blue-400'
                         : 'bg-slate-600/50 text-slate-400'
-                      const label = isRunning ? 'running' : isEnabled ? 'enabled' : normalizedStatus || 'disabled'
+                      const label = isRunning 
+                        ? (startedExternally ? 'EXTERNAL' : 'running')
+                        : isEnabled 
+                        ? 'enabled' 
+                        : normalizedStatus || 'disabled'
                       return (
-                        <span className={`px-2 py-1 rounded text-xs font-semibold ${badgeClasses}`}>
-                          {label}
-                        </span>
+                        <>
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${badgeClasses}`}>
+                            {label}
+                          </span>
+                          {startedExternally && (
+                            <span className="px-2 py-1 rounded text-xs bg-yellow-500/10 text-yellow-400 border border-yellow-500/30" title="Started by external process">
+                              📡 External
+                            </span>
+                          )}
+                        </>
                       )
                     })()}
                   </div>

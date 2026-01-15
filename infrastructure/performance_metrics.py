@@ -6,6 +6,7 @@ Provides real-time visibility into bot performance and bottlenecks.
 """
 
 import time
+import math
 import logging
 try:
     import psutil
@@ -72,7 +73,11 @@ class PerformanceStats:
         """Calculate average execution time."""
         if self.count == 0:
             return 0.0
-        return self.total_time_ms / self.count
+        result = self.total_time_ms / self.count
+        # Ensure no Infinity/NaN
+        if not math.isfinite(result):
+            return 0.0
+        return result
     
     @property
     def p95_time_ms(self) -> float:
@@ -87,7 +92,11 @@ class PerformanceStats:
         """Record a new execution time."""
         self.count += 1
         self.total_time_ms += duration_ms
-        self.min_time_ms = min(self.min_time_ms, duration_ms)
+        # Handle Infinity in min_time_ms initialization
+        if math.isinf(self.min_time_ms):
+            self.min_time_ms = duration_ms
+        else:
+            self.min_time_ms = min(self.min_time_ms, duration_ms)
         self.max_time_ms = max(self.max_time_ms, duration_ms)
         self.recent_times.append(duration_ms)
         if not success:
@@ -208,21 +217,27 @@ class MetricsTracker:
             reverse=True
         )[:5]
         
+        def safe_format_ms(value: float) -> str:
+            """Format milliseconds, handling Infinity/NaN."""
+            if not math.isfinite(value):
+                return "0.0"
+            return f"{value:.1f}"
+        
         return {
             "total_calls": total_calls,
             "total_errors": total_errors,
             "error_rate": (total_errors / total_calls * 100) if total_calls > 0 else 0.0,
             "slowest_endpoints": [
-                {"endpoint": endpoint, "avg_ms": f"{avg_ms:.1f}"} 
+                {"endpoint": endpoint, "avg_ms": safe_format_ms(avg_ms)} 
                 for endpoint, avg_ms in slowest
             ],
             "endpoints": {
                 endpoint: {
                     "count": stat.count,
-                    "avg_ms": f"{stat.avg_time_ms:.1f}",
-                    "min_ms": f"{stat.min_time_ms:.1f}",
-                    "max_ms": f"{stat.max_time_ms:.1f}",
-                    "p95_ms": f"{stat.p95_time_ms:.1f}",
+                    "avg_ms": safe_format_ms(stat.avg_time_ms),
+                    "min_ms": safe_format_ms(stat.min_time_ms),
+                    "max_ms": safe_format_ms(stat.max_time_ms),
+                    "p95_ms": safe_format_ms(stat.p95_time_ms),
                     "errors": stat.errors,
                     "error_rate": f"{(stat.errors / stat.count * 100) if stat.count > 0 else 0:.1f}%"
                 }

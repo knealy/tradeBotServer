@@ -94,13 +94,14 @@ class AccountTracker:
     4. Persisting state to database (or JSON file as fallback)
     """
     
-    def __init__(self, state_file: str = ".account_state.json", db=None):
+    def __init__(self, state_file: str = ".account_state.json", db=None, load_all_states: bool = False):
         """
         Initialize account tracker.
         
         Args:
             state_file: Path to file for persisting account state (fallback)
             db: Database manager instance (preferred)
+            load_all_states: If True, load all accounts from database. If False, lazy load on demand.
         """
         self.state_file = Path(state_file)
         self.db = db
@@ -108,8 +109,12 @@ class AccountTracker:
         self.lock = Lock()
         self.current_account_id: Optional[str] = None  # Track current active account
         
-        # Load persisted state if available
-        self._load_state()
+        # Only load persisted state if explicitly requested (e.g., for reporting/analysis)
+        # For normal trading, accounts will be initialized on-demand when selected
+        if load_all_states:
+            self._load_state()
+        else:
+            logger.debug("AccountTracker initialized with lazy loading (accounts loaded on-demand)")
     
     def initialize_account(self, account_id: str, account_name: str, account_type: str,
                           starting_balance: float, daily_loss_limit: Optional[float] = None,
@@ -615,6 +620,11 @@ class AccountTracker:
     def _save_state(self) -> None:
         """Persist account state to database (or disk as fallback)."""
         try:
+            # Only save if we have accounts to save (avoid saving empty states during lazy loading)
+            if not self.accounts:
+                logger.debug("No account states to save (lazy loading enabled)")
+                return
+            
             # Try database first
             if self.db:
                 for account_id, state in self.accounts.items():

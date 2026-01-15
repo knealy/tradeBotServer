@@ -1140,7 +1140,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # IMPORTANT: do NOT filter by status==1.
             # TopStepX "Open" search can include related bracket child orders that are "SuspENDED"
             # until the parent triggers. Filtering would hide those brackets from the GUI.
-            logger.info(f"Found {len(orders)} open-related orders (includes suspended brackets when returned by API)")
+            logger.debug(f"Found {len(orders)} open-related orders (includes suspended brackets when returned by API)")  # Reduced to DEBUG
             return orders
             
         except Exception as e:
@@ -1180,7 +1180,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         # IMPORTANT: do NOT filter by status==1.
         # Rust QueryExecutor already queries TopStepX "Open" search; results may include suspended bracket children.
-        logger.info(f"Found {len(orders)} open-related orders via Rust (includes suspended brackets when returned by API)")
+        logger.debug(f"Found {len(orders)} open-related orders via Rust (includes suspended brackets when returned by API)")  # Reduced to DEBUG
         return orders
     
     async def get_order_history(
@@ -1271,6 +1271,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             filled_orders = [o for o in orders if o.get("status") == 2 and o.get("fillVolume", 0) > 0]
             
             # Try Fill/search endpoint if no filled orders
+            # NOTE: This endpoint may not exist (404) - handle gracefully
             if not filled_orders:
                 logger.debug("No filled orders from Order/search, trying Fill/search endpoint")
                 fill_search_data = {
@@ -1282,7 +1283,10 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 
                 fill_response = self._make_request("POST", "/api/Fill/search", data=fill_search_data, headers=headers)
                 
-                if fill_response and "error" not in fill_response and fill_response.get("success"):
+                # Handle 404 errors gracefully - endpoint may not exist
+                if fill_response and fill_response.get("status_code") == 404:
+                    logger.debug("Fill/search endpoint not available (404) - skipping fallback")
+                elif fill_response and "error" not in fill_response and fill_response.get("success"):
                     fills = []
                     for field in ["fills", "data", "result", "items", "list"]:
                         if field in fill_response and isinstance(fill_response[field], list):
@@ -1303,6 +1307,12 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                                 'orderId': fill.get('orderId'),
                                 **fill
                             })
+                elif fill_response and "error" in fill_response:
+                    # Check if it's a 404 - if so, just skip silently
+                    error_str = str(fill_response.get("error", ""))
+                    if "404" not in error_str:
+                        # Only log non-404 errors
+                        logger.debug(f"Fill/search endpoint returned error: {fill_response.get('error')}")
             
             # Limit results
             if len(filled_orders) > limit:
@@ -1313,6 +1323,157 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
         except Exception as e:
             logger.error(f"Failed to fetch order history: {str(e)}")
+            return []
+    
+    async def get_trades(
+        self,
+        account_id: Optional[str] = None,
+        start_timestamp: Optional[str] = None,
+        end_timestamp: Optional[str] = None,
+        **kwargs
+    ) -> List[Dict]:
+        """
+        Get trades from TopStepX Trade/search API endpoint.
+        
+        This endpoint provides trades with pre-calculated profitAndLoss,
+        which is more accurate than consolidating orders manually.
+        
+        Args:
+            account_id: Account ID (required)
+            start_timestamp: Start timestamp in ISO format (required)
+            end_timestamp: End timestamp in ISO format (optional)
+            **kwargs: Additional parameters
+            
+        Returns:
+            List[Dict]: List of trades with profitAndLoss, fees, etc.
+        """
+        try:
+            await self.auth.ensure_valid_token()
+            
+            if not account_id:
+                logger.error("Account ID is required for Trade/search")
+                return []
+            
+            logger.info(f"Fetching trades from Trade/search API for account {account_id}")
+            
+            headers = {
+                "accept": "text/plain",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.auth.get_token()}"
+            }
+            
+            # Parse timestamps
+            from datetime import datetime, timezone, timedelta
+            
+            if start_timestamp:
+                if isinstance(start_timestamp, str):
+                    start_time = datetime.fromisoformat(start_timestamp.replace('Z', '+00:00'))
+                else:
+                    start_time = start_timestamp
+            else:
+                # Default to 7 days ago
+                start_time = datetime.now(timezone.utc) - timedelta(days=7)
+            
+            if end_timestamp:
+                if isinstance(end_timestamp, str):
+                    end_time = datetime.fromisoformat(end_timestamp.replace('Z', '+00:00'))
+                else:
+                    end_time = end_timestamp
+            else:
+                end_time = datetime.now(timezone.utc)
+            
+            # Prepare request body according to API docs
+            search_data = {
+                "accountId": int(account_id),
+                "startTimestamp": start_time.isoformat(),
+                "endTimestamp": end_time.isoformat() if end_timestamp else None
+            }
+            
+            # Remove None values (endTimestamp is optional)
+            search_data = {k: v for k, v in search_data.items() if v is not None}
+            
+            response = self._make_request("POST", "/api/Trade/search", data=search_data, headers=headers)
+            
+            if "error" in response:
+                logger.error(f"Failed to fetch trades: {response['error']}")
+                return []
+            
+            if not response.get("success", False):
+                error_msg = response.get("errorMessage") or response.get("error", "Unknown error")
+                logger.error(f"Trade/search API returned error: {error_msg}")
+                return []
+            
+            # Extract trades from response
+            trades = response.get("trades", [])
+            
+            if not trades:
+                logger.info(f"No trades found for account {account_id} in the specified time range")
+                return []
+            
+            logger.info(f"✅ Found {len(trades)} trades from Trade/search API")
+            
+            # Normalize trade data to match our expected format
+            normalized_trades = []
+            for trade in trades:
+                # Extract symbol from contractId (format: CON.F.US.MNQ.Z25 -> MNQ)
+                contract_id = trade.get("contractId", "")
+                symbol = "UNKNOWN"
+                if contract_id:
+                    parts = contract_id.split(".")
+                    if len(parts) >= 4:
+                        symbol = parts[-2].upper()  # Second to last part is usually the symbol
+                
+                # Normalize side (0=BUY, 1=SELL)
+                side_value = trade.get("side", 0)
+                side = "BUY" if side_value == 0 else "SELL"
+                
+                # profitAndLoss is null for half-turn trades (open positions)
+                profit_and_loss = trade.get("profitAndLoss")
+                pnl = float(profit_and_loss) if profit_and_loss is not None else None
+                
+                # Fees from API - note: this might be per-side, so we may need to double it
+                # TopStepX commission is typically $0.74 per contract per side = $1.48 round trip
+                # For 5 contracts: $0.74 * 5 * 2 = $7.40, but API shows $3.1
+                # This suggests fees might already be the full round-trip, or profitAndLoss already has fees deducted
+                api_fees = float(trade.get("fees", 0.0))
+                
+                # Calculate net PnL: profitAndLoss from API might already have fees deducted
+                # OR fees might need to be doubled. Based on user's data:
+                # - profitAndLoss: $210, actual net: $203.80, difference: $6.20
+                # - API fees: $3.1, but actual commission: $6.20
+                # So we need to double the fees to get the actual commission
+                # OR profitAndLoss already has $3.1 deducted, and we need to subtract another $3.1
+                # Let's assume fees need to be doubled for round-trip commission
+                actual_fees = api_fees * 2 if api_fees > 0 else 0.0
+                
+                normalized_trade = {
+                    "id": str(trade.get("id", "")),
+                    "order_id": str(trade.get("orderId", "")),
+                    "account_id": str(trade.get("accountId", account_id)),
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": int(trade.get("size", 0)),
+                    "price": float(trade.get("price", 0.0)),
+                    "pnl": pnl,  # Gross PnL (may already have some fees deducted)
+                    "profitAndLoss": pnl,  # Keep original field name
+                    "fees": actual_fees,  # Full round-trip fees/commission
+                    "net_pnl": pnl - actual_fees if pnl is not None else None,
+                    "timestamp": trade.get("creationTimestamp", ""),
+                    "creationTimestamp": trade.get("creationTimestamp", ""),
+                    "voided": trade.get("voided", False),
+                    "contractId": contract_id,
+                    "status": "filled" if not trade.get("voided", False) else "voided",
+                    # Mark as half-turn trade if profitAndLoss is null
+                    "is_half_turn": profit_and_loss is None
+                }
+                normalized_trades.append(normalized_trade)
+            
+            return normalized_trades
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch trades from Trade/search API: {str(e)}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return []
     
     # ==================== Position Interface Implementation ====================
@@ -2587,9 +2748,19 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             # If timeframe > 1m, use 1m aggregation strategy (fetch 1m data and aggregate)
             # This ensures accurate, up-to-date data using reliable 1m source
+            # For daily bars, ALWAYS aggregate from 1m to enforce 18:00-18:00 boundaries
             # Skip aggregation if we're already fetching 1m data (prevents recursion)
             target_seconds = self._parse_timeframe_to_seconds(timeframe)
-            if not _skip_aggregation and target_seconds and target_seconds > 60:
+            is_daily = timeframe.endswith('d')
+            
+            # For daily bars, skip API daily bars and always aggregate from 1m to ensure 18:00-18:00 boundaries
+            if is_daily and not _skip_aggregation:
+                logger.info(f"📊 Daily bars requested: aggregating from 1m bars to enforce 18:00-18:00 boundaries (skipping API daily bars)")
+                # Clear API daily bars - we'll aggregate from 1m instead
+                bars = []
+            
+            # Aggregate from 1m bars for timeframes > 1m OR for daily bars (to enforce 18:00-18:00)
+            if not _skip_aggregation and target_seconds and (target_seconds > 60 or is_daily):
                 logger.debug(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
                 
                 # Fetch 1m data instead (with _skip_aggregation=True to prevent recursion)
@@ -2607,10 +2778,21 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"No 1m data available for aggregation to {timeframe}")
                     return []
                 
-                logger.debug(f"📊 Aggregating {len(one_min_bars)} 1m bars into {timeframe} bars...")
+                # CRITICAL: Sort 1-minute bars by timestamp (oldest first) before aggregation
+                # This ensures correct grouping for daily bars (18:00 ET to 18:00 ET)
+                one_min_bars.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                
+                # Debug logging for daily bars
+                if timeframe.endswith('d') and one_min_bars:
+                    logger.info(f"📊 Daily aggregation: {len(one_min_bars)} 1m bars, first={one_min_bars[0].timestamp}, last={one_min_bars[-1].timestamp}")
+                    logger.info(f"   First bar: open={one_min_bars[0].open}, high={one_min_bars[0].high}, low={one_min_bars[0].low}, close={one_min_bars[0].close}")
+                
+                logger.debug(f"📊 Aggregating {len(one_min_bars)} 1m bars into {timeframe} bars (sorted by timestamp)...")
                 
                 # Use Rust aggregation if available, otherwise Python fallback
-                if RUST_AVAILABLE and self._use_rust:
+                # CRITICAL: For daily bars, always use Python aggregation because Rust uses UTC midnight boundaries
+                # instead of 18:00 ET boundaries. Rust's grouping would produce incorrect OHLC values.
+                if RUST_AVAILABLE and self._use_rust and not timeframe.endswith('d'):
                     try:
                         # Convert Bar objects to dict format for Rust
                         bars_dict = []
@@ -2642,11 +2824,6 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         aggregated_bars = []
                         for rust_bar in aggregated_rust:
                             dt = datetime.fromtimestamp(rust_bar.timestamp, tz=timezone.utc)
-                            # Adjust timestamp for daily bars to use correct market hours
-                            if timeframe.endswith('d'):
-                                bar_start = self._get_daily_bar_start_time(dt)
-                                # For display, use the trading day's date (next day if starts at 18:00)
-                                dt = self._get_daily_bar_display_date(bar_start)
                             aggregated_bars.append(Bar(
                                 timestamp=dt,
                                 open=rust_bar.open,
@@ -2712,12 +2889,9 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 # Convert back to Bar objects
                 aggregated_bars = []
                 for bar_dict in aggregated_dict:
+                    # The timestamp in bar_dict is already the bar start time (from _aggregate_bars)
+                    # For daily bars, keep the actual start time (18:00 ET previous day), not display date
                     dt = datetime.fromtimestamp(bar_dict['timestamp'], tz=timezone.utc)
-                    # Adjust timestamp for daily bars to use correct market hours
-                    if timeframe.endswith('d'):
-                        bar_start = self._get_daily_bar_start_time(dt)
-                        # For display, use the trading day's date (next day if starts at 18:00)
-                        dt = self._get_daily_bar_display_date(bar_start)
                     aggregated_bars.append(Bar(
                         timestamp=dt,
                         open=bar_dict['open'],
@@ -2855,14 +3029,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         Rules:
         - Every day opens at 18:00 ET (6pm) the previous day
-        - Every day closes at 17:00 ET (5pm) that day
+        - Every day closes at 18:00 ET (6pm) that day
         
         Examples:
-        - Monday bar: Sunday 18:00 ET to Monday 17:00 ET
-        - Tuesday bar: Monday 18:00 ET to Tuesday 17:00 ET
-        - Wednesday bar: Tuesday 18:00 ET to Wednesday 17:00 ET
-        - Thursday bar: Wednesday 18:00 ET to Thursday 17:00 ET
-        - Friday bar: Thursday 18:00 ET to Friday 17:00 ET
+        - Monday bar: Sunday 18:00 ET to Monday 18:00 ET
+        - Tuesday bar: Monday 18:00 ET to Tuesday 18:00 ET
+        - Wednesday bar: Tuesday 18:00 ET to Wednesday 18:00 ET
+        - Thursday bar: Wednesday 18:00 ET to Thursday 18:00 ET
+        - Friday bar: Thursday 18:00 ET to Friday 18:00 ET
         """
         try:
             import pytz
@@ -2880,14 +3054,14 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         hour = timestamp_et.hour
         
         # Calculate daily bar start - simplified logic
-        # If before 17:00 (5pm), we're still in today's bar (which started yesterday 18:00)
-        # If at or after 17:00 (5pm), we're in tomorrow's bar (which starts today 18:00)
-        if hour < 17:
-            # Before 17:00 - still in today's bar, which started yesterday 18:00
+        # If before 18:00 (6pm), we're still in today's bar (which started yesterday 18:00)
+        # If at or after 18:00 (6pm), we're in tomorrow's bar (which starts today 18:00)
+        if hour < 18:
+            # Before 18:00 - still in today's bar, which started yesterday 18:00
             days_back = 1
             bar_start_et = (timestamp_et - timedelta(days=days_back)).replace(hour=18, minute=0, second=0, microsecond=0)
         else:
-            # At or after 17:00 - this is tomorrow's bar, which starts today 18:00
+            # At or after 18:00 - this is tomorrow's bar, which starts today 18:00
             bar_start_et = timestamp_et.replace(hour=18, minute=0, second=0, microsecond=0)
         
         # Convert back to UTC
@@ -2943,6 +3117,31 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         # Convert back to UTC
         return display_date_et.astimezone(timezone.utc)
     
+    def _get_daily_bar_end_time(self, bar_start: datetime) -> datetime:
+        """
+        Get the end time for a daily bar based on EST market hours.
+        
+        Rules:
+        - Daily bars end at 18:00 ET (6pm) the next day
+        - This aligns with the overnight session: 18:00 to 18:00
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            et_tz = timezone(timedelta(hours=-5))
+        
+        # Convert to EST
+        if bar_start.tzinfo is None:
+            bar_start = bar_start.replace(tzinfo=timezone.utc)
+        bar_start_et = bar_start.astimezone(et_tz)
+        
+        # All daily bars end at 18:00 ET the next day
+        bar_end_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        # Convert back to UTC
+        return bar_end_et.astimezone(timezone.utc)
+    
     def _parse_timeframe_to_seconds(self, timeframe: str) -> Optional[int]:
         """Parse timeframe string to seconds."""
         timeframe = timeframe.strip().lower()
@@ -2964,6 +3163,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         Aggregate 1-minute bars into higher timeframes (5m, 15m, 30m, 1h, etc.).
         
         This is a Python fallback implementation. Rust version is preferred when available.
+        For daily bars, this is the primary implementation (Rust not used).
         """
         if not bars:
             return []
@@ -2975,6 +3175,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         aggregated = []
         current_group = []
         current_group_start = None
+        is_daily = target_timeframe.endswith('d')
         
         for bar in bars:
             ts = bar.get('timestamp') or bar.get('time')
@@ -2983,10 +3184,24 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 dt = datetime.fromtimestamp(ts, tz=timezone.utc)
                 bar_start_dt = self._get_daily_bar_start_time(dt)
                 bar_start_seconds = int(bar_start_dt.timestamp())
+                
+                # For daily bars, only include bars within the period (>= bar_start and < bar_end)
+                bar_end_dt = self._get_daily_bar_end_time(bar_start_dt)
+                if dt < bar_start_dt or dt >= bar_end_dt:
+                    continue
             else:
                 bar_start_seconds = (ts // target_seconds) * target_seconds
             
             if current_group_start is None or bar_start_seconds != current_group_start:
+                if current_group:
+                    # Debug logging for daily bars
+                    if is_daily:
+                        first_ts = datetime.fromtimestamp(current_group[0].get('timestamp') or current_group[0].get('time'), tz=timezone.utc)
+                        last_ts = datetime.fromtimestamp(current_group[-1].get('timestamp') or current_group[-1].get('time'), tz=timezone.utc)
+                        bar_start_display = datetime.fromtimestamp(current_group_start, tz=timezone.utc)
+                        logger.info(f"   Python daily bar: start={bar_start_display}, open={current_group[0].get('open', 0)}, "
+                                   f"first_ts={first_ts}, last_ts={last_ts}, bars={len(current_group)}")
+                    
                 if current_group:
                     agg_bar = {
                         'timestamp': current_group_start,

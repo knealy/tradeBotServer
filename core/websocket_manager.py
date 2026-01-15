@@ -77,6 +77,9 @@ class WebSocketManager:
         self._lock = Lock()
         self._reconnecting = False  # Flag to prevent multiple simultaneous reconnection attempts
         
+        # Track symbols that have already logged "hub not running" warnings to suppress spam
+        self._hub_not_running_warned: Set[str] = set()
+        
         # Store event loop reference for async operations from sync callbacks
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         
@@ -172,6 +175,8 @@ class WebSocketManager:
                 logger.info("✅ SignalR Market Hub connected")
                 with self._lock:
                     self._connected = True
+                    # Clear warning set so we can log warnings again if hub disconnects
+                    self._hub_not_running_warned.clear()
                 # Flush pending subscriptions - safely handle async from sync callback
                 # SignalR callbacks are synchronous, so we need to handle event loop carefully
                 if self._event_loop and self._event_loop.is_running():
@@ -394,18 +399,23 @@ class WebSocketManager:
             hub.start()
             self._hub = hub
             
-            # Wait for connection
+            # Wait for connection to be established
             import time
             start = time.time()
             while not self._connected and time.time() - start < 10:
                 await asyncio.sleep(0.05)
             
-            if self._connected:
-                logger.info("✅ SignalR Market Hub connection established")
-                return True
-            else:
+            if not self._connected:
                 logger.warning("⚠️  SignalR connection timeout")
                 return False
+            
+            # CRITICAL: Wait for hub to be fully ready to accept subscriptions
+            # The on_open callback fires but hub needs additional time to reach "running" state
+            logger.debug("Waiting for SignalR hub to reach running state...")
+            await asyncio.sleep(0.5)  # Give hub time to fully initialize
+            
+            logger.info("✅ SignalR Market Hub connection established and ready")
+            return True
                 
         except Exception as e:
             logger.error(f"Failed to start SignalR connection: {e}")
@@ -570,7 +580,10 @@ class WebSocketManager:
             
             # Check if hub is actually running before sending
             if not self._hub:
-                logger.warning(f"Cannot subscribe to quotes for {sym}: Hub not initialized")
+                # Use debug level to avoid spam - hub will be initialized when connection starts
+                logger.debug(f"Cannot subscribe to quotes for {sym}: Hub not initialized")
+                with self._lock:
+                    self._pending_symbols.add(sym)
                 return False
             
             # Check hub state - SignalR hub must be in running state
@@ -578,19 +591,36 @@ class WebSocketManager:
                 # SignalR hub has a state property that indicates if it's running
                 if hasattr(self._hub, 'transport') and self._hub.transport:
                     if hasattr(self._hub.transport, '_ws') and not self._hub.transport._ws:
-                        logger.warning(f"Cannot subscribe to quotes for {sym}: Hub transport not connected")
+                        # Use debug level to avoid spam - transport will connect when hub starts
+                        logger.debug(f"Cannot subscribe to quotes for {sym}: Hub transport not connected")
+                        with self._lock:
+                            self._pending_symbols.add(sym)
                         return False
             except:
                 pass  # If we can't check state, try anyway
             
             logger.info(f"📡 Subscribing to live quotes for {sym} (contract: {contract_id})")
-            self._hub.send(self.subscribe_method, [contract_id])
             
-            with self._lock:
-                self._subscribed_symbols.add(sym)
-            
-            logger.info(f"✅ Subscribed to quotes for {sym} via {contract_id}")
-            return True
+            # Try subscription with retries (hub may take a moment to be fully ready)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self._hub.send(self.subscribe_method, [contract_id])
+                    
+                    with self._lock:
+                        self._subscribed_symbols.add(sym)
+                    
+                    logger.info(f"✅ Subscribed to quotes for {sym} via {contract_id}")
+                    return True
+                except Exception as retry_error:
+                    if "not running" in str(retry_error).lower() or "cand send" in str(retry_error).lower():
+                        if attempt < max_retries - 1:
+                            # Hub not ready yet, wait and retry
+                            logger.debug(f"Hub not ready for {sym}, retrying in {0.2 * (attempt + 1)}s...")
+                            await asyncio.sleep(0.2 * (attempt + 1))
+                            continue
+                    # Other error or final retry - raise it
+                    raise retry_error
             
         except ValueError as e:
             logger.warning(f"Cannot subscribe to quotes for {sym}: {e}")
@@ -598,8 +628,16 @@ class WebSocketManager:
         except Exception as e:
             error_msg = str(e)
             # Handle "Hub is not running" errors gracefully
+            # Note: SignalR library has typo "cand" instead of "can't" in error message
             if "not running" in error_msg.lower() or "cand send" in error_msg.lower() or "can't send" in error_msg.lower():
-                logger.warning(f"Cannot subscribe to quotes for {sym}: Hub is not running (will retry when connected)")
+                # Only log warning once per symbol to avoid spam
+                with self._lock:
+                    if sym not in self._hub_not_running_warned:
+                        logger.warning(f"Cannot subscribe to quotes for {sym}: Hub is not running (will retry when connected)")
+                        self._hub_not_running_warned.add(sym)
+                    else:
+                        # Subsequent attempts use debug level to avoid spam
+                        logger.debug(f"Cannot subscribe to quotes for {sym}: Hub is not running (will retry when connected)")
                 # Queue for retry when hub is ready
                 with self._lock:
                     self._pending_symbols.add(sym)

@@ -298,14 +298,14 @@ class BarAggregator:
         
         Rules:
         - Every day opens at 18:00 ET (6pm) the previous day
-        - Every day closes at 17:00 ET (5pm) that day
+        - Every day closes at 18:00 ET (6pm) that day
         
         Examples:
-        - Monday bar: Sunday 18:00 ET to Monday 17:00 ET
-        - Tuesday bar: Monday 18:00 ET to Tuesday 17:00 ET
-        - Wednesday bar: Tuesday 18:00 ET to Wednesday 17:00 ET
-        - Thursday bar: Wednesday 18:00 ET to Thursday 17:00 ET
-        - Friday bar: Thursday 18:00 ET to Friday 17:00 ET
+        - Monday bar: Sunday 18:00 ET to Monday 18:00 ET
+        - Tuesday bar: Monday 18:00 ET to Tuesday 18:00 ET
+        - Wednesday bar: Tuesday 18:00 ET to Wednesday 18:00 ET
+        - Thursday bar: Wednesday 18:00 ET to Thursday 18:00 ET
+        - Friday bar: Thursday 18:00 ET to Friday 18:00 ET
         """
         try:
             import pytz
@@ -322,14 +322,14 @@ class BarAggregator:
         hour = timestamp_et.hour
         
         # Calculate daily bar start - simplified logic
-        # If before 17:00 (5pm), we're still in today's bar (which started yesterday 18:00)
-        # If at or after 17:00 (5pm), we're in tomorrow's bar (which starts today 18:00)
-        if hour < 17:
-            # Before 17:00 - still in today's bar, which started yesterday 18:00
+        # If before 18:00 (6pm), we're still in today's bar (which started yesterday 18:00)
+        # If at or after 18:00 (6pm), we're in tomorrow's bar (which starts today 18:00)
+        if hour < 18:
+            # Before 18:00 - still in today's bar, which started yesterday 18:00
             days_back = 1
             bar_start_et = (timestamp_et - timedelta(days=days_back)).replace(hour=18, minute=0, second=0, microsecond=0)
         else:
-            # At or after 17:00 - this is tomorrow's bar, which starts today 18:00
+            # At or after 18:00 - this is tomorrow's bar, which starts today 18:00
             bar_start_et = timestamp_et.replace(hour=18, minute=0, second=0, microsecond=0)
         
         # Convert back to UTC
@@ -340,7 +340,8 @@ class BarAggregator:
         Get the end time for a daily bar based on EST market hours.
         
         Rules:
-        - Daily bars end at 17:00 ET (5pm) the next day
+        - Daily bars end at 18:00 ET (6pm) the next day
+        - This aligns with the overnight session: 18:00 to 18:00
         """
         try:
             import pytz
@@ -353,8 +354,8 @@ class BarAggregator:
             bar_start = bar_start.replace(tzinfo=timezone.utc)
         bar_start_et = bar_start.astimezone(et_tz)
         
-        # All daily bars end at 17:00 ET the next day
-        bar_end_et = (bar_start_et + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+        # All daily bars end at 18:00 ET the next day
+        bar_end_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
         
         # Convert back to UTC
         return bar_end_et.astimezone(timezone.utc)

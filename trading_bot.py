@@ -49,6 +49,7 @@ except ImportError:
 # Import from new organized structure
 from core.discord_notifier import DiscordNotifier
 from core.account_tracker import AccountTracker
+from core.session_trade_tracker import SessionTradeTracker
 from strategies.overnight_range_strategy import OvernightRangeStrategy
 from strategies.mean_reversion_strategy import MeanReversionStrategy
 from strategies.trend_following_strategy import TrendFollowingStrategy
@@ -69,7 +70,7 @@ from core.websocket_manager import WebSocketManager
 from core.user_hub_manager import UserHubManager
 from core.order_execution import OrderExecutor
 from brokers.topstepx_adapter import TopStepXAdapter
-from events.event_bus import EventBus, get_event_bus
+# EventBus is imported where needed (core.event_bus)
 
 # Optional ProjectX SDK adapter
 try:
@@ -280,37 +281,50 @@ class TopStepXTradingBot:
             self.db = None
         
         # Initialize real-time account state tracker (with database support)
-        self.account_tracker = AccountTracker(db=self.db)
-        logger.debug("Account tracker initialized with database support")
+        # Use lazy loading - accounts will be initialized when selected
+        self.account_tracker = AccountTracker(db=self.db, load_all_states=False)
+        logger.debug("Account tracker initialized with lazy loading")
+        
+        # Initialize session-aware trade tracker (real-time FIFO matching)
+        self.session_trade_tracker = SessionTradeTracker(db=self.db)
+        logger.debug("Session trade tracker initialized")
         
         # Initialize Strategy Manager (modular strategy system)
         self.strategy_manager = StrategyManager(trading_bot=self)
         logger.debug("Strategy manager initialized")
+        
+        # Centralized risk manager for all strategies (lazy initialization)
+        self._strategy_risk_manager = None
         
         # Initialize bar aggregator for real-time chart updates
         from core.bar_aggregator import BarAggregator
         self.bar_aggregator = BarAggregator(broadcast_callback=None)  # Will be set by webhook server
         logger.debug("Bar aggregator initialized")
         
-        # Register all available strategies
+        # Initialize centralized state cache (reduces API calls by ~95%)
+        from core.state_cache import StateCache
+        self.state_cache = StateCache(trading_bot=self)
+        logger.debug("State cache initialized")
+        
+        # Initialize Event Bus for event-driven architecture
+        from core.event_bus import EventBus
+        self.event_bus = EventBus()
+        logger.info("📡 Event bus initialized (will start with main loop)")
+        
+        # Register strategy classes (but don't instantiate yet - lazy loading)
         self.strategy_manager.register_strategy("overnight_range", OvernightRangeStrategy)
         self.strategy_manager.register_strategy("mean_reversion", MeanReversionStrategy)
         self.strategy_manager.register_strategy("trend_following", TrendFollowingStrategy)
         self.strategy_manager.register_strategy("simple_momentum", SimpleMomentumStrategy)
         self.strategy_manager.register_strategy("simple_candle", SimpleCandleStrategy)
         self.strategy_manager.register_strategy("trend_scalping", TrendScalpingStrategy)
-        logger.debug("Strategies registered with manager")
+        logger.debug("Strategy classes registered (lazy loading enabled)")
         
-        # Load strategies from environment configuration
-        self.strategy_manager.load_strategies_from_config()
+        # NOTE: Strategies are no longer auto-loaded during init for performance
+        # They will be instantiated on-demand when explicitly started
         
-        # Initialize overnight range breakout strategy (backward compatibility)
-        # This is the default active strategy
-        self.overnight_strategy = self.strategy_manager.strategies.get("overnight_range")
-        if not self.overnight_strategy:
-            # Fallback if not loaded from config
-            self.overnight_strategy = OvernightRangeStrategy(trading_bot=self)
-        logger.debug("Overnight range strategy initialized (default active strategy)")
+        # Remove backward compatibility code - overnight_strategy will be created on-demand
+        self.overnight_strategy = None  # Lazy-loaded when needed
         
         # Order counter for unique custom tags
         self._order_counter = 0
@@ -345,9 +359,8 @@ class TopStepXTradingBot:
         self.contract_manager = ContractManager()
         logger.debug("✅ ContractManager initialized")
         
-        # Initialize EventBus (for event-driven architecture)
-        self.event_bus = get_event_bus()
-        logger.debug("✅ EventBus initialized")
+        # EventBus is initialized in __init__ (line ~311) - no need to reinitialize
+        # (Already initialized with core.event_bus.EventBus)
         
         # Initialize RiskManager (handles tick sizes, point values, trading sessions)
         self.risk_manager = RiskManager()
@@ -535,7 +548,7 @@ class TopStepXTradingBot:
             if hasattr(self, 'account_tracker') and self.account_tracker:
                 try:
                     # Get account state which contains PnL
-                    account_state = self.account_tracker.get_account_state(account_id=account_id_str)
+                    account_state = self.account_tracker.get_state(account_id=account_id_str)
                     if account_state:
                         # Account state returns realized_pnl and unrealized_pnl (snake_case)
                         realized_pnl = float(account_state.get('realized_pnl', 0))
@@ -616,9 +629,28 @@ class TopStepXTradingBot:
                     import traceback
                     logger.debug(traceback.format_exc())
             
+            # EVENT-DRIVEN: Emit account update event
+            if hasattr(self, 'event_bus') and self.event_bus:
+                from core.events import Event, EventType
+                try:
+                    await self.event_bus.publish(Event(
+                        type=EventType.ACCOUNT_UPDATED,
+                        data={'account': data, 'account_id': account_id_str, 'unrealized_pnl': unrealized_pnl, 'realized_pnl': realized_pnl},
+                        source='signalr_user_hub'
+                    ))
+                except Exception as e:
+                    logger.debug(f"Could not emit account event: {e}")
+            
             # Broadcast to GUI if available
             try:
-                from gui.chart_html import broadcast_update
+                try:
+                    from gui.chart_html import broadcast_update
+                except ImportError:
+                    broadcast_update = None
+                
+                if not broadcast_update:
+                    return  # GUI not available
+                    
                 account_update = {
                     'account_id': data.get('id'),
                     'account_name': data.get('name'),
@@ -629,10 +661,26 @@ class TopStepXTradingBot:
                     'isVisible': data.get('isVisible', True),
                     'simulated': data.get('simulated', False)
                 }
-                broadcast_update({
-                    'type': 'account',
-                    'data': account_update
-                })
+                # Handle async broadcast_update properly
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(broadcast_update({
+                            'type': 'account',
+                            'data': account_update
+                        }, immediate=False))
+                    else:
+                        loop.run_until_complete(broadcast_update({
+                            'type': 'account',
+                            'data': account_update
+                        }, immediate=False))
+                except RuntimeError:
+                    # No event loop, create new one
+                    asyncio.run(broadcast_update({
+                        'type': 'account',
+                        'data': account_update
+                    }, immediate=False))
                 logger.debug(f"📡 Broadcasted User Hub account update: {account_update.get('account_name')} - Balance: ${account_update.get('balance'):.2f}, Unrealized: ${unrealized_pnl:.2f}, Realized: ${realized_pnl:.2f}")
             except Exception as e:
                 logger.debug(f"Could not broadcast account update to GUI: {e}")
@@ -642,8 +690,28 @@ class TopStepXTradingBot:
     def _on_user_hub_position(self, data: Dict):
         """Callback for User Hub position updates."""
         try:
-            # Update account tracker with position change to refresh PnL
+            # OPTIMIZATION: Invalidate positions cache on SignalR event
             account_id_str = str(data.get('accountId', ''))
+            if account_id_str and hasattr(self, 'state_cache') and self.state_cache:
+                self.state_cache.invalidate_positions(account_id_str)
+                logger.debug(f"🔄 Invalidated positions cache for account {account_id_str}")
+            
+            # EVENT-DRIVEN: Emit position update event
+            if hasattr(self, 'event_bus') and self.event_bus:
+                from core.events import Event, EventType
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(self.event_bus.publish(Event(
+                            type=EventType.POSITION_UPDATED,
+                            data={'position': data, 'account_id': account_id_str},
+                            source='signalr_user_hub'
+                        )))
+                except Exception as e:
+                    logger.debug(f"Could not emit position event: {e}")
+            
+            # Update account tracker with position change to refresh PnL
             if account_id_str and hasattr(self, 'account_tracker') and self.account_tracker:
                 try:
                     # Trigger account update to recalculate PnL
@@ -654,7 +722,14 @@ class TopStepXTradingBot:
             
             # Broadcast to GUI if available
             try:
-                from gui.chart_html import broadcast_update
+                try:
+                    from gui.chart_html import broadcast_update
+                except ImportError:
+                    broadcast_update = None
+                
+                if not broadcast_update:
+                    return  # GUI not available
+                    
                 # Convert position data to GUI format
                 contract_id = data.get('contractId', '')
                 symbol = ''
@@ -752,10 +827,49 @@ class TopStepXTradingBot:
                     if isinstance(item, dict):
                         self._on_user_hub_order(item)
                 return
+            
+            # OPTIMIZATION: Invalidate orders cache on SignalR event
+            account_id_str = str(data.get('accountId', ''))
+            if account_id_str and hasattr(self, 'state_cache') and self.state_cache:
+                self.state_cache.invalidate_orders(account_id_str)
+                logger.debug(f"🔄 Invalidated orders cache for account {account_id_str}")
+            
+            # EVENT-DRIVEN: Emit order update event
+            if hasattr(self, 'event_bus') and self.event_bus:
+                from core.events import Event, EventType
+                import asyncio
+                try:
+                    # Determine event type based on order status
+                    status = data.get('status', '')
+                    if status == 'Filled':
+                        event_type = EventType.ORDER_FILLED
+                    elif status == 'Cancelled':
+                        event_type = EventType.ORDER_CANCELLED
+                    elif status == 'Rejected':
+                        event_type = EventType.ORDER_REJECTED
+                    else:
+                        event_type = EventType.ORDER_UPDATED
+                    
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(self.event_bus.publish(Event(
+                            type=event_type,
+                            data={'order': data, 'account_id': account_id_str},
+                            source='signalr_user_hub'
+                        )))
+                except Exception as e:
+                    logger.debug(f"Could not emit order event: {e}")
 
             # Broadcast to GUI if available
             try:
-                from gui.chart_html import broadcast_update
+                try:
+                    from gui.chart_html import broadcast_update
+                except ImportError:
+                    broadcast_update = None
+                
+                if not broadcast_update:
+                    return  # GUI not available
+                    
                 order_data = {
                     'id': data.get('id'),
                     'accountId': data.get('accountId'),
@@ -812,26 +926,112 @@ class TopStepXTradingBot:
                         self._on_user_hub_trade(item)
                 return
 
-            # Update AccountTracker with trade PnL
+            account_id = str(data.get('accountId', ''))
+            if not account_id:
+                return
+            
+            # Process fill through session trade tracker (FIFO matching)
+            if hasattr(self, 'session_trade_tracker') and self.session_trade_tracker:
+                try:
+                    # Extract fill data from trade update
+                    fill_id = str(data.get('fillId') or data.get('id') or f"fill_{int(datetime.now(timezone.utc).timestamp() * 1000)}")
+                    order_id = str(data.get('orderId') or data.get('order_id', ''))
+                    symbol = str(data.get('symbol') or data.get('contractSymbol', ''))
+                    side = int(data.get('side', 0))  # 0=BUY, 1=SELL
+                    quantity = int(data.get('quantity') or data.get('qty', 0))
+                    price = float(data.get('price') or data.get('fillPrice', 0))
+                    commission = float(data.get('commission', 0))
+                    fee = float(data.get('fee', 0))
+                    
+                    # Parse timestamp if available
+                    timestamp = None
+                    if 'timestamp' in data:
+                        try:
+                            if isinstance(data['timestamp'], str):
+                                timestamp = datetime.fromisoformat(data['timestamp'].replace('Z', '+00:00'))
+                            else:
+                                timestamp = datetime.fromtimestamp(data['timestamp'], tz=timezone.utc)
+                        except:
+                            pass
+                    
+                    if fill_id and order_id and symbol and quantity > 0 and price > 0:
+                        # Process fill through session tracker
+                        completed_trades = self.session_trade_tracker.process_fill(
+                            fill_id=fill_id,
+                            order_id=order_id,
+                            account_id=account_id,
+                            symbol=symbol,
+                            side=side,
+                            quantity=quantity,
+                            price=price,
+                            commission=commission,
+                            fee=fee,
+                            timestamp=timestamp
+                        )
+                        
+                        # If trades were completed, update AccountTracker with realized PnL
+                        if completed_trades:
+                            total_realized_pnl = sum(t.net_pnl for t in completed_trades)
+                            total_commission = sum(t.commission for t in completed_trades)
+                            total_fee = sum(t.fee for t in completed_trades)
+                            
+                            fill_data = {
+                                'pnl': total_realized_pnl,
+                                'commission': total_commission,
+                                'fee': total_fee
+                            }
+                            
+                            if hasattr(self, 'account_tracker') and self.account_tracker:
+                                self.account_tracker.update_from_fill(account_id, fill_data)
+                            
+                            logger.info(f"✅ Processed {len(completed_trades)} completed trade(s), Realized PnL: ${total_realized_pnl:.2f}")
+                            
+                            # Broadcast trade updates to GUI
+                            try:
+                                try:
+                                    from gui.chart_html import broadcast_update
+                                except ImportError:
+                                    broadcast_update = None
+                                
+                                if broadcast_update:
+                                    session_pnl = self.session_trade_tracker.get_session_pnl(account_id)
+                                    broadcast_update({
+                                        'type': 'session_trades',
+                                        'data': {
+                                            'completed_trades': [t.to_dict() for t in completed_trades],
+                                            'session_pnl': session_pnl,
+                                            'realized_pnl': total_realized_pnl
+                                        }
+                                    })
+                            except Exception as e:
+                                logger.debug(f"Could not broadcast trade update to GUI: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing fill in session tracker: {e}", exc_info=True)
+            
+            # Legacy: Update AccountTracker with trade PnL (fallback if session tracker not available)
             if data.get('profitAndLoss') and hasattr(self, 'account_tracker') and self.account_tracker:
-                account_id = str(data.get('accountId', ''))
-                if account_id:
-                    try:
-                        # Update fill to track realized PnL
-                        fill_data = {
-                            'pnl': float(data.get('profitAndLoss', 0)),
-                            'commission': float(data.get('commission', 0)),
-                            'fee': float(data.get('fee', 0))
-                        }
-                        self.account_tracker.update_from_fill(account_id, fill_data)
-                        logger.debug(f"✅ Updated AccountTracker with trade PnL: ${fill_data['pnl']:.2f}")
-                    except Exception as e:
-                        logger.debug(f"Could not update AccountTracker with trade: {e}")
+                try:
+                    fill_data = {
+                        'pnl': float(data.get('profitAndLoss', 0)),
+                        'commission': float(data.get('commission', 0)),
+                        'fee': float(data.get('fee', 0))
+                    }
+                    self.account_tracker.update_from_fill(account_id, fill_data)
+                    logger.debug(f"✅ Updated AccountTracker with trade PnL: ${fill_data['pnl']:.2f}")
+                except Exception as e:
+                    logger.debug(f"Could not update AccountTracker with trade: {e}")
 
             # Update account PnL from trade
             if data.get('profitAndLoss'):
                 try:
-                    from gui.chart_html import broadcast_update
+                    try:
+                        from gui.chart_html import broadcast_update
+                    except ImportError:
+                        broadcast_update = None
+                    
+                    if not broadcast_update:
+                        return  # GUI not available
+                        
                     broadcast_update({
                         'type': 'account',
                         'data': {
@@ -841,7 +1041,7 @@ class TopStepXTradingBot:
                 except Exception as e:
                     logger.debug(f"Could not broadcast trade update to GUI: {e}")
         except Exception as e:
-            logger.error(f"Error handling User Hub trade update: {e}")
+            logger.error(f"Error handling User Hub trade update: {e}", exc_info=True)
     
     async def _ensure_market_socket_started(self) -> None:
         """
@@ -1632,6 +1832,8 @@ class TopStepXTradingBot:
                         success = await self.user_hub_manager.start(account_id=account_id)
                         if success:
                             logger.info("✅ User Hub connected for real-time updates")
+                            # Register event-driven cache invalidation callbacks
+                            self._setup_event_driven_cache_invalidation(str(account_id))
                         else:
                             logger.warning("⚠️  User Hub connection failed, will use polling")
                 except Exception as e:
@@ -1642,6 +1844,41 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.error(f"Failed to switch account: {e}")
             return False
+    
+    def _setup_event_driven_cache_invalidation(self, account_id: str):
+        """
+        Setup event-driven cache invalidation from SignalR events.
+        This eliminates the need for constant API polling by invalidating
+        caches only when actual changes occur.
+        
+        Args:
+            account_id: Account ID to monitor
+        """
+        if not hasattr(self, 'user_hub_manager') or not hasattr(self, 'state_cache'):
+            return
+        
+        # Create cache invalidation callbacks
+        def on_order_update(data):
+            """Invalidate orders cache when order event received."""
+            try:
+                self.state_cache.invalidate_orders(account_id)
+                logger.debug(f"🔄 Orders cache invalidated (SignalR event)")
+            except Exception as e:
+                logger.error(f"Error invalidating orders cache: {e}")
+        
+        def on_position_update(data):
+            """Invalidate positions cache when position event received."""
+            try:
+                self.state_cache.invalidate_positions(account_id)
+                logger.debug(f"🔄 Positions cache invalidated (SignalR event)")
+            except Exception as e:
+                logger.error(f"Error invalidating positions cache: {e}")
+        
+        # Register callbacks with User Hub Manager
+        self.user_hub_manager.register_order_callback(on_order_update)
+        self.user_hub_manager.register_position_callback(on_position_update)
+        
+        logger.info(f"✅ Event-driven cache invalidation enabled for account {account_id}")
 
     def select_account(self, accounts: List[Dict]) -> Optional[Dict]:
         """
@@ -2541,6 +2778,16 @@ class TopStepXTradingBot:
             except Exception as cache_err:
                 logger.warning(f"Failed to cache IDs from order response: {cache_err}")
 
+            # CRITICAL: Invalidate cache immediately so fast refresh loop gets fresh data
+            if hasattr(self, 'state_cache') and self.state_cache and target_account:
+                try:
+                    self.state_cache.invalidate_orders(str(target_account))
+                    # Order fill may create/close position, so invalidate positions too
+                    self.state_cache.invalidate_positions(str(target_account))
+                    logger.debug(f"🔄 Invalidated orders/positions cache after order placement")
+                except Exception as inval_err:
+                    logger.debug(f"Error invalidating cache after order: {inval_err}")
+
             return response
             
         except Exception as e:
@@ -3031,6 +3278,15 @@ class TopStepXTradingBot:
             # Convert CloseResponse to dict for backward compatibility
             if hasattr(result, 'success'):
                 if result.success:
+                    # CRITICAL: Invalidate cache immediately so fast refresh loop gets fresh data
+                    if hasattr(self, 'state_cache') and self.state_cache and target_account:
+                        try:
+                            self.state_cache.invalidate_positions(str(target_account))
+                            self.state_cache.invalidate_orders(str(target_account))  # Closing may cancel related orders
+                            logger.debug(f"🔄 Invalidated positions/orders cache after position close")
+                        except Exception as inval_err:
+                            logger.debug(f"Error invalidating cache after position close: {inval_err}")
+                    
                     # Send Discord notification
                     try:
                         if position_details and "error" not in position_details:
@@ -3108,7 +3364,7 @@ class TopStepXTradingBot:
             # Use TopStepXAdapter for order fetching
             orders = await self.broker_adapter.get_open_orders(account_id=target_account)
             
-            logger.info(f"Found {len(orders)} open orders for account {target_account}")
+            logger.debug(f"Found {len(orders)} open orders for account {target_account}")  # Reduced to DEBUG
             return orders
             
         except Exception as e:
@@ -3143,6 +3399,14 @@ class TopStepXTradingBot:
             # Convert CancelResponse to dict for backward compatibility
             if hasattr(result, 'success'):
                 if result.success:
+                    # CRITICAL: Invalidate cache immediately so fast refresh loop gets fresh data
+                    if hasattr(self, 'state_cache') and self.state_cache and target_account:
+                        try:
+                            self.state_cache.invalidate_orders(str(target_account))
+                            logger.debug(f"🔄 Invalidated orders cache after order cancel")
+                        except Exception as inval_err:
+                            logger.debug(f"Error invalidating cache after order cancel: {inval_err}")
+                    
                     return {
                         "success": True,
                         "orderId": result.order_id,
@@ -3300,6 +3564,23 @@ class TopStepXTradingBot:
         Now uses RiskManager for point value calculations, maintaining backward compatibility.
         """
         return self.risk_manager.get_point_value(symbol)
+    
+    def _calculate_commission(self, quantity: int) -> float:
+        """
+        Calculate total commission for a trade (round trip).
+        
+        Each contract has $0.74 commission to open and $0.74 to close,
+        so total commission per round trip is $1.48 per contract.
+        
+        Args:
+            quantity: Number of contracts
+            
+        Returns:
+            Total commission in dollars
+        """
+        COMMISSION_PER_CONTRACT_OPEN = 0.74
+        COMMISSION_PER_CONTRACT_CLOSE = 0.74
+        return (COMMISSION_PER_CONTRACT_OPEN + COMMISSION_PER_CONTRACT_CLOSE) * quantity
 
     def _consolidate_orders_into_trades(self, orders: List[Dict]) -> List[Dict]:
         """
@@ -3388,7 +3669,10 @@ class TopStepXTradingBot:
                         entry_price = position['entry_price']
                         exit_price = price
                         point_value = self._get_point_value(symbol)
-                        pnl = (entry_price - exit_price) * closed_qty * point_value  # Reversed for short
+                        gross_pnl = (entry_price - exit_price) * closed_qty * point_value  # Reversed for short
+                        # Subtract commission (round trip: open + close)
+                        commission = self._calculate_commission(closed_qty)
+                        pnl = gross_pnl - commission
                         
                         # Extract strategy from entry order's custom tag
                         entry_order = position['entry_order']
@@ -3451,7 +3735,10 @@ class TopStepXTradingBot:
                         entry_price = position['entry_price']
                         exit_price = price
                         point_value = self._get_point_value(symbol)
-                        pnl = (exit_price - entry_price) * closed_qty * point_value
+                        gross_pnl = (exit_price - entry_price) * closed_qty * point_value
+                        # Subtract commission (round trip: open + close)
+                        commission = self._calculate_commission(closed_qty)
+                        pnl = gross_pnl - commission
                         
                         # Extract strategy from entry order's custom tag
                         entry_order = position['entry_order']
@@ -3505,12 +3792,95 @@ class TopStepXTradingBot:
         # Sort consolidated trades by exit time
         consolidated_trades.sort(key=lambda x: x.get('exit_time', ''))
         
-        # Log summary of consolidation
-        logger.info(f"Consolidated {len(orders)} orders into {len(consolidated_trades)} completed trades")
-        if consolidated_trades:
-            logger.debug(f"Trades summary: {[(t['symbol'], t['side'], t['quantity'], t['pnl']) for t in consolidated_trades]}")
+        # Deduplicate trades: if multiple trades have same entry_order_id, exit_order_id, entry_price, exit_price, and times,
+        # they are likely duplicates from the same order pair being processed multiple times
+        seen_trades = {}
+        deduplicated_trades = []
+        for trade in consolidated_trades:
+            # Create a unique key from trade characteristics
+            entry_id = trade.get('entry_order_id')
+            exit_id = trade.get('exit_order_id')
+            entry_price = trade.get('entry_price')
+            exit_price = trade.get('exit_price')
+            entry_time = trade.get('entry_time')
+            exit_time = trade.get('exit_time')
+            
+            # Use a combination of order IDs and prices as the key
+            # If same entry/exit order IDs with same prices, it's likely the same trade
+            trade_key = (entry_id, exit_id, entry_price, exit_price)
+            
+            if trade_key not in seen_trades:
+                seen_trades[trade_key] = trade
+                deduplicated_trades.append(trade)
+            else:
+                # Check if times are very close (within 1 second) - likely same trade
+                existing_trade = seen_trades[trade_key]
+                existing_entry_time = existing_trade.get('entry_time')
+                existing_exit_time = existing_trade.get('exit_time')
+                
+                # Convert times to comparable format if needed
+                try:
+                    from datetime import datetime
+                    if isinstance(entry_time, str):
+                        entry_time_dt = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
+                    elif isinstance(entry_time, datetime):
+                        entry_time_dt = entry_time
+                    else:
+                        entry_time_dt = None
+                    
+                    if isinstance(existing_entry_time, str):
+                        existing_entry_time_dt = datetime.fromisoformat(existing_entry_time.replace('Z', '+00:00'))
+                    elif isinstance(existing_entry_time, datetime):
+                        existing_entry_time_dt = existing_entry_time
+                    else:
+                        existing_entry_time_dt = None
+                    
+                    if isinstance(exit_time, str):
+                        exit_time_dt = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
+                    elif isinstance(exit_time, datetime):
+                        exit_time_dt = exit_time
+                    else:
+                        exit_time_dt = None
+                    
+                    if isinstance(existing_exit_time, str):
+                        existing_exit_time_dt = datetime.fromisoformat(existing_exit_time.replace('Z', '+00:00'))
+                    elif isinstance(existing_exit_time, datetime):
+                        existing_exit_time_dt = existing_exit_time
+                    else:
+                        existing_exit_time_dt = None
+                    
+                    # Compare times if both are available
+                    if entry_time_dt and existing_entry_time_dt:
+                        entry_time_diff = abs((entry_time_dt - existing_entry_time_dt).total_seconds())
+                    else:
+                        entry_time_diff = 999  # Can't compare, assume different
+                    
+                    if exit_time_dt and existing_exit_time_dt:
+                        exit_time_diff = abs((exit_time_dt - existing_exit_time_dt).total_seconds())
+                    else:
+                        exit_time_diff = 999  # Can't compare, assume different
+                    
+                    # If times are very close (within 1 second), it's likely a duplicate
+                    if entry_time_diff < 1.0 and exit_time_diff < 1.0:
+                        logger.debug(f"Skipping duplicate trade: entry={entry_id}, exit={exit_id}, entry_price={entry_price}, exit_price={exit_price}")
+                        continue
+                    else:
+                        # Different times, might be legitimate separate trades (e.g., partial fills)
+                        deduplicated_trades.append(trade)
+                except Exception as e:
+                    logger.debug(f"Could not compare times for deduplication: {e}, keeping trade")
+                    deduplicated_trades.append(trade)
         
-        return consolidated_trades
+        # Log summary of consolidation
+        duplicates_removed = len(consolidated_trades) - len(deduplicated_trades)
+        if duplicates_removed > 0:
+            logger.info(f"Consolidated {len(orders)} orders into {len(consolidated_trades)} trades, removed {duplicates_removed} duplicates, final count: {len(deduplicated_trades)}")
+        else:
+            logger.info(f"Consolidated {len(orders)} orders into {len(deduplicated_trades)} completed trades")
+        if deduplicated_trades:
+            logger.debug(f"Trades summary: {[(t['symbol'], t['side'], t['quantity'], t['pnl']) for t in deduplicated_trades]}")
+        
+        return deduplicated_trades
     
     def _calculate_trade_statistics(self, trades: List[Dict]) -> Dict:
         """
@@ -3541,13 +3911,31 @@ class TopStepXTradingBot:
         losing_trades = []
         
         for trade in trades:
-            pnl = float(trade.get('pnl', 0) or trade.get('unrealizedPnl', 0) or trade.get('realizedPnl', 0))
+            # Prefer net_pnl (after fees) if available, otherwise use gross pnl
+            net_pnl = trade.get('net_pnl')
+            if net_pnl is not None:
+                pnl = float(net_pnl)
+            else:
+                # Calculate net_pnl from gross pnl and fees if not provided
+                gross_pnl = float(trade.get('pnl', 0) or trade.get('unrealizedPnl', 0) or trade.get('realizedPnl', 0))
+                fees = float(trade.get('fees', 0) or trade.get('commission', 0) or 0)
+                pnl = gross_pnl - fees
             if pnl > 0:
                 winning_trades.append(pnl)
             elif pnl < 0:
                 losing_trades.append(pnl)
         
-        total_pnl = sum(float(t.get('pnl', 0) or t.get('unrealizedPnl', 0) or t.get('realizedPnl', 0)) for t in trades)
+        # Calculate total_pnl using net_pnl (after fees)
+        total_pnl = 0.0
+        for trade in trades:
+            net_pnl = trade.get('net_pnl')
+            if net_pnl is not None:
+                total_pnl += float(net_pnl)
+            else:
+                # Calculate net_pnl from gross pnl and fees if not provided
+                gross_pnl = float(trade.get('pnl', 0) or trade.get('unrealizedPnl', 0) or trade.get('realizedPnl', 0))
+                fees = float(trade.get('fees', 0) or trade.get('commission', 0) or 0)
+                total_pnl += (gross_pnl - fees)
         win_rate = (len(winning_trades) / len(trades) * 100) if trades else 0.0
         
         return {
@@ -3604,9 +3992,10 @@ class TopStepXTradingBot:
     
     async def get_today_stats(self, account_id: str = None) -> Dict:
         """
-        Get today's trading statistics from TopStepX Statistics API.
+        Get today's trading statistics using manual calculation from Trade/search.
         
-        This provides authoritative realized P&L and trade statistics directly from TopStepX.
+        Statistics endpoints on userapi.topstepx.com require internal developer permissions
+        and are not available via API key. This method calculates statistics from trades.
         
         Args:
             account_id: Account ID (uses selected account if not provided)
@@ -3615,62 +4004,68 @@ class TopStepXTradingBot:
             Dict: Today's statistics including totalPnL, totalTrades, winningTrades, etc.
         """
         try:
+            from datetime import datetime, timezone, timedelta
+            
             target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
             if not target_account:
                 logger.error("No account selected for today stats")
                 return {}
             
-            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
-            endpoints_to_try = [
-                "/Statistics/todaystats",  # Try without /api/ first (matches user's doc format)
-                "/api/Statistics/todaystats"  # Fallback to /api/ prefix
-            ]
+            # Get today's date range (UTC)
+            now = datetime.now(timezone.utc)
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
             
-            response = None
-            last_error = None
-            for endpoint_path in endpoints_to_try:
-                try:
-                    response = self._make_curl_request(
-                        method="POST",
-                        endpoint=endpoint_path,
-                        data={"tradingAccountId": int(target_account)},
-                        suppress_errors=True
-                    )
-                    # If successful (no error key), break
-                    if "error" not in response:
-                        break
-                    last_error = response.get('error', '')
-                    # If 404, try next endpoint; otherwise return error
-                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
-                        break
-                except Exception as e:
-                    last_error = str(e)
-                    if '404' not in last_error and 'Not Found' not in last_error:
-                        break
-                    continue
+            # Get trades for today using Trade/search
+            trades = await self.get_trades_from_api(
+                account_id=target_account,
+                start_date=start_of_day.isoformat(),
+                end_date=end_of_day.isoformat()
+            )
             
-            # Check for errors
-            if response and "error" in response:
-                error_msg = str(response.get('error', ''))
-                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
-                logger.debug(f"Tried endpoints: {endpoints_to_try}")
-                return {}
-            elif not response:
-                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
-                return {}
+            if not trades:
+                logger.debug(f"No trades found for today for account {target_account}")
+                return {
+                    "totalPnL": 0.0,
+                    "totalTrades": 0,
+                    "winningTrades": 0,
+                    "losingTrades": 0,
+                    "winRate": 0.0,
+                    "totalFees": 0.0
+                }
             
-            return response if isinstance(response, dict) else {}
+            # Calculate statistics from trades
+            stats = self._calculate_trade_statistics(trades)
+            
+            # Calculate total fees
+            total_fees = sum(float(trade.get('fees', 0) or 0) for trade in trades)
+            
+            # Return in format similar to what Statistics API would return
+            return {
+                "totalPnL": stats.get("total_pnl", 0.0),
+                "totalTrades": stats.get("total_trades", 0),
+                "winningTrades": stats.get("winning_trades", 0),
+                "losingTrades": stats.get("losing_trades", 0),
+                "winRate": stats.get("win_rate", 0.0),
+                "totalFees": round(total_fees, 2),
+                "averageWin": stats.get("average_win", 0.0),
+                "averageLoss": stats.get("average_loss", 0.0),
+                "largestWin": stats.get("largest_win", 0.0),
+                "largestLoss": stats.get("largest_loss", 0.0)
+            }
         except Exception as e:
-            # Suppress 404 errors - they're expected for practice accounts
-            error_str = str(e)
-            if '404' not in error_str and 'Not Found' not in error_str:
-                logger.debug(f"Error fetching today stats: {e}")
+            logger.error(f"Error calculating today stats: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return {}
     
     async def get_trade_statistics(self, account_id: str = None, 
                                    start_date: str = None, end_date: str = None) -> Dict:
         """
-        Get trade statistics for a date range from TopStepX Statistics API.
+        Get trade statistics for a date range using manual calculation from Trade/search.
+        
+        Statistics endpoints on userapi.topstepx.com require internal developer permissions
+        and are not available via API key. This method calculates statistics from trades.
         
         Args:
             account_id: Account ID (uses selected account if not provided)
@@ -3689,164 +4084,103 @@ class TopStepXTradingBot:
             
             # Default to today if not provided
             if not start_date:
-                start_date = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(timezone.utc)
+                start_date = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             if not end_date:
-                end_date = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(timezone.utc)
+                end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
             
-            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
-            endpoints_to_try = [
-                "/Statistics/daystats",  # Try without /api/ first (matches user's doc format)
-                "/api/Statistics/daystats"  # Fallback to /api/ prefix
-            ]
+            # Get trades for the date range using Trade/search
+            trades = await self.get_trades_from_api(
+                account_id=target_account,
+                start_date=start_date,
+                end_date=end_date
+            )
             
-            response = None
-            last_error = None
-            for endpoint_path in endpoints_to_try:
-                try:
-                    response = self._make_curl_request(
-                        method="POST",
-                        endpoint=endpoint_path,
-                        data={
-                            "tradingAccountId": int(target_account),
-                            "startTradeDay": start_date,
-                            "endTradeDay": end_date
-                        },
-                        suppress_errors=True
-                    )
-                    # If successful (no error key), break
-                    if "error" not in response:
-                        break
-                    last_error = response.get('error', '')
-                    # If 404, try next endpoint; otherwise return error
-                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
-                        break
-                except Exception as e:
-                    last_error = str(e)
-                    if '404' not in last_error and 'Not Found' not in last_error:
-                        break
-                    continue
+            if not trades:
+                logger.debug(f"No trades found for date range {start_date} to {end_date} for account {target_account}")
+                return {
+                    'totalPnL': 0.0,
+                    'totalTrades': 0,
+                    'winningTrades': 0,
+                    'losingTrades': 0,
+                    'winRate': 0.0,
+                    'totalFees': 0.0
+                }
             
-            # Check for errors
-            if response and "error" in response:
-                error_msg = str(response.get('error', ''))
-                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
-                logger.debug(f"Tried endpoints: {endpoints_to_try}")
-                return {}
-            elif not response:
-                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
-                return {}
+            # Calculate statistics from trades
+            stats = self._calculate_trade_statistics(trades)
             
-            # API returns a list, get the first item or aggregate if multiple days
-            if isinstance(response, list):
-                if len(response) == 1:
-                    return response[0]
-                elif len(response) > 1:
-                    # Aggregate multiple days
-                    total_pnl = sum(d.get('totalPnL', 0) for d in response)
-                    total_trades = sum(d.get('totalTrades', 0) for d in response)
-                    winning_trades = sum(d.get('winningTrades', 0) for d in response)
-                    losing_trades = sum(d.get('losingTrades', 0) for d in response)
-                    total_fees = sum(d.get('totalFees', 0) for d in response)
-                    
-                    return {
-                        'totalPnL': total_pnl,
-                        'totalTrades': total_trades,
-                        'winningTrades': winning_trades,
-                        'losingTrades': losing_trades,
-                        'winRate': winning_trades / total_trades if total_trades > 0 else 0,
-                        'totalFees': total_fees
-                    }
-                else:
-                    return {}
+            # Calculate total fees
+            total_fees = sum(float(trade.get('fees', 0) or 0) for trade in trades)
             
-            return response if isinstance(response, dict) else {}
+            # Return in format similar to what Statistics API would return
+            return {
+                'totalPnL': stats.get("total_pnl", 0.0),
+                'totalTrades': stats.get("total_trades", 0),
+                'winningTrades': stats.get("winning_trades", 0),
+                'losingTrades': stats.get("losing_trades", 0),
+                'winRate': stats.get("win_rate", 0.0),
+                'totalFees': round(total_fees, 2),
+                'averageWin': stats.get("average_win", 0.0),
+                'averageLoss': stats.get("average_loss", 0.0),
+                'largestWin': stats.get("largest_win", 0.0),
+                'largestLoss': stats.get("largest_loss", 0.0)
+            }
         except Exception as e:
-            logger.debug(f"Error fetching trade statistics: {e}")
+            logger.error(f"Error calculating trade statistics: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return {}
     
     async def get_trades_from_api(self, account_id: str = None,
                                   start_date: str = None, end_date: str = None) -> List[Dict]:
         """
-        Get individual trades from TopStepX Statistics API.
+        Get individual trades from TopStepX Trade/search API endpoint.
         
-        This provides authoritative trade data with realized P&L directly from TopStepX.
+        This provides authoritative trade data with pre-calculated profitAndLoss
+        directly from TopStepX, which is more accurate than manual consolidation.
         
         Args:
             account_id: Account ID (uses selected account if not provided)
-            start_date: Start date in ISO format (defaults to today)
-            end_date: End date in ISO format (defaults to today)
+            start_date: Start date in ISO format (defaults to 7 days ago)
+            end_date: End date in ISO format (defaults to now)
             
         Returns:
-            List[Dict]: List of trades with profitAndLoss, entryPrice, exitPrice, etc.
+            List[Dict]: List of trades with profitAndLoss, fees, etc.
         """
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime, timezone, timedelta
             target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
             if not target_account:
                 logger.error("No account selected for trades")
                 return []
             
-            # Default to today if not provided
-            if not start_date:
-                start_date = datetime.now(timezone.utc).isoformat()
-            if not end_date:
-                end_date = datetime.now(timezone.utc).isoformat()
-            
-            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
-            endpoints_to_try = [
-                "/Statistics/trades",  # Try without /api/ first (matches user's doc format)
-                "/api/Statistics/trades"  # Fallback to /api/ prefix
-            ]
-            
-            response = None
-            last_error = None
-            for endpoint_path in endpoints_to_try:
-                try:
-                    response = self._make_curl_request(
-                        method="POST",
-                        endpoint=endpoint_path,
-                        data={
-                            "tradingAccountId": int(target_account),
-                            "startTradeDay": start_date,
-                            "endTradeDay": end_date
-                        },
-                        suppress_errors=True
-                    )
-                    # If successful (no error key), break
-                    if "error" not in response:
-                        break
-                    last_error = response.get('error', '')
-                    # If 404, try next endpoint; otherwise return error
-                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
-                        break
-                except Exception as e:
-                    last_error = str(e)
-                    if '404' not in last_error and 'Not Found' not in last_error:
-                        break
-                    continue
-            
-            # Check for errors
-            if response and "error" in response:
-                error_msg = str(response.get('error', ''))
-                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
-                logger.debug(f"Tried endpoints: {endpoints_to_try}")
+            # Use broker adapter's get_trades method which uses Trade/search endpoint
+            if hasattr(self, 'broker_adapter') and self.broker_adapter:
+                trades = await self.broker_adapter.get_trades(
+                    account_id=target_account,
+                    start_timestamp=start_date,
+                    end_timestamp=end_date
+                )
+                logger.info(f"✅ Retrieved {len(trades)} trades from Trade/search API")
+                return trades
+            else:
+                logger.warning("Broker adapter not available, cannot fetch trades")
                 return []
-            elif not response:
-                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
-                return []
-            
-            return response if isinstance(response, list) else []
         except Exception as e:
-            # Suppress 404 errors - they're expected for practice accounts
-            error_str = str(e)
-            if '404' not in error_str and 'Not Found' not in error_str:
-                logger.debug(f"Error fetching trades from API: {e}")
+            logger.error(f"Error fetching trades from Trade/search API: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return []
     
     async def get_profit_factor(self, account_id: str = None,
                                start_date: str = None, end_date: str = None) -> Dict:
         """
-        Get profit factor from TopStepX Statistics API.
+        Get profit factor using manual calculation from Trade/search.
+        
+        Statistics endpoints on userapi.topstepx.com require internal developer permissions
+        and are not available via API key. This method calculates profit factor from trades.
         
         Args:
             account_id: Account ID (uses selected account if not provided)
@@ -3865,59 +4199,51 @@ class TopStepXTradingBot:
             
             # Default to today if not provided
             if not start_date:
-                start_date = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(timezone.utc)
+                start_date = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             if not end_date:
-                end_date = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(timezone.utc)
+                end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
             
-            # Try both /api/Statistics/ and /Statistics/ paths (API structure may vary)
-            endpoints_to_try = [
-                "/Statistics/profitFactor",  # Try without /api/ first (matches user's doc format)
-                "/api/Statistics/profitFactor"  # Fallback to /api/ prefix
-            ]
+            # Get trades for the date range using Trade/search
+            trades = await self.get_trades_from_api(
+                account_id=target_account,
+                start_date=start_date,
+                end_date=end_date
+            )
             
-            response = None
-            last_error = None
-            for endpoint_path in endpoints_to_try:
-                try:
-                    response = self._make_curl_request(
-                        method="POST",
-                        endpoint=endpoint_path,
-                        data={
-                            "tradingAccountId": int(target_account),
-                            "startTradeDay": start_date,
-                            "endTradeDay": end_date
-                        },
-                        suppress_errors=True
-                    )
-                    # If successful (no error key), break
-                    if "error" not in response:
-                        break
-                    last_error = response.get('error', '')
-                    # If 404, try next endpoint; otherwise return error
-                    if '404' not in str(last_error) and 'Not Found' not in str(last_error):
-                        break
-                except Exception as e:
-                    last_error = str(e)
-                    if '404' not in last_error and 'Not Found' not in last_error:
-                        break
-                    continue
-            
-            # Check for errors
-            if response and "error" in response:
-                error_msg = str(response.get('error', ''))
-                logger.warning(f"Statistics API error for account {target_account}: {error_msg}")
-                logger.debug(f"Tried endpoints: {endpoints_to_try}")
-                return {'totalProfit': 0, 'totalLoss': 0}
-            elif not response:
-                logger.warning(f"Statistics API failed for account {target_account}: {last_error}")
+            if not trades:
+                logger.debug(f"No trades found for date range {start_date} to {end_date} for account {target_account}")
                 return {'totalProfit': 0, 'totalLoss': 0}
             
-            return response if isinstance(response, dict) else {'totalProfit': 0, 'totalLoss': 0}
+            # Calculate total profit and loss from trades
+            total_profit = 0.0
+            total_loss = 0.0
+            
+            for trade in trades:
+                # Prefer net_pnl (after fees) if available
+                net_pnl = trade.get('net_pnl')
+                if net_pnl is not None:
+                    pnl = float(net_pnl)
+                else:
+                    # Calculate net_pnl from gross pnl and fees if not provided
+                    gross_pnl = float(trade.get('pnl', 0) or trade.get('profitAndLoss', 0) or 0)
+                    fees = float(trade.get('fees', 0) or 0)
+                    pnl = gross_pnl - fees
+                
+                if pnl > 0:
+                    total_profit += pnl
+                elif pnl < 0:
+                    total_loss += abs(pnl)  # Store as positive value for loss
+            
+            return {
+                'totalProfit': round(total_profit, 2),
+                'totalLoss': round(total_loss, 2)
+            }
         except Exception as e:
-            # Suppress 404 errors - they're expected for practice accounts
-            error_str = str(e)
-            if '404' not in error_str and 'Not Found' not in error_str:
-                logger.debug(f"Error fetching profit factor: {e}")
+            logger.error(f"Error calculating profit factor: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return {'totalProfit': 0, 'totalLoss': 0}
     
     # ============================================================================
@@ -4086,6 +4412,9 @@ class TopStepXTradingBot:
         
         Now uses TopStepXAdapter for bracket order creation, maintaining backward compatibility.
         
+        **CENTRALIZED RISK MANAGEMENT**: When called from strategies (strategy_name provided),
+        orders are automatically checked for position limits, cooldowns, and time restrictions.
+        
         Args:
             symbol: Trading symbol (e.g., "ES", "NQ", "MNQ", "YM")
             side: "BUY" or "SELL"
@@ -4095,7 +4424,7 @@ class TopStepXTradingBot:
             stop_loss_ticks: Stop loss in ticks (optional if stop_loss_price provided)
             take_profit_ticks: Take profit in ticks (optional if take_profit_price provided)
             account_id: Account ID (uses selected account if not provided)
-            strategy_name: Optional strategy name for tracking
+            strategy_name: Optional strategy name for tracking (triggers risk checks if provided)
             
         Returns:
             Dict: Bracket order response or error
@@ -4108,6 +4437,27 @@ class TopStepXTradingBot:
             
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
+            
+            # CENTRALIZED RISK MANAGEMENT: Check if order is allowed (when called from strategies)
+            if strategy_name:
+                if self._strategy_risk_manager is None:
+                    from core.risk_management import StrategyRiskManager
+                    self._strategy_risk_manager = StrategyRiskManager(self)
+                
+                allowed, reason = await self._strategy_risk_manager.check_order_allowed(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity
+                )
+                
+                if not allowed:
+                    error_msg = f"Risk management blocked order: {reason}"
+                    logger.warning(f"⚠️  Strategy {strategy_name}: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "orderId": None
+                    }
             
             # Use TopStepXAdapter for bracket order creation
             result = await self.broker_adapter.create_bracket_order(
@@ -4124,6 +4474,10 @@ class TopStepXTradingBot:
             
             # Convert OrderResponse to dict for backward compatibility
             if result.success:
+                # Record successful order placement for cooldown tracking (when from strategy)
+                if strategy_name and self._strategy_risk_manager:
+                    await self._strategy_risk_manager.record_order_placement(symbol, side)
+                
                 return {
                     "success": True,
                     "orderId": result.order_id,
@@ -5092,15 +5446,33 @@ class TopStepXTradingBot:
 
                 logger.error(f"Stop bracket order failed: {error_msg}")
 
-                # Hybrid fallback for accounts without Auto OCO Brackets, or when TopStepX returns 500
+                # Check if error is specifically about Auto OCO Brackets not being enabled
+                # In this case, we should NOT attempt fallback - just return the error gracefully
                 err_lower = str(error_msg).lower()
+                is_auto_oco_error = (
+                    "brackets cannot be used with position brackets" in err_lower
+                    or ("you must enable auto oco brackets" in err_lower and "code: 2" in err_lower)
+                    or ("error code 2" in err_lower and "auto oco brackets" in err_lower)
+                )
+                
+                if is_auto_oco_error:
+                    logger.error("❌ Auto OCO Brackets is not enabled in account settings. Cannot place bracket orders.")
+                    logger.error("   Please enable 'Auto OCO Brackets' in your TopStepX account settings to use bracket orders.")
+                    logger.error("   Skipping order placement - no fallback will be attempted.")
+                    return {
+                        "success": False,
+                        "error": "Auto OCO Brackets is not enabled in account settings. Please enable 'Auto OCO Brackets' in your TopStepX account settings to use bracket orders.",
+                        "error_code": 2,
+                        "requires_account_setting": "Auto OCO Brackets"
+                    }
+
+                # Hybrid fallback ONLY for HTTP 500 errors (server issues), NOT for account setting errors
                 if (
-                    "position brackets" in err_lower
-                    or "auto oco" in err_lower
-                    or "http 500" in err_lower
+                    "http 500" in err_lower
                     or "internal server error" in err_lower
+                    or ("500" in err_lower and "error" in err_lower)
                 ):
-                    logger.warning("⚠️ OCO bracket failed; attempting hybrid stop-entry + post-fill bracket fallback")
+                    logger.warning("⚠️ OCO bracket failed with server error; attempting hybrid stop-entry + post-fill bracket fallback")
                     hybrid = await self._stop_bracket_hybrid(
                         symbol=symbol,
                         side=side,
@@ -5491,19 +5863,19 @@ class TopStepXTradingBot:
 
             symbol_up = symbol.upper()
 
-            # Try live cache first
+            # Try live cache first - this is fed by SignalR quotes
             try:
                 await self._ensure_market_socket_started()
                 await self._ensure_quote_subscription(symbol_up)
                 # Briefly wait for first live tick
                 import time
                 start_wait = time.time()
-                while time.time() - start_wait < 0.5:
+                while time.time() - start_wait < 1.0:  # Increased wait time to 1.0s for SignalR to connect
                     with self._quote_cache_lock:
                         live = self._quote_cache.get(symbol_up)
                     if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
                         break
-                    time.sleep(0.02)
+                    time.sleep(0.05)  # Check every 50ms
                 with self._quote_cache_lock:
                     live = self._quote_cache.get(symbol_up)
                 if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
@@ -5564,9 +5936,9 @@ class TopStepXTradingBot:
             except Exception as e:
                 logger.debug(f"REST quote endpoint not available: {e}")
 
-            # Fallback to recent bars for last price
+            # Fallback to recent bars for last price (only if SignalR is truly unavailable)
             from datetime import datetime, timezone, timedelta
-            logger.info(f"Fetching fallback bars for {symbol_up}")
+            logger.warning(f"⚠️  SignalR and REST quote unavailable, falling back to bars API for {symbol_up}")
             contract_id = self._get_contract_id(symbol_up)
             headers = {
                 "accept": "text/plain",
@@ -6298,6 +6670,9 @@ class TopStepXTradingBot:
         current_group = []
         current_group_start = None
         
+        # Debug logging for daily bars
+        is_daily = target_timeframe.endswith('d')
+        
         for bar in bars:
             # Get timestamp
             ts_str = bar.get('timestamp') or bar.get('time')
@@ -6317,9 +6692,16 @@ class TopStepXTradingBot:
             # Calculate which target timeframe bar this belongs to
             # Special handling for daily bars
             if target_timeframe.endswith('d'):
+                # Get the actual bar start time (18:00 ET previous day) for grouping
                 bar_start = self._get_daily_bar_start_time(ts)
-                # For daily bars, use the trading day's date for display (next day if starts at 18:00)
-                bar_start = self._get_daily_bar_display_date(bar_start)
+                # For daily bars, only include bars that are >= bar_start and < bar_end
+                # This ensures we don't include bars from before the daily period
+                bar_end = self._get_daily_bar_end_time(bar_start)
+                if ts < bar_start or ts >= bar_end:
+                    # Skip bars outside the daily period
+                    import logging
+                    logging.debug(f"Skipping bar outside daily period: ts={ts}, bar_start={bar_start}, bar_end={bar_end}")
+                    continue
             else:
                 bar_start_seconds = int(ts.timestamp()) // target_seconds * target_seconds
                 bar_start = datetime.fromtimestamp(bar_start_seconds, tz=timezone.utc)
@@ -6328,14 +6710,25 @@ class TopStepXTradingBot:
             if current_group_start is None or bar_start != current_group_start:
                 # Finalize previous group
                 if current_group:
-                    # For daily bars, convert to display date (trading day's date)
-                    display_timestamp = current_group_start
-                    if target_timeframe.endswith('d'):
-                        display_timestamp = self._get_daily_bar_display_date(current_group_start)
+                    # For daily bars, use the actual bar start time as timestamp (not display date)
+                    # The display date is only for labeling, but timestamp should be the actual start
+                    agg_timestamp = current_group_start
+                    
+                    # Debug logging for daily bars
+                    if is_daily:
+                        import logging
+                        first_bar_ts = current_group[0].get('timestamp') or current_group[0].get('time')
+                        if isinstance(first_bar_ts, str):
+                            first_bar_ts = datetime.fromisoformat(first_bar_ts.replace('Z', '+00:00'))
+                        last_bar_ts = current_group[-1].get('timestamp') or current_group[-1].get('time')
+                        if isinstance(last_bar_ts, str):
+                            last_bar_ts = datetime.fromisoformat(last_bar_ts.replace('Z', '+00:00'))
+                        logging.info(f"📊 Daily bar: start={agg_timestamp}, open={current_group[0].get('open', 0)}, "
+                                    f"first_bar_ts={first_bar_ts}, last_bar_ts={last_bar_ts}, bars_in_group={len(current_group)}")
                     
                     agg_bar = {
-                        'timestamp': display_timestamp.isoformat(),
-                        'time': display_timestamp.isoformat(),
+                        'timestamp': agg_timestamp.isoformat(),
+                        'time': agg_timestamp.isoformat(),
                         'open': current_group[0].get('open', 0),
                         'high': max(b.get('high', 0) for b in current_group),
                         'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
@@ -6356,14 +6749,12 @@ class TopStepXTradingBot:
         
         # Finalize last group
         if current_group:
-            # For daily bars, convert to display date (trading day's date)
-            display_timestamp = current_group_start
-            if target_timeframe.endswith('d'):
-                display_timestamp = self._get_daily_bar_display_date(current_group_start)
+            # For daily bars, use the actual bar start time as timestamp (not display date)
+            agg_timestamp = current_group_start
             
             agg_bar = {
-                'timestamp': display_timestamp.isoformat(),
-                'time': display_timestamp.isoformat(),
+                'timestamp': agg_timestamp.isoformat(),
+                'time': agg_timestamp.isoformat(),
                 'open': current_group[0].get('open', 0),
                 'high': max(b.get('high', 0) for b in current_group),
                 'low': min(b.get('low', float('inf')) for b in current_group if b.get('low') is not None),
@@ -6414,14 +6805,14 @@ class TopStepXTradingBot:
         
         Rules:
         - Every day opens at 18:00 ET (6pm) the previous day
-        - Every day closes at 17:00 ET (5pm) that day
+        - Every day closes at 18:00 ET (6pm) that day
         
         Examples:
-        - Monday bar: Sunday 18:00 ET to Monday 17:00 ET
-        - Tuesday bar: Monday 18:00 ET to Tuesday 17:00 ET
-        - Wednesday bar: Tuesday 18:00 ET to Wednesday 17:00 ET
-        - Thursday bar: Wednesday 18:00 ET to Thursday 17:00 ET
-        - Friday bar: Thursday 18:00 ET to Friday 17:00 ET
+        - Monday bar: Sunday 18:00 ET to Monday 18:00 ET
+        - Tuesday bar: Monday 18:00 ET to Tuesday 18:00 ET
+        - Wednesday bar: Tuesday 18:00 ET to Wednesday 18:00 ET
+        - Thursday bar: Wednesday 18:00 ET to Thursday 18:00 ET
+        - Friday bar: Thursday 18:00 ET to Friday 18:00 ET
         """
         try:
             import pytz
@@ -6438,18 +6829,43 @@ class TopStepXTradingBot:
         hour = timestamp_et.hour
         
         # Calculate daily bar start - simplified logic
-        # If before 17:00 (5pm), we're still in today's bar (which started yesterday 18:00)
-        # If at or after 17:00 (5pm), we're in tomorrow's bar (which starts today 18:00)
-        if hour < 17:
-            # Before 17:00 - still in today's bar, which started yesterday 18:00
+        # If before 18:00 (6pm), we're still in today's bar (which started yesterday 18:00)
+        # If at or after 18:00 (6pm), we're in tomorrow's bar (which starts today 18:00)
+        if hour < 18:
+            # Before 18:00 - still in today's bar, which started yesterday 18:00
             days_back = 1
             bar_start_et = (timestamp_et - timedelta(days=days_back)).replace(hour=18, minute=0, second=0, microsecond=0)
         else:
-            # At or after 17:00 - this is tomorrow's bar, which starts today 18:00
+            # At or after 18:00 - this is tomorrow's bar, which starts today 18:00
             bar_start_et = timestamp_et.replace(hour=18, minute=0, second=0, microsecond=0)
         
         # Convert back to UTC
         return bar_start_et.astimezone(timezone.utc)
+    
+    def _get_daily_bar_end_time(self, bar_start: datetime) -> datetime:
+        """
+        Get the end time for a daily bar based on EST market hours.
+        
+        Rules:
+        - Daily bars end at 18:00 ET (6pm) the next day
+        - This aligns with the overnight session: 18:00 to 18:00
+        """
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+        except ImportError:
+            et_tz = timezone(timedelta(hours=-5))
+        
+        # Convert to EST
+        if bar_start.tzinfo is None:
+            bar_start = bar_start.replace(tzinfo=timezone.utc)
+        bar_start_et = bar_start.astimezone(et_tz)
+        
+        # All daily bars end at 18:00 ET the next day
+        bar_end_et = (bar_start_et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        # Convert back to UTC
+        return bar_end_et.astimezone(timezone.utc)
     
     def _get_daily_bar_display_date(self, bar_start_timestamp: datetime) -> datetime:
         """
@@ -6581,6 +6997,83 @@ class TopStepXTradingBot:
 
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             return []
+    
+    async def get_historical_data_parallel(self, requests: List[Dict]) -> Dict[str, List[Dict]]:
+        """
+        Fetch historical data for multiple symbols/timeframes in parallel.
+        
+        This optimization reduces startup time by fetching historical data concurrently
+        instead of sequentially, particularly useful for multi-symbol strategies.
+        
+        Args:
+            requests: List of dicts with keys: symbol, timeframe, limit, start_time, end_time
+                     Example: [
+                         {"symbol": "MNQ", "timeframe": "1m", "limit": 100},
+                         {"symbol": "MES", "timeframe": "5m", "start_time": dt1, "end_time": dt2}
+                     ]
+        
+        Returns:
+            Dict mapping request index or symbol to bars:
+                {
+                    "MNQ_1m": [...bars...],
+                    "MES_5m": [...bars...]
+                }
+        
+        Example:
+            requests = [
+                {"symbol": "MNQ", "timeframe": "1m", "limit": 500},
+                {"symbol": "MES", "timeframe": "1m", "limit": 500},
+                {"symbol": "MGC", "timeframe": "1m", "limit": 500}
+            ]
+            results = await bot.get_historical_data_parallel(requests)
+            mnq_bars = results["MNQ_1m"]
+        """
+        import time
+        start_time_fetch = time.time()
+        
+        async def fetch_one(request_dict: Dict, request_idx: int):
+            """Fetch one historical data request."""
+            symbol = request_dict.get("symbol")
+            timeframe = request_dict.get("timeframe", "1m")
+            limit = request_dict.get("limit", 100)
+            start_time = request_dict.get("start_time")
+            end_time = request_dict.get("end_time")
+            
+            # Create unique key for this request
+            key = f"{symbol}_{timeframe}"
+            if start_time:
+                key += f"_{start_time.strftime('%Y%m%d')}" if hasattr(start_time, 'strftime') else f"_{start_time}"
+            
+            try:
+                bars = await self.get_historical_data(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    limit=limit,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                return (key, bars)
+            except Exception as e:
+                logger.error(f"Failed to fetch {symbol} {timeframe}: {e}")
+                return (key, [])
+        
+        # Fetch all requests in parallel
+        tasks = [fetch_one(req, idx) for idx, req in enumerate(requests)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Build result dict
+        result_dict = {}
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Parallel fetch error: {result}")
+                continue
+            key, bars = result
+            result_dict[key] = bars
+        
+        elapsed = time.time() - start_time_fetch
+        logger.info(f"✅ Parallel historical data fetch: {len(requests)} requests in {elapsed:.2f}s ({elapsed/len(requests) if requests else 0:.2f}s avg)")
+        
+        return result_dict
     
     def _start_prefetch_task(self) -> None:
         """Start background task to prefetch common symbols/timeframes."""
@@ -6777,6 +7270,14 @@ class TopStepXTradingBot:
             _auth_ms = int((_t.time() - _auth_start) * 1000)
             print(f"✅ Authentication successful! ({_auth_ms} ms)")
             
+            # Start event bus for event-driven architecture (optional - only needed if GUI is running)
+            if hasattr(self, 'event_bus') and self.event_bus and hasattr(self.event_bus, 'start'):
+                try:
+                    await self.event_bus.start()
+                    logger.info("📡 Event bus started")
+                except Exception as e:
+                    logger.warning(f"⚠️  Could not start event bus (not critical if GUI not running): {e}")
+            
             # Step 2: Parallel initialization of independent operations
             # These can all run concurrently after authentication
             print("\n⚡ Initializing in parallel...")
@@ -6856,6 +7357,8 @@ class TopStepXTradingBot:
                     success = await self.user_hub_manager.start(account_id=account_id)
                     if success:
                         logger.info("✅ User Hub connected for real-time updates")
+                        # Register event-driven cache invalidation callbacks
+                        self._setup_event_driven_cache_invalidation(str(account_id))
                     else:
                         logger.warning("⚠️  User Hub connection failed, will use polling")
                 except Exception as e:
@@ -7110,7 +7613,8 @@ class TopStepXTradingBot:
                         print(json.dumps(result_data, indent=2, default=str))
                         
                         # Check if we need to keep running (e.g., for realtime charts)
-                        if result_data.get('keep_running'):
+                        # Only check keep_running if result_data is a dict
+                        if isinstance(result_data, dict) and result_data.get('keep_running'):
                             print(f"\n{result_data.get('message', 'Bot will keep running...')}")
                             print("Press Ctrl+C to stop the bot and close the chart server.\n")
                             
@@ -7132,6 +7636,13 @@ class TopStepXTradingBot:
                                     await asyncio.sleep(1)
                             except KeyboardInterrupt:
                                 print("\n👋 Bot stopped by user")
+                                # Stop event bus
+                                if hasattr(self, 'event_bus') and self.event_bus:
+                                    try:
+                                        await self.event_bus.stop()
+                                        logger.info("📡 Event bus stopped")
+                                    except Exception as e:
+                                        logger.error(f"Error stopping event bus: {e}")
                                 # Cleanup chart server if needed
                                 from gui.chart_html import _chart_server
                                 if _chart_server:

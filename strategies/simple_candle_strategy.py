@@ -855,7 +855,19 @@ class SimpleCandleStrategy(BaseStrategy):
     async def run(self):
         """Main strategy loop."""
         self.status = StrategyStatus.ACTIVE
-        print(f"🚀 Starting Simple Candle Strategy for {self.config.symbols}")
+        
+        # Print initialization message
+        strategy_details = [
+            f"⏰ Timeframe: {self.timeframe}",
+            f"📈 ATR Period: {self.atr_period} bars",
+            f"🎯 Take Profit: {self.profit_multiplier}x ATR",
+            f"🛑 Stop Loss: {self.stop_multiplier}x ATR",
+            f"📊 EMA Cross Detection: {self.ema_fast_period}EMA / {self.ema_slow_period}EMA",
+            f"🔄 Trend Filter: {'ENABLED' if self.use_trend_filter else 'DISABLED'}",
+            f"📦 Position Size: {self.config.position_size} contract(s) per order"
+        ]
+        self.print_initialization_message("Simple Candle Strategy", self.config.symbols, strategy_details)
+        
         logger.info(f"🚀 Starting Simple Candle Strategy for {self.config.symbols}")
         logger.info(f"⏰ Using timeframe: {self.timeframe}, ATR period: {self.atr_period}")
 

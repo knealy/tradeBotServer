@@ -8,7 +8,7 @@ that can be dynamically loaded and managed based on market conditions.
 import os
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -61,6 +61,10 @@ class StrategyConfig:
     respect_dll: bool = True
     respect_mll: bool = True
     max_dll_usage_percent: float = 0.75  # Use max 75% of DLL
+    
+    # Per-instrument risk configuration (optional)
+    risk_config: Optional[Dict[str, Dict[str, Any]]] = None
+    # Format: {'SYMBOL': {'max_quantity': int, 'cooldown': float, 'max_pending': int}}
     
     @staticmethod
     def _parse_conditions(conditions_str: str) -> List[MarketCondition]:
@@ -191,7 +195,88 @@ class BaseStrategy(ABC):
         self.daily_trades: int = 0
         self.last_trade_time: Dict[str, datetime] = {}
         
+        # Running state (some strategies use is_trading, some use is_running)
+        # This provides a unified interface for strategy executors
+        self.is_trading = False
+        
+        # Centralized risk manager (lazy initialization)
+        self._risk_manager = None
+        self._risk_config = getattr(config, 'risk_config', None)  # Per-instrument risk config
+        
         logger.info(f"✨ Initialized {self.config.name} strategy")
+    
+    @property
+    def is_running(self) -> bool:
+        """
+        Check if strategy is currently running.
+        
+        This provides a unified interface for checking strategy status.
+        Checks multiple indicators: is_trading flag, ACTIVE status, etc.
+        """
+        return self.is_trading or self.status == StrategyStatus.ACTIVE
+    
+    @property
+    def risk_manager(self):
+        """Get or create the centralized risk manager."""
+        if self._risk_manager is None:
+            from core.risk_management import StrategyRiskManager
+            self._risk_manager = StrategyRiskManager(self.trading_bot, risk_config=self._risk_config)
+        return self._risk_manager
+    
+    def set_risk_config(self, risk_config: Optional[Dict[str, Dict[str, Any]]]):
+        """
+        Set per-instrument risk configuration.
+        
+        Args:
+            risk_config: Dict mapping symbol to risk config, e.g.:
+                {'MNQ': {'max_quantity': 10, 'cooldown': 60.0, 'max_pending': 1}}
+        """
+        self._risk_config = risk_config
+        # Reset risk manager so it gets recreated with new config
+        self._risk_manager = None
+    
+    def print_initialization_message(self, strategy_name: str, symbols: List[str], 
+                                    strategy_details: Optional[List[str]] = None):
+        """
+        Print a standardized initialization message for all strategies.
+        
+        Args:
+            strategy_name: Display name for the strategy
+            symbols: List of symbols being traded
+            strategy_details: Optional list of strategy-specific detail lines to display
+        """
+        print("\n" + "="*80)
+        print(f"🎯 {strategy_name.upper()} - INITIAL CONFIGURATION")
+        print("="*80)
+        print(f"📊 Symbols: {', '.join(symbols)}")
+        
+        # Print strategy-specific details if provided
+        if strategy_details:
+            for detail in strategy_details:
+                print(detail)
+        
+        # Print risk management configuration
+        print("\n🛡️  RISK MANAGEMENT CONFIGURATION:")
+        print("-"*80)
+        
+        # Get risk manager config (will be created if needed)
+        risk_mgr = self.risk_manager
+        has_per_instrument_config = bool(risk_mgr._risk_config)
+        
+        if has_per_instrument_config:
+            print("📊 Per-Instrument Risk Limits:")
+            for symbol in symbols:
+                config = risk_mgr._get_config_for_symbol(symbol)
+                print(f"  {symbol}: Max Qty={config['max_quantity']}, Cooldown={config['cooldown']}s, Max Pending={config['max_pending']}")
+        else:
+            # Show defaults
+            default_config = risk_mgr._get_config_for_symbol(symbols[0] if symbols else "MNQ")
+            print(f"📊 Default Risk Limits (applies to all symbols):")
+            print(f"  Max Quantity: {default_config['max_quantity']} contracts")
+            print(f"  Order Cooldown: {default_config['cooldown']}s")
+            print(f"  Max Pending Orders: {default_config['max_pending']} per symbol/side")
+        
+        print("\n" + "="*80 + "\n")
     
     @abstractmethod
     async def analyze(self, symbol: str) -> Optional[Dict]:
@@ -429,6 +514,12 @@ class BaseStrategy(ABC):
         This is the standard way for ALL strategies to place bracket orders.
         Uses place_oco_bracket_with_stop_entry which is proven to work reliably.
         
+        **CENTRALIZED RISK MANAGEMENT**: All orders are automatically checked for:
+        - Position quantity limits per symbol
+        - Order cooldown periods
+        - Pending order limits
+        - Time-based restrictions
+        
         Args:
             symbol: Trading symbol (e.g., "MNQ", "ES")
             side: "BUY" or "SELL"
@@ -458,6 +549,22 @@ class BaseStrategy(ABC):
         logger.info(f"📝 {self.config.name}: Placing bracket order via verified path")
         logger.info(f"   {side} {quantity} {symbol} @ {entry_price:.2f}, SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}")
         
+        # CENTRALIZED RISK MANAGEMENT: Check if order is allowed
+        allowed, reason = await self.risk_manager.check_order_allowed(
+            symbol=symbol,
+            side=side,
+            quantity=quantity
+        )
+        
+        if not allowed:
+            error_msg = f"Risk management blocked order: {reason}"
+            logger.warning(f"⚠️  {self.config.name}: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "orderId": None
+            }
+        
         # IMPORTANT: pass `strategy_name` so downstream (adapter/Rust/Python)
         # can attribute orders and send Discord notifications for strategy orders.
         result = await self.trading_bot.place_oco_bracket_with_stop_entry(
@@ -477,6 +584,10 @@ class BaseStrategy(ABC):
             order_id = result.get('orderId')
             method = result.get('method', 'unknown')
             logger.info(f"✅ {self.config.name}: Bracket order placed - ID: {order_id}, Method: {method}")
+            
+            # Record successful order placement for cooldown tracking
+            if order_id:
+                await self.risk_manager.record_order_placement(symbol, side)
         
         return result
     

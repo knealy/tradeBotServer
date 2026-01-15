@@ -427,7 +427,8 @@ class TrendScalpingStrategy(BaseStrategy):
                     side="BUY",
                     quantity=self.config.position_size,
                     stop_loss_price=signal['stop_loss'],
-                    take_profit_price=signal['take_profit']
+                    take_profit_price=signal['take_profit'],
+                    strategy_name=self.config.name  # Enable centralized risk management
                 )
             elif action == 'SHORT':
                 # Native bracket: Market SELL + SL + TP
@@ -436,7 +437,8 @@ class TrendScalpingStrategy(BaseStrategy):
                     side="SELL",
                     quantity=self.config.position_size,
                     stop_loss_price=signal['stop_loss'],
-                    take_profit_price=signal['take_profit']
+                    take_profit_price=signal['take_profit'],
+                    strategy_name=self.config.name  # Enable centralized risk management
                 )
             else:
                 logger.warning(f"Unknown action: {action}")
@@ -481,6 +483,18 @@ class TrendScalpingStrategy(BaseStrategy):
         
         Monitors market at configured timeframe interval.
         """
+        # Print initialization message
+        strategy_details = [
+            f"⏰ Timeframe: {self.timeframe}",
+            f"📈 EMAs: {self.ema_short}/{self.ema_long}",
+            f"🎯 Risk:Reward Ratio: {self.risk_reward_ratio}:1",
+            f"⏱️  Max Hold Time: {self.max_hold_time_seconds}s",
+            f"🔄 Trailing Stop: {'ENABLED' if self.trailing_stop_enabled else 'DISABLED'}",
+            f"📊 Market Structure Lookback: {self.lookback_bars} bars",
+            f"📦 Position Size: {self.config.position_size} contract(s) per order"
+        ]
+        self.print_initialization_message("Trend Scalping Strategy", self.config.symbols, strategy_details)
+        
         logger.info(f"🚀 Starting Trend Scalping Strategy for {self.config.symbols}")
         logger.info(f"   Timeframe: {self.timeframe}")
         

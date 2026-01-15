@@ -253,11 +253,21 @@ class SimpleMomentumStrategy(BaseStrategy):
     async def run(self):
         """Main strategy loop."""
         self.status = StrategyStatus.ACTIVE
-        print(f"🚀 Starting Simple Momentum Strategy for {self.config.symbols}")
+        
+        # Print initialization message
+        strategy_details = [
+            f"⏰ Timeframe: 1m",
+            f"📊 Lookback: {self.lookback_bars} bars",
+            f"🎯 Take Profit: {self.profit_ticks} ticks",
+            f"🛑 Stop Loss: {self.stop_ticks} ticks",
+            f"📈 Min Volume Ratio: {self.min_volume_ratio}x",
+            f"📦 Position Size: {self.config.position_size} contract(s) per order"
+        ]
+        self.print_initialization_message("Simple Momentum Strategy", self.config.symbols, strategy_details)
+        
         logger.info(f"🚀 Starting Simple Momentum Strategy for {self.config.symbols}")
         
         # NO time limit for testing
-        print(f"⏰ Strategy running with NO time limit (test mode)")
         logger.info(f"⏰ Strategy running with NO time limit (test mode)")
         
         check_interval = 10  # Check every 10 seconds (faster for testing)

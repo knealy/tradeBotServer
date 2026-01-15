@@ -69,6 +69,7 @@ class StrategyManager:
         Broadcast a strategy signal to:
         - GUI via `gui.chart_html.broadcast_update` (WebSocket)
         - Discord via `DiscordNotifier.send_signal_notification`
+        - External processes via StrategyExecutor WebSocket client (if running in executor)
 
         Used by StrategyManager loops AND strategies that run their own loop
         (e.g. `SimpleCandleStrategy.run()`).
@@ -92,13 +93,23 @@ class StrategyManager:
             logger.debug(f"Could not send Discord notification for signal: {e}")
 
         # GUI via WebSocket (best-effort)
+        # Try local GUI first (if running in same process)
         try:
             import gui.chart_html as chart_html_module
             broadcast_func = getattr(chart_html_module, 'broadcast_update', None)
             if broadcast_func:
                 await broadcast_func({'type': 'signal', 'data': signal_data})
         except Exception as e:
-            logger.warning(f"Could not broadcast signal to GUI: {e}")
+            # If local GUI not available, try external executor WebSocket
+            try:
+                # Check if we're running in a StrategyExecutor context
+                # The executor will have its own WebSocket client
+                if hasattr(self.trading_bot, '_strategy_executor'):
+                    executor = self.trading_bot._strategy_executor
+                    if hasattr(executor, 'broadcast_signal_to_gui'):
+                        await executor.broadcast_signal_to_gui(signal_data)
+            except Exception as exec_e:
+                logger.debug(f"Could not broadcast signal via executor: {exec_e}")
     
     def load_strategies(self):
         """
@@ -430,6 +441,7 @@ class StrategyManager:
         symbols: Optional[List[str]] = None,
         persist: bool = True,
         strategy_specific_settings: Optional[Dict[str, Any]] = None,
+        process_id: Optional[str] = None,
     ) -> None:
         """Persist state to database if available."""
         strategy = self.strategies.get(strategy_name)
@@ -440,7 +452,8 @@ class StrategyManager:
             config_settings.update(strategy_specific_settings)
         
         metadata = {
-            "manager_saved_at": datetime.now(timezone.utc).isoformat()
+            "manager_saved_at": datetime.now(timezone.utc).isoformat(),
+            "process_id": process_id  # Track which process started this strategy
         }
         
         last_started = datetime.now(timezone.utc) if enabled else None
@@ -610,13 +623,19 @@ class StrategyManager:
         
         return summaries
     
-    async def start_strategy(self, name: str, symbols: List[str] = None, persist: bool = True):
+    async def start_strategy(self, name: str, symbols: List[str] = None, persist: bool = True,
+                            risk_config: Optional[Dict[str, Dict[str, Any]]] = None,
+                            process_id: Optional[str] = None):
         """
         Start a specific strategy.
         
         Args:
             name: Strategy name
             symbols: Optional list of symbols to override config
+            persist: Whether to persist state to database
+            risk_config: Optional per-instrument risk configuration.
+                        Format: {'SYMBOL': {'max_quantity': int, 'cooldown': float, 'max_pending': int}}
+            process_id: Optional process ID that started this strategy (for tracking external processes)
         
         Returns:
             tuple: (success: bool, message: str)
@@ -634,6 +653,9 @@ class StrategyManager:
                     # Override symbols if provided
                     if symbols:
                         config.symbols = symbols
+                    # Set risk config if provided
+                    if risk_config:
+                        config.risk_config = risk_config
                     # Ensure enabled
                     config.enabled = True
                     strategy = strategy_class(self.trading_bot, config)
@@ -668,6 +690,11 @@ class StrategyManager:
         # Override symbols if provided
         if symbols:
             strategy.config.symbols = symbols
+        
+        # Set risk config if provided
+        if risk_config:
+            strategy.config.risk_config = risk_config
+            strategy.set_risk_config(risk_config)
 
         # Track start time for UI/runtime display (strategies don't set this consistently)
         try:
@@ -700,7 +727,7 @@ class StrategyManager:
             logger.debug(f"▶️  Using standard monitoring loop for strategy {name}")
         
         logger.info(f"🚀 Started strategy: {name}")
-        self._save_strategy_state(name, enabled=True, symbols=strategy.config.symbols, persist=persist)
+        self._save_strategy_state(name, enabled=True, symbols=strategy.config.symbols, persist=persist, process_id=process_id)
         return True, f"Strategy started: {name} on {', '.join(strategy.config.symbols)}"
     
     async def stop_strategy(self, name: str, persist: bool = True):
@@ -987,6 +1014,28 @@ class StrategyManager:
         # Get aggregated metrics
         metrics = self.get_aggregated_metrics()
 
+        # Get process information for strategies
+        db = getattr(self.trading_bot, 'db', None)
+        account_id = self._get_account_id()
+        strategy_process_info = {}
+        
+        if db and account_id:
+            # Get strategy states to check process_id
+            states = db.get_strategy_states(account_id)
+            for strategy_name, state in states.items():
+                metadata = state.get('metadata', {})
+                process_id = metadata.get('process_id') if isinstance(metadata, dict) else None
+                if process_id:
+                    # Check if process is still running
+                    process_states = db.get_process_states('strategy_executor')
+                    process_running = any(p.get('process_id') == process_id and p.get('status') == 'running' 
+                                         for p in process_states)
+                    strategy_process_info[strategy_name] = {
+                        'process_id': process_id,
+                        'process_running': process_running,
+                        'started_externally': True
+                    }
+
         # Get individual strategy statuses with monitoring info
         strategy_statuses = {}
         for name, strategy in self.strategies.items():
@@ -996,6 +1045,14 @@ class StrategyManager:
             # Add task info if available
             running_tasks = sum(1 for task in self._tasks if not task.done())
             status['has_running_task'] = running_tasks > 0 and name in self.active_strategies
+            
+            # Add process information if available
+            if name in strategy_process_info:
+                status.update(strategy_process_info[name])
+            else:
+                status['started_externally'] = False
+                status['process_id'] = None
+            
             strategy_statuses[name] = status
 
         return {

@@ -736,6 +736,9 @@ class DatabaseManager:
         Returns:
             bool: Success
         """
+        # Ensure account_id is string (database uses VARCHAR)
+        account_id = str(account_id)
+        
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
@@ -798,6 +801,9 @@ class DatabaseManager:
         Returns:
             Optional[Dict]: Account state or None
         """
+        # Ensure account_id is string (database uses VARCHAR)
+        account_id = str(account_id)
+        
         try:
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -841,6 +847,8 @@ class DatabaseManager:
         last_started: Optional[datetime] = None,
         last_stopped: Optional[datetime] = None,
     ) -> bool:
+        # Ensure account_id is string (database uses VARCHAR)
+        account_id = str(account_id)
         """Persist strategy toggle/configuration state for an account."""
         if not account_id:
             logger.warning("⚠️  Cannot save strategy state without account_id")
@@ -892,6 +900,9 @@ class DatabaseManager:
             return states
         
         try:
+            # Ensure account_id is string (database uses VARCHAR)
+            account_id_str = str(account_id)
+            
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
@@ -901,7 +912,7 @@ class DatabaseManager:
                         FROM strategy_states
                         WHERE account_id = %s
                         """,
-                        (account_id,),
+                        (account_id_str,),
                     )
                     
                     for row in cur.fetchall():
@@ -1203,6 +1214,9 @@ class DatabaseManager:
         Returns:
             bool: Success status
         """
+        # Ensure account_id is string (database uses VARCHAR)
+        account_id = str(account_id)
+        
         if not orders:
             return True
         

@@ -120,10 +120,15 @@ class DashboardAPI:
                 symbol = DashboardAPI._extract_trade_symbol(trade)
                 point_value = DashboardAPI._get_point_value(symbol)
                 
+                # Calculate gross P&L
                 if side == 'BUY' or side == 'LONG' or side == '0':
-                    pnl = (exit_price - entry) * quantity * point_value
+                    gross_pnl = (exit_price - entry) * quantity * point_value
                 else:  # SELL/SHORT
-                    pnl = (entry - exit_price) * quantity * point_value
+                    gross_pnl = (entry - exit_price) * quantity * point_value
+                
+                # Subtract commission (round trip: open + close)
+                commission = DashboardAPI._calculate_commission(quantity)
+                pnl = gross_pnl - commission
                 
                 return float(pnl)
             except Exception as e:
@@ -179,6 +184,24 @@ class DashboardAPI:
             return 100.0  # Gold: $100 per point
         else:
             return 1.0  # Default
+    
+    @staticmethod
+    def _calculate_commission(quantity: float) -> float:
+        """
+        Calculate total commission for a trade (round trip).
+        
+        Each contract has $0.74 commission to open and $0.74 to close,
+        so total commission per round trip is $1.48 per contract.
+        
+        Args:
+            quantity: Number of contracts
+            
+        Returns:
+            Total commission in dollars
+        """
+        COMMISSION_PER_CONTRACT_OPEN = 0.74
+        COMMISSION_PER_CONTRACT_CLOSE = 0.74
+        return (COMMISSION_PER_CONTRACT_OPEN + COMMISSION_PER_CONTRACT_CLOSE) * quantity
 
     @staticmethod
     def _extract_trade_fees(trade: Dict[str, Any]) -> float:
@@ -785,15 +808,35 @@ class DashboardAPI:
             if start_dt >= end_dt:
                 start_dt = end_dt - timedelta(days=1)
 
-            history = await self._get_cached_order_history(
-                account=account,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                limit=limit * 3,
-            )
+            # Try Trade/search API first (more accurate, pre-calculated PnL)
+            use_trade_search = True
+            trades_from_api = []
+            
+            if use_trade_search and hasattr(self.trading_bot, 'get_trades_from_api'):
+                try:
+                    trades_from_api = await self.trading_bot.get_trades_from_api(
+                        account_id=account,
+                        start_date=self._format_iso(start_dt),
+                        end_date=self._format_iso(end_dt)
+                    )
+                    if trades_from_api:
+                        logger.info(f"✅ Using {len(trades_from_api)} trades from Trade/search API")
+                except Exception as e:
+                    logger.warning(f"Trade/search API failed, falling back to Order/search: {e}")
+                    use_trade_search = False
+            
+            # Fallback to Order/search + consolidation if Trade/search not available or returned no results
+            history = []
+            if not trades_from_api:
+                history = await self._get_cached_order_history(
+                    account=account,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    limit=limit * 3,
+                )
 
             # If consolidate=True, use trading_bot's consolidation logic to pair orders and calculate P&L
-            if consolidate and hasattr(self.trading_bot, '_consolidate_orders_into_trades'):
+            if not trades_from_api and consolidate and hasattr(self.trading_bot, '_consolidate_orders_into_trades'):
                 try:
                     consolidated_trades = self.trading_bot._consolidate_orders_into_trades(history)
                     logger.info(f"✅ Consolidated {len(history)} orders into {len(consolidated_trades)} complete trades")
@@ -835,8 +878,46 @@ class DashboardAPI:
                     logger.error(f"❌ Trade consolidation failed: {e}, falling back to raw orders")
                     consolidate = False  # Fall back to raw order processing
             
+            # If we got trades from Trade/search API, normalize them directly
+            if trades_from_api:
+                trades_normalized: List[Dict[str, Any]] = []
+                for trade in trades_from_api:
+                    trade_ts = self._parse_iso_datetime(trade.get('timestamp') or trade.get('creationTimestamp'))
+                    if not trade_ts or trade_ts < start_dt or trade_ts > end_dt:
+                        continue
+                    
+                    if symbol and trade.get('symbol', '').upper() != symbol.upper():
+                        continue
+                    
+                    # Skip half-turn trades (open positions) if we only want completed trades
+                    if trade_type == 'filled' and trade.get('is_half_turn', False):
+                        continue
+                    
+                    # Use profitAndLoss from API (already calculated by TopStepX)
+                    pnl = trade.get('profitAndLoss') or trade.get('pnl')
+                    fees = trade.get('fees', 0.0)
+                    
+                    normalized = {
+                        "id": trade.get('id', ''),
+                        "order_id": trade.get('order_id', ''),
+                        "symbol": trade.get('symbol', 'UNKNOWN').upper(),
+                        "side": trade.get('side', 'UNKNOWN').upper(),
+                        "quantity": float(trade.get('quantity', 0)),
+                        "price": float(trade.get('price', 0)),
+                        "pnl": float(pnl) if pnl is not None else 0.0,
+                        "fees": float(fees),
+                        "net_pnl": float(pnl) - float(fees) if pnl is not None else 0.0,
+                        "status": trade.get('status', 'filled'),
+                        "strategy": trade.get('strategy'),
+                        "timestamp": self._format_iso(trade_ts),
+                        "is_half_turn": trade.get('is_half_turn', False),
+                    }
+                    trades_normalized.append(normalized)
+                
+                logger.info(f"📊 Normalized {len(trades_normalized)} trades from Trade/search API")
+            
             # If not consolidating or consolidation failed, process raw orders
-            if not consolidate:
+            elif not consolidate:
                 trades_normalized: List[Dict[str, Any]] = []
                 for idx, trade in enumerate(history):
                     trade_ts = self._extract_trade_timestamp(trade)

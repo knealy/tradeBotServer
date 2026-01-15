@@ -254,6 +254,8 @@ class AsyncWebhookServer:
 
         self.app.router.add_get('/api/trades', self.handle_get_trades)
         self.app.router.add_get('/api/trades/export', self.handle_export_trades_csv)
+        self.app.router.add_get('/api/session/trades', self.handle_get_session_trades)
+        self.app.router.add_get('/api/session/pnl', self.handle_get_session_pnl)
         self.app.router.add_get('/api/performance', self.handle_get_performance)
         self.app.router.add_get('/api/performance/history', self.handle_get_performance_history)
         self.app.router.add_get('/api/performance/export', self.handle_export_performance_csv)
@@ -1966,6 +1968,56 @@ class AsyncWebhookServer:
             return web.json_response(trades, status=status)
         except Exception as e:
             logger.error(f"Error getting trades: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_session_trades(self, request: web.Request) -> web.Response:
+        """Get session trades from SessionTradeTracker."""
+        try:
+            params = request.rel_url.query
+            account_id = params.get('account_id') or self._get_selected_account_id()
+            limit = int(params.get('limit', '100'))
+            
+            if not account_id:
+                return web.json_response({"error": "Account ID required"}, status=400)
+            
+            if not hasattr(self.trading_bot, 'session_trade_tracker') or not self.trading_bot.session_trade_tracker:
+                return web.json_response({"error": "Session trade tracker not available"}, status=503)
+            
+            trades = self.trading_bot.session_trade_tracker.get_session_trades(account_id, limit=limit)
+            
+            return web.json_response({
+                "trades": trades,
+                "count": len(trades),
+                "account_id": account_id
+            })
+        except Exception as e:
+            logger.error(f"Error getting session trades: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def handle_get_session_pnl(self, request: web.Request) -> web.Response:
+        """Get session PnL summary from SessionTradeTracker."""
+        try:
+            params = request.rel_url.query
+            account_id = params.get('account_id') or self._get_selected_account_id()
+            
+            if not account_id:
+                return web.json_response({"error": "Account ID required"}, status=400)
+            
+            if not hasattr(self.trading_bot, 'session_trade_tracker') or not self.trading_bot.session_trade_tracker:
+                return web.json_response({"error": "Session trade tracker not available"}, status=503)
+            
+            pnl_data = self.trading_bot.session_trade_tracker.get_session_pnl(account_id)
+            session_state = self.trading_bot.session_trade_tracker.get_session_state(account_id)
+            open_positions = self.trading_bot.session_trade_tracker.get_open_positions(account_id)
+            
+            return web.json_response({
+                "session_pnl": pnl_data,
+                "session_state": session_state,
+                "open_positions": open_positions,
+                "account_id": account_id
+            })
+        except Exception as e:
+            logger.error(f"Error getting session PnL: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
     async def handle_export_trades_csv(self, request: web.Request) -> web.Response:

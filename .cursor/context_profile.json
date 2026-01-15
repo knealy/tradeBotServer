@@ -1,6 +1,6 @@
 {
   "version": "1.3.0",
-  "last_updated": "2025-12-04",
+  "last_updated": "2026-01-15",
   "description": "Context profile for common problems, fixes, and patterns in the tradeBotServer codebase",
   
   "common_problems": {
@@ -1446,6 +1446,217 @@
         "Market data aggregation",
         "Database hot paths",
         "Strategy execution framework"
+      ]
+    },
+    "simulation_daily_atr_wrong": {
+      "problem": "Daily ATR calculation in simulation returns wrong value (7.25 instead of 269.04)",
+      "symptoms": [
+        "Daily ATR shows same value as current timeframe ATR (e.g., 7.25)",
+        "ATR zones are too small and inside the overnight range",
+        "Log shows 'calculated from 200 daily bars: 7.25' instead of correct value"
+      ],
+      "root_causes": [
+        "Strategy replay engine mocked trading_bot.get_historical_data to always return the in-memory replay bars list, ignoring requested timeframe (e.g., '1d' or '5m')",
+        "As a result, daily ATR was computed from partial intraday replay bars (small TR), making 'daily' ATR collapse to ~the intraday ATR",
+        "Secondary: when using real daily bars, you must still exclude the current incomplete daily bar from ATR inputs"
+      ],
+      "solutions": [
+        {
+          "file": "strategies/overnight_range_strategy.py",
+          "method": "calculate_atr",
+          "fix": "Filter out incomplete daily bars by comparing bar date with current date. Only use complete daily bars (from previous days) for ATR calculation."
+        },
+        {
+          "file": "core/backtest/strategy_replay.py",
+          "method": "_call_strategy_analyze",
+          "fix": "Replay mock must respect timeframe: serve replay timeframe from in-memory bars, but delegate other timeframes (esp. '1d' and '5m') to the underlying get_historical_data with end_time capped to current replay bar to avoid look-ahead. Cache daily passthrough responses per day."
+        },
+        {
+          "file": "core/cli_command_parser.py",
+          "method": "_handle_simulate",
+          "fix": "Pass replay_timeframe into StrategyReplayEngine.replay(...) so the replay engine knows which timeframe should be served from in-memory replay bars."
+        }
+      ],
+      "prevention": [
+        "In replay/backtest, never implement get_historical_data mocks that ignore timeframe/start/end_time; doing so silently breaks higher-timeframe indicators",
+        "Cap delegated end_time to current replay bar timestamp to prevent look-ahead bias",
+        "Exclude the current incomplete daily bar when calculating daily ATR"
+      ]
+    },
+    "simulation_recalculates_every_bar": {
+      "problem": "Strategy recalculates overnight range and ATR zones on every bar in simulation, causing performance issues and log spam",
+      "symptoms": [
+        "Logs show 'Fetching overnight range' and 'Daily ATR zones check' on every bar",
+        "Simulation is slow due to redundant calculations",
+        "Many 'No bars found in overnight session' warnings",
+        "Strategy goes backward bar by bar trying to find overnight session"
+      ],
+      "root_causes": [
+        "No caching for overnight range per day",
+        "Date determination was fetching bars instead of using current bar timestamp",
+        "Strategy was called on every bar without checking if calculations were already done for that day"
+      ],
+      "solutions": [
+        {
+          "file": "strategies/overnight_range_strategy.py",
+          "method": "track_overnight_range",
+          "fix": "Add date-based cache for overnight ranges: `_overnight_range_cache: Dict[Tuple[str, date], OvernightRange]`. Check cache before calculating. Cache result after calculation."
+        },
+        {
+          "file": "strategies/overnight_range_strategy.py",
+          "method": "track_overnight_range",
+          "fix": "Use current bar timestamp from strategy replay engine (`trading_bot._current_bar_timestamp`) instead of fetching bars to determine date. This ensures correct date in backtest mode."
+        },
+        {
+          "file": "core/backtest/strategy_replay.py",
+          "method": "replay",
+          "fix": "Store current bar timestamp in `trading_bot._current_bar_timestamp` so strategy can access it for date determination."
+        },
+        {
+          "file": "strategies/overnight_range_strategy.py",
+          "method": "calculate_range_break_orders",
+          "fix": "Only log ATR zones check once per day using `_atr_zones_logged` set. Change repeated zone overlap messages to debug level."
+        }
+      ],
+      "prevention": [
+        "Always cache expensive calculations per day in backtest mode",
+        "Use current bar timestamp from replay engine instead of fetching bars",
+        "Reduce logging verbosity for repeated calculations in backtest"
+      ]
+    },
+    "simulation_wrong_overnight_session_date": {
+      "problem": "Strategy calculates wrong overnight session date in simulation (e.g., 2026-01-07 18:00 to 2026-01-08 08:00 instead of 2026-01-08 18:00 to 2026-01-09 08:00)",
+      "symptoms": [
+        "Logs show 'Session: 2026-01-07 18:00 to 2026-01-08 08:00' when target date is 2026-01-09",
+        "Many 'No bars found in overnight session' warnings",
+        "Strategy goes backward bar by bar trying to find bars for wrong session"
+      ],
+      "root_causes": [
+        "Date determination was using latest bar from fetched bars, which could be from previous day if processing early morning bars",
+        "Strategy replay engine wasn't passing current bar timestamp to strategy",
+        "Strategy was fetching bars with limit=100 and using latest one, but in early morning, latest bar is from previous day"
+      ],
+      "solutions": [
+        {
+          "file": "core/backtest/strategy_replay.py",
+          "method": "replay",
+          "fix": "Store current bar timestamp in `trading_bot._current_bar_timestamp` before calling strategy analyze method."
+        },
+        {
+          "file": "strategies/overnight_range_strategy.py",
+          "method": "track_overnight_range",
+          "fix": "First try to get current bar timestamp from `trading_bot._current_bar_timestamp` (set by replay engine). Fallback to fetching latest bar if not available."
+        }
+      ],
+      "prevention": [
+        "Strategy replay engine should always pass current bar context to strategies",
+        "Strategies should use current bar timestamp directly instead of fetching bars for date determination"
+      ]
+    }
+    ,
+    "session_replay_simple": {
+      "problem": "Full StrategyReplayEngine bar-by-bar replay can distort strategy context (overnight range / market open / ATR) or add complexity when you only want session playback + order-event recording",
+      "goal": "Use analyze_date as the single source of truth for the day's setup, then replay only the regular session (08:00–16:00 ET) bars and record order events without live execution pathways",
+      "solution": {
+        "command": "replay_session <strategy> <symbol> <YYYY-MM-DD> [timeframe] [--settings=key:value,...]",
+        "implementation": [
+          {
+            "file": "core/cli_command_parser.py",
+            "method": "_handle_replay_session",
+            "details": [
+              "Call analyze_date first to get correct overnight range + daily ATR zones for the date",
+              "Fetch bars explicitly for 08:00–16:00 ET via start_time/end_time (no backtracking)",
+              "Defensively filter bars to session window because adapter/date-range helpers may still return extra bars",
+              "Enforce entry cutoff at/after 16:00 ET (no new entries), and force-close any open position at 16:00 ET",
+              "Match OvernightRangeStrategy breakout monitor rules: stage stop-entry orders only when current price is within proximity threshold (max(range_size * breakout_proximity_percent%, breakout_min_proximity_points)), and only if BUY stop entry is above current price / SELL stop entry is below current price at placement time",
+              "Only allow fills if the stop-entry order has been staged (emit order_placed events, then entry when later bars cross the staged entry price)",
+              "Seed OvernightRangeStrategy caches and override calculate_atr/track_overnight_range to return the analyze_date-derived context",
+              "Iterate bars oldest->newest and record entry/exit events when price crosses bracket levels (simple OCO + conservative same-bar handling)"
+            ]
+          }
+        ]
+      }
+    },
+    "rust_python_interoperability": {
+      "problem": "Rust module fails to import or Python version mismatches break the build",
+      "critical_warning": "⚠️ EXTREMELY FRAGILE - See docs/RUST_PYTHON_INTEROP_CRITICAL.md",
+      "working_configuration": {
+        "system_python": "3.13.1",
+        "venv_python": "3.13.8",
+        "pyo3_version": "0.20",
+        "maturin_version": ">=1.0,<2.0",
+        "rust_edition": "2021"
+      },
+      "build_process": {
+        "step_1": "source venv/bin/activate",
+        "step_2": "cd rust",
+        "step_3": "maturin develop --release",
+        "verify": "python -c 'import trading_bot_rust; print(dir(trading_bot_rust))'"
+      },
+      "symptoms": [
+        "ModuleNotFoundError: No module named 'trading_bot_rust'",
+        "ImportError: dynamic module does not define module export function",
+        "Build fails with PyO3 errors"
+      ],
+      "root_causes": [
+        "Built with system Python instead of venv Python",
+        "PyO3 version incompatibility with Python version",
+        "Not in venv when running",
+        "Module not installed in correct site-packages"
+      ],
+      "solutions": [
+        {
+          "description": "Always build in venv, never with system Python",
+          "commands": [
+            "cd /Users/knealy/tradeBotServer",
+            "source venv/bin/activate",
+            "cd rust",
+            "maturin develop --release"
+          ]
+        }
+      ],
+      "prevention": [
+        "NEVER upgrade PyO3 without extensive testing",
+        "NEVER upgrade Python major version without rebuilding",
+        "ALWAYS verify 'which python' shows venv path before building",
+        "Document any version changes in docs/RUST_PYTHON_INTEROP_CRITICAL.md"
+      ],
+      "performance_notes": {
+        "order_placement": "20-30x faster than Python",
+        "order_modification": "10-15x faster than Python",
+        "bar_aggregation": "20-40x faster than Python",
+        "memory_overhead": "5-10 MB resident, no leaks detected"
+      }
+    },
+    "database_type_cast_errors": {
+      "problem": "PostgreSQL errors: operator does not exist: character varying = integer",
+      "symptoms": [
+        "Database error: operator does not exist: character varying = integer",
+        "Failed to fetch strategy states for account XXXXX",
+        "HINT: No operator matches the given name and argument types"
+      ],
+      "root_causes": [
+        "account_id stored as VARCHAR in database",
+        "account_id passed as integer in queries",
+        "PostgreSQL strict type checking requires exact type match"
+      ],
+      "solutions": [
+        {
+          "file": "infrastructure/database.py",
+          "methods": [
+            "get_strategy_states",
+            "save_strategy_state",
+            "get_account_state",
+            "save_account_state",
+            "cache_order_history"
+          ],
+          "fix": "Add 'account_id = str(account_id)' at start of each method to ensure VARCHAR compatibility"
+        }
+      ],
+      "prevention": [
+        "Always cast account_id to string before database operations",
+        "Use VARCHAR for all account_id columns",
+        "Add type hints to enforce str type for account_id parameters"
       ]
     }
   }

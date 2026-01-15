@@ -5,18 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Master Trading Control - Unified Dashboard</title>
     <style>
-        /* CSS Variables for Consistent Styling */
+        /* CSS Variables for Professional Matte Theme */
         :root {
-            --bg-primary: #0a0a0a;
-            --bg-secondary: #1a1a1a;
-            --bg-tertiary: #151515;
-            --text-primary: #e0e0e0;
-            --text-secondary: #888;
-            --border-color: #333;
-            --accent-color: #3b82f6;
-            --positive-color: #4caf50;
-            --negative-color: #f44336;
-            --warning-color: #ff9800;
+            --bg-primary: #0f172a;    /* Deep slate */
+            --bg-secondary: #1e293b;  /* Lighter slate for panels */
+            --bg-tertiary: #334155;   /* Accent areas */
+            --text-primary: #f1f5f9;  /* Muted white */
+            --text-secondary: #94a3b8;/* Slate gray */
+            --border-color: #334155;  /* Subtle borders */
+            --accent-color: #6366f1;  /* Muted Indigo for active elements */
+            --positive-color: #10b981;/* Professional green */
+            --negative-color: #ef4444;/* Professional red */
+            --warning-color: #f59e0b; /* Amber */
+            --font-size-base: 12px;
         }
         
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -25,120 +26,36 @@
             background: var(--bg-primary);
             color: var(--text-primary);
             overflow-x: hidden;
+            font-size: var(--font-size-base);
         }
         
         /* Header */
         .header {
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
-            padding: 12px 20px;
+            padding: 4px 8px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             position: sticky;
             top: 0;
             z-index: 100;
+            min-height: 32px;
         }
-        .header h1 { font-size: 18px; font-weight: 600; }
-        .connection-status { font-size: 12px; color: #4caf50; }
+        .header h1 { font-size: 10px; font-weight: 500; }
+        .connection-status { font-size: 8px; color: var(--positive-color); }
         .customize-btn {
-            background: #3b82f6;
+            background: var(--accent-color);
             border: none;
             color: white;
-            padding: 8px 16px;
-            border-radius: 4px;
+            padding: 3px 8px;
+            border-radius: 2px;
             cursor: pointer;
-            font-size: 12px;
-            font-weight: 600;
+            font-size: 9px;
+            font-weight: 500;
             transition: background 0.2s;
         }
-        .customize-btn:hover { background: #2563eb; }
-        
-        /* Customization Panel */
-        .customize-panel {
-            position: fixed;
-            top: 0;
-            right: -400px;
-            width: 400px;
-            height: 100vh;
-            background: #1a1a1a;
-            border-left: 2px solid #333;
-            z-index: 1000;
-            transition: right 0.3s ease;
-            overflow-y: auto;
-            padding: 20px;
-        }
-        .customize-panel.open { right: 0; }
-        .customize-panel h2 {
-            color: #fff;
-            font-size: 18px;
-            margin-bottom: 20px;
-            border-bottom: 1px solid #333;
-            padding-bottom: 10px;
-        }
-        .customize-section {
-            margin-bottom: 24px;
-        }
-        .customize-section h3 {
-            color: #fff;
-            font-size: 14px;
-            margin-bottom: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .customize-control {
-            margin-bottom: 16px;
-        }
-        .customize-control label {
-            display: block;
-            color: #888;
-            font-size: 12px;
-            margin-bottom: 6px;
-        }
-        .customize-control input[type="range"] {
-            width: 100%;
-            margin: 8px 0;
-        }
-        .customize-control input[type="number"],
-        .customize-control select {
-            width: 100%;
-            background: #222;
-            border: 1px solid #444;
-            color: #fff;
-            padding: 8px;
-            border-radius: 4px;
-            font-size: 13px;
-        }
-        .customize-control .value-display {
-            color: #4caf50;
-            font-weight: 600;
-            font-size: 12px;
-            margin-top: 4px;
-        }
-        .preset-buttons {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            margin-top: 12px;
-        }
-        .preset-btn {
-            background: #333;
-            border: 1px solid #555;
-            color: #fff;
-            padding: 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-        .preset-btn:hover {
-            background: #444;
-            border-color: #3b82f6;
-        }
-        .preset-btn.active {
-            background: #3b82f6;
-            border-color: #3b82f6;
-        }
+        .customize-btn:hover { background: var(--accent-color); opacity: 0.8; }
         
         /* Widget Controls */
         .widget-controls {
@@ -203,87 +120,122 @@
         .account-bar {
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
-            padding: 16px 20px;
+            padding: 4px 8px;
             display: flex;
-            gap: 32px;
+            gap: 12px;
             flex-wrap: wrap;
             align-items: center;
+            min-height: 28px;
+            font-size: 9px;
         }
         .status-item {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 2px;
         }
-        .status-label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; }
-        .status-value { color: var(--text-primary); font-weight: 600; font-size: 16px; }
+        .status-label { color: var(--text-secondary); font-size: 8px; text-transform: uppercase; }
+        .status-value { color: var(--text-primary); font-weight: 500; font-size: 10px; }
         .status-value.positive { color: var(--positive-color); }
         .status-value.negative { color: var(--negative-color); }
         
-        /* Main Dashboard - Flexible Layout with Resizable Widgets */
+        /* Main Dashboard - Uniform Flow Layout */
         .dashboard {
             display: flex;
             flex-wrap: wrap;
-            gap: 12px;
-            padding: 12px;
-            width: 100%;
-            align-items: flex-start;
+            gap: 6px;
+            padding: 15px;
+            width: 1250px;
+            height: 1500px;
+            margin: 5px auto 0 auto;
             align-content: flex-start;
-            min-height: 100vh;
+            background: var(--bg-primary);
         }
         
         /* Ensure panels don't overlap */
         .panel {
             position: relative;
             z-index: 1;
-        }
-        
-        /* Panels - Independent sizing */
-        .panel {
             background: var(--bg-secondary);
-            border: 2px solid transparent;
-            border-radius: 4px;
-            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            padding: 4px;
             overflow: hidden;
-            position: relative;
-            /* multi-color gradient border per widget */
-            border-image: linear-gradient(
-                135deg,
-                #a855f7,
-                #ef4444,
-                #3b82f6,
-                #f97316,
-                #eab308,
-                #a855f7
-            ) 1;
-            box-shadow: 0 0 12px rgba(168, 85, 247, 0.06), 0 0 8px rgba(59, 130, 246, 0.04);
-            /* Default sizes - can be overridden by customization */
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
             flex: 0 0 auto;
-            min-width: 300px;
-            min-height: 200px;
         }
         
-        /* Chart panel - larger by default */
+        /* Chart panel - top left */
         .chart-panel {
-            width: calc(66.666% - 6px);
-            min-width: 600px;
-            height: 600px;
+            width: 750px;
+            height: 500px;
+            order: 1;
+        }
+        
+        /* Activity panel (Positions/Orders) - top right */
+        .main-activity-panel {
+            width: 400px;
+            height: 500px;
+            order: 2;
+        }
+        
+        /* Trades panel - middle left */
+        .trades-panel {
+            width: 750px;
+            height: 500px;
+            order: 3;
+        }
+        
+        /* Terminal hub - middle right */
+        .terminal-hub-panel {
+            width: 750px;
+            height: 500px;
+            order: 4;
+        }
+        
+        /* Performance panel - bottom left */
+        .performance-panel {
+            width: 400px;
+            height: 500px;
+            order: 5;
+        }
+        
+        /* Strategy hub - bottom right */
+        .strategy-hub-panel {
+            width: 400px;
+            height: 500px;
+            order: 6;
         }
         
         /* Other panels - smaller by default */
         .strategy-panel,
-        .logs-panel,
-        .command-panel,
-        .positions-panel,
-        .orders-panel,
-        .signal-feed-panel,
         .actions-panel {
-            width: calc(33.333% - 6px);
             min-width: 300px;
-            height: 300px;
+            height: auto;
+            max-height: 600px;
+        }
+        
+        /* Sub-section styling for combined panels */
+        .sub-section {
+            margin-bottom: 0;
+        }
+        .sub-section h3 {
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .sub-section.divider {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
         }
         
         /* Strategy panel - compact and scrollable */
-        .strategy-panel .panel-content {
+        .strategy-panel .panel-content,
+        .strategy-hub-panel .panel-content,
+        .main-activity-panel .panel-content {
             max-height: calc(100% - 40px);
             overflow-y: auto;
             overflow-x: hidden;
@@ -295,11 +247,11 @@
             padding: 4px;
         }
         .strategy-card {
-            padding: 8px;
-            background: #151515;
-            border: 1px solid #333;
-            border-radius: 4px;
-            font-size: 11px;
+            padding: 4px 6px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            font-size: 9px;
         }
         
         /* Resize handles */
@@ -333,12 +285,12 @@
             cursor: nwse-resize;
         }
         .panel h2 {
-            font-size: 13px;
-            margin-bottom: 10px;
-            color: #fff;
-            border-bottom: 1px solid #333;
-            padding-bottom: 6px;
-            font-weight: 600;
+            font-size: 11px;
+            margin-bottom: 6px;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 4px;
+            font-weight: 500;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -351,48 +303,51 @@
         .collapse-btn {
             background: transparent;
             border: none;
-            color: #888;
-            font-size: 18px;
+            color: var(--text-secondary);
+            font-size: 14px;
             cursor: pointer;
-            padding: 0 8px;
+            padding: 0 6px;
             transition: all 0.2s;
             line-height: 1;
         }
         .collapse-btn:hover {
-            color: #fff;
+            color: var(--text-primary);
         }
         .panel-content {
             max-height: 2000px;
             overflow: hidden;
-            transition: max-height 0.3s ease-in-out, padding 0.3s ease-in-out, margin 0.3s ease-in-out;
+            transition: max-height 0.3s ease-in-out, padding 0.3s ease-in-out, margin 0.3s ease-in-out, opacity 0.3s ease-in-out;
+            padding: 8px;
+            opacity: 1;
         }
         .panel.collapsed .panel-content {
-            max-height: 0;
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
-            margin-top: 0 !important;
-            margin-bottom: 0 !important;
+            max-height: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            opacity: 0;
+            overflow: hidden;
+        }
+        .panel.collapsed {
+            min-height: auto !important;
+            height: auto !important;
         }
         .panel.collapsed h2 {
             border-bottom: none;
-            padding-bottom: 0;
+            padding-bottom: 4px;
             margin-bottom: 0;
         }
         .panel.collapsed .collapse-btn {
             transform: rotate(-90deg);
         }
         
-        /* Chart Panel - Dynamic sizing */
+        /* Chart Panel - Flex Layout for Content */
         .chart-panel {
             display: flex;
             flex-direction: column;
-            height: 100%;
         }
         #chart-container {
             flex: 1;
-            min-height: 400px;
-            max-height: calc(100vh - 200px);
-            height: 100%;
+            min-height: 350px;
             background: #0a0a0a;
             border-radius: 4px;
             margin-top: 8px;
@@ -403,26 +358,26 @@
         /* Chart Controls */
         .chart-controls {
             display: flex;
-            gap: 8px;
-            margin-bottom: 12px;
+            gap: 4px;
+            margin-bottom: 8px;
             flex-wrap: wrap;
-            padding: 12px;
-            background: #151515;
-            border-radius: 4px;
+            padding: 6px;
+            background: var(--bg-tertiary);
+            border-radius: 2px;
         }
         .chart-controls select, .chart-controls input {
-            background: #222;
-            border: 1px solid #444;
-            color: #fff;
-            padding: 6px 10px;
-            border-radius: 4px;
-            font-size: 12px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 4px 6px;
+            border-radius: 2px;
+            font-size: 10px;
         }
         .chart-controls button {
-            padding: 6px 12px;
+            padding: 4px 8px;
             border: none;
-            border-radius: 4px;
-            font-size: 12px;
+            border-radius: 2px;
+            font-size: 10px;
             cursor: pointer;
             font-weight: 500;
             transition: all 0.2s;
@@ -450,35 +405,38 @@
         }
         .btn-danger:hover { background: #d32f2f; }
         
-        /* Positions Panel */
-        .positions-panel { 
-            max-height: 400px; 
+        /* Main Activity Panel (Combined Positions & Orders) */
+        .main-activity-panel { 
+            max-height: 500px; 
             overflow-y: auto;
-            min-height: 280px;
         }
         
-        .positions-panel table,
-        .orders-panel table {
+        .main-activity-panel table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 11px;
-        }
-        
-        .positions-panel table th,
-        .orders-panel table th {
-            padding: 4px 6px !important;
-            text-align: left;
-            font-weight: 600;
-            color: #888;
-            border-bottom: 1px solid #333;
             font-size: 10px;
         }
         
-        .positions-panel table td,
-        .orders-panel table td {
-            padding: 6px 6px !important;
-            border-bottom: 1px solid #222;
-            color: #d1d5db;
+        .main-activity-panel table th {
+            padding: 4px 6px !important;
+            text-align: left;
+            font-weight: 500;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-color);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .main-activity-panel table td {
+            padding: 5px 6px !important;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-size: 10px;
+        }
+        
+        .main-activity-panel table tr:hover {
+            background: var(--bg-tertiary);
         }
         
         .positions-panel table tr:last-child td,
@@ -492,14 +450,17 @@
             overflow-y: auto;
             min-height: 280px;
         }
-        
-        /* Strategy Panel */
-        .strategy-panel { }
 
         /* Signal feed + command + logs sizing */
-        .signal-feed-panel { max-height: 520px; overflow: hidden; }
-        .command-panel { max-height: 520px; overflow: hidden; }
-        .logs-panel { max-height: 520px; overflow: hidden; }
+        .signal-feed-panel { 
+            max-height: 500px; 
+            overflow: hidden; 
+        }
+        .terminal-hub-panel { 
+            max-height: 800px; 
+            min-width: 600px;
+            overflow: hidden;
+        }
 
         /* Drag handle */
         .drag-handle {
@@ -518,29 +479,30 @@
             margin-top: 8px;
         }
         .strategy-card {
-            background: #151515;
-            border: 1px solid #333;
-            border-radius: 6px;
-            padding: 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            padding: 4px 6px;
         }
         .strategy-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 8px;
+            margin-bottom: 4px;
         }
-        .strategy-name { font-weight: 600; color: #fff; font-size: 13px; }
+        .strategy-name { font-weight: 500; color: var(--text-primary); font-size: 10px; }
         .strategy-status {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 8px;
             font-weight: 600;
         }
         .strategy-status.active { background: #4caf50; color: #fff; }
         .strategy-status.idle { background: #666; color: #fff; }
         .strategy-info {
-            font-size: 11px;
-            color: #888;
+            font-size: 8px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
             margin: 8px 0;
         }
         .strategy-actions {
@@ -668,183 +630,79 @@
             cursor: not-allowed;
             opacity: 0.5;
         }
+        
+        /* Enhanced Trades Table Styling */
+        #trades-table {
+            font-size: 11px;
+        }
+        #trades-table thead th {
+            background: var(--bg-secondary);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+        #trades-table thead th:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+        #trades-table tbody tr {
+            transition: background-color 0.15s;
+        }
+        #trades-table tbody tr:hover {
+            background: var(--bg-tertiary);
+        }
+        #trades-table tbody td {
+            padding: 8px 4px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        /* Metrics Grid Styling */
+        .metric-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            border-color: var(--accent-color);
+        }
+        
+        /* Summary Bar Styling */
+        #trades-summary-bar {
+            background: linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
+            border: 1px solid var(--border-color);
+        }
+        #trades-summary-bar > div {
+            text-align: center;
+        }
+        #trades-summary-bar span:first-child {
+            display: block;
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        #trades-summary-bar span:last-child {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
     </style>
 </head>
 <body>
     <!-- Header -->
     <div class="header">
-        <h1>🎯 Master Trading Control</h1>
+        <h1>Master Trading Control</h1>
         <div style="display: flex; gap: 12px; align-items: center;">
-            <button class="customize-btn" onclick="toggleKeyboardShortcuts()" title="Toggle Keyboard Shortcuts" id="shortcuts-toggle" style="background: #4caf50;">⌨️ Shortcuts ON</button>
-            <button class="customize-btn" onclick="toggleAlerts()" title="Toggle Audio Alerts" id="alerts-toggle" style="background: #4caf50;">🔔 Alerts ON</button>
-            <button class="customize-btn" onclick="toggleDesktopNotifications()" title="Toggle Desktop Notifications" id="notifications-toggle" style="background: #666;">📬 Notifications OFF</button>
-            <button class="customize-btn" onclick="toggleCustomizePanel()">⚙️ Customize UI</button>
-            <button class="customize-btn" onclick="showShortcutsHelp()" title="Show Keyboard Shortcuts Help (?)">❓ Help</button>
+            <button class="customize-btn" onclick="toggleKeyboardShortcuts()" title="Toggle Keyboard Shortcuts" id="shortcuts-toggle" style="background: var(--accent-color);">Shortcuts ON</button>
+            <button class="customize-btn" onclick="toggleAlerts()" title="Toggle Audio Alerts" id="alerts-toggle" style="background: var(--bg-tertiary);">Alerts OFF</button>
+            <button class="customize-btn" onclick="toggleDesktopNotifications()" title="Toggle Desktop Notifications" id="notifications-toggle" style="background: var(--bg-tertiary);">Notifications OFF</button>
+            <button class="customize-btn" onclick="showShortcutsHelp()" title="Show Keyboard Shortcuts Help (?)">Help</button>
             <div class="connection-status" id="connection-status">Connecting...</div>
-        </div>
-    </div>
-    
-    <!-- Customization Panel -->
-    <div class="customize-panel" id="customize-panel">
-        <h2>🎨 UI Customization</h2>
-        
-        <div class="customize-section">
-            <h3>Layout Presets</h3>
-            <div class="preset-buttons">
-                <button class="preset-btn" onclick="applyPreset('compact')">Compact</button>
-                <button class="preset-btn" onclick="applyPreset('spacious')">Spacious</button>
-                <button class="preset-btn" onclick="applyPreset('wide')">Wide</button>
-                <button class="preset-btn" onclick="applyPreset('tall')">Tall</button>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Grid Layout</h3>
-            <div class="customize-control">
-                <label>Number of Columns</label>
-                <input type="range" id="grid-cols" min="1" max="4" value="2" oninput="updateGridLayout()">
-                <div class="value-display" id="grid-cols-value">2 columns</div>
-            </div>
-            <div class="customize-control">
-                <label>Gap Between Widgets (px)</label>
-                <input type="range" id="grid-gap" min="0" max="32" value="6" oninput="updateGridLayout()">
-                <div class="value-display" id="grid-gap-value">6px</div>
-            </div>
-            <div class="customize-control">
-                <label>Padding (px)</label>
-                <input type="range" id="grid-padding" min="0" max="32" value="6" oninput="updateGridLayout()">
-                <div class="value-display" id="grid-padding-value">6px</div>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Widget Styling</h3>
-            <div class="customize-control">
-                <label>Panel Padding (px)</label>
-                <input type="range" id="panel-padding" min="4" max="24" value="8" oninput="updateWidgetStyle()">
-                <div class="value-display" id="panel-padding-value">8px</div>
-            </div>
-            <div class="customize-control">
-                <label>Border Radius (px)</label>
-                <input type="range" id="border-radius" min="0" max="16" value="4" oninput="updateWidgetStyle()">
-                <div class="value-display" id="border-radius-value">4px</div>
-            </div>
-            <div class="customize-control">
-                <label>Border Width (px)</label>
-                <input type="range" id="border-width" min="1" max="4" value="2" oninput="updateWidgetStyle()">
-                <div class="value-display" id="border-width-value">2px</div>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Colors</h3>
-            <div class="customize-control">
-                <label>Background Color</label>
-                <input type="color" id="bg-color" value="#1a1a1a" onchange="updateColors()">
-            </div>
-            <div class="customize-control">
-                <label>Text Color</label>
-                <input type="color" id="text-color" value="#e0e0e0" onchange="updateColors()">
-            </div>
-            <div class="customize-control">
-                <label>Accent Color</label>
-                <input type="color" id="accent-color" value="#3b82f6" onchange="updateColors()">
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Typography</h3>
-            <div class="customize-control">
-                <label>Base Font Size (px)</label>
-                <input type="range" id="font-size" min="10" max="16" value="13" oninput="updateTypography()">
-                <div class="value-display" id="font-size-value">13px</div>
-            </div>
-            <div class="customize-control">
-                <label>Table Font Size (px)</label>
-                <input type="range" id="table-font-size" min="9" max="14" value="11" oninput="updateTypography()">
-                <div class="value-display" id="table-font-size-value">11px</div>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Widget Layout</h3>
-            <div class="customize-control">
-                <label>Widget Order</label>
-                <div id="widget-order-list" style="background: #222; padding: 12px; border-radius: 4px; max-height: 300px; overflow-y: auto;">
-                    <!-- Widget order controls will be populated here -->
-                </div>
-            </div>
-            <div class="customize-control">
-                <label>Chart Position</label>
-                <select id="chart-position" onchange="updateWidgetOrder()">
-                    <option value="top">Top</option>
-                    <option value="middle">Middle</option>
-                    <option value="bottom">Bottom</option>
-                </select>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Button Styling</h3>
-            <div class="customize-control">
-                <label>Buy Button Color</label>
-                <input type="color" id="btn-buy-color" value="#26a69a" onchange="updateButtonStyles()">
-            </div>
-            <div class="customize-control">
-                <label>Sell Button Color</label>
-                <input type="color" id="btn-sell-color" value="#ef5350" onchange="updateButtonStyles()">
-            </div>
-            <div class="customize-control">
-                <label>Primary Button Color</label>
-                <input type="color" id="btn-primary-color" value="#4a9eff" onchange="updateButtonStyles()">
-            </div>
-            <div class="customize-control">
-                <label>Danger Button Color</label>
-                <input type="color" id="btn-danger-color" value="#f44336" onchange="updateButtonStyles()">
-            </div>
-            <div class="customize-control">
-                <label>Start Button Color</label>
-                <input type="color" id="btn-start-color" value="#4caf50" onchange="updateButtonStyles()">
-            </div>
-            <div class="customize-control">
-                <label>Stop Button Color</label>
-                <input type="color" id="btn-stop-color" value="#f44336" onchange="updateButtonStyles()">
-            </div>
-            <div class="customize-control">
-                <label>Button Border Radius (px)</label>
-                <input type="range" id="btn-border-radius" min="0" max="12" value="4" oninput="updateButtonStyles()">
-                <div class="value-display" id="btn-border-radius-value">4px</div>
-            </div>
-            <div class="customize-control">
-                <label>Button Font Size (px)</label>
-                <input type="range" id="btn-font-size" min="10" max="16" value="11" oninput="updateButtonStyles()">
-                <div class="value-display" id="btn-font-size-value">11px</div>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <h3>Widget Widths</h3>
-            <div class="customize-control">
-                <label>Chart Width (columns)</label>
-                <input type="range" id="chart-width" min="1" max="4" value="1" oninput="updateWidgetWidths()">
-                <div class="value-display" id="chart-width-value">1 column</div>
-            </div>
-            <div class="customize-control">
-                <label>Positions Width (columns)</label>
-                <input type="range" id="positions-width" min="1" max="4" value="1" oninput="updateWidgetWidths()">
-                <div class="value-display" id="positions-width-value">1 column</div>
-            </div>
-            <div class="customize-control">
-                <label>Orders Width (columns)</label>
-                <input type="range" id="orders-width" min="1" max="4" value="1" oninput="updateWidgetWidths()">
-                <div class="value-display" id="orders-width-value">1 column</div>
-            </div>
-        </div>
-        
-        <div class="customize-section">
-            <button class="preset-btn" onclick="saveCustomization()" style="width: 100%; background: #4caf50; border-color: #4caf50;">💾 Save Settings</button>
-            <button class="preset-btn" onclick="saveAsDefaults()" style="width: 100%; background: #3b82f6; border-color: #3b82f6; margin-top: 8px;">💾 Save as Defaults</button>
-            <button class="preset-btn" onclick="resetCustomization()" style="width: 100%; margin-top: 8px; background: #f44336; border-color: #f44336;">🔄 Reset to Default</button>
         </div>
     </div>
     
@@ -852,7 +710,7 @@
     <div class="account-bar">
         <div class="status-item">
             <div class="status-label">Account</div>
-            <select id="account-select" onchange="switchAccount()" style="background: #222; border: 1px solid #444; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; width: 200px;">
+            <select id="account-select" onchange="switchAccount()" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 3px 6px; border-radius: 2px; font-size: 9px; font-weight: 500; cursor: pointer; width: 180px;">
                 <option value="">Loading...</option>
             </select>
     </div>
@@ -887,7 +745,7 @@
         <div class="panel chart-panel" id="chart-panel">
             <h2 onclick="togglePanel('chart-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">📈 Real-Time Chart & Trading</span>
+                <span class="panel-header-text">Real-Time Chart & Trading</span>
                 <div class="widget-controls">
                     <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('chart-panel')" title="Pop out">⤢</button>
                 </div>
@@ -951,7 +809,7 @@
                 <input type="number" id="order-tp-ticks" step="0.25" placeholder="TP Price" style="width: 90px; display: none;">
                 <button class="btn-buy" onclick="placeOrder('BUY')" id="buy-btn">BUY</button>
                 <button class="btn-sell" onclick="placeOrder('SELL')" id="sell-btn">SELL</button>
-                <button class="btn-danger" onclick="quickFlatten()" style="padding: 6px 10px; background: #dc2626;" title="Quick Flatten (F key)">⚡ FLATTEN</button>
+                <button class="btn-danger" onclick="quickFlatten()" style="padding: 6px 10px; background: var(--negative-color);" title="Quick Flatten (F key)">FLATTEN</button>
                 </div>
                 
             <!-- Chart Container -->
@@ -959,18 +817,21 @@
             </div> <!-- End panel-content -->
         </div>
         
-        <!-- Positions Panel (Right Side, Top) -->
-        <div class="panel positions-panel" id="positions-panel">
-            <h2 onclick="togglePanel('positions-panel')">
+        <!-- Active Trading Hub (Combined Positions & Orders) -->
+        <div class="panel main-activity-panel" id="activity-panel">
+            <h2 onclick="togglePanel('activity-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">📊 Open Positions (<span id="pos-count">0</span>)</span>
+                <span class="panel-header-text">Active Trading</span>
                 <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('positions-panel')" title="Pop out">⤢</button>
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('activity-panel')" title="Pop out">⤢</button>
                 </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
-            <table>
+                <!-- Positions Section -->
+                <div class="sub-section">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Positions (<span id="pos-count">0</span>)</h3>
+                    <table style="width: 100%; font-size: 11px;">
                 <thead>
                     <tr>
                         <th>Symbol</th>
@@ -986,21 +847,11 @@
                     <tr><td colspan="7" class="empty-state">No positions</td></tr>
                 </tbody>
             </table>
-            </div> <!-- End panel-content -->
                 </div>
-                
-        <!-- Orders Panel (Right Side, Middle) -->
-        <div class="panel orders-panel" id="orders-panel">
-            <h2 onclick="togglePanel('orders-panel')">
-                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">📋 Open Orders (<span id="ord-count">0</span>)</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('orders-panel')" title="Pop out">⤢</button>
-                </div>
-                <span class="collapse-btn">−</span>
-            </h2>
-            <div class="panel-content">
-            <table>
+                <!-- Orders Section -->
+                <div class="sub-section divider" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Orders (<span id="ord-count">0</span>)</h3>
+                    <table style="width: 100%; font-size: 11px;">
                         <thead>
                             <tr>
                                 <th>Symbol</th>
@@ -1015,27 +866,50 @@
                     <tr><td colspan="6" class="empty-state">No orders</td></tr>
                 </tbody>
             </table>
-            </div> <!-- End panel-content -->
+                </div>
+            </div>
                 </div>
         
-        <!-- Strategy Control Panel (Bottom Left) -->
-        <div class="panel strategy-panel" id="strategy-panel">
-            <h2 onclick="togglePanel('strategy-panel')">
+        <!-- Strategy Hub (Combined Strategy Control & Signals) -->
+        <div class="panel strategy-hub-panel" id="strategy-hub-panel">
+            <h2 onclick="togglePanel('strategy-hub-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">🎯 Strategy Control</span>
+                <span class="panel-header-text">Strategy Management</span>
                 <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('strategy-panel')" title="Pop out">⤢</button>
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('strategy-hub-panel')" title="Pop out">⤢</button>
                 </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
+                <!-- Strategy Signals Section (on top) -->
+                <div class="sub-section" id="strategy-signals-section">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Strategy Signals</h3>
+                    <div style="margin-bottom: 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="signal-filter-input" placeholder="Filter by strategy/symbol..." 
+                               style="flex: 1; min-width: 120px; padding: 4px 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-primary); font-size: 10px;">
+                        <select id="signal-type-filter" style="padding: 4px 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-primary); font-size: 10px;">
+                            <option value="all">All Types</option>
+                            <option value="BUY">BUY/LONG</option>
+                            <option value="SELL">SELL/SHORT</option>
+                            <option value="EXIT">EXIT</option>
+                        </select>
+                        <button onclick="clearSignalFeed()" style="padding: 4px 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-primary); font-size: 10px; cursor: pointer;">Clear</button>
+                    </div>
+                    <div id="signal-feed-container" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; max-height: 200px; overflow-y: auto;">
+                        <div style="color: var(--text-secondary); font-size: 10px; text-align: center;">No signals yet...</div>
+                    </div>
+                </div>
+                
+                <!-- Strategy Control Section (below signals) -->
+                <div class="sub-section divider" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Strategy Control</h3>
             <!-- Strategy Start Controls -->
-            <div style="margin-bottom: 16px; padding: 12px; background: #151515; border: 1px solid #333; border-radius: 6px;">
-                <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: #fff;">Start New Strategy</div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end;">
+                    <div style="margin-bottom: 12px; padding: 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px;">
+                        <div style="font-size: 10px; font-weight: 500; margin-bottom: 6px; color: var(--text-primary);">Start New Strategy</div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: end;">
                     <div>
-                        <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Strategy</label>
-                        <select id="strategy-select" style="width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                                <label style="font-size: 9px; color: var(--text-secondary); display: block; margin-bottom: 3px;">Strategy</label>
+                                <select id="strategy-select" style="width: 100%; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px; border-radius: 3px; font-size: 10px;">
                             <option value="simple_candle">Simple Candle</option>
                             <option value="overnight_range">Overnight Range</option>
                             <option value="trend_scalping">Trend Scalping</option>
@@ -1045,12 +919,12 @@
                         </select>
                     </div>
                     <div>
-                        <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Symbol(s)</label>
-                        <input type="text" id="strategy-symbols" placeholder="MNQ,MES" value="MNQ" style="width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                                <label style="font-size: 9px; color: var(--text-secondary); display: block; margin-bottom: 3px;">Symbol(s)</label>
+                                <input type="text" id="strategy-symbols" placeholder="MNQ,MES" value="MNQ" style="width: 100%; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px; border-radius: 3px; font-size: 10px;">
                     </div>
                     <div>
-                        <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Timeframe</label>
-                        <select id="strategy-timeframe" style="width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                                <label style="font-size: 9px; color: var(--text-secondary); display: block; margin-bottom: 3px;">Timeframe</label>
+                                <select id="strategy-timeframe" style="width: 100%; background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px; border-radius: 3px; font-size: 10px;">
                             <option value="5s">5s</option>
                             <option value="15s">15s</option>
                             <option value="30s">30s</option>
@@ -1062,89 +936,74 @@
                             <option value="1h">1h</option>
                         </select>
                     </div>
-                    <button onclick="startStrategy()" style="background: #4caf50; border: none; color: #fff; padding: 8px 16px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 11px;">▶ Start</button>
+                            <button onclick="startStrategy()" style="background: var(--positive-color); border: none; color: #fff; padding: 6px 12px; border-radius: 3px; font-weight: 500; cursor: pointer; font-size: 10px;">Start</button>
             </div>
         </div>
         
-            <!-- Active Strategies Grid -->
-            <div class="strategy-grid" id="strategy-grid">
-                <div class="empty-state">Loading strategies...</div>
+                    <!-- Active Strategies Grid (only shows active strategies) -->
+                    <div class="strategy-grid" id="strategy-grid" style="margin-top: 8px;">
+                        <div class="empty-state" style="color: var(--text-secondary); font-size: 9px; text-align: center; padding: 12px;">No active strategies</div>
             </div>
+                </div> <!-- End strategy-control-section -->
             </div> <!-- End panel-content -->
         </div>
         
-        <!-- Strategy Signal Feed Panel -->
-        <div class="panel signal-feed-panel" id="signal-feed-panel">
-            <h2 onclick="togglePanel('signal-feed-panel')">
+        <!-- Terminal Hub (Combined Command Input & Logs) -->
+        <div class="panel terminal-hub-panel" id="terminal-hub-panel">
+            <h2 onclick="togglePanel('terminal-hub-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">📡 Strategy Signals</span>
+                <span class="panel-header-text">Terminal</span>
                 <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('signal-feed-panel')" title="Pop out">⤢</button>
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('terminal-hub-panel')" title="Pop out">⤢</button>
                 </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
-                <div style="margin-bottom: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                    <input type="text" id="signal-filter-input" placeholder="Filter by strategy/symbol..." 
-                           style="flex: 1; min-width: 150px; padding: 4px 8px; background: #0a0a0a; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-size: 11px;">
-                    <select id="signal-type-filter" style="padding: 4px 8px; background: #0a0a0a; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-size: 11px;">
-                        <option value="all">All Types</option>
-                        <option value="BUY">BUY/LONG</option>
-                        <option value="SELL">SELL/SHORT</option>
-                        <option value="EXIT">EXIT</option>
-                    </select>
-                    <button onclick="clearSignalFeed()" style="padding: 4px 8px; background: #333; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; font-size: 11px; cursor: pointer;">Clear</button>
-                </div>
-                <div id="signal-feed-container" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; max-height: 300px; overflow-y: auto;">
-                    <div style="color: #888; font-size: 11px; text-align: center;">No signals yet...</div>
-                </div>
-            </div>
-
-        <!-- Command Input Panel -->
-        <div class="panel command-panel" id="command-panel">
-            <h2 onclick="togglePanel('command-panel')">
-                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">⌨️ Command Input</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('command-panel')" title="Pop out">⤢</button>
-                </div>
-                <span class="collapse-btn">−</span>
-            </h2>
-            <div class="panel-content">
-                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                <!-- Command Input Section (on top) -->
+                <div class="sub-section" id="command-input-section">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Command Input</h3>
+                    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
                     <input type="text" id="command-input" placeholder="Enter command (e.g., flatten, contracts, positions)" 
-                           style="flex: 1; background: #222; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px;"
+                               style="flex: 1; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 8px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 10px;"
                            onkeypress="if(event.key==='Enter') executeCommand()">
-                    <button onclick="executeCommand()" style="background: #4caf50; border: none; color: #fff; padding: 8px 20px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 12px;">Execute</button>
+                        <button onclick="executeCommand()" style="background: var(--positive-color); border: none; color: #fff; padding: 6px 12px; border-radius: 3px; font-weight: 500; cursor: pointer; font-size: 10px;">Execute</button>
+                </div>
+                    <div id="command-output" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; font-family: 'Courier New', monospace; font-size: 9px; max-height: 150px; overflow-y: auto; color: var(--text-primary);">
+                        <div style="color: var(--text-secondary);">Ready to execute commands...</div>
             </div>
-                <div id="command-output" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; font-family: 'Courier New', monospace; font-size: 11px; max-height: 200px; overflow-y: auto; color: #d1d5db;">
-                    <div style="color: #888;">Ready to execute commands...</div>
-                    </div>
-                    </div>
-                </div>
+        </div>
 
-        <!-- Risk Metrics Panel (NEW - High Priority) -->
-        <div class="panel strategy-panel" id="risk-panel" style="min-width: 300px;">
-            <h2 onclick="togglePanel('risk-panel')">
-                <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">⚠️ Risk & Compliance</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('risk-panel')" title="Pop out">⤢</button>
+                <!-- Terminal Logs Section (below commands) -->
+                <div class="sub-section divider" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Terminal Logs</h3>
+                    <div style="display: flex; gap: 6px; margin-bottom: 6px; align-items: center; flex-wrap: wrap;">
+                        <span style="font-size: 9px; color: var(--text-secondary);">Level:</span>
+                        <select id="log-level-filter" onchange="applyLogFilters()" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 6px; border-radius: 3px; font-size: 9px;">
+                            <option value="all">All</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                        </select>
+                        <span style="font-size: 9px; color: var(--text-secondary);">Search:</span>
+                        <input type="text" id="log-search-filter" oninput="applyLogFilters()" placeholder="Filter text..." style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 6px; border-radius: 3px; font-size: 9px; width: 120px;">
+                        <button onclick="clearLogs()" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 8px; border-radius: 3px; font-size: 9px; cursor: pointer;">Clear</button>
+                        <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; margin-left: auto;">
+                            <input type="checkbox" id="auto-scroll-logs" checked>
+                            <span style="color: var(--text-secondary);">Auto-scroll</span>
+                        </label>
                 </div>
-                <span class="collapse-btn">−</span>
-            </h2>
-            <div class="panel-content">
-                <div id="risk-metrics-widget" style="padding: 12px;">
-                    <div style="color: var(--text-secondary); text-align: center;">Loading risk metrics...</div>
+                    <div id="logs-container" style="background: #000000; border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; font-family: 'Courier New', monospace; font-size: 9px; min-height: 250px; max-height: 600px; height: 300px; overflow-y: auto; color: #00ff00; resize: vertical; cursor: ns-resize;">
+                        <div style="color: var(--text-secondary);">Connecting to log stream...</div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- Performance Metrics Panel -->
-        <div class="panel strategy-panel" id="performance-panel" style="min-width: 300px;">
+        <div class="panel strategy-panel" id="performance-panel">
             <h2 onclick="togglePanel('performance-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">📊 Performance Metrics</span>
+                <span class="panel-header-text">Performance Metrics</span>
                 <div class="widget-controls">
                     <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('performance-panel')" title="Pop out">⤢</button>
                 </div>
@@ -1160,41 +1019,76 @@
                         <div style="color: var(--text-secondary); text-align: center; font-size: 10px;">Loading...</div>
                     </div>
                 </div>
+                
+                <!-- Risk & Compliance Section (at bottom) -->
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                    <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Risk & Compliance</h3>
+                    <div id="risk-metrics-widget" style="padding: 8px;">
+                        <div style="color: var(--text-secondary); text-align: center; font-size: 9px;">Loading risk metrics...</div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- Terminal Logs Panel -->
-        <div class="panel logs-panel" id="logs-panel">
-            <h2 onclick="togglePanel('logs-panel')">
+        <!-- Enhanced Trade Log Panel (StrategIQ-style) -->
+        <div class="panel strategy-panel" id="trades-panel">
+            <h2 onclick="togglePanel('trades-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">📋 Terminal Logs</span>
+                <span class="panel-header-text">Trading Results</span>
                 <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('logs-panel')" title="Pop out">⤢</button>
+                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('trades-panel')" title="Pop out">⤢</button>
                 </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
-                <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
-                    <span style="font-size: 11px; color: #888;">Level:</span>
-                    <select id="log-level-filter" onchange="applyLogFilters()" style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px;">
-                        <option value="all">All</option>
-                        <option value="INFO">INFO</option>
-                        <option value="WARNING">WARNING</option>
-                        <option value="ERROR">ERROR</option>
-                    </select>
-                    <span style="font-size: 11px; color: #888;">Search:</span>
-                    <input type="text" id="log-search-filter" oninput="applyLogFilters()" placeholder="Filter text..." style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px; width: 150px;">
-                    <button onclick="clearLogs()" style="background: #444; border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Clear</button>
-                    <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; margin-left: auto;">
-                        <input type="checkbox" id="auto-scroll-logs" checked>
-                        <span style="color: #888;">Auto-scroll</span>
-                    </label>
+                <!-- Summary Statistics Bar -->
+                <div id="trades-summary-bar" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; padding: 12px; background: var(--bg-tertiary); border-radius: 6px; margin-bottom: 12px; font-size: 11px;">
+                    <div><span style="color: var(--text-secondary);">Trades:</span> <span id="summary-trades" style="font-weight: 600;">0</span></div>
+                    <div><span style="color: var(--text-secondary);">Win Rate:</span> <span id="summary-win-rate" style="font-weight: 600;">0%</span></div>
+                    <div><span style="color: var(--text-secondary);">Net P&L:</span> <span id="summary-net-pnl" style="font-weight: 600;">$0.00</span></div>
+                    <div><span style="color: var(--text-secondary);">Avg Trade:</span> <span id="summary-avg-trade" style="font-weight: 600;">$0.00</span></div>
+                    <div><span style="color: var(--text-secondary);">Max DD:</span> <span id="summary-max-dd" style="font-weight: 600;">0%</span></div>
+                    <div><span style="color: var(--text-secondary);">Profit Factor:</span> <span id="summary-profit-factor" style="font-weight: 600;">0.00</span></div>
                 </div>
-                <div id="logs-container" style="background: #0a0a0a; border: 1px solid #333; border-radius: 4px; padding: 12px; font-family: 'Courier New', monospace; font-size: 11px; max-height: 300px; overflow-y: auto; color: #d1d5db;">
-                    <div style="color: #888;">Connecting to log stream...</div>
+                
+                <!-- Controls -->
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap;">
+                    <select id="trades-side-filter" onchange="filterTradesTable()" style="background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px;">
+                        <option value="all">All Sides</option>
+                        <option value="LONG">LONG</option>
+                        <option value="SHORT">SHORT</option>
+                    </select>
+                    <button onclick="exportTradesCSV()" style="background: var(--accent-color); border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Export CSV</button>
+                    <button onclick="refreshTradesTable()" style="background: var(--positive-color); border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Refresh</button>
+                    <span style="margin-left: auto; font-size: 11px; color: var(--text-secondary);" id="trades-count">0 trades</span>
+                </div>
+                
+                <!-- Enhanced Trades Table -->
+                <div style="overflow-x: auto; max-height: 500px; overflow-y: auto;">
+                    <table id="trades-table" style="width: 100%; border-collapse: collapse; font-size: 11px;">
+                        <thead style="position: sticky; top: 0; background: var(--bg-secondary); z-index: 10;">
+                            <tr style="border-bottom: 2px solid var(--border-color);">
+                                <th onclick="sortTradesTable('trade_number')" style="padding: 8px 4px; text-align: left; cursor: pointer; user-select: none;"># <span id="sort-indicator-trade_number"></span></th>
+                                <th onclick="sortTradesTable('side')" style="padding: 8px 4px; text-align: left; cursor: pointer; user-select: none;">Side <span id="sort-indicator-side"></span></th>
+                                <th onclick="sortTradesTable('entry_time')" style="padding: 8px 4px; text-align: left; cursor: pointer; user-select: none;">Entry Time <span id="sort-indicator-entry_time"></span></th>
+                                <th onclick="sortTradesTable('exit_time')" style="padding: 8px 4px; text-align: left; cursor: pointer; user-select: none;">Exit Time <span id="sort-indicator-exit_time"></span></th>
+                                <th onclick="sortTradesTable('entry_price')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Entry <span id="sort-indicator-entry_price"></span></th>
+                                <th onclick="sortTradesTable('exit_price')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Exit <span id="sort-indicator-exit_price"></span></th>
+                                <th onclick="sortTradesTable('points')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Points <span id="sort-indicator-points"></span></th>
+                                <th onclick="sortTradesTable('pnl')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">P&L <span id="sort-indicator-pnl"></span></th>
+                                <th style="padding: 8px 4px; text-align: right;">Max RU $</th>
+                                <th style="padding: 8px 4px; text-align: right;">Max DD $</th>
+                                <th onclick="sortTradesTable('cumulative_pnl')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Cumulative P&L <span id="sort-indicator-cumulative_pnl"></span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-tbody">
+                            <tr><td colspan="11" style="padding: 20px; text-align: center; color: var(--text-secondary);">Loading trades...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
+
     </div>
     
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -1213,10 +1107,18 @@
         const wsMaxReconnectAttempts = 5;
         let currentChartSymbol = SYMBOL || 'MNQ'; // Track current chart symbol
         let currentChartTimeframe = TIMEFRAME || '5m'; // Track current chart timeframe
+        let chartUpdateInProgress = false; // Prevent concurrent chart updates
+        let chartErrorCount = 0; // Track consecutive errors
+        const maxChartErrors = 5; // Stop interval after this many consecutive errors
         
         // Store position and order price lines (global scope for update functions)
         let positionLines = new Map();
         let orderLines = new Map();
+        let orderLineDataMap = new Map(); // Map price lines to order data for drag/drop
+        let isDraggingOrderLine = false;
+        let draggedOrderLine = null;
+        let draggedOrderData = null;
+        let chartContainerElement = null; // Store reference to chart container DOM element
         
         // ========== KEYBOARD SHORTCUTS ==========
         let keyboardShortcutsEnabled = localStorage.getItem('keyboard-shortcuts-enabled') !== 'false';
@@ -1278,14 +1180,14 @@
         function updateShortcutsToggleButton() {
             const btn = document.getElementById('shortcuts-toggle');
             if (btn) {
-                btn.textContent = keyboardShortcutsEnabled ? '⌨️ Shortcuts ON' : '⌨️ Shortcuts OFF';
+                btn.textContent = keyboardShortcutsEnabled ? 'Shortcuts ON' : 'Shortcuts OFF';
                 btn.style.background = keyboardShortcutsEnabled ? '#4caf50' : '#666';
             }
         }
         
         function showShortcutsHelp() {
             const help = `
-⚡ Speed Trading Shortcuts:
+Speed Trading Shortcuts:
 • B - Quick BUY (market order)
 • S - Quick SELL (market order)
 • F - Quick Flatten all positions
@@ -1298,7 +1200,7 @@
         
         // ========== AUDIO & VISUAL ALERTS ==========
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        let alertEnabled = localStorage.getItem('alerts-enabled') !== 'false';
+        let alertEnabled = localStorage.getItem('alerts-enabled') === 'true'; // Default to OFF
         let desktopNotificationsEnabled = localStorage.getItem('desktop-notifications-enabled') === 'true';
         
         // Request notification permission
@@ -1372,7 +1274,7 @@
             if (!desktopNotificationsEnabled || !('Notification' in window)) return;
             if (Notification.permission !== 'granted') return;
             
-            const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
+            const icon = ''; // Removed emojis for professional look
             
             try {
                 new Notification(`${icon} ${title}`, {
@@ -1422,18 +1324,13 @@
             localStorage.setItem('alerts-enabled', alertEnabled);
             showToast(`Audio alerts ${alertEnabled ? 'enabled' : 'disabled'}`, 'info', 2000);
             
-            // Update button
-            const btn = document.getElementById('alerts-toggle');
-            if (btn) {
-                btn.textContent = alertEnabled ? '🔔 Alerts ON' : '🔔 Alerts OFF';
-                btn.style.background = alertEnabled ? '#4caf50' : '#666';
-            }
+            updateAlertsButton();
         }
         
         function updateNotificationButton() {
             const btn = document.getElementById('notifications-toggle');
             if (btn) {
-                btn.textContent = desktopNotificationsEnabled ? '📬 Notifications ON' : '📬 Notifications OFF';
+                btn.textContent = desktopNotificationsEnabled ? 'Notifications ON' : 'Notifications OFF';
                 btn.style.background = desktopNotificationsEnabled ? '#4caf50' : '#666';
             }
         }
@@ -1471,42 +1368,39 @@
         }
         
         // Initialize button states on load
-        document.addEventListener('DOMContentLoaded', () => {
+        // Initialize alerts button state
+        function updateAlertsButton() {
             const alertsBtn = document.getElementById('alerts-toggle');
             if (alertsBtn) {
-                alertsBtn.textContent = alertEnabled ? '🔔 Alerts ON' : '🔔 Alerts OFF';
-                alertsBtn.style.background = alertEnabled ? '#4caf50' : '#666';
+                alertsBtn.textContent = alertEnabled ? 'Alerts ON' : 'Alerts OFF';
+                alertsBtn.style.background = alertEnabled ? 'var(--positive-color)' : 'var(--bg-tertiary)';
             }
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            updateAlertsButton();
             updateNotificationButton();
         });
         
         // ========== RISK METRICS ==========
         let riskMetricsData = null;
-        let complianceData = null;
         
+        let lastRiskMetricsJson = null;
         async function loadRiskMetrics() {
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/risk/metrics`);
                 if (!response.ok) return;
                 const data = await response.json();
+                
+                const currentJson = JSON.stringify(data);
+                if (currentJson === lastRiskMetricsJson) return;
+                lastRiskMetricsJson = currentJson;
+                
                 if (data.error) return;
                 riskMetricsData = data;
                 updateRiskMetricsWidget(data);
             } catch (e) {
                 console.error('Error loading risk metrics:', e);
-            }
-        }
-        
-        async function loadComplianceStatus() {
-            try {
-                const response = await fetch(`${BASE_URL}/api/chart/compliance/status`);
-                if (!response.ok) return;
-                const data = await response.json();
-                if (data.error) return;
-                complianceData = data;
-                updateComplianceWidget(data);
-            } catch (e) {
-                console.error('Error loading compliance status:', e);
             }
         }
         
@@ -1587,50 +1481,22 @@
             `;
         }
         
-        function updateComplianceWidget(data) {
-            // Update compliance indicators in risk widget
-            if (!data) return;
-            
-            const widget = document.getElementById('risk-metrics-widget');
-            if (!widget) return;
-            
-            // Add compliance status badge
-            const isCompliant = data.is_compliant && data.dll_compliant && data.mll_compliant;
-            const statusColor = isCompliant ? '#4caf50' : '#f44336';
-            const statusText = isCompliant ? '✅ COMPLIANT' : '🚨 VIOLATION';
-            
-            // Find or create compliance status element
-            let statusEl = widget.querySelector('.compliance-status');
-            if (!statusEl) {
-                statusEl = document.createElement('div');
-                statusEl.className = 'compliance-status';
-                statusEl.style.cssText = 'padding-top: 8px; border-top: 1px solid #222; margin-top: 8px;';
-                widget.appendChild(statusEl);
-            }
-            
-            statusEl.innerHTML = `
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                    <span style="color: #888;">Compliance Status</span>
-                    <span style="color: ${statusColor}; font-weight: 600; font-size: 12px;">${statusText}</span>
-                </div>
-                ${(data.violations || []).length > 0 ? `
-                    <div style="color: #f44336; font-size: 10px; margin-top: 4px;">
-                        ${data.violations.map(v => `<div>• ${v}</div>`).join('')}
-                    </div>
-                ` : ''}
-                ${(data.warnings || []).length > 0 ? `
-                    <div style="color: #ff9800; font-size: 10px; margin-top: 4px;">
-                        ${data.warnings.map(w => `<div>⚠️ ${w}</div>`).join('')}
-                    </div>
-                ` : ''}
-            `;
-        }
-        
         // ========== PERFORMANCE METRICS ==========
         let performanceData = null;
         let pnlHistory = [];
         
+        let lastMetricsLoadTime = 0;
+        let metricsLoading = false;
         async function loadPerformanceMetrics() {
+            if (metricsLoading) return;
+            
+            // Throttle to once every 10 seconds to prevent API spam
+            const now = Date.now();
+            if (now - lastMetricsLoadTime < 10000) return;
+            
+            metricsLoading = true;
+            lastMetricsLoadTime = now;
+
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/performance/metrics`);
                 if (!response.ok) {
@@ -1647,10 +1513,23 @@
                 updatePerformanceWidget(data);
             } catch (e) {
                 console.error('Error loading performance metrics:', e);
+            } finally {
+                metricsLoading = false;
             }
         }
         
+        let lastPnlHistoryLoadTime = 0;
+        let pnlHistoryLoading = false;
         async function loadPnlHistory() {
+            if (pnlHistoryLoading) return;
+            
+            // Throttle to once every 30 seconds
+            const now = Date.now();
+            if (now - lastPnlHistoryLoadTime < 30000) return;
+            
+            pnlHistoryLoading = true;
+            lastPnlHistoryLoadTime = now;
+
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/pnl/history?period=24`);
                 if (!response.ok) {
@@ -1667,6 +1546,8 @@
                 updatePnlChart();
             } catch (e) {
                 console.error('Error loading P&L history:', e);
+            } finally {
+                pnlHistoryLoading = false;
             }
         }
         
@@ -1688,59 +1569,357 @@
             
             // Show current P&L even if no trades
             const hasTrades = trades.total > 0;
+            const winRatePct = hasTrades ? (trades.win_rate * 100) : 0;
+            const returnPct = perf.return_pct || 0;
+            const maxDDPct = perf.max_drawdown || 0;
+            const riskReward = trades.risk_reward_ratio || 0;
+            const hwm = perf.high_water_mark || 0;
+            const fees = perf.fees || 0;
             
+            // StrategIQ-style metrics grid
             widget.innerHTML = `
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 11px;">
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Total P&L</div>
-                        <div style="font-size: 18px; font-weight: 600; color: ${(current.total_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}">
-                            $${(current.total_pnl || 0).toFixed(2)}
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px;">
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Trades</div>
+                        <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">${trades.total || 0}</div>
                         </div>
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Win Rate</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${winRatePct >= 50 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'};">${winRatePct.toFixed(2)}%</div>
                     </div>
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Realized P&L</div>
-                        <div style="font-size: 16px; font-weight: 600; color: ${(current.realized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}">
-                            $${(current.realized_pnl || 0).toFixed(2)}
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Net P&L</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${(current.realized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'};">$${(current.realized_pnl || 0).toFixed(2)}</div>
                         </div>
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Avg Trade</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${(trades.avg_trade || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'};">$${(trades.avg_trade || 0).toFixed(2)}</div>
                     </div>
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Unrealized P&L</div>
-                        <div style="font-size: 16px; font-weight: 600; color: ${(current.unrealized_pnl || 0) >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}">
-                            $${(current.unrealized_pnl || 0).toFixed(2)}
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Max DD</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${maxDDPct >= 0 ? 'var(--negative-color)' : 'var(--text-secondary)'};">${maxDDPct.toFixed(2)}%</div>
                         </div>
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Profit Factor</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${(trades.profit_factor || 0) >= 1 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'};">${hasTrades && trades.profit_factor ? trades.profit_factor.toFixed(2) : '0.00'}</div>
                     </div>
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Win Rate</div>
-                        <div style="font-size: 16px; font-weight: 600; color: ${hasTrades && trades.win_rate >= 0.5 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'}">
-                            ${hasTrades ? (trades.win_rate * 100).toFixed(1) + '%' : 'N/A'}
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Return</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${returnPct >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'};">${returnPct.toFixed(2)}%</div>
                         </div>
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">R:R</div>
+                        <div style="font-size: 14px; font-weight: 500; color: ${riskReward >= 1 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'};">${riskReward.toFixed(2)}:1</div>
                     </div>
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Total Trades</div>
-                        <div style="font-size: 16px; font-weight: 600;">${trades.total || 0}</div>
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Best</div>
+                        <div style="font-size: 14px; font-weight: 500; color: var(--positive-color);">$${(trades.largest_win || 0).toFixed(2)}</div>
                     </div>
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Profit Factor</div>
-                        <div style="font-size: 16px; font-weight: 600; color: ${hasTrades && trades.profit_factor >= 1 ? 'var(--positive-color)' : hasTrades ? 'var(--negative-color)' : 'var(--text-secondary)'}">
-                            ${hasTrades && trades.profit_factor ? trades.profit_factor.toFixed(2) : 'N/A'}
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Worst</div>
+                        <div style="font-size: 14px; font-weight: 500; color: var(--negative-color);">$${(trades.largest_loss || 0).toFixed(2)}</div>
                         </div>
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">HWM</div>
+                        <div style="font-size: 14px; font-weight: 500; color: var(--positive-color);">$${hwm.toFixed(2)}</div>
                     </div>
-                    ${hasTrades ? `
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Avg Win</div>
-                        <div style="font-size: 14px; font-weight: 600; color: var(--positive-color)">
-                            $${trades.avg_win ? trades.avg_win.toFixed(2) : '0.00'}
+                    <div class="metric-card" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; text-align: center;">
+                        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">Fees</div>
+                        <div style="font-size: 14px; font-weight: 500; color: var(--text-secondary);">$${fees.toFixed(2)}</div>
                         </div>
-                    </div>
-                    <div>
-                        <div style="color: var(--text-secondary); margin-bottom: 4px;">Avg Loss</div>
-                        <div style="font-size: 14px; font-weight: 600; color: var(--negative-color)">
-                            $${trades.avg_loss ? trades.avg_loss.toFixed(2) : '0.00'}
-                        </div>
-                    </div>
-                    ` : ''}
                 </div>
             `;
+        }
+        
+        // ========== ENHANCED TRADES TABLE ==========
+        let allTrades = [];
+        let filteredTrades = [];
+        let tradesSortColumn = 'trade_number';
+        let tradesSortDirection = 'desc';
+        
+        let lastTradesJson = null;
+        async function loadTradesTable() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/chart/trades`);
+                if (!response.ok) {
+                    console.error('Trades response not OK:', response.status, response.statusText);
+                    return;
+                }
+                const data = await response.json();
+                
+                const currentJson = JSON.stringify(data);
+                if (currentJson === lastTradesJson) return;
+                lastTradesJson = currentJson;
+                
+                if (data.error) {
+                    console.error('Trades error:', data.error);
+                    return;
+                }
+                console.log('📊 Loaded trades:', data);
+                allTrades = data.trades || [];
+                filteredTrades = [...allTrades];
+                
+                // Update summary bar
+                updateTradesSummary(data.statistics || {});
+                
+                // Update table
+                updateTradesTable();
+            } catch (e) {
+                console.error('Error loading trades:', e);
+            }
+        }
+        
+        function updateTradesSummary(stats) {
+            const totalTrades = stats.total_trades || 0;
+            // The stats.win_rate from backend is already a percentage (0-100)
+            const winRate = (stats.win_rate || 0);
+            const netPnl = stats.total_pnl || 0;
+            const avgTrade = totalTrades > 0 ? (netPnl / totalTrades) : 0;
+            const maxDD = stats.max_drawdown_pct || 0;
+            const profitFactor = stats.profit_factor || 0;
+            
+            document.getElementById('summary-trades').textContent = totalTrades;
+            document.getElementById('summary-win-rate').textContent = winRate.toFixed(2) + '%';
+            document.getElementById('summary-net-pnl').textContent = '$' + netPnl.toFixed(2);
+            document.getElementById('summary-avg-trade').textContent = '$' + avgTrade.toFixed(2);
+            document.getElementById('summary-max-dd').textContent = maxDD.toFixed(2) + '%';
+            document.getElementById('summary-profit-factor').textContent = profitFactor.toFixed(2);
+            
+            // Color code
+            document.getElementById('summary-net-pnl').style.color = netPnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)';
+            document.getElementById('summary-avg-trade').style.color = avgTrade >= 0 ? 'var(--positive-color)' : 'var(--negative-color)';
+        }
+        
+        function updateTradesTable() {
+            const tbody = document.getElementById('trades-tbody');
+            if (!tbody) return;
+            
+            if (filteredTrades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" style="padding: 20px; text-align: center; color: var(--text-secondary);">No trades found</td></tr>';
+                document.getElementById('trades-count').textContent = '0 trades';
+                return;
+            }
+            
+            tbody.innerHTML = filteredTrades.map(trade => {
+                const pnl = parseFloat(trade.pnl || 0);
+                const points = parseFloat(trade.points || 0);
+                const cumulativePnl = parseFloat(trade.cumulative_pnl || 0);
+                const entryTime = trade.entry_time ? new Date(trade.entry_time).toLocaleString() : 'N/A';
+                const exitTime = trade.exit_time ? new Date(trade.exit_time).toLocaleString() : 'N/A';
+                const side = (trade.side || '').toUpperCase();
+                const sideColor = side === 'LONG' || side === 'BUY' ? 'var(--positive-color)' : 'var(--negative-color)';
+                
+                return `
+                    <tr style="border-bottom: 1px solid var(--border-color);">
+                        <td style="padding: 6px 4px; color: var(--text-secondary);">${trade.trade_number || ''}</td>
+                        <td style="padding: 6px 4px; color: ${sideColor}; font-weight: 600;">${side}</td>
+                        <td style="padding: 6px 4px; color: var(--text-primary); font-size: 10px;">${entryTime}</td>
+                        <td style="padding: 6px 4px; color: var(--text-primary); font-size: 10px;">${exitTime}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-primary);">${parseFloat(trade.entry_price || 0).toFixed(2)}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-primary);">${parseFloat(trade.exit_price || 0).toFixed(2)}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: ${points >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${points >= 0 ? '+' : ''}${points.toFixed(2)}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: ${pnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${trade.max_ru ? '$' + parseFloat(trade.max_ru).toFixed(2) : '—'}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${trade.max_dd ? '$' + parseFloat(trade.max_dd).toFixed(2) : '—'}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: ${cumulativePnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${cumulativePnl >= 0 ? '+' : ''}$${Math.abs(cumulativePnl).toFixed(2)}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            document.getElementById('trades-count').textContent = `${filteredTrades.length} trades`;
+        }
+        
+        function sortTradesTable(column) {
+            if (tradesSortColumn === column) {
+                tradesSortDirection = tradesSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                tradesSortColumn = column;
+                tradesSortDirection = 'asc';
+            }
+            
+            // Clear all sort indicators
+            document.querySelectorAll('[id^="sort-indicator-"]').forEach(el => el.textContent = '');
+            
+            // Set sort indicator
+            const indicator = document.getElementById(`sort-indicator-${column}`);
+            if (indicator) {
+                indicator.textContent = tradesSortDirection === 'asc' ? '↑' : '↓';
+            }
+            
+            // Sort trades
+            filteredTrades.sort((a, b) => {
+                let aVal = a[column];
+                let bVal = b[column];
+                
+                // Handle numeric values
+                if (column === 'trade_number' || column === 'entry_price' || column === 'exit_price' || column === 'points' || column === 'pnl' || column === 'cumulative_pnl') {
+                    aVal = parseFloat(aVal || 0);
+                    bVal = parseFloat(bVal || 0);
+                }
+                
+                // Handle dates
+                if (column === 'entry_time' || column === 'exit_time') {
+                    aVal = aVal ? new Date(aVal).getTime() : 0;
+                    bVal = bVal ? new Date(bVal).getTime() : 0;
+                }
+                
+                if (tradesSortDirection === 'asc') {
+                    return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+                } else {
+                    return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+                }
+            });
+            
+            updateTradesTable();
+        }
+        
+        function filterTradesTable() {
+            const sideFilter = document.getElementById('trades-side-filter').value;
+            
+            filteredTrades = allTrades.filter(trade => {
+                if (sideFilter !== 'all') {
+                    const side = (trade.side || '').toUpperCase();
+                    if (sideFilter === 'LONG' && side !== 'LONG' && side !== 'BUY') return false;
+                    if (sideFilter === 'SHORT' && side !== 'SHORT' && side !== 'SELL') return false;
+                }
+                return true;
+            });
+            
+            updateTradesTable();
+        }
+        
+        function exportTradesCSV() {
+            if (filteredTrades.length === 0) {
+                alert('No trades to export');
+                return;
+            }
+            
+            // CSV header
+            const headers = ['#', 'Side', 'Entry Time', 'Exit Time', 'Entry', 'Exit', 'Points', 'P&L', 'Max RU $', 'Max DD $', 'Cumulative P&L'];
+            const rows = [headers.join(',')];
+            
+            // CSV rows
+            filteredTrades.forEach(trade => {
+                const row = [
+                    trade.trade_number || '',
+                    trade.side || '',
+                    trade.entry_time || '',
+                    trade.exit_time || '',
+                    trade.entry_price || '',
+                    trade.exit_price || '',
+                    trade.points || '',
+                    trade.pnl || '',
+                    trade.max_ru || '',
+                    trade.max_dd || '',
+                    trade.cumulative_pnl || ''
+                ];
+                rows.push(row.join(','));
+            });
+            
+            // Create and download
+            const csv = rows.join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trades_${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+        
+        function refreshTradesTable() {
+            loadTradesTable();
+        }
+        
+        // Session trades tracking
+        let sessionTrades = [];
+        let sessionPnL = null;
+        
+        function updateSessionTrades(trades) {
+            sessionTrades = [...(sessionTrades || []), ...trades].slice(-100); // Keep last 100 trades
+            
+            // Update session trades widget if it exists
+            const widget = document.getElementById('session-trades-widget');
+            if (widget) {
+                const tradesList = widget.querySelector('.trades-list') || document.createElement('div');
+                tradesList.className = 'trades-list';
+                tradesList.style.cssText = 'max-height: 400px; overflow-y: auto;';
+                
+                if (sessionTrades.length === 0) {
+                    tradesList.innerHTML = '<div style="padding: 16px; text-align: center; color: #888;">No trades yet</div>';
+                } else {
+                    tradesList.innerHTML = sessionTrades.slice().reverse().map(trade => {
+                        const pnl = trade.net_pnl || 0;
+                        const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+                        const pnlSign = pnl >= 0 ? '+' : '';
+                        const entryTime = new Date(trade.entry_time).toLocaleTimeString();
+                        const exitTime = new Date(trade.exit_time).toLocaleTimeString();
+                        
+                        return `
+                            <div class="trade-item" style="padding: 8px; margin-bottom: 4px; background: #1a1a1a; border-left: 3px solid ${pnl >= 0 ? '#10b981' : '#ef4444'}; border-radius: 4px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <strong>${trade.side || ''} ${trade.symbol || ''}</strong>
+                                        <span style="color: #888; font-size: 0.85em; margin-left: 8px;">${trade.quantity || 0} contracts</span>
+                                    </div>
+                                    <div class="pnl ${pnlClass}" style="font-weight: bold; color: ${pnl >= 0 ? '#10b981' : '#ef4444'};">
+                                        ${pnlSign}$${pnl.toFixed(2)}
+                                    </div>
+                                </div>
+                                <div style="font-size: 0.8em; color: #888; margin-top: 4px;">
+                                    Entry: ${entryTime} @ $${(trade.entry_price || 0).toFixed(2)} | 
+                                    Exit: ${exitTime} @ $${(trade.exit_price || 0).toFixed(2)}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+                
+                if (!widget.querySelector('.trades-list')) {
+                    widget.appendChild(tradesList);
+                }
+            }
+        }
+        
+        function updateSessionPnL(pnlData) {
+            sessionPnL = pnlData;
+            
+            // Update session PnL widget if it exists
+            const widget = document.getElementById('session-pnl-widget');
+            if (widget) {
+                const netPnl = pnlData.net_pnl || 0;
+                const realizedPnl = pnlData.realized_pnl || 0;
+                const totalTrades = pnlData.total_trades || 0;
+                const winRate = pnlData.win_rate || 0;
+                const avgWin = pnlData.avg_win || 0;
+                const avgLoss = pnlData.avg_loss || 0;
+                
+                widget.innerHTML = `
+                    <div style="padding: 16px;">
+                        <div style="font-size: 1.5em; font-weight: bold; color: ${netPnl >= 0 ? '#10b981' : '#ef4444'}; margin-bottom: 12px;">
+                            ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9em;">
+                            <div>
+                                <div style="color: #888;">Realized P&L</div>
+                                <div style="color: ${realizedPnl >= 0 ? '#10b981' : '#ef4444'};">$${realizedPnl.toFixed(2)}</div>
+                            </div>
+                            <div>
+                                <div style="color: #888;">Total Trades</div>
+                                <div>${totalTrades}</div>
+                            </div>
+                            <div>
+                                <div style="color: #888;">Win Rate</div>
+                                <div>${winRate.toFixed(1)}%</div>
+                            </div>
+                            <div>
+                                <div style="color: #888;">Avg Win/Loss</div>
+                                <div>$${avgWin.toFixed(2)} / $${Math.abs(avgLoss).toFixed(2)}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
         }
         
         function updatePnlChart() {
@@ -1819,16 +1998,16 @@
             // Load performance metrics
             loadPerformanceMetrics();
             loadPnlHistory();
+            // Load enhanced trades table
+            loadTradesTable();
             // Load risk metrics (critical for account protection)
             loadRiskMetrics();
-            loadComplianceStatus();
-            
             // Refresh every 30 seconds
             setInterval(loadPerformanceMetrics, 30000);
             setInterval(loadPnlHistory, 30000);
+            setInterval(loadTradesTable, 30000); // Refresh trades every 30 seconds
             // Refresh risk metrics more frequently (every 5 seconds)
             setInterval(loadRiskMetrics, 5000);
-            setInterval(loadComplianceStatus, 10000);
         });
         
         // Toggle panel collapse/expand
@@ -1845,7 +2024,7 @@
         
         // Restore panel states from localStorage
         function restorePanelStates() {
-            ['chart-panel', 'positions-panel', 'orders-panel', 'strategy-panel', 'signal-feed-panel', 'command-panel', 'logs-panel', 'performance-panel'].forEach(panelId => {
+            ['chart-panel', 'activity-panel', 'strategy-hub-panel', 'terminal-hub-panel', 'performance-panel', 'trades-panel'].forEach(panelId => {
                 const collapsed = localStorage.getItem(`panel-${panelId}-collapsed`) === 'true';
                 if (collapsed) {
                     const panel = document.getElementById(panelId);
@@ -1860,9 +2039,16 @@
             if (!dashboard) return;
             try {
                 const raw = localStorage.getItem('dashboard-order');
-                if (!raw) return;
-                const ids = JSON.parse(raw);
-                if (!Array.isArray(ids)) return;
+                let ids;
+                if (!raw) {
+                    // Default order: Chart+Active Trading (top), Trading Results+Terminal (middle), Performance+Strategy (bottom)
+                    ids = ['chart-panel', 'activity-panel', 'trades-panel', 'terminal-hub-panel', 'performance-panel', 'strategy-hub-panel'];
+                } else {
+                    ids = JSON.parse(raw);
+                    if (!Array.isArray(ids)) {
+                        ids = ['chart-panel', 'activity-panel', 'trades-panel', 'terminal-hub-panel', 'performance-panel', 'strategy-hub-panel'];
+                    }
+                }
                 ids.forEach(id => {
                     const el = document.getElementById(id);
                     if (el && el.classList.contains('panel')) {
@@ -2054,6 +2240,25 @@
                         updatePnlChart();
                     }
                     break;
+                case 'session_trades':
+                    if (data) {
+                        console.log('📈 Received session trades update:', data);
+                        if (data.completed_trades && data.completed_trades.length > 0) {
+                            // Update session trades display
+                            updateSessionTrades(data.completed_trades);
+                            // Show notification for new trades
+                            data.completed_trades.forEach(trade => {
+                                const pnl = trade.net_pnl || 0;
+                                const symbol = trade.symbol || '';
+                                const side = trade.side || '';
+                                showToast(`${side} ${symbol}: $${pnl.toFixed(2)}`, pnl >= 0 ? 'success' : 'error', 3000);
+                            });
+                        }
+                        if (data.session_pnl) {
+                            updateSessionPnL(data.session_pnl);
+                        }
+                    }
+                    break;
                 case 'performance_metrics':
                     if (data) {
                         console.log('📈 Received performance metrics:', data);
@@ -2075,28 +2280,6 @@
                                 showDesktopNotification('Risk Alert', `Approaching limit: ${data.dll_percentage >= 90 ? 'DLL' : 'MLL'} at ${Math.max(data.dll_percentage, data.mll_percentage).toFixed(1)}%`, 'warning');
                             }
                         }
-                    }
-                    break;
-                case 'compliance_status':
-                    if (data) {
-                        console.log('✅ Received compliance status:', data);
-                        complianceData = data;
-                        updateComplianceWidget(data);
-                        
-                        // Alert on violations
-                        if (!data.is_compliant || data.violations?.length > 0) {
-                            playAlert('error');
-                            flashAlert('error');
-                            showDesktopNotification('🚨 Compliance Violation', data.violations?.join(', ') || 'Compliance violation detected', 'error');
-                        }
-                    }
-                    break;
-                case 'compliance_violation':
-                    if (data) {
-                        playAlert('error');
-                        flashAlert('error');
-                        showToast(`🚨 ${data.message || 'Compliance Violation!'}`, 'error', 10000);
-                        showDesktopNotification('Compliance Violation', data.message || 'Compliance violation detected', 'error');
                     }
                     break;
                 case 'order_filled':
@@ -2127,17 +2310,12 @@
                         showDesktopNotification('Take Profit', message, 'success');
                     }
                     break;
-                    if (data) {
-                        playAlert(data.type === 'stop_triggered' ? 'error' : 'success');
-                        showToast(`${data.type === 'stop_triggered' ? 'Stop loss' : 'Take profit'} hit: ${data.symbol || ''}`, 
-                                 data.type === 'stop_triggered' ? 'error' : 'success');
-                    }
-                    break;
                 case 'risk_alert':
-                case 'compliance_violation':
                     if (data) {
                         playAlert('error');
-                        showToast(data.message || 'Risk/Compliance Alert', 'error', 8000);
+                        flashAlert('error');
+                        showToast(`🚨 ${data.message || 'Risk Limit Violation!'}`, 'error', 10000);
+                        showDesktopNotification('Risk Warning', data.message || 'Risk limit violation detected', 'error');
                     }
                     break;
                 case 'pong':
@@ -2502,7 +2680,13 @@
             }
         }
         
+        // Display update functions with simple change detection
+        let lastPositionsJson = null;
         function updatePositionsDisplay(positions) {
+            const currentJson = JSON.stringify(positions);
+            if (currentJson === lastPositionsJson) return;
+            lastPositionsJson = currentJson;
+            
             document.getElementById('position-count').textContent = positions.length;
             document.getElementById('pos-count').textContent = positions.length;
             
@@ -2574,7 +2758,12 @@
             }
         }
         
+        let lastOrdersJson = null;
         function updateOrdersDisplay(data) {
+            const currentJson = JSON.stringify(data);
+            if (currentJson === lastOrdersJson) return;
+            lastOrdersJson = currentJson;
+            
             // Handle both old format (array) and new format (object with orders/groups)
             const orders = Array.isArray(data) ? data : (data.orders || []);
             const groups = data.groups || [];
@@ -2743,7 +2932,7 @@
                             <button onclick="cancelOrder('${orderId}', '${order.symbol}')" 
                                     style="background: #ff9800; border: none; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; cursor: pointer; margin-right: 2px;"
                                     title="Cancel order">
-                                ⚡ Cancel
+                                Cancel
                             </button>
                         </td>
                     </tr>
@@ -2757,21 +2946,31 @@
             }
         }
         
+        let lastStrategiesJson = null;
         function updateStrategiesDisplay(data) {
+            const currentJson = JSON.stringify(data);
+            if (currentJson === lastStrategiesJson) return;
+            lastStrategiesJson = currentJson;
+            
             const strategies = Object.values(data.strategies || {});
             const active = data.active || [];
             const grid = document.getElementById('strategy-grid');
+            if (!grid) return;
             
-            if (strategies.length === 0) {
-                grid.innerHTML = '<div class="empty-state">No strategies available</div>';
+            // Filter to only show active strategies
+            const activeStrategies = strategies.filter(strategy => {
+                return strategy.active === true || active.includes(strategy.name);
+            });
+            
+            if (activeStrategies.length === 0) {
+                grid.innerHTML = '<div class="empty-state" style="color: var(--text-secondary); font-size: 9px; text-align: center; padding: 12px;">No active strategies</div>';
             } else {
-                grid.innerHTML = strategies.map(strategy => {
-                    const isActive = strategy.active === true || active.includes(strategy.name);
+                grid.innerHTML = activeStrategies.map(strategy => {
                     // Runtime (prefer server-provided string)
                     let runtimeLine = '';
-                    if (isActive && strategy.runtime_str) {
-                        runtimeLine = `<br><span style="font-size: 9px; color: #888;">Runtime: ${strategy.runtime_str}</span>`;
-                    } else if (isActive && strategy.start_time && strategy.start_time !== 'N/A') {
+                    if (strategy.runtime_str) {
+                        runtimeLine = `<br><span style="font-size: 8px; color: var(--text-secondary);">Runtime: ${strategy.runtime_str}</span>`;
+                    } else if (strategy.start_time && strategy.start_time !== 'N/A') {
                         // Fallback compute if needed
                         try {
                             const startTime = new Date(strategy.start_time);
@@ -2779,40 +2978,36 @@
                             const diffMs = now - startTime;
                             const hours = Math.floor(diffMs / (1000 * 60 * 60));
                             const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                            runtimeLine = `<br><span style="font-size: 9px; color: #888;">Runtime: ${hours}h ${minutes}m</span>`;
+                            runtimeLine = `<br><span style="font-size: 8px; color: var(--text-secondary);">Runtime: ${hours}h ${minutes}m</span>`;
                         } catch (e) {
                             runtimeLine = '';
                         }
                     }
+                    
                 return `
                 <div class="strategy-card" id="strategy-${strategy.name}">
                     <div class="strategy-header">
                         <span class="strategy-name">${strategy.name}</span>
-                                <span class="strategy-status ${isActive ? 'active' : 'idle'}">
-                                    ${isActive ? '🟢 ACTIVE' : '⚪ IDLE'}
-                                </span>
+                        <span class="strategy-status active" title="Active">ACTIVE</span>
                     </div>
                     <div class="strategy-info">
-                                ${strategy.symbols && strategy.symbols.length > 0 ? strategy.symbols.join(', ') : 'No symbols'} | 
+                        ${strategy.symbols && strategy.symbols.length > 0 ? (Array.isArray(strategy.symbols) ? strategy.symbols.join(', ') : strategy.symbols) : 'No symbols'} | 
                                 ${strategy.timeframe || 'N/A'} | 
                                 ${strategy.positions || 0} pos
-                                ${strategy.start_time && strategy.start_time !== 'N/A' ? '<br><span style="font-size: 9px; color: #888;">Started: ' + strategy.start_time + '</span>' : ''}
+                        ${strategy.start_time && strategy.start_time !== 'N/A' ? '<br><span style="font-size: 8px; color: var(--text-secondary);">Started: ' + (strategy.start_time.length > 19 ? new Date(strategy.start_time).toLocaleString() : strategy.start_time) + '</span>' : ''}
                                 ${runtimeLine}
                     </div>
-                            <div class="strategy-actions">
-                                <button class="btn-primary" onclick="startStrategyByName('${strategy.name}')" ${isActive ? 'disabled' : ''}>
-                            Start
-                        </button>
-                                <button class="btn-danger" onclick="stopStrategyByName('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
+                    <div class="strategy-actions" style="display: flex; gap: 4px; margin-top: 4px; justify-content: space-between; align-items: center;">
+                        <button class="btn-danger" onclick="stopStrategyByName('${strategy.name}')" style="padding: 3px 8px; font-size: 9px; border-radius: 2px;">
                             Stop
                         </button>
-                                ${isActive ? `<button class="btn-info" onclick="toggleStrategyDetails('${strategy.name}')" style="background: #2196f3; border: none; color: #fff; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                            ▼ Details
-                        </button>` : ''}
+                        <button class="btn-info" onclick="toggleStrategyDetails('${strategy.name}')" style="background: var(--accent-color); border: none; color: #fff; padding: 3px 8px; border-radius: 2px; cursor: pointer; font-size: 9px;">
+                            Details
+                        </button>
                     </div>
-                    ${isActive ? `<div class="strategy-details" id="details-${strategy.name}" style="display: none;">
-                        <div style="color: #888; text-align: center; padding: 12px;">Loading details...</div>
-                    </div>` : ''}
+                    <div class="strategy-details" id="details-${strategy.name}" style="display: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-color);">
+                        <div style="color: var(--text-secondary); text-align: center; padding: 8px; font-size: 8px;">Loading details...</div>
+                    </div>
                 </div>
             `;
                 }).join('');
@@ -2853,30 +3048,48 @@
         // Render strategy details
         function renderStrategyDetails(details) {
             if (details.name === 'overnight_range') {
-                // Calculate runtime
+                // Calculate runtime - check multiple sources
                 let runtimeStr = 'N/A';
-                if (details.start_time) {
+                if (details.runtime_str) {
+                    runtimeStr = details.runtime_str;
+                } else if (details.runtime_seconds !== undefined && details.runtime_seconds !== null) {
+                    const hours = Math.floor(details.runtime_seconds / 3600);
+                    const minutes = Math.floor((details.runtime_seconds % 3600) / 60);
+                    runtimeStr = `${hours}h ${minutes}m`;
+                } else if (details.start_time && details.start_time !== 'N/A') {
                     try {
                         const startTime = new Date(details.start_time);
-                        const now = new Date();
-                        const diffMs = now - startTime;
-                        const hours = Math.floor(diffMs / (1000 * 60 * 60));
-                        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                        runtimeStr = `${hours}h ${minutes}m`;
+                        if (!isNaN(startTime.getTime())) {
+                            const now = new Date();
+                            const diffMs = now - startTime;
+                            const hours = Math.floor(diffMs / (1000 * 60 * 60));
+                            const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                            runtimeStr = `${hours}h ${minutes}m`;
+                        }
                     } catch (e) {
                         runtimeStr = 'N/A';
                     }
                 }
                 
-                // Format start time
+                // Format start time - handle ISO strings and various formats
                 let startTimeStr = 'N/A';
-                if (details.start_time) {
+                if (details.start_time && details.start_time !== 'N/A') {
                     try {
-                        const dt = new Date(details.start_time);
-                        startTimeStr = dt.toLocaleString('en-US', { 
-                            month: 'short', day: 'numeric', 
-                            hour: '2-digit', minute: '2-digit', second: '2-digit' 
-                        });
+                        // Handle ISO format strings
+                        let dt = new Date(details.start_time);
+                        if (isNaN(dt.getTime())) {
+                            // Try parsing as ISO string with timezone
+                            dt = new Date(details.start_time.replace('Z', '+00:00'));
+                        }
+                        if (!isNaN(dt.getTime())) {
+                            startTimeStr = dt.toLocaleString('en-US', { 
+                                month: 'short', day: 'numeric', 
+                                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                                timeZoneName: 'short'
+                            });
+                        } else {
+                            startTimeStr = details.start_time;
+                        }
                     } catch (e) {
                         startTimeStr = details.start_time;
                     }
@@ -2893,7 +3106,7 @@
                 if (details.breakout_levels && Object.keys(details.breakout_levels).length > 0) {
                     html += `
                         <div class="strategy-detail-section">
-                            <strong>🎯 Breakout Levels:</strong>
+                            <strong>Breakout Levels:</strong>
                     `;
                     for (const [symbol, levels] of Object.entries(details.breakout_levels)) {
                         html += `
@@ -2982,20 +3195,34 @@
             if (updateIntervals.positions) clearInterval(updateIntervals.positions);
             if (updateIntervals.orders) clearInterval(updateIntervals.orders);
             if (updateIntervals.strategies) clearInterval(updateIntervals.strategies);
+            
+            updateIntervals.account = null;
+            updateIntervals.positions = null;
+            updateIntervals.orders = null;
+            updateIntervals.strategies = null;
             }
         
+        // Initialize update intervals
         function startHttpPolling() {
-            // Start HTTP polling as fallback
-            updateIntervals.account = setInterval(updateAccountStatus, 3000);
-            updateIntervals.positions = setInterval(updatePositions, 3000);
-            updateIntervals.orders = setInterval(updateOrders, 5000);
-            updateIntervals.strategies = setInterval(updateStrategies, 5000);
+            // Already polling?
+            if (updateIntervals.account) return;
+            
+            console.log('📡 Starting SLOW background sync (30s)');
+            // SLOW SYNC ONLY - WebSocket handles real-time events
+            // This ensures we never drift more than 30s if an event is missed
+            updateIntervals.account = setInterval(updateAccountStatus, 30000);
+            updateIntervals.positions = setInterval(updatePositions, 30000);
+            updateIntervals.orders = setInterval(updateOrders, 30000);
+            updateIntervals.strategies = setInterval(updateStrategies, 30000);
         }
         
         // Initialize chart
         function initChart() {
             const container = document.getElementById('chart-container');
             if (!container || typeof LightweightCharts === 'undefined') return;
+            
+            // Store container reference for drag/drop
+            chartContainerElement = container;
             
                 chart = LightweightCharts.createChart(container, {
                     width: container.clientWidth,
@@ -3083,6 +3310,9 @@
             if (container) {
                 resizeObserver.observe(container);
             }
+            
+            // Add drag/drop support for bracket order price lines
+            setupOrderLineDragDrop();
         }
         
         async function loadChartData() {
@@ -3210,17 +3440,35 @@
                         lineStyle = LightweightCharts.LineStyle.Solid;
                     }
                     
+                    // Check if this is a bracket order (has stop_loss or take_profit)
+                    const isBracketOrder = order.stop_loss_price || order.take_profit_price || 
+                                         order.stopLossPrice || order.takeProfitPrice ||
+                                         orderType.includes('BRACKET');
+                    
                     const priceLine = {
                         price: price,
                         color: color,
-                        lineWidth: 1,
+                        lineWidth: isBracketOrder ? 2 : 1,
                         lineStyle: lineStyle,
                         axisLabelVisible: true,
-                        title: `${side} ${orderType} ${order.quantity || 0} @ $${price.toFixed(2)}`
+                        title: `${side} ${orderType} ${order.quantity || 0} @ $${price.toFixed(2)}${isBracketOrder ? ' (Bracket - drag to modify)' : ''}`,
+                        // Make bracket orders draggable
+                        draggable: isBracketOrder
                     };
                     
                     const line = candlestickSeries.createPriceLine(priceLine);
                     orderLines.set(order.order_id || order.id, line);
+                    
+                    // Store order data for drag/drop modification
+                    if (isBracketOrder) {
+                        orderLineDataMap.set(line, {
+                            orderId: order.order_id || order.id,
+                            order: order,
+                            originalPrice: price,
+                            isStopLoss: orderType.includes('STOP') || order.stop_loss_price || order.stopLossPrice,
+                            isTakeProfit: orderType.includes('TAKE_PROFIT') || order.take_profit_price || order.takeProfitPrice
+                        });
+                    }
                 });
             } catch (error) {
                 console.error('Error updating order lines:', error);
@@ -3228,7 +3476,13 @@
         }
         
         async function updateChart() {
+            // Prevent concurrent requests
+            if (chartUpdateInProgress) {
+                return;
+            }
+            
             try {
+                chartUpdateInProgress = true;
                 const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
                 const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
                 
@@ -3236,23 +3490,66 @@
                 if (symbol !== currentChartSymbol || timeframe !== currentChartTimeframe) {
                     console.log(`Chart changed: ${currentChartSymbol} ${currentChartTimeframe} → ${symbol} ${timeframe}, reloading...`);
                     await refreshChart();
+                    chartUpdateInProgress = false;
                     return;
                 }
                 
                 const response = await fetch(`${BASE_URL}/api/chart/quote?symbol=${symbol}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const data = await response.json();
+                
                 if (data.latest_bar && candlestickSeries) {
                     const bar = data.latest_bar;
-                    candlestickSeries.update({
-                        time: bar.time,
-                        open: bar.open,
-                        high: bar.high,
-                        low: bar.low,
-                        close: bar.close,
-                    });
+                    // Ensure time is a valid timestamp (not an object)
+                    let barTime = bar.time;
+                    if (typeof barTime === 'object') {
+                        // If it's a Date object, convert to Unix timestamp
+                        barTime = Math.floor(barTime.getTime() / 1000);
+                    } else if (typeof barTime === 'string') {
+                        // If it's a string, parse and convert
+                        barTime = Math.floor(new Date(barTime).getTime() / 1000);
+                    }
+                    
+                    // Only update if we have a valid, newer timestamp
+                    if (barTime && typeof barTime === 'number' && !isNaN(barTime)) {
+                        candlestickSeries.update({
+                            time: barTime,
+                            open: bar.open,
+                            high: bar.high,
+                            low: bar.low,
+                            close: bar.close,
+                        });
+                    }
+                }
+                
+                // Reset error count on success
+                chartErrorCount = 0;
+                
+                // Refresh chart lines and indicators (order lines, position lines, etc.)
+                // Only update visual elements, don't make additional fetch requests
+                if (typeof updateOrderLines === 'function') {
+                    updateOrderLines();
+                }
+                if (typeof updatePositionLines === 'function') {
+                    updatePositionLines();
                 }
             } catch (error) {
-                // Silent fail for chart updates
+                chartErrorCount++;
+                console.warn(`Chart update error (${chartErrorCount}/${maxChartErrors}):`, error.message || error);
+                
+                // Stop interval if too many consecutive errors
+                if (chartErrorCount >= maxChartErrors) {
+                    console.error(`❌ Too many chart update errors, stopping auto-refresh`);
+                    if (updateIntervals.chart) {
+                        clearInterval(updateIntervals.chart);
+                        updateIntervals.chart = null;
+                    }
+                    showToast('Chart auto-refresh stopped due to errors. Click Refresh to restart.', 'warning', 5000);
+                }
+            } finally {
+                chartUpdateInProgress = false;
             }
         }
         
@@ -3266,12 +3563,173 @@
             // Reload chart data with new symbol/timeframe
             await loadChartData();
             
+            // Reset error count when manually refreshing
+            chartErrorCount = 0;
+            
             // Restart update interval with current refresh rate
             const rate = parseInt(document.getElementById('chart-refresh-rate')?.value || 12);
             if (rate > 0) {
+                // Clear any existing interval first
+                if (updateIntervals.chart) {
+                    clearInterval(updateIntervals.chart);
+                }
                 updateIntervals.chart = setInterval(updateChart, 1000 / rate);
                 console.log(`✅ Chart auto-refresh restarted at ${rate}x/s`);
             }
+        }
+        
+        // Setup drag/drop for bracket order price lines
+        function setupOrderLineDragDrop() {
+            if (!chart || !candlestickSeries || !chartContainerElement) return;
+            
+            const chartContainer = chartContainerElement;
+            
+            let mouseDown = false;
+            let startY = 0;
+            let startPrice = 0;
+            
+            chartContainer.addEventListener('mousedown', (e) => {
+                // Check if clicking near a bracket order price line
+                const rect = chartContainer.getBoundingClientRect();
+                const y = e.clientY - rect.top;
+                
+                // Find nearest bracket order line by checking each line's Y position
+                let nearestLine = null;
+                let nearestDistance = Infinity;
+                let nearestData = null;
+                const PRICE_LINE_TOLERANCE_PX = 12; // Pixel tolerance for detecting price line hover
+                
+                orderLineDataMap.forEach((data, line) => {
+                    const linePrice = line.options().price;
+                    // Convert price to Y coordinate using the series
+                    const lineY = candlestickSeries.priceToCoordinate(linePrice);
+                    if (lineY === null || lineY === undefined) return;
+                    
+                    const distance = Math.abs(y - lineY);
+                    if (distance < nearestDistance && distance < PRICE_LINE_TOLERANCE_PX) {
+                        nearestDistance = distance;
+                        nearestLine = line;
+                        nearestData = data;
+                    }
+                });
+                
+                if (nearestLine && nearestData) {
+                    mouseDown = true;
+                    startY = y;
+                    startPrice = nearestLine.options().price;
+                    draggedOrderLine = nearestLine;
+                    draggedOrderData = nearestData;
+                    isDraggingOrderLine = true;
+                    chartContainer.style.cursor = 'ns-resize';
+                    e.preventDefault();
+                }
+            });
+            
+            chartContainer.addEventListener('mousemove', (e) => {
+                if (!mouseDown || !draggedOrderLine || !draggedOrderData) return;
+                
+                const rect = chartContainer.getBoundingClientRect();
+                const y = e.clientY - rect.top;
+                
+                // Calculate price from Y coordinate using visible price range
+                const priceScale = chart.priceScale('right');
+                if (!priceScale) return;
+                
+                const visibleRange = priceScale.getVisibleRange();
+                if (!visibleRange) return;
+                
+                // Calculate price from Y coordinate
+                // Y=0 is at top, Y=height is at bottom
+                // Price scale: top = max price, bottom = min price
+                const chartHeight = rect.height;
+                const priceRange = visibleRange.max - visibleRange.min;
+                const newPrice = visibleRange.max - ((y / chartHeight) * priceRange);
+                
+                if (newPrice && newPrice > 0) {
+                    // Update the price line visually
+                    const options = draggedOrderLine.options();
+                    options.price = newPrice;
+                    candlestickSeries.removePriceLine(draggedOrderLine);
+                    draggedOrderLine = candlestickSeries.createPriceLine(options);
+                    orderLines.set(draggedOrderData.orderId, draggedOrderLine);
+                    orderLineDataMap.set(draggedOrderLine, draggedOrderData);
+                }
+            });
+            
+            chartContainer.addEventListener('mouseup', async (e) => {
+                if (!mouseDown || !draggedOrderLine || !draggedOrderData) return;
+                
+                mouseDown = false;
+                isDraggingOrderLine = false;
+                chartContainer.style.cursor = '';
+                
+                const finalPrice = draggedOrderLine.options().price;
+                const priceDiff = Math.abs(finalPrice - startPrice);
+                
+                // Only update if price changed significantly (more than 0.25)
+                if (priceDiff > 0.25) {
+                    try {
+                        const order = draggedOrderData.order;
+                        const updateData = {
+                            order_id: draggedOrderData.orderId,
+                            price: finalPrice
+                        };
+                        
+                        // Determine if this is stop loss or take profit
+                        if (draggedOrderData.isStopLoss) {
+                            updateData.stop_loss_price = finalPrice;
+                        } else if (draggedOrderData.isTakeProfit) {
+                            updateData.take_profit_price = finalPrice;
+                        } else {
+                            updateData.price = finalPrice;
+                        }
+                        
+                        const response = await fetch(`${BASE_URL}/api/chart/order/modify`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(updateData)
+                        });
+                        
+                        const result = await response.json();
+                        if (result.success) {
+                            console.log(`✅ Bracket order ${draggedOrderData.orderId} updated to price ${finalPrice.toFixed(2)}`);
+                            // Refresh order lines to get updated data
+                            await updateOrderLines();
+                        } else {
+                            console.error('Failed to update bracket order:', result.error);
+                            // Revert the line position
+                            const options = draggedOrderLine.options();
+                            options.price = startPrice;
+                            candlestickSeries.removePriceLine(draggedOrderLine);
+                            draggedOrderLine = candlestickSeries.createPriceLine(options);
+                            orderLines.set(draggedOrderData.orderId, draggedOrderLine);
+                            orderLineDataMap.set(draggedOrderLine, draggedOrderData);
+                        }
+                    } catch (error) {
+                        console.error('Error updating bracket order:', error);
+                        // Revert on error
+                        const options = draggedOrderLine.options();
+                        options.price = startPrice;
+                        candlestickSeries.removePriceLine(draggedOrderLine);
+                        draggedOrderLine = candlestickSeries.createPriceLine(options);
+                        orderLines.set(draggedOrderData.orderId, draggedOrderLine);
+                        orderLineDataMap.set(draggedOrderLine, draggedOrderData);
+                    }
+                }
+                
+                draggedOrderLine = null;
+                draggedOrderData = null;
+            });
+            
+            chartContainer.addEventListener('mouseleave', () => {
+                if (mouseDown) {
+                    mouseDown = false;
+                    isDraggingOrderLine = false;
+                    chartContainer.style.cursor = '';
+                    draggedOrderLine = null;
+                    draggedOrderData = null;
+                }
+            });
         }
         
         // Update account status
@@ -3377,64 +3835,11 @@
         async function updateStrategies() {
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/status`);
-                if (!response.ok) {
-                    console.error(`Strategy status API error: ${response.status} ${response.statusText}`);
-                    return;
-                }
+                if (!response.ok) return;
                 const data = await response.json();
-                const grid = document.getElementById('strategy-grid');
-                if (!grid) {
-                    console.warn('Strategy grid element not found');
-                    return;
-                }
-                
-                if (data && data.strategies) {
-                    const strategies = Object.values(data.strategies);
-                    const active = data.active || [];
-                    
-                    if (strategies.length === 0) {
-                        grid.innerHTML = '<div class="empty-state">No strategies available</div>';
-                    } else {
-                        grid.innerHTML = strategies.map(strategy => {
-                            const isActive = active.includes(strategy.name) || strategy.active === true;
-                            const symbols = Array.isArray(strategy.symbols) ? strategy.symbols : (strategy.symbols ? [strategy.symbols] : []);
-                            return `
-                                <div class="strategy-card">
-                                    <div class="strategy-header">
-                                        <span class="strategy-name">${strategy.name || 'Unknown'}</span>
-                                        <span class="strategy-status ${isActive ? 'active' : 'idle'}">
-                                            ${isActive ? 'ACTIVE' : 'IDLE'}
-                                        </span>
-                                    </div>
-                                    <div class="strategy-info">
-                                        ${symbols.length > 0 ? symbols.join(', ') : 'No symbols'} | 
-                                        ${strategy.positions || 0} pos
-                                    </div>
-                                    <div class="strategy-actions">
-                                        <button class="btn-primary" onclick="startStrategyByName('${strategy.name}')" ${isActive ? 'disabled' : ''}>
-                                            Start
-                                        </button>
-                                        <button class="btn-danger" onclick="stopStrategyByName('${strategy.name}')" ${!isActive ? 'disabled' : ''}>
-                                            Stop
-                                        </button>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                        console.log(`✅ Updated ${strategies.length} strategies in widget`);
-                    }
-                } else if (data.error) {
-                    grid.innerHTML = `<div class="empty-state">Error: ${data.error}</div>`;
-                    console.error('Strategy status error:', data.error);
-                } else {
-                    grid.innerHTML = '<div class="empty-state">No strategy data available</div>';
-                }
+                updateStrategiesDisplay(data);
             } catch (error) {
                 console.error('Error updating strategies:', error);
-                const grid = document.getElementById('strategy-grid');
-                if (grid) {
-                    grid.innerHTML = `<div class="empty-state">Error loading strategies: ${error.message}</div>`;
-                }
             }
         }
         
@@ -3738,12 +4143,16 @@
         
         // Strategy control - start strategy by name (from strategy cards)
         async function startStrategyByName(name) {
-            // Optimize: disable button immediately to prevent double-clicks
+            // Optimistic UI: disable button and show loading state immediately
             const btn = event?.target;
             if (btn) {
                 btn.disabled = true;
                 btn.textContent = 'Starting...';
+                btn.style.opacity = '0.7';
             }
+            
+            // Show toast immediately for feedback
+            showToast(`Starting strategy ${name}...`, 'info', 2000);
             
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/start`, {
@@ -3753,28 +4162,39 @@
                 });
                 const data = await response.json();
                 if (data.success) {
-                    // Use setTimeout to avoid blocking UI
-                    setTimeout(() => updateStrategies(), 100);
+                    showToast(`✅ Strategy ${name} started`, 'success', 3000);
+                    playAlert('success');
+                    // Refresh data immediately
+                    await updateStrategies();
                 } else {
-                    showToast(`${data.error || data.message}`, 'error', 6000);
+                    showToast(`❌ ${data.error || data.message}`, 'error', 6000);
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Start';
+                        btn.style.opacity = '1';
+                    }
                 }
             } catch (error) {
-                showToast(`Error: ${error.message}`, 'error', 6000);
-            } finally {
+                showToast(`❌ Error: ${error.message}`, 'error', 6000);
                 if (btn) {
                     btn.disabled = false;
                     btn.textContent = 'Start';
+                    btn.style.opacity = '1';
                 }
             }
         }
         
         async function stopStrategyByName(name) {
-            // Optimize: disable button immediately to prevent double-clicks
+            // Optimistic UI: disable button and show loading state immediately
             const btn = event?.target;
             if (btn) {
                 btn.disabled = true;
                 btn.textContent = 'Stopping...';
+                btn.style.opacity = '0.7';
             }
+            
+            // Show toast immediately for feedback
+            showToast(`Stopping strategy ${name}...`, 'info', 2000);
             
             try {
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/stop`, {
@@ -3784,17 +4204,24 @@
                 });
                 const data = await response.json();
                 if (data.success) {
-                    // Use setTimeout to avoid blocking UI
-                    setTimeout(() => updateStrategies(), 100);
+                    showToast(`✅ Strategy ${name} stopped`, 'success', 3000);
+                    playAlert('success');
+                    // Refresh data immediately
+                    await updateStrategies();
                 } else {
-                    showToast(`${data.error || data.message}`, 'error', 6000);
+                    showToast(`❌ ${data.error || data.message}`, 'error', 6000);
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = 'Stop';
+                        btn.style.opacity = '1';
+                    }
                 }
             } catch (error) {
-                showToast(`Error: ${error.message}`, 'error', 6000);
-            } finally {
+                showToast(`❌ Error: ${error.message}`, 'error', 6000);
                 if (btn) {
                     btn.disabled = false;
                     btn.textContent = 'Stop';
+                    btn.style.opacity = '1';
                 }
             }
         }
@@ -4085,8 +4512,6 @@
             
             // Load risk metrics (critical for account protection)
             loadRiskMetrics();
-            loadComplianceStatus();
-            
             // Connection status (will be updated by WebSocket)
             const connectionStatusEl = document.getElementById('connection-status');
             if (connectionStatusEl) {
@@ -4116,6 +4541,8 @@
                     clearInterval(updateIntervals.chart);
                     updateIntervals.chart = null;
                 }
+                // Reset error count when user changes refresh rate
+                chartErrorCount = 0;
                 const rate = parseInt(e.target.value || 12);
                 if (rate > 0) {
                     updateIntervals.chart = setInterval(updateChart, 1000 / rate);
@@ -4467,12 +4894,8 @@
             const panel = document.getElementById(panelId);
             if (!panel) return;
             
-            // Clone the panel content
-            const panelClone = panel.cloneNode(true);
-            const panelContent = panelClone.querySelector('.panel-content');
-            
-            // Create popout URL with widget ID
-            const popoutUrl = `${BASE_URL}/popout?widget=${panelId}&port=${SERVER_PORT}&symbol=${encodeURIComponent(SYMBOL)}&timeframe=${encodeURIComponent(TIMEFRAME)}`;
+            // Create popout URL with widget ID and websocket connection info
+            const popoutUrl = `${BASE_URL}/popout?widget=${panelId}&port=${SERVER_PORT}&symbol=${encodeURIComponent(SYMBOL)}&timeframe=${encodeURIComponent(TIMEFRAME)}&ws_url=${encodeURIComponent(WS_URL)}`;
             
             // Open in new window
             const popoutWindow = window.open(
@@ -4498,22 +4921,34 @@
             const popBackBtn = document.createElement('button');
             popBackBtn.textContent = '↩ Pop Back In';
             popBackBtn.className = 'widget-btn';
-            popBackBtn.style.cssText = 'position: absolute; top: 5px; right: 5px; z-index: 1000; background: #4caf50; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; font-size: 10px; cursor: pointer;';
+            popBackBtn.style.cssText = 'position: absolute; top: 5px; right: 5px; z-index: 1000; background: var(--positive-color); color: #fff; border: none; padding: 3px 6px; border-radius: 2px; font-size: 9px; cursor: pointer;';
             popBackBtn.onclick = () => popBackWidget(panelId);
             panel.appendChild(popBackBtn);
             
-            // Send widget content to popout window when it loads
-            popoutWindow.addEventListener('load', () => {
-                setTimeout(() => {
+            // Forward websocket messages to popout window
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                const originalOnMessage = websocket.onmessage;
+                websocket.onmessage = (event) => {
+                    // Call original handler for main window
+                    if (originalOnMessage) originalOnMessage(event);
+                    
+                    // Forward to popout window
                     if (popoutWindow && !popoutWindow.closed) {
+                        try {
                         popoutWindow.postMessage({
-                            type: 'widget-content',
-                            widgetId: panelId,
-                            html: panelContent ? panelContent.innerHTML : panelClone.innerHTML
+                                type: 'websocket-message',
+                                data: JSON.parse(event.data)
+                            }, '*');
+                        } catch (e) {
+                            // If not JSON, send as text
+                            popoutWindow.postMessage({
+                                type: 'websocket-message',
+                                data: event.data
                         }, '*');
                     }
-                }, 100);
-            });
+                    }
+                };
+            }
             
             // Listen for popout window close to restore panel
             const checkClosed = setInterval(() => {

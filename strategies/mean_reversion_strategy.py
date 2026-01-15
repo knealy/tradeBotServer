@@ -510,6 +510,33 @@ class MeanReversionStrategy(BaseStrategy):
         if symbols:
             self.config.symbols = symbols
         
+        # Print initialization message
+        strategy_details = [
+            f"⏰ Timeframe: {self.timeframe}",
+            f"📊 RSI: {self.rsi_period} period, Oversold<{self.rsi_oversold}, Overbought>{self.rsi_overbought}",
+            f"📈 MA: {self.ma_period} period {self.ma_type}",
+            f"🎯 Entry: Price > {self.atr_deviation_threshold}x ATR from MA",
+            f"🛑 Stop Loss: {self.stop_atr_multiplier}x ATR",
+            f"🎯 Target: {'Return to MA' if self.target_ma_return else 'Fixed TP'}",
+            f"📦 Position Size: {self.config.position_size} contract(s) per order"
+        ]
+        self.print_initialization_message("Mean Reversion Strategy", self.config.symbols, strategy_details)
+        
+        if symbols:
+            self.config.symbols = symbols
+        
+        # Print initialization message
+        strategy_details = [
+            f"⏰ Timeframe: {self.timeframe}",
+            f"📊 RSI: {self.rsi_period} period, Oversold<{self.rsi_oversold}, Overbought>{self.rsi_overbought}",
+            f"📈 MA: {self.ma_period} period {self.ma_type}",
+            f"🎯 Entry: Price > {self.atr_deviation_threshold}x ATR from MA",
+            f"🛑 Stop Loss: {self.stop_atr_multiplier}x ATR",
+            f"🎯 Target: {'Return to MA' if self.target_ma_return else 'Fixed TP'}",
+            f"📦 Position Size: {self.config.position_size} contract(s) per order"
+        ]
+        self.print_initialization_message("Mean Reversion Strategy", self.config.symbols, strategy_details)
+        
         self.is_trading = True
         self.status = StrategyStatus.ACTIVE
         

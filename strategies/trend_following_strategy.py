@@ -503,6 +503,17 @@ class TrendFollowingStrategy(BaseStrategy):
         if symbols:
             self.config.symbols = symbols
         
+        # Print initialization message
+        strategy_details = [
+            f"⏰ Timeframe: {self.timeframe}",
+            f"📈 MA Crossover: {self.fast_ma_period}/{self.slow_ma_period} {self.ma_type}",
+            f"📊 ATR: {self.atr_period} period, Stop={self.atr_stop_multiplier}x, Trail={self.atr_trailing_multiplier}x",
+            f"🎯 Min Trend Strength: {self.min_trend_strength}",
+            f"📦 Pyramiding: {'ENABLED' if self.pyramid_enabled else 'DISABLED'} (max {self.pyramid_max_adds} adds)",
+            f"📦 Position Size: {self.config.position_size} contract(s) per order"
+        ]
+        self.print_initialization_message("Trend Following Strategy", self.config.symbols, strategy_details)
+        
         self.is_trading = True
         self.status = StrategyStatus.ACTIVE
         

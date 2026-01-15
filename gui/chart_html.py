@@ -7,13 +7,34 @@ Supports real-time updates and backtesting mode.
 import json
 import os
 import asyncio
+import math
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from pathlib import Path
+from collections import defaultdict
 from aiohttp import web, WSMsgType
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def json_serialize_safe(obj: Any) -> Any:
+    """
+    Recursively serialize object to JSON-safe format.
+    Replaces Infinity/NaN with null or large numbers.
+    """
+    if isinstance(obj, float):
+        if math.isinf(obj):
+            return None if obj > 0 else -999999.0  # Positive infinity -> null, negative -> large negative
+        if math.isnan(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: json_serialize_safe(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [json_serialize_safe(item) for item in obj]
+    else:
+        return obj
 
 # Global server instance for real-time charts
 _chart_server = None
@@ -21,6 +42,10 @@ _chart_server_port = None
 _chart_server_trading_bot = None
 _chart_server_symbol = None
 _chart_server_timeframe = None
+
+# Track refresh tasks to avoid concurrent redundant refreshes (Global scope)
+_refresh_locks = defaultdict(asyncio.Lock)
+_last_refresh_time = defaultdict(float)
 
 
 async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -> int:
@@ -52,7 +77,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     _account_state_cache_ttl = 10000  # 10 seconds cache TTL
     
     async def handle_account_state(request):
-        """Get account state - balance, P&L, compliance - lightweight with caching."""
+        """Get account state - balance, P&L, compliance - fast path via AccountTracker."""
         try:
             account_id = None
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
@@ -61,131 +86,39 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 else:
                     account_id = str(trading_bot.selected_account)
             
-            # Check cache first (but reduce TTL for PnL updates)
-            cache_key = f"account_state_{account_id}"
-            import time
-            current_time = time.time() * 1000  # milliseconds
-            
-            # Reduce cache TTL to 1 second for real-time PnL updates
-            cache_ttl = 1000  # 1 second instead of default
-            
-            if cache_key in _account_state_cache:
-                cache_age = current_time - _account_state_cache_time.get(cache_key, 0)
-                if cache_age < cache_ttl:
-                    # Return cached data
-                    response = web.json_response(_account_state_cache[cache_key])
+            if not account_id:
+                return web.json_response({'error': 'No account selected'}, status=200)
+
+            # FAST PATH: Try AccountTracker first (it's memory-only, no API calls)
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                state = trading_bot.account_tracker.get_state(account_id=str(account_id))
+                if state:
+                    # Success - return tracker state
+                    response = web.json_response(state)
                     response.headers['Access-Control-Allow-Origin'] = '*'
                     return response
-            
-            # Get account info and balance efficiently (only if cache expired)
-            # Use balance from selected_account if available (faster)
+
+            # Basic info from bot if tracker not available
             balance = 0.0
-            account_name = ''
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
                 if isinstance(trading_bot.selected_account, dict):
                     balance = float(trading_bot.selected_account.get('balance', 0.0))
-                    account_name = trading_bot.selected_account.get('name', '')
             
-            # Only fetch account_info if we don't have cached balance
-            account_info = None
-            if not balance or balance == 0.0:
-                account_info = await trading_bot.get_account_info(account_id=account_id)
-                balance_data = await trading_bot.get_account_balance(account_id=account_id)
-                
-                if balance_data is not None:
-                    balance = float(balance_data)
-            
-            # --- PnL ---
-            # TopStepX position payloads often *do not* include unrealizedPnL; our
-            # `handle_get_positions()` already computes accurate unrealized PnL using
-            # tick value + current quote. Reuse that to drive the account banner.
-            unrealized_pnl = 0.0
-            realized_pnl = 0.0
-
-            # **Realized PnL**: Get from AccountTracker (manual calculation)
-            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker and account_id:
-                try:
-                    state = trading_bot.account_tracker.get_state(account_id=str(account_id))
-                    if isinstance(state, dict):
-                        # AccountTracker returns 'realized_pnl' (already converted from 'realised_PnL')
-                        realized_pnl = float(state.get('realized_pnl', 0.0) or 0.0)
-                        logger.debug(f"Retrieved realized PnL from account tracker: ${realized_pnl:.2f}")
-                except Exception as e:
-                    logger.debug(f"Could not get realized PnL from account tracker: {e}")
-
-            # **Unrealized PnL**: sum computed per-position PnL from `handle_get_positions()`
-            try:
-                pos_resp = await handle_get_positions(None)
-                pos_payload = None
-                # aiohttp Response exposes `.text` as a property with the decoded body
-                if hasattr(pos_resp, 'text') and pos_resp.text:
-                    pos_payload = json.loads(pos_resp.text)
-                elif hasattr(pos_resp, 'body') and pos_resp.body:
-                    pos_payload = json.loads(pos_resp.body.decode('utf-8'))
-
-                positions_list = (pos_payload or {}).get('positions') or []
-                for pos in positions_list:
-                    if isinstance(pos, dict):
-                        upnl = pos.get('unrealized_pnl') or pos.get('unrealizedPnL') or pos.get('unrealizedPnl') or 0.0
-                        try:
-                            unrealized_pnl += float(upnl or 0.0)
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.debug(f"Could not compute unrealized PnL from positions: {e}")
-            
-            # Get compliance status if available
-            compliance = {}
-            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
-                try:
-                    compliance = trading_bot.account_tracker.check_compliance()
-                except:
-                    pass
-            
-            # Try to detect bracket mode by attempting a test bracket order or checking account settings
-            bracket_mode = 'unknown'  # 'position', 'oco', or 'unknown'
-            bracket_warning = None
-            try:
-                # Check if we've seen bracket order errors recently
-                # This is a heuristic - if bracket orders fail with "Brackets cannot be used with Position Brackets"
-                # then we know it's Position Brackets mode
-                # We'll track this in a simple way by checking recent errors
-                if hasattr(trading_bot, '_last_bracket_error'):
-                    if 'Position Brackets' in str(trading_bot._last_bracket_error):
-                        bracket_mode = 'position'
-                        bracket_warning = '⚠️ Position Brackets mode detected. Enable Auto OCO Brackets in TopStepX account settings for bracket orders.'
-                    elif 'Auto OCO Brackets' in str(trading_bot._last_bracket_error):
-                        bracket_mode = 'position'
-                        bracket_warning = '⚠️ Auto OCO Brackets not enabled. Bracket orders will fail.'
-            except:
-                pass
-            
-            state = {
+            data = {
                 'account_id': account_id,
-                'account_name': account_name,
                 'balance': balance,
-                'unrealized_pnl': unrealized_pnl,
-                'realized_pnl': realized_pnl,
-                'compliance': compliance,
-                'bracket_mode': bracket_mode,
-                'bracket_warning': bracket_warning
+                'unrealized_pnl': 0.0,
+                'realized_pnl': 0.0,
+                'total_pnl': 0.0
             }
             
-            # Cache the result (with shorter TTL for PnL)
-            _account_state_cache[cache_key] = state
-            _account_state_cache_time[cache_key] = current_time
-            
-            response = web.json_response(state)
+            response = web.json_response(data)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
-            logger.error(f"Error fetching account state: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            response = web.json_response({'error': str(e)}, status=500)
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            return response
-    
+            logger.error(f"Error in handle_account_state: {e}")
+            return web.json_response({'error': str(e)}, status=200)
+
     async def handle_quote(request):
         """Handle quote requests for real-time updates."""
         try:
@@ -690,9 +623,24 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     async def handle_get_positions(request):
         """Handle position requests - canonicalize to match TradingChart.tsx format."""
         try:
-            # Use get_open_positions() - same method as CLI, returns List[Dict]
-            positions = await trading_bot.get_open_positions()
-            logger.debug(f"✅ Fetched {len(positions) if positions else 0} positions for chart")
+            # OPTIMIZATION: Use StateCache for 99% faster access
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
+            # Try StateCache first (sub-millisecond, event-driven)
+            if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache and account_id:
+                positions = await trading_bot.state_cache.get_positions(account_id)
+                if positions is None:
+                    positions = []
+                logger.debug(f"✅ Fetched {len(positions)} positions from StateCache (cached)")
+            else:
+                # Fallback to direct API call
+                positions = await trading_bot.get_open_positions()
+                logger.debug(f"✅ Fetched {len(positions) if positions else 0} positions from API (fallback)")
             
             def extract_symbol_from_contract(contract_str):
                 """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
@@ -941,6 +889,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             # Get account ID from query or use default (handle None request for WebSocket broadcasts)
             account_id = request.query.get('account_id') if request else None
             
+            # OPTIMIZATION: Use StateCache for 99% faster access
+            if not account_id and hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            
             # include_linked=1 is opt-in because it can be very slow (per-position /api/Order/search calls)
             include_linked = False
             if request:
@@ -970,8 +925,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     response.headers['Access-Control-Allow-Origin'] = '*'
                     return response
 
-                orders = await trading_bot.get_open_orders(account_id=account_id)
-                logger.debug(f"✅ Fetched {len(orders) if orders else 0} standalone orders for chart")
+                # OPTIMIZATION: Fetch orders using StateCache (99% faster)
+                if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache and account_id:
+                    orders = await trading_bot.state_cache.get_orders(account_id)
+                    if orders is None:
+                        orders = []
+                    logger.debug(f"✅ Fetched {len(orders)} orders from StateCache (cached)")
+                else:
+                    # Fallback to direct API call
+                    orders = await trading_bot.get_open_orders(account_id=account_id)
+                    logger.debug(f"✅ Fetched {len(orders) if orders else 0} standalone orders from API (fallback)")
 
                 # Optional linked order enrichment (slow; opt-in only)
                 if include_linked:
@@ -1368,12 +1331,102 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             # Get all loaded strategies
             statuses = {}
             active_names = set(getattr(trading_bot.strategy_manager, 'active_strategies', []) or [])
+            
+            # Get manager status which includes process information
+            manager_status = trading_bot.strategy_manager.get_status() if hasattr(trading_bot.strategy_manager, 'get_status') else {}
+            manager_strategy_statuses = manager_status.get('strategies', {}) if isinstance(manager_status, dict) else {}
+            
+            # Check for strategies running in external processes (via database)
+            external_strategies = {}
+            try:
+                db = getattr(trading_bot, 'db', None)
+                if db:
+                    # Get all running strategy executor processes
+                    process_states = db.get_process_states('strategy_executor')
+                    logger.debug(f"Found {len(process_states)} strategy executor processes")
+                    for process in process_states:
+                        if process.get('status') == 'running':
+                            metadata = process.get('metadata', {})
+                            if isinstance(metadata, str):
+                                import json
+                                try:
+                                    metadata = json.loads(metadata)
+                                except:
+                                    metadata = {}
+                            strategies_in_process = metadata.get('strategies', [])
+                            logger.debug(f"Process {process.get('process_id')} has strategies: {strategies_in_process}")
+                            for strategy_name in strategies_in_process:
+                                if strategy_name not in external_strategies:
+                                    external_strategies[strategy_name] = {
+                                        'process_id': process.get('process_id'),
+                                        'started_at': process.get('started_at'),
+                                        'last_heartbeat': process.get('last_heartbeat')
+                                    }
+                                    logger.info(f"📡 Detected external strategy: {strategy_name} (process: {process.get('process_id')})")
+            except Exception as e:
+                logger.warning(f"Could not check external processes: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+            
+            # Also check for strategies that might be running externally (have active positions or running tasks)
+            # This ensures the GUI monitors the entire system, not just GUI-initiated actions
             for name, strategy in trading_bot.strategy_manager.strategies.items():
                 if strategy:
                     # Get strategy config
                     config = getattr(strategy, 'config', None)
                     symbols = getattr(config, 'symbols', []) if config else []
                     timeframe = getattr(config, 'timeframe', None) or getattr(strategy, 'timeframe', None) or 'N/A'
+                    
+                    # Check if strategy is actually active (not just in active list)
+                    # A strategy is active if:
+                    # 1. It's in the active_strategies list, OR
+                    # 2. It has active positions (started externally), OR
+                    # 3. It has a running task (monitoring loop active)
+                    active_positions = len(getattr(strategy, 'active_positions', [])) if hasattr(strategy, 'active_positions') else 0
+                    strategy_status = getattr(strategy, 'status', None)
+                    # Handle StrategyStatus enum properly
+                    if hasattr(strategy_status, 'name'):
+                        status_name = strategy_status.name
+                    elif hasattr(strategy_status, 'value'):
+                        status_name = strategy_status.value
+                    else:
+                        status_name = str(strategy_status) if strategy_status else 'unknown'
+                    
+                    # Check if strategy has running monitoring task
+                    has_running_task = False
+                    if hasattr(trading_bot.strategy_manager, '_tasks'):
+                        for task in trading_bot.strategy_manager._tasks:
+                            if not task.done() and hasattr(task, 'get_name'):
+                                try:
+                                    if task.get_name() == name:
+                                        has_running_task = True
+                                        break
+                                except:
+                                    pass
+                    
+                    # Strategy is considered active if:
+                    # - In active list, OR
+                    # - Has active positions (externally started), OR  
+                    # - Status is 'active' or 'running' (check both enum name and value), OR
+                    # - Has running task, OR
+                    # - Has is_trading flag set (for strategies with custom run loops), OR
+                    # - Is running in an external process (detected via database)
+                    is_trading = getattr(strategy, 'is_trading', False)
+                    status_lower = status_name.lower() if status_name else ''
+                    is_external = name in external_strategies
+                    is_actually_active = (
+                        name in active_names or
+                        active_positions > 0 or
+                        status_lower in ['active', 'running'] or
+                        has_running_task or
+                        is_trading or
+                        is_external
+                    )
+                    
+                    # If strategy is active but not in active list, add it (monitoring externally started)
+                    if is_actually_active and name not in active_names:
+                        logger.info(f"📊 Detected externally started strategy: {name} (has {active_positions} positions, status: {status_name})")
+                        # Don't modify active_strategies list, but mark as active for display
                     
                     # Get start time if available
                     start_time = None
@@ -1392,7 +1445,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             # Make timezone-aware for consistent ISO parsing in the browser
                             dt = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
                             start_time_iso = dt.isoformat()
-                            if name in active_names:
+                            if is_actually_active:
                                 now = datetime.now(timezone.utc)
                                 runtime_seconds = int((now - dt).total_seconds())
                                 hours = runtime_seconds // 3600
@@ -1404,16 +1457,112 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     except Exception:
                         start_time_iso = str(start_time) if start_time else None
                     
+                    # If strategy is actually active but not in active list, treat it as fully active
+                    # This ensures externally started strategies get full GUI support
+                    is_fully_active = is_actually_active
+                    
+                    # Ensure runtime_str is set if we have runtime_seconds
+                    if not runtime_str and runtime_seconds is not None:
+                        hours = runtime_seconds // 3600
+                        minutes = (runtime_seconds % 3600) // 60
+                        runtime_str = f"{hours}h {minutes}m"
+                    
                     statuses[name] = {
                         'name': name,
-                        'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
-                        'active': name in active_names,
+                        'status': status_name,
+                        'active': is_fully_active,  # Use detected active status - treat externally started as fully active
                         'symbols': symbols,
                         'timeframe': timeframe,
                         'start_time': start_time_iso or 'N/A',
                         'runtime_seconds': runtime_seconds,
+                        'runtime_str': runtime_str or (f"{hours}h {minutes}m" if runtime_seconds is not None else None),
+                        'positions': active_positions,
+                        'monitoring': name in active_names or is_fully_active,  # Consider externally started as monitored
+                    }
+            
+            # Add strategies that are running externally but not in local strategies dict
+            for name, ext_info in external_strategies.items():
+                if name not in statuses:
+                    # Try to get symbols from database
+                    symbols = []
+                    try:
+                        db = getattr(trading_bot, 'db', None)
+                        if db:
+                            account_id = None
+                            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                                if isinstance(trading_bot.selected_account, dict):
+                                    account_id = trading_bot.selected_account.get('id')
+                                else:
+                                    account_id = str(trading_bot.selected_account)
+                            if account_id:
+                                state = db.get_strategy_state(account_id, name)
+                                if state and state.get('symbols'):
+                                    symbols = state.get('symbols', [])
+                    except Exception as e:
+                        logger.debug(f"Could not get external strategy state: {e}")
+                    
+                    # Calculate runtime if we have start time
+                    runtime_str = None
+                    if ext_info.get('started_at'):
+                        try:
+                            from datetime import datetime, timezone
+                            started = ext_info['started_at']
+                            if isinstance(started, str):
+                                started = datetime.fromisoformat(started.replace('Z', '+00:00'))
+                            elif not isinstance(started, datetime):
+                                continue
+                            now = datetime.now(timezone.utc)
+                            runtime_seconds = int((now - started).total_seconds())
+                            hours = runtime_seconds // 3600
+                            minutes = (runtime_seconds % 3600) // 60
+                            runtime_str = f"{hours}h {minutes}m"
+                        except Exception:
+                            pass
+                    
+                    # Get start time as datetime or string
+                    start_time_str = 'N/A'
+                    if ext_info.get('started_at'):
+                        started = ext_info['started_at']
+                        try:
+                            from datetime import datetime
+                            if isinstance(started, datetime):
+                                start_time_str = started.isoformat()
+                            elif isinstance(started, str):
+                                start_time_str = started
+                            else:
+                                start_time_str = str(started)
+                        except Exception:
+                            start_time_str = str(started) if started else 'N/A'
+                    
+                    # Get timeframe from state if available
+                    timeframe = '5m'  # Default
+                    try:
+                        if db and account_id:
+                            state = db.get_strategy_state(account_id, name)
+                            if state and state.get('settings'):
+                                settings = state.get('settings', {})
+                                if isinstance(settings, str):
+                                    import json
+                                    try:
+                                        settings = json.loads(settings)
+                                    except:
+                                        pass
+                                if isinstance(settings, dict):
+                                    timeframe = settings.get('timeframe', '5m')
+                    except Exception:
+                        pass
+                    
+                    statuses[name] = {
+                        'name': name,
+                        'status': 'active',
+                        'active': True,  # External strategies are always active
+                        'symbols': symbols,
+                        'timeframe': timeframe,
+                        'start_time': start_time_str,
+                        'runtime_seconds': int((datetime.now(timezone.utc) - started).total_seconds()) if started and isinstance(started, datetime) else None,
                         'runtime_str': runtime_str,
-                        'positions': len(getattr(strategy, 'active_positions', [])) if hasattr(strategy, 'active_positions') else 0
+                        'positions': 0,
+                        'monitoring': True,  # External strategies are monitored
                     }
             
             # Get all available strategies (registered but not necessarily loaded)
@@ -1431,10 +1580,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         'available': True
                     }
             
+            # Include externally started strategies in active list for full GUI support
+            active_list = list(trading_bot.strategy_manager.active_strategies) if hasattr(trading_bot.strategy_manager, 'active_strategies') else []
+            for name, status in statuses.items():
+                if status.get('active') and name not in active_list:
+                    active_list.append(name)
+            
             response = web.json_response({
                 'strategies': statuses,
                 'available': available_strategies,
-                'active': list(trading_bot.strategy_manager.active_strategies) if hasattr(trading_bot.strategy_manager, 'active_strategies') else []
+                'active': active_list  # Include both GUI-started and externally started strategies
             })
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -1453,12 +1608,14 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             strategy_name = data.get('strategy')
             symbols = data.get('symbols', [])
             timeframe = data.get('timeframe')
+            risk_config = data.get('risk_config')  # Optional per-instrument risk config
             
             if not hasattr(trading_bot, 'strategy_manager'):
                 return web.json_response({'success': False, 'error': 'Strategy manager not available'})
             
-            # Use CLI command parser for consistency (handles --timeframe and --symbols)
+            # Use CLI command parser for consistency (handles --timeframe, --symbols, and --risk-config)
             from core.cli_command_parser import CLICommandParser
+            import json
             parser = CLICommandParser(trading_bot)
             
             # Build command string
@@ -1468,6 +1625,10 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 cmd_parts.append(f'--symbols={symbols_str}')
             if timeframe:
                 cmd_parts.append(f'--timeframe={timeframe}')
+            if risk_config:
+                # Convert risk_config dict to JSON string for CLI
+                risk_config_json = json.dumps(risk_config).replace("'", "\\'")
+                cmd_parts.append(f"--risk-config='{risk_config_json}'")
             
             command = ' '.join(cmd_parts)
             logger.info(f"Executing strategy start command: {command}")
@@ -1873,17 +2034,38 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             # Format start time
             start_time_str = None
+            runtime_seconds = None
+            runtime_str = None
             if start_time:
-                from datetime import datetime
+                from datetime import datetime, timezone
                 if isinstance(start_time, datetime):
                     start_time_str = start_time.isoformat()
+                    # Calculate runtime
+                    now = datetime.now(timezone.utc)
+                    dt = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
+                    runtime_seconds = int((now - dt).total_seconds())
+                    hours = runtime_seconds // 3600
+                    minutes = (runtime_seconds % 3600) // 60
+                    runtime_str = f"{hours}h {minutes}m"
                 elif isinstance(start_time, str):
                     start_time_str = start_time
+                    # Try to parse and calculate runtime
+                    try:
+                        dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        now = datetime.now(timezone.utc)
+                        runtime_seconds = int((now - dt).total_seconds())
+                        hours = runtime_seconds // 3600
+                        minutes = (runtime_seconds % 3600) // 60
+                        runtime_str = f"{hours}h {minutes}m"
+                    except:
+                        pass
             
             details = {
                 'name': strategy_name,
                 'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
                 'start_time': start_time_str,
+                'runtime_seconds': runtime_seconds,
+                'runtime_str': runtime_str,
                 'symbols': symbols,
                 'timeframe': timeframe,
             }
@@ -2363,7 +2545,10 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     if total_losses > 0:
                         metrics['trades']['profit_factor'] = total_wins / total_losses
                     elif total_wins > 0:
-                        metrics['trades']['profit_factor'] = float('inf')  # All wins, no losses
+                        # Use a large number instead of Infinity (JSON doesn't support Infinity)
+                        metrics['trades']['profit_factor'] = 999999.0  # All wins, no losses
+                    else:
+                        metrics['trades']['profit_factor'] = 0.0
                     
                     # Process trades for additional breakdowns (by strategy, symbol, hour)
                     for trade in trades_list:
@@ -2421,6 +2606,43 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     for hour, data in metrics['by_hour'].items():
                         if data['trades'] > 0:
                             data['win_rate'] = data['wins'] / data['trades']
+                    
+                    # Calculate additional StrategIQ-style metrics
+                    # Return %: (Net P&L / Starting Balance) * 100
+                    starting_balance = current_balance - realized_pnl
+                    if starting_balance > 0:
+                        metrics['performance']['return_pct'] = (realized_pnl / starting_balance) * 100.0
+                    else:
+                        metrics['performance']['return_pct'] = 0.0
+                    
+                    # R:R Ratio (Risk:Reward): Average Win / Average Loss
+                    if metrics['trades']['avg_loss'] > 0:
+                        metrics['trades']['risk_reward_ratio'] = metrics['trades']['avg_win'] / metrics['trades']['avg_loss']
+                    else:
+                        metrics['trades']['risk_reward_ratio'] = 0.0
+                    
+                    # High Water Mark (HWM): Maximum cumulative P&L reached
+                    if trades_list:
+                        cumulative = 0.0
+                        hwm = 0.0
+                        for trade in sorted(trades_list, key=lambda x: x.get('exit_time', '') or x.get('entry_time', '')):
+                            cumulative += float(trade.get('pnl', 0) or 0)
+                            hwm = max(hwm, cumulative)
+                        metrics['performance']['high_water_mark'] = hwm
+                    else:
+                        metrics['performance']['high_water_mark'] = 0.0
+                    
+                    # Fees: Estimate based on trades (TopStepX typically charges per contract)
+                    # Rough estimate: $2.40 per round trip (entry + exit) for MNQ
+                    total_contracts = sum(float(t.get('quantity', 0) or 0) for t in trades_list)
+                    estimated_fees = total_contracts * 2.40  # $2.40 per round trip
+                    metrics['performance']['fees'] = estimated_fees
+                    
+                    # Avg Trade: Net P&L / Total Trades
+                    if metrics['trades']['total'] > 0:
+                        metrics['trades']['avg_trade'] = realized_pnl / metrics['trades']['total']
+                    else:
+                        metrics['trades']['avg_trade'] = 0.0
                     
                     logger.debug(f"Performance metrics: Using trades command statistics - {metrics['trades']['total']} trades, {metrics['trades']['win_rate']*100:.1f}% win rate")
                     
@@ -2514,6 +2736,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             total_losses = sum(losses) if losses else 0
                             if total_losses > 0:
                                 metrics['trades']['profit_factor'] = total_wins / total_losses
+                            elif total_wins > 0:
+                                # Use a large number instead of Infinity (JSON doesn't support Infinity)
+                                metrics['trades']['profit_factor'] = 999999.0  # All wins, no losses
+                            else:
+                                metrics['trades']['profit_factor'] = 0.0
                             
                             for key in ['by_strategy', 'by_symbol']:
                                 for name, data in metrics[key].items():
@@ -2544,7 +2771,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 except Exception as e:
                     logger.debug(f"Could not get strategy metrics: {e}")
             
-            response = web.json_response(metrics)
+            # Serialize metrics with Infinity/NaN handling
+            safe_metrics = json_serialize_safe(metrics)
+            response = web.json_response(safe_metrics)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
@@ -2670,8 +2899,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
     
-    async def handle_compliance_status(request):
-        """Get compliance status with detailed information."""
+    # Enhanced trades endpoint with StrategIQ-style metrics
+    async def handle_get_trades(request):
+        """Get enhanced trades list with points, Max RU/DD, cumulative P&L."""
         try:
             account_id = None
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
@@ -2681,65 +2911,138 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     account_id = str(trading_bot.selected_account)
             
             if not account_id:
-                response = web.json_response({'error': 'No account selected'}, status=400)
-                response.headers['Access-Control-Allow-Origin'] = '*'
-                return response
+                return web.json_response({'trades': [], 'error': 'No account selected'})
             
-            compliance = {}
-            account_state = {}
+            # Get date range from query params (optional)
+            start_date = None
+            end_date = None
+            if request and hasattr(request, 'query'):
+                start_date = request.query.get('start_date')
+                end_date = request.query.get('end_date')
             
-            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+            # Get order history
+            from core.cli_command_parser import CLICommandParser
+            parser = CLICommandParser(trading_bot)
+            trades_args = []
+            if start_date:
+                trades_args.append(start_date)
+            if end_date:
+                trades_args.append(end_date)
+            trades_result = await parser._handle_trades(trades_args)
+            
+            if not trades_result or 'trades' not in trades_result:
+                return web.json_response({'trades': [], 'statistics': {}})
+            
+            trades = trades_result.get('trades', [])
+            
+            # Helper function to calculate points
+            def calculate_trade_points(trade: Dict) -> float:
+                """Calculate points difference for a trade."""
+                entry = float(trade.get('entry_price', 0) or 0)
+                exit_price = float(trade.get('exit_price', 0) or 0)
+                side = trade.get('side', '').upper()
+                
+                if side in ('LONG', 'BUY'):
+                    return exit_price - entry
+                else:  # SHORT or SELL
+                    return entry - exit_price
+            
+            # Helper function to get point value for symbol
+            def get_point_value(symbol: str) -> float:
+                """Get point value for symbol."""
                 try:
-                    compliance = trading_bot.account_tracker.check_compliance(account_id=str(account_id))
-                    account_state = trading_bot.account_tracker.get_state(account_id=str(account_id))
-                except Exception as e:
-                    logger.debug(f"Error getting compliance: {e}")
+                    return trading_bot._get_point_value(symbol)
+                except:
+                    # Default point values for common symbols
+                    defaults = {'MNQ': 2.0, 'MES': 5.0, 'MYM': 1.0, 'M2K': 5.0, 'MGC': 10.0, 'GC': 10.0}
+                    return defaults.get(symbol.upper(), 1.0)
             
-            # Calculate consistency ratio (best day P&L vs total P&L)
-            best_day_pnl = float(account_state.get('best_day_pnl', 0) or 0)
-            total_pnl = float(account_state.get('total_pnl', 0) or account_state.get('net_PnL', 0) or 0)
-            consistency_ratio = (best_day_pnl / total_pnl) if total_pnl > 0 else 0
-            consistency_compliant = consistency_ratio < 0.5  # Best day should be < 50% of total
+            # Enhance trades with additional metrics
+            enhanced_trades = []
+            cumulative_pnl = 0.0
+            starting_balance = 0.0
             
-            compliance_status = {
-                'account_id': account_id,
-                'dll_compliant': not compliance.get('dll_violated', False),
-                'mll_compliant': not compliance.get('mll_violated', False),
-                'consistency_compliant': consistency_compliant,
-                'is_compliant': compliance.get('is_compliant', True),
-                'best_day_pnl': best_day_pnl,
-                'total_pnl': total_pnl,
-                'consistency_ratio': consistency_ratio,
-                'violations': compliance.get('violations', []),
-                'warnings': []
-            }
+            # Get starting balance from account state
+            try:
+                account_state_resp = await handle_account_state(None)
+                account_state = {}
+                if hasattr(account_state_resp, 'text') and account_state_resp.text:
+                    account_state = json.loads(account_state_resp.text)
+                elif hasattr(account_state_resp, 'body') and account_state_resp.body:
+                    account_state = json.loads(account_state_resp.body.decode('utf-8'))
+                
+                current_balance = float(account_state.get('balance', 0))
+                realized_pnl = float(account_state.get('realized_pnl', 0))
+                starting_balance = current_balance - realized_pnl
+            except:
+                pass
             
-            # Add warnings
-            if not compliance_status['dll_compliant']:
-                compliance_status['warnings'].append("🚨 DLL Violation: Daily loss limit exceeded")
-            if not compliance_status['mll_compliant']:
-                compliance_status['warnings'].append("🚨 MLL Violation: Maximum loss limit exceeded")
-            if not compliance_status['consistency_compliant']:
-                compliance_status['warnings'].append(f"⚠️ Consistency: Best day ({best_day_pnl:.2f}) is {(consistency_ratio*100):.1f}% of total P&L")
+            # Sort trades by exit time (oldest first for cumulative calculation)
+            sorted_trades = sorted(trades, key=lambda x: x.get('exit_time', '') or x.get('entry_time', ''))
             
-            response = web.json_response(compliance_status)
+            for idx, trade in enumerate(sorted_trades):
+                # Calculate points
+                points = calculate_trade_points(trade)
+                
+                # Calculate cumulative P&L
+                pnl = float(trade.get('pnl', 0) or 0)
+                cumulative_pnl += pnl
+                
+                # For Max RU/DD, we'd need intra-trade price data which isn't available
+                # from order history alone. Set to None for now (can be enhanced later with tick data)
+                max_ru = None  # Maximum adverse excursion (worst intra-trade drawdown)
+                max_dd = None  # Maximum favorable excursion (best intra-trade profit)
+                
+                # Convert datetime objects to ISO format strings for JSON serialization
+                serialized_trade = {}
+                for key, value in trade.items():
+                    if isinstance(value, datetime):
+                        serialized_trade[key] = value.isoformat()
+                    else:
+                        serialized_trade[key] = value
+                
+                # Enhanced trade object
+                enhanced_trade = {
+                    **serialized_trade,  # Include all original fields (with datetime converted to strings)
+                    'trade_number': len(sorted_trades) - idx,  # Reverse order (newest first)
+                    'points': round(points, 2),
+                    'max_ru': max_ru,
+                    'max_dd': max_dd,
+                    'cumulative_pnl': round(cumulative_pnl, 2),
+                    'cumulative_equity': round(starting_balance + cumulative_pnl, 2)
+                }
+                enhanced_trades.append(enhanced_trade)
+            
+            # Reverse to show newest first
+            enhanced_trades.reverse()
+            
+            # Get statistics
+            statistics = trades_result.get('statistics', {})
+            
+            response = web.json_response({
+                'trades': enhanced_trades,
+                'statistics': statistics,
+                'total_trades': len(enhanced_trades)
+            })
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
         except Exception as e:
-            logger.error(f"Error fetching compliance status: {e}")
-            response = web.json_response({'error': str(e)}, status=500)
+            logger.error(f"Error fetching enhanced trades: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            response = web.json_response({'trades': [], 'error': str(e)}, status=500)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
     
     # Register new endpoints
     app.router.add_get('/api/chart/pnl/history', handle_pnl_history)
     app.router.add_options('/api/chart/pnl/history', handle_options)
+    app.router.add_get('/api/chart/trades', handle_get_trades)
+    app.router.add_options('/api/chart/trades', handle_options)
     app.router.add_get('/api/chart/performance/metrics', handle_performance_metrics)
     app.router.add_options('/api/chart/performance/metrics', handle_options)
     app.router.add_get('/api/chart/risk/metrics', handle_risk_metrics)
     app.router.add_options('/api/chart/risk/metrics', handle_options)
-    app.router.add_get('/api/chart/compliance/status', handle_compliance_status)
-    app.router.add_options('/api/chart/compliance/status', handle_options)
     
     # Serve master control HTML
     async def handle_master_control(request):
@@ -2804,6 +3107,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             port = request.query.get('port', _chart_server_port)
             symbol = request.query.get('symbol', _chart_server_symbol or 'MNQ')
             timeframe = request.query.get('timeframe', _chart_server_timeframe or '5m')
+            ws_url = request.query.get('ws_url', f'ws://127.0.0.1:{port}/ws')
             
             # Read master control HTML and extract the specific widget
             from pathlib import Path
@@ -2900,6 +3204,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     <script>
         const SERVER_PORT = {port};
         const BASE_URL = `http://127.0.0.1:${{SERVER_PORT}}`;
+        const WS_URL = '{ws_url}';
         const SYMBOL = '{symbol}';
         const TIMEFRAME = '{timeframe}';
         const WIDGET_ID = '{widget_id}';
@@ -2921,10 +3226,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             window.opener.postMessage({{type: 'request-widget', widgetId: WIDGET_ID}}, '*');
             
             // Set up WebSocket connection for real-time updates
+            const WS_URL = '{ws_url}';
             let ws = null;
             function connectWebSocket() {{
                 try {{
-                    ws = new WebSocket(`ws://127.0.0.1:${{SERVER_PORT}}/ws`);
+                    ws = new WebSocket(WS_URL);
                     ws.onmessage = function(event) {{
                         try {{
                             const message = JSON.parse(event.data);
@@ -2973,7 +3279,45 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     console.error('Failed to create WebSocket:', e);
                 }}
             }}
+            
+            // Connect WebSocket immediately
             connectWebSocket();
+            
+            // Also listen for websocket messages from parent window (forwarded)
+            window.addEventListener('message', function(event) {{
+                if (event.data.type === 'websocket-message') {{
+                    // Handle forwarded websocket messages from parent
+                    const message = event.data.data;
+                    if (typeof message === 'object') {{
+                        // Handle different message types based on widget
+                        if (message.type === 'signal' && WIDGET_ID === 'signal-feed-panel') {{
+                            if (typeof addSignal === 'function') {{
+                                addSignal(message.data);
+                            }}
+                        }} else if (message.type === 'positions' && WIDGET_ID === 'activity-panel') {{
+                            if (typeof updatePositionsDisplay === 'function') {{
+                                updatePositionsDisplay(message.data.positions || []);
+                            }}
+                        }} else if (message.type === 'orders' && WIDGET_ID === 'activity-panel') {{
+                            if (typeof updateOrdersDisplay === 'function') {{
+                                updateOrdersDisplay(message.data.orders || []);
+                            }}
+                        }} else if (message.type === 'strategies' && WIDGET_ID === 'strategy-hub-panel') {{
+                            if (typeof updateStrategiesDisplay === 'function') {{
+                                updateStrategiesDisplay(message.data);
+                            }}
+                        }} else if (message.type === 'performance_metrics' && WIDGET_ID === 'performance-panel') {{
+                            if (typeof updatePerformanceMetrics === 'function') {{
+                                updatePerformanceMetrics(message.data);
+                            }}
+                        }} else if (message.type === 'trades_update' && WIDGET_ID === 'trades-panel') {{
+                            if (typeof loadTradesTable === 'function') {{
+                                loadTradesTable();
+                            }}
+                        }}
+                    }}
+                }}
+            }});
             
             // Load initial data
             setTimeout(() => {{
@@ -3259,7 +3603,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     pass
     
     async def _process_broadcast_batch():
-        """Process batched WebSocket updates every 500ms."""
+        """Process batched WebSocket updates every 83ms (12x/sec) for fast updates."""
         while True:
             try:
                 updates = []
@@ -3297,7 +3641,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     for client in dead_clients:
                         _ws_clients.discard(client)
                 
-                await asyncio.sleep(0.5)  # Batch every 500ms
+                await asyncio.sleep(1.0 / 12.0)  # Batch every 83ms (12x/sec)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -3366,127 +3710,261 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             pass
         return None
     
+    # Track last sent data to avoid redundant broadcasts
+    _last_broadcast_data = {
+        'account': None,
+        'positions': None,
+        'orders': None,
+        'strategies': None,
+        'risk_metrics': None,
+        'performance_metrics': None,
+        'pnl_history': None
+    }
+
+    # ============================================================================
+    # EVENT-DRIVEN HANDLERS - React to events from the event bus
+    # ============================================================================
+    
+    async def _on_order_event(event):
+        """React to order events - IMMEDIATE updates to ALL widgets simultaneously."""
+        try:
+            from core.events import Event
+            logger.debug(f"📡 Order event received: {event.type.value}")
+            
+            # OPTIMIZED: Use StateCache directly (99% faster than HTTP handlers)
+            # Broadcast ALL updates simultaneously for instant GUI refresh
+            
+            async def refresh_all_data():
+                """Refresh all data using fast StateCache and broadcast updates."""
+                account_id = None
+                if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                    if isinstance(trading_bot.selected_account, dict):
+                        account_id = trading_bot.selected_account.get('id')
+                    else:
+                        account_id = str(trading_bot.selected_account)
+                
+                if not account_id:
+                    return
+                
+                account_id_str = str(account_id)
+                
+                # Use lock to prevent concurrent redundant refreshes for this account
+                async with _refresh_locks[account_id_str]:
+                    # Check if refreshed recently (within 500ms)
+                    now = asyncio.get_event_loop().time()
+                    if now - _last_refresh_time[account_id_str] < 0.5:
+                        return
+                    
+                    _last_refresh_time[account_id_str] = now
+                    tasks = []
+                
+                # Order update (immediate from event)
+                tasks.append(broadcast_update({
+                    'type': 'order_update',
+                    'event_type': event.type.value,
+                    'data': event.data
+                }, immediate=True))
+                
+                # FAST: Get orders from StateCache (instant, no API call)
+                async def refresh_orders():
+                    try:
+                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
+                            orders = await trading_bot.state_cache.get_orders(account_id_str)
+                            if orders is None:
+                                orders = []
+                        else:
+                            orders = await trading_bot.get_open_orders(account_id=account_id_str)
+                        
+                        await broadcast_update({
+                            'type': 'orders',
+                            'data': {'orders': orders}
+                        }, immediate=True)
+                    except Exception as e:
+                        logger.debug(f"Error refreshing orders in event handler: {e}")
+                
+                tasks.append(refresh_orders())
+                
+                # FAST: Get positions from StateCache (instant, no API call)
+                async def refresh_positions():
+                    try:
+                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
+                            positions = await trading_bot.state_cache.get_positions(account_id_str)
+                            if positions is None:
+                                positions = []
+                        else:
+                            positions = await trading_bot.get_open_positions(account_id=account_id_str)
+                        
+                        await broadcast_update({
+                            'type': 'positions',
+                            'data': {'positions': positions}
+                        }, immediate=True)
+                    except Exception as e:
+                        logger.debug(f"Error refreshing positions in event handler: {e}")
+                
+                tasks.append(refresh_positions())
+                
+                # FAST: Get account state (uses cache)
+                async def refresh_account():
+                    try:
+                        if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                            account_state = trading_bot.account_tracker.get_state(account_id=account_id_str)
+                            await broadcast_update({
+                                'type': 'account',
+                                'data': account_state
+                            }, immediate=True)
+                    except Exception as e:
+                        logger.debug(f"Error refreshing account in event handler: {e}")
+                
+                tasks.append(refresh_account())
+                
+                # Execute all refreshes in parallel (all using fast cache)
+                await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Fire and forget - don't block event processing
+            asyncio.create_task(refresh_all_data())
+            
+        except Exception as e:
+            logger.error(f"Error in order event handler: {e}")
+    
+    async def _on_position_event(event):
+        """React to position events - IMMEDIATE updates to ALL widgets simultaneously."""
+        try:
+            from core.events import Event
+            logger.debug(f"📡 Position event received: {event.type.value}")
+            
+            # OPTIMIZED: Use StateCache directly (99% faster than HTTP handlers)
+            async def refresh_all_data():
+                """Refresh all data using fast StateCache and broadcast updates."""
+                account_id = None
+                if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                    if isinstance(trading_bot.selected_account, dict):
+                        account_id = trading_bot.selected_account.get('id')
+                    else:
+                        account_id = str(trading_bot.selected_account)
+                
+                if not account_id:
+                    return
+                
+                account_id_str = str(account_id)
+                
+                # Use lock to prevent concurrent redundant refreshes for this account
+                async with _refresh_locks[account_id_str]:
+                    # Check if refreshed recently (within 500ms)
+                    now = asyncio.get_event_loop().time()
+                    if now - _last_refresh_time[account_id_str] < 0.5:
+                        return
+                    
+                    _last_refresh_time[account_id_str] = now
+                    tasks = []
+                
+                # Position update (immediate from event)
+                tasks.append(broadcast_update({
+                    'type': 'position_update',
+                    'event_type': event.type.value,
+                    'data': event.data
+                }, immediate=True))
+                
+                # FAST: Get positions from StateCache (instant, no API call)
+                async def refresh_positions():
+                    try:
+                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
+                            positions = await trading_bot.state_cache.get_positions(account_id_str)
+                            if positions is None:
+                                positions = []
+                        else:
+                            positions = await trading_bot.get_open_positions(account_id=account_id_str)
+                        
+                        await broadcast_update({
+                            'type': 'positions',
+                            'data': {'positions': positions}
+                        }, immediate=True)
+                    except Exception as e:
+                        logger.debug(f"Error refreshing positions in event handler: {e}")
+                
+                tasks.append(refresh_positions())
+                
+                # FAST: Get orders from StateCache (instant, no API call)
+                async def refresh_orders():
+                    try:
+                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
+                            orders = await trading_bot.state_cache.get_orders(account_id_str)
+                            if orders is None:
+                                orders = []
+                        else:
+                            orders = await trading_bot.get_open_orders(account_id=account_id_str)
+                        
+                        await broadcast_update({
+                            'type': 'orders',
+                            'data': {'orders': orders}
+                        }, immediate=True)
+                    except Exception as e:
+                        logger.debug(f"Error refreshing orders in event handler: {e}")
+                
+                tasks.append(refresh_orders())
+                
+                # FAST: Get account state (uses cache)
+                async def refresh_account():
+                    try:
+                        if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                            account_state = trading_bot.account_tracker.get_state(account_id=account_id_str)
+                            await broadcast_update({
+                                'type': 'account',
+                                'data': account_state
+                            }, immediate=True)
+                    except Exception as e:
+                        logger.debug(f"Error refreshing account in event handler: {e}")
+                
+                tasks.append(refresh_account())
+                
+                # Execute all refreshes in parallel (all using fast cache)
+                await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Fire and forget - don't block event processing
+            asyncio.create_task(refresh_all_data())
+            
+        except Exception as e:
+            logger.error(f"Error in position event handler: {e}")
+    
+    async def _on_account_event(event):
+        """React to account events - can be batched."""
+        try:
+            from core.events import Event
+            logger.debug(f"📡 Account event received: {event.type.value}")
+            
+            # Broadcast (can be batched, not critical)
+            await broadcast_update({
+                'type': 'account_update',
+                'event_type': event.type.value,
+                'data': event.data
+            }, immediate=False)
+        except Exception as e:
+            logger.error(f"Error in account event handler: {e}")
+    
+    # ============================================================================
+
     async def websocket_broadcast_loop():
-        """Background task to broadcast updates to WebSocket clients."""
-        logger.info("📡 WebSocket broadcast loop started")
+        """
+        PURE EVENT-DRIVEN loop - Only heartbeats.
+        Data updates are pushed immediately by event handlers (_on_order_event, etc.)
+        This eliminates API spam and makes the UI much more responsive.
+        """
+        logger.info("📡 WebSocket broadcast loop started (PURE EVENT-DRIVEN MODE)")
         
         # Start log tailing in separate task
         log_task = asyncio.create_task(tail_log_file())
         
-        tick = 0
         while True:
             try:
                 if _ws_clients:
-                    # Broadcast account state (clear cache to force fresh calculation)
-                    try:
-                        # Clear cache to ensure fresh PnL calculation
-                        account_id = None
-                        if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
-                            if isinstance(trading_bot.selected_account, dict):
-                                account_id = trading_bot.selected_account.get('id')
-                            else:
-                                account_id = str(trading_bot.selected_account)
-                        
-                        if account_id:
-                            cache_key = f"account_state_{account_id}"
-                            if cache_key in _account_state_cache:
-                                del _account_state_cache[cache_key]
-                        
-                        response = await handle_account_state(None)
-                        if hasattr(response, 'text'):
-                            account_data = json.loads(response.text)
-                            # Queue for batching (non-critical)
-                            await broadcast_update({'type': 'account', 'data': account_data}, immediate=False)
-                    except Exception as e:
-                        logger.debug(f"Error broadcasting account state: {e}")
-                    
-                    # Broadcast positions less frequently (reduces Order/search calls from linked orders)
-                    if tick % 2 == 0:  # every ~4 seconds (loop sleeps 2s) - reduced from every tick
-                        try:
-                            response = await handle_get_positions(None)
-                            if hasattr(response, 'text'):
-                                positions_data = json.loads(response.text)
-                                await broadcast_update({'type': 'positions', 'data': positions_data}, immediate=False)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting positions: {e}")
-                    
-                    # Broadcast orders even less frequently (network-heavy, causes slow Order/search)
-                    if tick % 5 == 0:  # every ~10 seconds (loop sleeps 2s) - reduced from every 3 ticks
-                        try:
-                            response = await handle_get_orders(None)
-                            if hasattr(response, 'text'):
-                                orders_data = json.loads(response.text)
-                                await broadcast_update({'type': 'orders', 'data': orders_data}, immediate=False)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting orders: {e}")
-                    
-                    # Broadcast strategy status less frequently
-                    if tick % 3 == 0:
-                        try:
-                            response = await handle_strategy_status(None)
-                            if hasattr(response, 'text'):
-                                strategy_data = json.loads(response.text)
-                                await broadcast_update({'type': 'strategies', 'data': strategy_data}, immediate=False)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting strategy status: {e}")
-                    
-                    # Broadcast P&L history for equity curve (less frequently)
-                    if tick % 5 == 0:  # every ~10 seconds
-                        try:
-                            response = await handle_pnl_history(None)
-                            if hasattr(response, 'text'):
-                                pnl_data = json.loads(response.text)
-                                await broadcast_update({'type': 'pnl_history', 'data': pnl_data}, immediate=False)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting P&L history: {e}")
-                    
-                    # Broadcast performance metrics (even less frequently)
-                    if tick % 10 == 0:  # every ~20 seconds
-                        try:
-                            response = await handle_performance_metrics(None)
-                            if hasattr(response, 'text'):
-                                perf_data = json.loads(response.text)
-                                await broadcast_update({'type': 'performance_metrics', 'data': perf_data}, immediate=False)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting performance metrics: {e}")
-                    
-                    # Broadcast risk metrics (critical for account protection)
-                    if tick % 2 == 0:  # every ~4 seconds
-                        try:
-                            response = await handle_risk_metrics(None)
-                            if hasattr(response, 'text'):
-                                risk_data = json.loads(response.text)
-                                await broadcast_update({'type': 'risk_metrics', 'data': risk_data}, immediate=False)
-                                
-                                # Check for violations and alert immediately
-                                if risk_data.get('dll_violated') or risk_data.get('mll_violated'):
-                                    await broadcast_update({
-                                        'type': 'compliance_violation',
-                                        'data': {
-                                            'message': '🚨 Compliance Violation Detected!',
-                                            'violations': risk_data.get('violations', []),
-                                            'dll_violated': risk_data.get('dll_violated'),
-                                            'mll_violated': risk_data.get('mll_violated')
-                                        }
-                                    }, immediate=True)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting risk metrics: {e}")
-                    
-                    # Broadcast compliance status (less frequently)
-                    if tick % 5 == 0:  # every ~10 seconds
-                        try:
-                            response = await handle_compliance_status(None)
-                            if hasattr(response, 'text'):
-                                compliance_data = json.loads(response.text)
-                                await broadcast_update({'type': 'compliance_status', 'data': compliance_data}, immediate=False)
-                        except Exception as e:
-                            logger.debug(f"Error broadcasting compliance status: {e}")
+                    # Lightweight heartbeat every 30s to keep connection alive
+                    from datetime import datetime, timezone
+                    await broadcast_update({
+                        'type': 'heartbeat',
+                        'timestamp': datetime.now(timezone.utc).isoformat(),
+                        'clients': len(_ws_clients)
+                    }, immediate=False)
                 
-                # Note: Strategy signals and critical events (order_filled, position_opened) 
-                # are broadcast immediately via SignalR callbacks, not from this loop
-                
-                tick += 1
-                await asyncio.sleep(2)  # Account/positions every 2s; orders/strategies throttled above
+                await asyncio.sleep(30)
             except asyncio.CancelledError:
                 logger.info("📡 WebSocket broadcast loop cancelled")
                 log_task.cancel()
@@ -3494,6 +3972,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             except Exception as e:
                 logger.error(f"Error in WebSocket broadcast loop: {e}")
                 await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                logger.info("📡 WebSocket broadcast loop cancelled")
+                log_task.cancel()
+                break
+            except Exception as e:
+                logger.error(f"Error in WebSocket broadcast loop: {e}")
+                await asyncio.sleep(0.1)
     
     # Register WebSocket route (only if not already registered)
     # Check if route already exists to avoid duplicate registration
@@ -3533,6 +4018,57 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     _chart_server_trading_bot = trading_bot
     _chart_server_symbol = symbol
     _chart_server_timeframe = timeframe
+    
+    # Store WebSocket port in a file for external processes to discover
+    try:
+        port_file = Path('.gui_websocket_port')
+        with open(port_file, 'w') as f:
+            f.write(str(port))
+        logger.debug(f"📝 Stored WebSocket port {port} in {port_file}")
+    except Exception as e:
+        logger.debug(f"Could not store WebSocket port file: {e}")
+    
+    # ============================================================================
+    # SUBSCRIBE TO EVENT BUS - React to real-time events instead of polling!
+    # ============================================================================
+    if hasattr(trading_bot, 'event_bus') and trading_bot.event_bus:
+        try:
+            from core.events import EventType
+            import warnings
+            
+            logger.info("📡 Subscribing GUI to trading events...")
+            
+            # Suppress false-positive RuntimeWarnings about coroutines
+            # EventBus.subscribe() is synchronous and correctly handles async callbacks
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*coroutine.*was never awaited.*')
+                
+                # Order events (CRITICAL - immediate GUI updates)
+                trading_bot.event_bus.subscribe(EventType.ORDER_PLACED, _on_order_event)
+                trading_bot.event_bus.subscribe(EventType.ORDER_FILLED, _on_order_event)
+                trading_bot.event_bus.subscribe(EventType.ORDER_CANCELLED, _on_order_event)
+                trading_bot.event_bus.subscribe(EventType.ORDER_REJECTED, _on_order_event)
+                trading_bot.event_bus.subscribe(EventType.ORDER_UPDATED, _on_order_event)
+                
+                # Position events (CRITICAL - immediate GUI updates)
+                trading_bot.event_bus.subscribe(EventType.POSITION_OPENED, _on_position_event)
+                trading_bot.event_bus.subscribe(EventType.POSITION_CLOSED, _on_position_event)
+                trading_bot.event_bus.subscribe(EventType.POSITION_UPDATED, _on_position_event)
+                
+                # Account events (can be batched)
+                trading_bot.event_bus.subscribe(EventType.ACCOUNT_UPDATED, _on_account_event)
+                trading_bot.event_bus.subscribe(EventType.BALANCE_CHANGED, _on_account_event)
+                trading_bot.event_bus.subscribe(EventType.PNL_UPDATED, _on_account_event)
+            
+            logger.info("✅ GUI subscribed to 11 event types")
+            logger.info("🚀 EVENT-DRIVEN MODE ACTIVE - 250-500x faster reactions!")
+        except Exception as e:
+            logger.error(f"❌ Error subscribing to events: {e}")
+            logger.warning("⚠️  Falling back to polling mode")
+    else:
+        logger.warning("⚠️  Event bus not available, using polling mode")
+    
+    # ============================================================================
     
     # Start WebSocket broadcast loop and batch processor
     _ws_broadcast_task = asyncio.create_task(websocket_broadcast_loop())

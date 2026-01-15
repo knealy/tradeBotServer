@@ -230,6 +230,15 @@ class AuthManager:
                         snippet = snippet[:600] + "…"
                     error_msg = f"{error_msg} | body: {snippet}"
                 
+                # Handle 404 errors gracefully - some endpoints may not exist
+                if status_code == 404:
+                    # For /api/Fill/search, this is expected (endpoint may not exist)
+                    if "/api/Fill/search" in endpoint:
+                        logger.debug(f"Endpoint not found (404): {endpoint} - this is expected, skipping")
+                    else:
+                        logger.warning(f"Endpoint not found (404): {endpoint}")
+                    return {"error": error_msg, "status_code": status_code, "response_text": body_text}
+                
                 # Provide more context for 500 errors
                 if status_code == 500:
                     logger.error(f"Server error (500) from {endpoint}")
@@ -540,7 +549,7 @@ class AuthManager:
                 }
                 normalized_accounts.append(normalized_account)
             
-            logger.info(f"Found {len(normalized_accounts)} active accounts")
+            logger.debug(f"Found {len(normalized_accounts)} active accounts")  # Reduced to DEBUG
             return normalized_accounts
             
         except Exception as e:

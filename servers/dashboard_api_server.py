@@ -322,13 +322,15 @@ class DashboardAPIServer:
             
             data = await request.json() if request.content_length else {}
             symbols = data.get('symbols')
+            risk_config = data.get('risk_config')  # Optional per-instrument risk config
             
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
-            success, message = self.trading_bot.strategy_manager.start_strategy(
+            success, message = await self.trading_bot.strategy_manager.start_strategy(
                 strategy_name,
-                symbols=symbols
+                symbols=symbols,
+                risk_config=risk_config
             )
             
             if success:
