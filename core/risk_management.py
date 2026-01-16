@@ -467,14 +467,14 @@ class StrategyRiskManager:
             if position_qty >= max_quantity:
                 self._recent_attempts[symbol][side] = now
                 self._last_order_attempt[cooldown_key] = now
-                logger.warning(f"🛡️  Risk check BLOCKED: Position {position_qty} >= max_quantity {max_quantity}")
+                logger.warning(f"🛡️  Risk check BLOCKED for {symbol} {side}: Position {position_qty} >= max_quantity {max_quantity}")
                 return False, f"Position {position_qty} >= max_quantity {max_quantity}"
             
             # Check 3: position + pending >= max_quantity
             if position_qty + pending_qty >= max_quantity:
                 self._recent_attempts[symbol][side] = now
                 self._last_order_attempt[cooldown_key] = now
-                logger.warning(f"🛡️  Risk check BLOCKED: Total exposure {position_qty + pending_qty} "
+                logger.warning(f"🛡️  Risk check BLOCKED for {symbol} {side}: Total exposure {position_qty + pending_qty} "
                              f"(pos={position_qty} + pending={pending_qty}) >= max_quantity {max_quantity}")
                 return False, f"Total exposure {position_qty + pending_qty} >= max_quantity {max_quantity}"
             
@@ -482,7 +482,7 @@ class StrategyRiskManager:
             if position_qty + pending_qty + quantity > max_quantity:
                 self._recent_attempts[symbol][side] = now
                 self._last_order_attempt[cooldown_key] = now
-                logger.warning(f"🛡️  Risk check BLOCKED: Would exceed max_quantity: "
+                logger.warning(f"🛡️  Risk check BLOCKED for {symbol} {side}: Would exceed max_quantity: "
                              f"{position_qty + pending_qty + quantity} = pos({position_qty}) + pending({pending_qty}) + new({quantity}) > {max_quantity}")
                 return False, (f"Would exceed max_quantity: {position_qty + pending_qty + quantity} > {max_quantity} "
                               f"(pos={position_qty} + pending={pending_qty} + new={quantity})")

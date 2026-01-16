@@ -1,0 +1,140 @@
+
+2026-01-16 10:04:13,330 - strategies.overnight_range_strategy - WARNING - ⚠️  SHORT entry 6983.00 is above current price 6982.75, skipping stale order
+2026-01-16 10:23:33,671 - brokers.topstepx_adapter - WARNING - ⚠️  Rust OCO bracket returned failure, falling back to Python: Order failed: Order price is outside allowed range. Please set price below best ask. (Code: Unknown)
+🔄 Using Python fallback for stop bracket order (Rust path unavailable)
+🔐 Ensuring valid token before placing order...
+✅ Token validated
+📋 Order parameters:
+   Symbol: MES, Side: SELL, Qty: 1
+   Entry (Stop): $6983.00
+   Stop Loss: 15 ticks ($6986.75)
+   Take Profit: -28 ticks ($6976.00)
+2026-01-16 10:23:33,825 - brokers.topstepx_adapter - ERROR - Bracket order failed: Error Code 2, Message: Order price is outside allowed range. Please set price below best ask.
+❌ Python fallback: Bracket order failed: Order price is outside allowed range. Please set price below best ask. (Code: 2)
+2026-01-16 10:23:33,825 - trading_bot - ERROR - Stop bracket order failed: Bracket order failed: Order price is outside allowed range. Please set price below best ask. (Code: 2)
+2026-01-16 10:23:33,825 - strategies.overnight_range_strategy - WARNING - ⚠️  Unable to place SELL breakout order for MES: Bracket order failed: Order price is outside allowed range. Please set price below best ask. (Code: 2)
+2026-01-16 11:11:10,420 - brokers.topstepx_adapter - WARNING - ⚠️  Rust OCO bracket returned failure, falling back to Python: Order failed: Order price is outside allowed range. Please set price below best ask. (Code: Unknown)
+🔄 Using Python fallback for stop bracket order (Rust path unavailable)
+🔐 Ensuring valid token before placing order...
+✅ Token validated
+📋 Order parameters:
+   Symbol: MNQ, Side: SELL, Qty: 1
+   Entry (Stop): $25704.00
+   Stop Loss: 78 ticks ($25723.50)
+   Take Profit: -124 ticks ($25673.00)
+2026-01-16 11:11:10,575 - brokers.topstepx_adapter - ERROR - Bracket order failed: Error Code 2, Message: Order price is outside allowed range. Please set price below best ask.
+❌ Python fallback: Bracket order failed: Order price is outside allowed range. Please set price below best ask. (Code: 2)
+2026-01-16 11:11:10,575 - trading_bot - ERROR - Stop bracket order failed: Bracket order failed: Order price is outside allowed range. Please set price below best ask. (Code: 2)
+2026-01-16 11:11:10,575 - strategies.overnight_range_strategy - WARNING - ⚠️  Unable to place SELL breakout order for MNQ: Bracket order failed: Order price is outside allowed range. Please set price below best ask. (Code: 2)
+2026-01-16 11:17:03,288 - brokers.topstepx_adapter - WARNING - ⚠️  Rust OCO bracket returned failure, falling back to Python: Order failed: Order price is outside allowed range. Please set price below best ask. (Code: Unknown)
+🔄 Using Python fallback for stop bracket order (Rust path unavailable)
+🔐 Ensuring valid token before placing order...
+✅ Token validated
+📋 Order parameters:
+   Symbol: MES, Side: SELL, Qty: 1
+   Entry (Stop): $6983.00
+   Stop Loss: 15 ticks ($6986.75)
+   Take Profit: -28 ticks ($6976.00)
+✅ Python fallback: OCO bracket order placed successfully with ID: 2255795947
+2026-01-16 11:18:50,247 - brokers.topstepx_adapter - WARNING - ⚠️  Rust OCO bracket returned failure, falling back to Python: Order failed: Order price is outside allowed range. Please set price below best ask. (Code: Unknown)
+🔄 Using Python fallback for stop bracket order (Rust path unavailable)
+🔐 Ensuring valid token before placing order...
+✅ Token validated
+📋 Order parameters:
+   Symbol: MES, Side: SELL, Qty: 1
+   Entry (Stop): $6983.00
+   Stop Loss: 15 ticks ($6986.75)
+   Take Profit: -28 ticks ($6976.00)
+2026-01-16 11:18:50,308 - core.discord_notifier - WARNING - Discord notification rate limited - skipping
+✅ Python fallback: OCO bracket order placed successfully with ID: 2255818499
+2026-01-16 12:03:04,327 - brokers.topstepx_adapter - WARNING - ⚠️  Rust OCO bracket returned failure, falling back to Python: Order failed: Order price is outside allowed range. Please set price below best ask. (Code: Unknown)
+🔄 Using Python fallback for stop bracket order (Rust path unavailable)
+🔐 Ensuring valid token before placing order...
+✅ Token validated
+📋 Order parameters:
+   Symbol: MNQ, Side: SELL, Qty: 1
+   Entry (Stop): $25704.00
+   Stop Loss: 78 ticks ($25723.50)
+   Take Profit: -124 ticks ($25673.00)
+✅ Python fallback: OCO bracket order placed successfully with ID: 2256306031
+
+
+
+- what causes rust pathway to be unavailable these times ?
+
+
+2026-01-16 12:03:03,764 - core.risk_management - INFO - 🔍 RISK CHECK: PENDING CHECK: Found 1 entry order(s) for MNQ (limit: 3)
+2026-01-16 12:03:03,797 - trading_bot - INFO - Found 2 open positions for account 12694476
+2026-01-16 12:03:03,797 - core.risk_management - INFO - 🔍 RISK CHECK: EXPOSURE for MNQ: position=3, pending_entry=1, new_order=1, total_if_placed=5, limit=10
+2026-01-16 12:03:03,848 - trading_bot - INFO - Found 2 open positions for account 12694476
+2026-01-16 12:03:03,851 - strategies.overnight_range_strategy - INFO - 📌 Placing SELL breakout order for MNQ at 25704.00 (tick_size=0.25, exposure=4/10 [pos=3 + pending=1])
+2026-01-16 12:03:03,931 - brokers.topstepx_adapter - INFO - ⚡ Rust OCO bracket execution: 79.18ms
+2026-01-16 12:03:04,325 - core.discord_notifier - INFO - Discord notification sent for SELL 1 MNQ
+2026-01-16 12:03:04,327 - brokers.topstepx_adapter - WARNING - ⚠️  Rust OCO bracket returned failure, falling back to Python: Order failed: Order price is outside allowed range. Please set price below best ask. (Code: Unknown)
+2026-01-16 12:03:04,327 - brokers.topstepx_adapter - INFO - 🔄 Using Python fallback for stop bracket order
+2026-01-16 12:03:04,987 - core.discord_notifier - INFO - Discord notification sent for SELL 1 MNQ
+2026-01-16 12:03:04,994 - brokers.topstepx_adapter - INFO - 📧 Discord notification sent for strategy order: overnight_range - SELL 1 MNQ
+2026-01-16 12:03:04,995 - brokers.topstepx_adapter - INFO - ✅ OCO bracket order placed successfully with ID: 2256306031
+2026-01-16 12:03:04,995 - strategies.overnight_range_strategy - INFO - ✅ SELL breakout order submitted: 2256306031
+
+
+- it looks like rust execution succeeds but then it immediately says using python fallback to place the orders ^ what is going on here?
+
+
+
+- when calculating the breakout levels price needs to be somewhat close to the set market open time or it will throw off the values 
+
+📊 CALCULATED BREAKOUT LEVELS:
+--------------------------------------------------------------------------------
+
+MNQ:
+  📊 Range: High=25873.50, Low=25704.25, Size=169.25 pts
+  📈 ATR: Current=15.53, Daily=317.50
+  🎯 Market Open Price: 25830.75
+  📍 Daily ATR Zones:
+     🟢 Upper Zone: [25910.12, 25928.86] (midpoint: 25919.49)
+     🔴 Lower Zone: [25732.64, 25751.38] (midpoint: 25742.01)
+  🟢 LONG:  Entry=25873.80, SL=25854.20, TP=25919.50
+           Risk=19.60 pts, Reward=45.70 pts
+  🔴 SHORT: Entry=25704.00, SL=25723.50, TP=25673.00
+           Risk=19.50 pts, Reward=31.00 pts
+
+MES:
+  📊 Range: High=7006.75, Low=6983.25, Size=23.50 pts
+  📈 ATR: Current=3.08, Daily=56.52
+  🎯 Market Open Price: 6991.75
+  📍 Daily ATR Zones:
+     🟢 Upper Zone: [7005.88, 7009.21] (midpoint: 7007.55)
+     🔴 Lower Zone: [6974.29, 6977.62] (midpoint: 6975.95)
+  🟢 LONG:  Entry=7007.00, SL=7003.20, TP=7013.20
+           Risk=3.80 pts, Reward=6.20 pts
+  🔴 SHORT: Entry=6983.00, SL=6986.80, TP=6976.00
+           Risk=3.80 pts, Reward=7.00 pts
+
+MGC:
+  📊 Range: High=4625.30, Low=4594.50, Size=30.80 pts
+  📈 ATR: Current=6.56, Daily=92.54
+  🎯 Market Open Price: 4605.80
+  📍 Daily ATR Zones:
+     🟢 Upper Zone: [4628.94, 4634.40] (midpoint: 4631.67)
+     🔴 Lower Zone: [4577.20, 4582.66] (midpoint: 4579.93)
+  🟢 LONG:  Entry=4625.60, SL=4617.40, TP=4631.70
+           Risk=8.20 pts, Reward=6.10 pts
+  🔴 SHORT: Entry=4594.20, SL=4602.40, TP=4579.90
+           Risk=8.20 pts, Reward=14.30 pts
+
+================================================================================
+
+
+- need to make it so that if the bot is started and the set market open time has not happened yet, the bot determines how far away it is and waits until the market open time to make breakout calculations above ^
+
+
+2026-01-16 12:24:31,193 - core.risk_management - WARNING - 🛡️  Risk check BLOCKED: Total exposure 10 (pos=9 + pending=1) >= max_quantity 10
+2026-01-16 12:24:46,410 - core.risk_management - WARNING - 🛡️  Risk check BLOCKED: Total exposure 10 (pos=9 + pending=1) >= max_quantity 10
+
+- it should say which symbol it was trying to trade that got blocked ^
+
+
+- do we have implementation for breakeven or trailing stops already and what is the flag for turning them on/off?
+
+

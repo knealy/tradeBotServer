@@ -287,6 +287,27 @@ class WebSocketManager:
                             thread.start()
                         return
                     
+                    # Handle server-side errors (502, 503, 504) - these require waiting before retry
+                    if "502" in error_text or "503" in error_text or "504" in error_text or "Gateway" in error_text or "Bad Gateway" in error_text or "Service Unavailable" in error_text:
+                        logger.warning(f"SignalR server error (5xx): {error_text}")
+                        logger.info("Server appears overloaded or unavailable. Will retry with longer delay...")
+                        # Use network interruption handler but it will use exponential backoff
+                        if self._event_loop and self._event_loop.is_running():
+                            self._event_loop.create_task(self._handle_network_interruption_and_reconnect())
+                        else:
+                            def run_in_thread():
+                                new_loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(new_loop)
+                                try:
+                                    new_loop.run_until_complete(self._handle_network_interruption_and_reconnect())
+                                except Exception as e:
+                                    logger.debug(f"Error reconnecting in thread: {e}")
+                                finally:
+                                    new_loop.close()
+                            thread = threading.Thread(target=run_in_thread, daemon=True)
+                            thread.start()
+                        return
+                    
                     logger.error(f"SignalR Market Hub error: {error_text}")
                 except Exception:
                     logger.error(f"SignalR Market Hub error: {err}")

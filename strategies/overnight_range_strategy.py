@@ -2772,7 +2772,38 @@ class OvernightRangeStrategy(BaseStrategy):
         # Get symbols to trade
         trade_symbols = self._get_trade_symbols(symbols)
         
-        # 🔥 NEW: Immediately track overnight ranges and calculate breakout levels
+        # Check if we need to wait for market open before calculating breakout levels
+        # Breakout levels depend on market open price, so we should wait if started before market open
+        now = datetime.now(self.timezone)
+        try:
+            market_open_hour, market_open_min = map(int, self.market_open_time.split(':'))
+            market_open_today = now.replace(hour=market_open_hour, minute=market_open_min, second=0, microsecond=0)
+            
+            if now < market_open_today:
+                # Before market open - wait until market open time
+                time_until_open = (market_open_today - now).total_seconds()
+                wait_minutes = int(time_until_open / 60)
+                wait_seconds = int(time_until_open % 60)
+                logger.warning(f"⏰ Bot started before market open ({self.market_open_time}). Waiting {wait_minutes}m {wait_seconds}s until market open to calculate breakout levels...")
+                logger.warning(f"   Breakout levels need market open price to be accurate. Will calculate at {market_open_today.strftime('%H:%M:%S')}")
+                
+                # Wait until market open (check every 10 seconds to allow for cancellation)
+                while now < market_open_today and self.is_trading:
+                    await asyncio.sleep(min(10, (market_open_today - now).total_seconds()))
+                    now = datetime.now(self.timezone)
+                    if now < market_open_today:
+                        remaining = (market_open_today - now).total_seconds()
+                        logger.debug(f"   Still waiting... {int(remaining/60)}m {int(remaining%60)}s remaining")
+                
+                if not self.is_trading:
+                    logger.info("Strategy stopped while waiting for market open")
+                    return
+                
+                logger.info(f"✅ Market open time reached. Calculating breakout levels now...")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not parse market open time '{self.market_open_time}', calculating immediately: {e}")
+        
+        # 🔥 NEW: Track overnight ranges and calculate breakout levels
         # This allows the strategy to work at ANY time of day, not just at market open
         logger.info("📊 Calculating overnight ranges and breakout levels...")
         for symbol in trade_symbols:

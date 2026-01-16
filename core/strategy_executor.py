@@ -22,21 +22,33 @@ from datetime import datetime, timezone
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from trading_bot import TopStepXTradingBot
-from infrastructure.database import get_database
-
-# Get log level from environment (default to INFO)
+# Set up logging FIRST, before importing trading_bot (which also sets up logging)
+# This ensures we use the LOG_FILE environment variable consistently
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_file = os.getenv('LOG_FILE', 'strategy_executor.log')
+# Convert to absolute path if relative (ensures consistent path resolution)
+if not os.path.isabs(log_file):
+    project_root = Path(__file__).parent.parent
+    log_file = str(project_root / log_file)
+# Ensure log directory exists
+log_path = Path(log_file)
+if log_path.parent != Path('.'):
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
+# Set up basic logging first (trading_bot.py will override with force=True, but will use same LOG_FILE)
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('strategy_executor.log'),
+        logging.FileHandler(log_file),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Now import trading_bot (it will override logging config with force=True, but will use same LOG_FILE)
+from trading_bot import TopStepXTradingBot
+from infrastructure.database import get_database
 
 
 class StrategyExecutor:

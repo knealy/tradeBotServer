@@ -138,37 +138,51 @@
         .status-value.positive { color: var(--positive-color); }
         .status-value.negative { color: var(--negative-color); }
         
-        /* Main Dashboard - Uniform Flow Layout */
+        /* Main Dashboard - Responsive Flow Layout */
         .dashboard {
             display: flex;
             flex-wrap: wrap;
-            gap: 6px;
-            padding: 15px;
-            width: 1250px;
-            height: 1500px;
-            margin: 5px auto 0 auto;
+            gap: 10px;
+            padding: 10px;
+            width: 100%;
+            max-width: 1800px;
+            min-height: 100vh;
+            margin: 0 auto;
             align-content: flex-start;
             background: var(--bg-primary);
         }
         
-        /* Ensure panels don't overlap */
+        /* Ensure panels don't overlap and are resizable */
         .panel {
             position: relative;
             z-index: 1;
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
-            border-radius: 2px;
-            padding: 4px;
+            border-radius: 4px;
+            padding: 0;
             overflow: hidden;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
             flex: 0 0 auto;
+            display: flex;
+            flex-direction: column;
         }
         
-        /* Chart panel - top left */
+        /* Chart panel - resizable and flexible */
         .chart-panel {
-            width: 750px;
-            height: 500px;
+            flex: 1 1 800px;
+            min-width: 600px;
+            min-height: 500px;
+            height: 600px;
             order: 1;
+            resize: both;
+            overflow: auto;
+        }
+        
+        /* Account panel - fixed width */
+        .account-panel {
+            width: 380px;
+            height: auto;
+            order: 2;
         }
         
         /* Activity panel (Positions/Orders) - top right */
@@ -345,6 +359,13 @@
             display: flex;
             flex-direction: column;
         }
+        .chart-panel .panel-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: visible; /* Allow time scale to be visible */
+            max-height: none;
+        }
         #chart-container {
             flex: 1;
             min-height: 350px;
@@ -352,7 +373,10 @@
             border-radius: 4px;
             margin-top: 8px;
             position: relative;
-            overflow: hidden;
+            overflow: visible; /* Allow time scale to be visible */
+            width: 100%;
+            /* Reserve space for time scale at bottom - typically 30-40px */
+            padding-bottom: 40px;
         }
         
         /* Chart Controls */
@@ -691,6 +715,39 @@
             font-weight: 600;
             color: var(--text-primary);
         }
+        
+        /* OHLCV Legend */
+        .chart-legend {
+            position: absolute;
+            left: 12px;
+            top: 12px;
+            z-index: 5;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            color: #d1d5db;
+            pointer-events: none;
+            background: rgba(15, 23, 42, 0.7);
+            padding: 4px 8px;
+            border-radius: 3px;
+            display: flex;
+            gap: 10px;
+            border: 1px solid var(--border-color);
+        }
+        .legend-value {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .legend-value.up { color: var(--positive-color); }
+        .legend-value.down { color: var(--negative-color); }
+        
+        /* Compact controls */
+        .chart-controls.compact button, 
+        .chart-controls.compact select, 
+        .chart-controls.compact input {
+            padding: 2px 4px !important;
+            font-size: 9px !important;
+            height: 22px !important;
+        }
     </style>
 </head>
 <body>
@@ -753,7 +810,7 @@
             </h2>
             <div class="panel-content">
                 <!-- Chart Controls -->
-            <div class="chart-controls">
+            <div class="chart-controls compact">
                 <select id="chart-symbol-select">
                         <option value="{{SYMBOL}}">{{SYMBOL}}</option>
                     </select>
@@ -772,9 +829,7 @@
                     <option value="1d">1d</option>
                     </select>
                 <button class="btn-primary" onclick="refreshChart()">Refresh</button>
-                <button class="btn-danger" onclick="flattenAll()" style="padding: 6px 10px;">Flatten</button>
-                <button class="btn-danger" onclick="cancelAllOrders()" style="padding: 6px 10px;">Cancel</button>
-                <button class="btn-primary" onclick="refreshAll()" style="padding: 6px 10px;">Refresh All</button>
+                <button class="btn-primary" onclick="refreshAll()">Refresh All</button>
                     <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
                     <span style="font-size: 10px; color: #888;">Rate:</span>
                     <select id="chart-refresh-rate" style="width: 70px;">
@@ -789,7 +844,7 @@
                 </div>
                 
             <!-- Trading Controls -->
-            <div class="chart-controls">
+            <div class="chart-controls compact">
                 <select id="order-type" onchange="updateOrderType()">
                     <option value="market">Market</option>
                         <option value="limit">Limit</option>
@@ -809,11 +864,21 @@
                 <input type="number" id="order-tp-ticks" step="0.25" placeholder="TP Price" style="width: 90px; display: none;">
                 <button class="btn-buy" onclick="placeOrder('BUY')" id="buy-btn">BUY</button>
                 <button class="btn-sell" onclick="placeOrder('SELL')" id="sell-btn">SELL</button>
-                <button class="btn-danger" onclick="quickFlatten()" style="padding: 6px 10px; background: var(--negative-color);" title="Quick Flatten (F key)">FLATTEN</button>
+                <button class="btn-danger" onclick="cancelAllOrders()" style="background: var(--negative-color); opacity: 0.8;" title="Cancel All Orders">CANCEL</button>
+                <button class="btn-danger" onclick="quickFlatten()" style="background: var(--negative-color); font-weight: bold;" title="Quick Flatten (F key)">FLATTEN</button>
                 </div>
                 
             <!-- Chart Container -->
-                <div id="chart-container"></div>
+                <div id="chart-container">
+                    <div id="chart-legend" class="chart-legend">
+                        <div id="legend-symbol" style="font-weight: bold; color: var(--accent-color);">---</div>
+                        <div>O: <span id="legend-open" class="legend-value">---</span></div>
+                        <div>H: <span id="legend-high" class="legend-value">---</span></div>
+                        <div>L: <span id="legend-low" class="legend-value">---</span></div>
+                        <div>C: <span id="legend-close" class="legend-value">---</span></div>
+                        <div>V: <span id="legend-volume" class="legend-value">---</span></div>
+                    </div>
+                </div>
             </div> <!-- End panel-content -->
         </div>
         
@@ -1076,8 +1141,7 @@
                                 <th onclick="sortTradesTable('exit_price')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Exit <span id="sort-indicator-exit_price"></span></th>
                                 <th onclick="sortTradesTable('points')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Points <span id="sort-indicator-points"></span></th>
                                 <th onclick="sortTradesTable('pnl')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">P&L <span id="sort-indicator-pnl"></span></th>
-                                <th style="padding: 8px 4px; text-align: right;">Max RU $</th>
-                                <th style="padding: 8px 4px; text-align: right;">Max DD $</th>
+                                <th onclick="sortTradesTable('fees')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Fees <span id="sort-indicator-fees"></span></th>
                                 <th onclick="sortTradesTable('cumulative_pnl')" style="padding: 8px 4px; text-align: right; cursor: pointer; user-select: none;">Cumulative P&L <span id="sort-indicator-cumulative_pnl"></span></th>
                             </tr>
                         </thead>
@@ -1101,6 +1165,7 @@
         
         let chart = null;
         let candlestickSeries = null;
+        let volumeSeries = null;
         let updateIntervals = {};
         let websocket = null;
         let wsReconnectAttempts = 0;
@@ -1708,8 +1773,7 @@ Speed Trading Shortcuts:
                 const exitTimeValue = trade.exit_time || trade.exitTime || trade.timestamp || trade.creationTimestamp;
                 const entryTime = entryTimeValue ? new Date(entryTimeValue).toLocaleString() : 'N/A';
                 const exitTime = exitTimeValue ? new Date(exitTimeValue).toLocaleString() : 'N/A';
-                const maxRu = trade.max_ru !== undefined ? trade.max_ru : trade.maxRu;
-                const maxDd = trade.max_dd !== undefined ? trade.max_dd : trade.maxDd;
+                const fees = parseFloat(trade.fees || 0);
                 const side = (trade.side || '').toUpperCase();
                 const sideColor = side === 'LONG' || side === 'BUY' ? 'var(--positive-color)' : 'var(--negative-color)';
                 
@@ -1723,8 +1787,7 @@ Speed Trading Shortcuts:
                         <td style="padding: 6px 4px; text-align: right; color: var(--text-primary);">${parseFloat(trade.exit_price || 0).toFixed(2)}</td>
                         <td style="padding: 6px 4px; text-align: right; color: ${points >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${points >= 0 ? '+' : ''}${points.toFixed(2)}</td>
                         <td style="padding: 6px 4px; text-align: right; color: ${pnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</td>
-                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${maxRu !== null && maxRu !== undefined ? '$' + parseFloat(maxRu).toFixed(2) : '—'}</td>
-                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">${maxDd !== null && maxDd !== undefined ? '$' + parseFloat(maxDd).toFixed(2) : '—'}</td>
+                        <td style="padding: 6px 4px; text-align: right; color: var(--text-secondary);">$${fees.toFixed(2)}</td>
                         <td style="padding: 6px 4px; text-align: right; color: ${cumulativePnl >= 0 ? 'var(--positive-color)' : 'var(--negative-color)'}; font-weight: 600;">${cumulativePnl >= 0 ? '+' : ''}$${Math.abs(cumulativePnl).toFixed(2)}</td>
                     </tr>
                 `;
@@ -1799,7 +1862,7 @@ Speed Trading Shortcuts:
             }
             
             // CSV header
-            const headers = ['#', 'Side', 'Entry Time', 'Exit Time', 'Entry', 'Exit', 'Points', 'P&L', 'Max RU $', 'Max DD $', 'Cumulative P&L'];
+            const headers = ['#', 'Side', 'Entry Time', 'Exit Time', 'Entry', 'Exit', 'Points', 'P&L', 'Fees', 'Cumulative P&L'];
             const rows = [headers.join(',')];
             
             // CSV rows
@@ -1813,8 +1876,7 @@ Speed Trading Shortcuts:
                     trade.exit_price || '',
                     trade.points || '',
                     trade.pnl || '',
-                    trade.max_ru || '',
-                    trade.max_dd || '',
+                    trade.fees || '0',
                     trade.cumulative_pnl || ''
                 ];
                 rows.push(row.join(','));
@@ -3228,9 +3290,14 @@ Speed Trading Shortcuts:
             // Store container reference for drag/drop
             chartContainerElement = container;
             
+            // Time scale typically needs ~30-40px at bottom
+            // We reserve this space with padding-bottom, so use full container height
+            const TIME_AXIS_HEIGHT = 40;
+
                 chart = LightweightCharts.createChart(container, {
+                    autoSize: false,
                     width: container.clientWidth,
-                height: container.clientHeight,
+                    height: Math.max(100, container.clientHeight - TIME_AXIS_HEIGHT),
                     layout: {
                         background: { color: '#0a0a0a' },
                         textColor: '#d1d5db',
@@ -3243,11 +3310,13 @@ Speed Trading Shortcuts:
                     rightPriceScale: {
                         borderColor: '#1a1a1a',
                         autoScale: true,
+                        visible: true,
                     },
                     timeScale: {
                         borderColor: '#1a1a1a',
                         timeVisible: true,
                         secondsVisible: false,
+                        visible: true,
                     },
                 });
                 
@@ -3258,6 +3327,21 @@ Speed Trading Shortcuts:
                     wickUpColor: '#4caf50',
                     wickDownColor: '#f44336',
                 });
+
+            volumeSeries = chart.addHistogramSeries({
+                color: '#26a69a',
+                priceFormat: {
+                    type: 'volume',
+                },
+                priceScaleId: '', // set as an overlay
+            });
+
+            chart.priceScale('').applyOptions({
+                scaleMargins: {
+                    top: 0.8,
+                    bottom: 0,
+                },
+            });
                 
                 // Clear existing lines when reinitializing
                 positionLines.clear();
@@ -3295,28 +3379,74 @@ Speed Trading Shortcuts:
             updateIntervals.chart = setInterval(updateChart, 1000 / rate);
             console.log(`✅ Chart initialized with refresh rate: ${rate}x/s`);
             
-            // Resize handler - debounced to prevent excessive updates
-            let resizeTimeout;
-            const handleResize = () => {
-                if (resizeTimeout) clearTimeout(resizeTimeout);
-                resizeTimeout = setTimeout(() => {
-                    if (chart && container) {
-                        const width = Math.min(container.clientWidth, window.innerWidth - 100);
-                        const height = Math.min(container.clientHeight, window.innerHeight - 200);
-                        chart.applyOptions({ width, height });
-                    }
-                }, 100);
-            };
-            window.addEventListener('resize', handleResize);
-            
-            // Also handle panel resize
-            const resizeObserver = new ResizeObserver(handleResize);
-            if (container) {
-                resizeObserver.observe(container);
-            }
-            
             // Add drag/drop support for bracket order price lines
             setupOrderLineDragDrop();
+            
+             // Add ResizeObserver to handle container resizing (for both horizontal and vertical)
+             // Reserve space for time scale at bottom (40px padding-bottom)
+             const TIME_AXIS_HEIGHT = 40;
+             const resizeObserver = new ResizeObserver(entries => {
+                 for (let entry of entries) {
+                     if (chart && entry.target === container) {
+                         // Use full container width, but reserve space for time axis
+                         chart.resize(entry.contentRect.width, Math.max(100, entry.contentRect.height - TIME_AXIS_HEIGHT));
+                     }
+                 }
+             });
+             resizeObserver.observe(container);
+             
+             // Also observe the chart panel for resize
+             const chartPanel = document.getElementById('chart-panel');
+             if (chartPanel) {
+                 const panelResizeObserver = new ResizeObserver(() => {
+                     if (chart && container) {
+                         chart.resize(container.clientWidth, Math.max(100, container.clientHeight - TIME_AXIS_HEIGHT));
+                     }
+                 });
+                 panelResizeObserver.observe(chartPanel);
+             }
+            
+            // OHLCV Legend update on crosshair move
+            chart.subscribeCrosshairMove(param => {
+                const legendSymbol = document.getElementById('legend-symbol');
+                const legendOpen = document.getElementById('legend-open');
+                const legendHigh = document.getElementById('legend-high');
+                const legendLow = document.getElementById('legend-low');
+                const legendClose = document.getElementById('legend-close');
+                const legendVolume = document.getElementById('legend-volume');
+                
+                if (!legendSymbol || !candlestickSeries) return;
+                
+                legendSymbol.textContent = currentChartSymbol;
+                
+                if (param.point === undefined || !param.time || param.point.x < 0 || param.point.x > container.clientWidth || param.point.y < 0 || param.point.y > container.clientHeight) {
+                    // Could reset to last bar here if desired
+                    return;
+                }
+                
+                const candleData = param.seriesData.get(candlestickSeries);
+                const volData = param.seriesData.get(volumeSeries);
+                
+                if (candleData) {
+                    legendOpen.textContent = candleData.open.toFixed(2);
+                    legendHigh.textContent = candleData.high.toFixed(2);
+                    legendLow.textContent = candleData.low.toFixed(2);
+                    legendClose.textContent = candleData.close.toFixed(2);
+                    
+                    const isUp = candleData.close >= candleData.open;
+                    [legendOpen, legendHigh, legendLow, legendClose].forEach(el => {
+                        el.className = `legend-value ${isUp ? 'up' : 'down'}`;
+                    });
+                }
+                
+                if (volData) {
+                    legendVolume.textContent = Math.round(volData.value).toLocaleString();
+                } else if (candleData && candleData.volume !== undefined) {
+                    legendVolume.textContent = Math.round(candleData.volume).toLocaleString();
+                } else {
+                    legendVolume.textContent = '---';
+                }
+            });
         }
         
         async function loadChartData() {
@@ -3333,6 +3463,13 @@ Speed Trading Shortcuts:
                         high: bar.high,
                         low: bar.low,
                         close: bar.close,
+                        volume: bar.volume || 0,
+                    }));
+                    
+                    const volumeData = data.bars.map(bar => ({
+                        time: bar.time,
+                        value: bar.volume || 0,
+                        color: bar.close >= bar.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
                     }));
                     
                     // Update current symbol and timeframe tracking
@@ -3340,6 +3477,7 @@ Speed Trading Shortcuts:
                     currentChartTimeframe = timeframe;
                     
                     candlestickSeries.setData(bars);
+                    if (volumeSeries) volumeSeries.setData(volumeData);
                     
                     // Reset visible range to show recent bars (last ~50 bars)
                     if (bars.length > 0) {
@@ -3524,7 +3662,16 @@ Speed Trading Shortcuts:
                             high: bar.high,
                             low: bar.low,
                             close: bar.close,
+                            volume: bar.volume || 0,
                         });
+                        
+                        if (volumeSeries) {
+                            volumeSeries.update({
+                                time: barTime,
+                                value: bar.volume || 0,
+                                color: bar.close >= bar.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
+                            });
+                        }
                     }
                 }
                 

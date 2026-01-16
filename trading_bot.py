@@ -92,10 +92,20 @@ import load_env
 
 # Configure logging
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+# Get log file from environment (default to trading_bot.log)
+log_file = os.getenv('LOG_FILE', 'trading_bot.log')
+# Convert to absolute path if relative (ensures consistent path resolution)
+if not os.path.isabs(log_file):
+    project_root = Path(__file__).parent
+    log_file = str(project_root / log_file)
+# Ensure log directory exists
+log_path = Path(log_file)
+if log_path.parent != Path('.'):
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 # Ensure log file handler is properly configured with rotation
 from logging.handlers import RotatingFileHandler
 file_handler = RotatingFileHandler(
-    'trading_bot.log', 
+    log_file, 
     mode='a', 
     encoding='utf-8',
     maxBytes=10*1024*1024,  # 10MB per file
@@ -118,7 +128,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 # Only log to file, not console (this is INFO level)
-logger.info("Logging initialized - file: trading_bot.log (INFO+), console: stdout (WARNING+)")
+logger.info(f"Logging initialized - file: {log_file} (INFO+), console: stdout (WARNING+)")
 
 # SignalR errors are now properly handled with token refresh - no suppression needed
 # Keep log levels reasonable to avoid spam but show important errors
@@ -3938,6 +3948,31 @@ class TopStepXTradingBot:
                 total_pnl += (gross_pnl - fees)
         win_rate = (len(winning_trades) / len(trades) * 100) if trades else 0.0
         
+        # Calculate profit factor
+        total_wins = sum(winning_trades) if winning_trades else 0.0
+        total_losses = abs(sum(losing_trades)) if losing_trades else 0.0
+        profit_factor = total_wins / total_losses if total_losses > 0 else (99.99 if total_wins > 0 else 0.0)
+        
+        # Calculate Max Drawdown from trades
+        max_drawdown = 0.0
+        peak = 0.0
+        current_pnl = 0.0
+        
+        # Sort trades by time if possible, otherwise assume order is chronological
+        try:
+            sorted_trades = sorted(trades, key=lambda x: x.get('exit_time') or x.get('timestamp') or '')
+        except:
+            sorted_trades = trades
+            
+        for t in sorted_trades:
+            pnl = float(t.get('net_pnl') or (float(t.get('pnl', 0)) - float(t.get('fees', 0))))
+            current_pnl += pnl
+            if current_pnl > peak:
+                peak = current_pnl
+            drawdown = peak - current_pnl
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+        
         return {
             "total_trades": len(trades),
             "winning_trades": len(winning_trades),
@@ -3945,6 +3980,9 @@ class TopStepXTradingBot:
             "break_even_trades": len(trades) - len(winning_trades) - len(losing_trades),
             "win_rate": round(win_rate, 2),
             "total_pnl": round(total_pnl, 2),
+            "profit_factor": round(profit_factor, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "max_drawdown_pct": 0.0, # Placeholder until we have account balance context
             "average_pnl": round(total_pnl / len(trades), 2) if trades else 0.0,
             "average_win": round(sum(winning_trades) / len(winning_trades), 2) if winning_trades else 0.0,
             "average_loss": round(sum(losing_trades) / len(losing_trades), 2) if losing_trades else 0.0,

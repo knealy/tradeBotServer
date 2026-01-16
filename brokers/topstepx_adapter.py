@@ -3755,15 +3755,31 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     # which previously prevented Python fallback from running.
                     if rust_resp and getattr(rust_resp, "success", False):
                         return rust_resp
-                    logger.warning(f"⚠️  Rust OCO bracket returned failure, falling back to Python: {getattr(rust_resp, 'error', None)}")
+                    
+                    # Rust execution completed but API rejected the order
+                    # API errors (network, server, validation) will fail the same in Python,
+                    # so don't waste resources on fallback. Only fallback for Rust library exceptions.
+                    rust_error = getattr(rust_resp, 'error', None) if rust_resp else None
+                    rust_error_str = str(rust_error) if rust_error else ""
+                    
+                    logger.warning(f"⚠️  Rust OCO bracket execution completed but API rejected order: {rust_error_str}")
+                    logger.warning(f"   Order: {side} {quantity} {symbol} @ {entry_price:.2f}")
+                    logger.warning(f"   Skipping Python fallback - API errors will fail the same way in Python")
+                    return OrderResponse(
+                        success=False,
+                        error=f"Order rejected by API: {rust_error_str}",
+                        raw_response=getattr(rust_resp, 'raw_response', None)
+                    )
                 except Exception as e:
-                    logger.warning(f"⚠️  Rust execution failed, falling back to Python: {e}")
+                    # This is a Rust library exception (PyO3, serialization, etc.), not an API error
+                    # Python fallback might work if it's a Rust-specific issue
+                    logger.warning(f"⚠️  Rust library exception (not API error), falling back to Python: {e}")
                     import traceback
                     logger.debug(f"Rust error traceback: {traceback.format_exc()}")
             
             # Python fallback
             logger.info("🔄 Using Python fallback for stop bracket order")
-            print("🔄 Using Python fallback for stop bracket order (Rust path unavailable)")
+            print("🔄 Using Python fallback for stop bracket order")
             
             # Ensure valid token before placing order
             print("🔐 Ensuring valid token before placing order...")

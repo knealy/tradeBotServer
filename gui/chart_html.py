@@ -2644,17 +2644,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     metrics['trades']['largest_win'] = stats.get('largest_win', 0.0)
                     metrics['trades']['largest_loss'] = stats.get('largest_loss', 0.0)
                     
-                    # Calculate profit factor from statistics
-                    # Profit factor = (average_win * winning_trades) / (average_loss * losing_trades)
-                    total_wins = stats.get('average_win', 0.0) * stats.get('winning_trades', 0)
-                    total_losses = abs(stats.get('average_loss', 0.0)) * stats.get('losing_trades', 0)
-                    if total_losses > 0:
-                        metrics['trades']['profit_factor'] = total_wins / total_losses
-                    elif total_wins > 0:
-                        # Use a large number instead of Infinity (JSON doesn't support Infinity)
-                        metrics['trades']['profit_factor'] = 999999.0  # All wins, no losses
+                    # Use profit factor from statistics
+                    metrics['trades']['profit_factor'] = stats.get('profit_factor', 0.0)
+                    
+                    metrics['performance']['max_drawdown'] = stats.get('max_drawdown', 0.0)
+                    if starting_balance_calc > 0:
+                        metrics['performance']['max_drawdown_pct'] = (metrics['performance']['max_drawdown'] / starting_balance_calc) * 100.0
                     else:
-                        metrics['trades']['profit_factor'] = 0.0
+                        metrics['performance']['max_drawdown_pct'] = 0.0
+                    metrics['performance']['current_drawdown'] = stats.get('current_drawdown_pct', 0.0)
+                    metrics['performance']['recovery_factor'] = stats.get('recovery_factor', 0.0)
                     
                     # Process trades for additional breakdowns (by strategy, symbol, hour)
                     for trade in trades_list:
@@ -2715,9 +2714,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     
                     # Calculate additional StrategIQ-style metrics
                     # Return %: (Net P&L / Starting Balance) * 100
-                    starting_balance = current_balance - realized_pnl
-                    if starting_balance > 0:
-                        metrics['performance']['return_pct'] = (realized_pnl / starting_balance) * 100.0
+                    starting_balance_calc = float(account_state.get('balance', 0)) - realized_pnl
+                    if starting_balance_calc > 0:
+                        metrics['performance']['return_pct'] = (realized_pnl / starting_balance_calc) * 100.0
                     else:
                         metrics['performance']['return_pct'] = 0.0
                     
@@ -3121,8 +3120,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             except:
                 pass
             
+            # Helper to get sortable timestamp from trade
+            def get_trade_timestamp(t):
+                """Get a sortable timestamp from trade data."""
+                ts = t.get('exit_time') or t.get('exitTime') or t.get('entry_time') or t.get('entryTime') or t.get('timestamp') or t.get('creationTimestamp') or ''
+                if isinstance(ts, datetime):
+                    return ts.isoformat()
+                return str(ts) if ts else ''
+            
             # Sort trades by exit time (oldest first for cumulative calculation)
-            sorted_trades = sorted(trades, key=lambda x: x.get('exit_time', '') or x.get('entry_time', ''))
+            sorted_trades = sorted(trades, key=get_trade_timestamp)
             
             for idx, trade in enumerate(sorted_trades):
                 # Normalize commonly used fields across API variants
@@ -3141,8 +3148,18 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 trade_with_prices['exit_price'] = exit_price
                 points = calculate_trade_points(trade_with_prices)
                 
-                # Calculate cumulative P&L
-                pnl = float(trade.get('pnl', 0) or 0)
+                # Get PnL from various possible field names in API response
+                pnl = float(
+                    trade.get('pnl') or 
+                    trade.get('profitAndLoss') or 
+                    trade.get('profit_and_loss') or 
+                    trade.get('netPnl') or 
+                    trade.get('net_pnl') or 
+                    trade.get('realizedPnl') or
+                    0
+                )
+                
+                # Calculate cumulative P&L (running total from oldest to newest)
                 cumulative_pnl += pnl
                 
                 # Max RU/DD: use available API fields if present
@@ -3174,8 +3191,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     **serialized_trade,  # Include all original fields (with datetime converted to strings)
                     'trade_number': len(sorted_trades) - idx,  # Reverse order (newest first)
                     'points': round(points, 2),
-                    'max_ru': float(max_ru) if max_ru is not None else None,
-                    'max_dd': float(max_dd) if max_dd is not None else None,
+                    'fees': round(float(trade.get('quantity', 0) or 0) * 2.40, 2), # $2.40 per round trip
                     'cumulative_pnl': round(cumulative_pnl, 2),
                     'cumulative_equity': round(starting_balance + cumulative_pnl, 2)
                 }
@@ -3186,6 +3202,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             # Get statistics
             statistics = trades_result.get('statistics', {})
+            
+            # Add max_drawdown_pct if we have starting balance
+            if statistics and starting_balance > 0:
+                max_dd = statistics.get('max_drawdown', 0.0)
+                statistics['max_drawdown_pct'] = round((max_dd / starting_balance) * 100.0, 2)
+            elif statistics:
+                statistics['max_drawdown_pct'] = 0.0
             
             response = web.json_response({
                 'trades': enhanced_trades,
