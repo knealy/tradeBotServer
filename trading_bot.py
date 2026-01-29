@@ -5990,10 +5990,9 @@ class TopStepXTradingBot:
                 "live": True,
                 "startTime": start_time.isoformat(),
                 "endTime": now.isoformat(),
-                "unit": 1,
+                "unit": 2,  # AggregateBarUnit: 2 = Minute
                 "unitNumber": 1,
-                "limit": 5,
-                "includePartialBar": True
+                "limit": 5
             }
             response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
             if "error" in response or not response.get("success"):
@@ -6001,7 +6000,7 @@ class TopStepXTradingBot:
                 from datetime import timedelta as _td
                 start_time2 = now - _td(seconds=30)
                 bars_request2 = dict(bars_request)
-                bars_request2.update({"live": False, "startTime": start_time2.isoformat(), "limit": 30})
+                bars_request2.update({"live": False, "startTime": start_time2.isoformat()})
                 response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
                 if "error" in response or not response.get("success"):
                     # Last resort: return any cached last if present
@@ -6022,7 +6021,7 @@ class TopStepXTradingBot:
                 from datetime import timedelta as _td
                 start_time2 = now - _td(seconds=30)
                 bars_request2 = dict(bars_request)
-                bars_request2.update({"live": False, "startTime": start_time2.isoformat(), "limit": 30})
+                bars_request2.update({"live": False, "startTime": start_time2.isoformat()})
                 response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
                 bars = response.get("bars", []) if response and response.get("success") else []
                 if not bars:

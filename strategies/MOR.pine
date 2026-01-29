@@ -1,0 +1,378 @@
+//@version=6
+indicator('Map Of Ranges 2', shorttitle = 'MoR', overlay = true, max_labels_count = 500, max_bars_back = 500, max_boxes_count = 500, max_lines_count = 500, max_polylines_count = 100, behind_chart = true)
+
+// ===== INPUTS =====
+const string GROUP_OPENING_RANGE = "Opening Range"
+const string GROUP_SESSION = "Session Times"  
+const int offset = 20
+
+show_ORB = input(true, 
+     title = 'Show Intraday Range', 
+     tooltip = "Display the overnight trading range before regular session",
+     group = 'Show') 
+
+OR_COLOR = input.color(color.yellow, 
+     title = 'Color', 
+     tooltip = "Color of the intraday range box. This highlights the price range established during the pre-market or opening period.",
+     inline="open_range", 
+     group = GROUP_OPENING_RANGE)
+
+OR_OPACITY = input.int(90, 
+     title = 'Transparency', 
+     tooltip = "Transparency level of the intraday range box. Higher values make the box more transparent (less visible).",
+     inline="open_range", 
+     group=GROUP_OPENING_RANGE)
+
+DAY_BND_COLOR = input.color(color.orange,
+     title = 'Daily Boundary Color',
+     tooltip = "Daily bounds color for daily targets",
+     group = 'Trading')
+
+openHour = input.int(defval = 9, 
+     title = 'Opening Session Hour',
+     tooltip = "Hour of the trading session open (24-hour format). Used to identify session boundaries for opening range calculations.",
+     inline = 'session_open',
+     minval = 0,
+     maxval = 23)
+
+openMin = input.int(defval = 30, 
+     title = 'Opening Session Minute',
+     tooltip = "Minute of the trading session open. Combined with the hour to precisely define when the trading session begins.",
+     inline = 'session_open',
+     minval = 0,
+     maxval = 59)
+
+closeHour = input.int(20, 
+     title = 'Closing Session Hour',
+     tooltip = "Hour of the trading session close (24-hour format). Used to identify session boundaries and avoid signals after market close.",
+     inline = 'session_close',
+     minval = 0,
+     maxval = 23)
+
+closeMin = input.int(0, 
+     title = 'Closing Session Minute',
+     tooltip = "Minute of the trading session close. Combined with the hour to precisely define when the trading session ends.",
+     inline = 'session_close',
+     minval = 0,
+     maxval = 59)
+
+// ===== VARIABLES =====
+var float orb_high = na                                   
+var float orb_low = na
+var color plotColor = na
+var label orb_high_label = na
+var label orb_low_label = na
+var float last_plotted_high = na
+var float last_plotted_low = na
+
+var float day_dist = na
+var float day_bull_price = na
+var float day_bull_price1 = na 
+var float day_bear_price = na
+var float day_bear_price1 = na
+
+var int open_bar_index = na
+var line day_bull_lvl = na
+var line day_bear_lvl = na
+var line day_bull_lvl1 = na
+var line day_bear_lvl1 = na
+var label day_bull_label = na
+var label day_bear_label = na
+var float last_plotted_day_bull = na
+var float last_plotted_day_bear = na
+
+// Add variables for daily boundary level 1 labels
+var label day_bull_lvl1_label = na
+var label day_bear_lvl1_label = na
+var float last_plotted_day_bull_lvl1 = na
+var float last_plotted_day_bear_lvl1 = na
+
+// ===== OPENING RANGE STRUCTURE =====
+type OpeningRange
+	float or_high
+	float or_low
+	color fillColor
+
+// Initialize the opening range
+initOpeningRange() =>
+    OpeningRange.new(or_high = high, or_low = low, fillColor = color.new(OR_COLOR,OR_OPACITY))
+var openingRange = initOpeningRange()
+
+// Update the opening range
+updateOpeningRange(OpeningRange _or, float currentHigh, float currentLow, bool inSession) =>
+    if inSession and not na(_or)
+        _high = na(_or.or_high) or currentHigh > _or.or_high ? currentHigh : _or.or_high
+        _low = na(_or.or_low) or currentLow < _or.or_low ? currentLow : _or.or_low
+        OpeningRange.new(_high, _low, _or.fillColor)
+    else
+        _or
+
+// ===== DAILY ATR CALCULATION =====
+getDailyLevelATR() =>
+    daily_atr = request.security(syminfo.tickerid, "D", ta.atr(14))
+    daily_atr
+
+// ===== MAIN LOGIC =====
+isFutures = str.contains(syminfo.type, "futures")
+
+if isFutures
+    openHour := openHour - 1
+    closeHour := closeHour - 1
+
+is_open = hour == openHour and minute == openMin 
+open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0) 
+is_close = hour == closeHour and minute == closeMin
+
+oH = str.tostring(openHour)
+oM = str.tostring(openMin)
+cH = str.tostring(closeHour)
+cM = str.tostring(closeMin)
+
+if str.length(oH) < 2
+    oH := '0' + oH
+if str.length(oM) < 2
+    oM := '0' + oM
+if str.length(cH) < 2
+    cH := '0' + cH
+if str.length(cM) < 2
+    cM := '0' + cM
+
+inv_sess = cH + cM + '-' + oH + oM
+
+showONR = show_ORB and timeframe.isintraday                
+t = time(timeframe.period, inv_sess + ':1234567')      
+in_session = not na(t)
+is_first = in_session and not in_session[1]    
+
+// ===== OPENING RANGE LOGIC =====
+if is_first                                            
+    orb_high := high
+    orb_low := low
+    openingRange := OpeningRange.new(high, low, color.new(OR_COLOR, OR_OPACITY))
+else if in_session
+    orb_high := math.max(orb_high[1], high)
+    orb_low := math.min(orb_low[1], low)
+    openingRange := updateOpeningRange(openingRange, orb_high, orb_low, true)
+
+if not na(openingRange)
+    plotColor := openingRange.fillColor
+
+// ===== ORB LABELS =====
+if showONR
+    if is_first
+        if not na(orb_high_label)
+            label.delete(orb_high_label)
+        if not na(orb_low_label)
+            label.delete(orb_low_label)
+        
+        last_plotted_high := na
+        last_plotted_low := na
+    else if barstate.islast
+        last_bar = last_bar_index
+        if na(last_plotted_high) or orb_high != last_plotted_high
+            if not na(orb_high_label)
+                label.delete(orb_high_label)
+            orb_high_label := label.new(last_bar+offset, orb_high,
+                             text=str.tostring(orb_high, "#.##"),
+                             xloc=xloc.bar_index,
+                             style=label.style_text_outline,
+                             tooltip="ORB High",
+                             color=OR_COLOR,
+                             textcolor=color.black,
+                             size=size.tiny,
+                             textalign=text.align_right)
+            last_plotted_high := orb_high
+        
+        if na(last_plotted_low) or orb_low != last_plotted_low
+            if not na(orb_low_label)
+                label.delete(orb_low_label)
+            orb_low_label := label.new(last_bar+offset, orb_low,
+                             text=str.tostring(orb_low, "#.##"),
+                             xloc=xloc.bar_index,
+                             style=label.style_text_outline,
+                             tooltip="ORB Low",
+                             color=OR_COLOR,
+                             textcolor=color.black,
+                             size=size.tiny,
+                             textalign=text.align_right)
+            last_plotted_low := orb_low
+
+// ===== DAILY BOUNDARY LABELS =====
+if is_first
+    if not na(day_bull_label)
+        label.delete(day_bull_label)
+    if not na(day_bear_label)
+        label.delete(day_bear_label)
+    
+    last_plotted_day_bull := na
+    last_plotted_day_bear := na
+else if barstate.islast
+    last_bar = last_bar_index
+    if na(last_plotted_day_bull) or day_bull_price != last_plotted_day_bull
+        if not na(day_bull_label)
+            label.delete(day_bull_label)
+        day_bull_label := label.new(last_bar+offset, day_bull_price,
+                         text=str.tostring(day_bull_price, "#.##"),
+                         xloc=xloc.bar_index,
+                         style=label.style_text_outline,
+                         tooltip="Daily Bull Level",
+                         color=DAY_BND_COLOR,
+         textcolor=color.black,
+                         size=size.tiny,
+                         textalign=text.align_right)
+        last_plotted_day_bull := day_bull_price
+    
+    if na(last_plotted_day_bear) or day_bear_price != last_plotted_day_bear
+        if not na(day_bear_label)
+            label.delete(day_bear_label)
+        day_bear_label := label.new(last_bar+offset, day_bear_price,
+                         text=str.tostring(day_bear_price, "#.##"),
+                         xloc=xloc.bar_index,
+                         style=label.style_text_outline,
+                         tooltip="Daily Bear Level",
+                         color=DAY_BND_COLOR,
+                         textcolor=color.black,
+                         size=size.tiny,
+                         textalign=text.align_right)
+        last_plotted_day_bear := day_bear_price
+
+// ===== DAILY BOUNDARY LEVEL 1 LABELS =====
+if is_first
+    if not na(day_bull_lvl1_label)
+        label.delete(day_bull_lvl1_label)
+    if not na(day_bear_lvl1_label)
+        label.delete(day_bear_lvl1_label)
+    
+    last_plotted_day_bull_lvl1 := na
+    last_plotted_day_bear_lvl1 := na
+else if barstate.islast
+    last_bar = last_bar_index
+    if na(last_plotted_day_bull_lvl1) or day_bull_price1 != last_plotted_day_bull_lvl1
+        if not na(day_bull_lvl1_label)
+            label.delete(day_bull_lvl1_label)
+        day_bull_lvl1_label := label.new(last_bar+offset, day_bull_price1,
+                         text=str.tostring(day_bull_price1, "#.##"),
+                         xloc=xloc.bar_index,
+                         style=label.style_text_outline,
+                         tooltip="Daily Bull Level 1",
+                         color=DAY_BND_COLOR,
+                         textcolor=color.black,
+                         size=size.tiny,
+                         textalign=text.align_right)
+        last_plotted_day_bull_lvl1 := day_bull_price1
+    
+    if na(last_plotted_day_bear_lvl1) or day_bear_price1 != last_plotted_day_bear_lvl1
+        if not na(day_bear_lvl1_label)
+            label.delete(day_bear_lvl1_label)
+        day_bear_lvl1_label := label.new(last_bar+offset, day_bear_price1,
+                         text=str.tostring(day_bear_price1, "#.##"),
+                         xloc=xloc.bar_index,
+                         style=label.style_text_outline,
+                         tooltip="Daily Bear Level 1",
+                         color=DAY_BND_COLOR,
+                         textcolor=color.black,
+                         size=size.tiny,
+                         textalign=text.align_right)
+        last_plotted_day_bear_lvl1 := day_bear_price1
+
+// ===== DAILY BOUNDARY LEVELS =====
+day_dist := getDailyLevelATR() * 0.5
+
+day_bear_price := open_price - day_dist * 0.5
+day_bear_price1 := open_price - day_dist * 0.618
+
+day_bull_price := open_price + day_dist * 0.5
+day_bull_price1 := open_price + day_dist * 0.618
+
+// ===== DAILY BOUNDARY LINES =====
+// At open time, store the bar index and create initial lines
+if is_open
+    open_bar_index := bar_index
+
+    // Create new lines with start point at open, but don't extend them yet
+    day_bull_lvl1 := line.new(
+         x1 = bar_index, 
+         y1 = day_bull_price1, 
+         x2 = bar_index, 
+         y2 = day_bull_price1, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     ) 
+    
+    day_bear_lvl1 := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price1, 
+         x2 = bar_index, 
+         y2 = day_bear_price1, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+    
+    // Create new lines with start point at open, but don't extend them yet
+    day_bull_lvl := line.new(
+         x1 = bar_index, 
+         y1 = day_bull_price, 
+         x2 = bar_index, 
+         y2 = day_bull_price, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     ) 
+    
+    day_bear_lvl := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price, 
+         x2 = bar_index, 
+         y2 = day_bear_price, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+// At every bar, update the end point of the lines to the current bar (including overnight)
+if not na(open_bar_index) and not na(day_bull_lvl) and not na(day_bear_lvl)
+    line.set_x2(day_bull_lvl, bar_index)
+    line.set_x2(day_bear_lvl, bar_index)
+    line.set_x2(day_bull_lvl1, bar_index)
+    line.set_x2(day_bear_lvl1, bar_index)
+    
+    // Only create fills during active session (not overnight)
+    if not is_close
+        linefill.new(day_bull_lvl,day_bull_lvl1,color.new(DAY_BND_COLOR,80))
+        linefill.new(day_bear_lvl,day_bear_lvl1,color.new(DAY_BND_COLOR,80))
+    
+
+// At close time, finalize the line length for the day but don't reset open_bar_index
+// This allows lines to continue extending into overnight hours
+if is_close
+    if not na(day_bull_lvl) and not na(day_bear_lvl)
+        line.set_x2(day_bull_lvl, bar_index)
+        line.set_x2(day_bear_lvl, bar_index)
+        line.set_x2(day_bull_lvl1, bar_index)
+        line.set_x2(day_bear_lvl1, bar_index)
+    // Note: open_bar_index is NOT reset here, so lines continue extending overnight
+
+// ===== PLOTTING =====
+// Plotting the ORB Range High
+RangeHigh = plot(showONR ? orb_high : na, 
+     style=plot.style_line,
+     color = orb_high[1] != orb_high ? na : OR_COLOR, 
+     title='OnH', 
+     linewidth=2,
+     display=display.pane,
+     trackprice=false)
+
+// Plotting the ORB Range Low
+RangeLow = plot(showONR ? orb_low : na,
+     style=plot.style_line, 
+     color = orb_low[1] != orb_low ? na : OR_COLOR,
+     title='OnL', 
+     linewidth=2,
+     display=display.pane,
+     trackprice=false)
+
+// Filling the ORB Range Color
+fill(RangeHigh, RangeLow, color= showONR and not (not in_session or is_close) ? plotColor: na)

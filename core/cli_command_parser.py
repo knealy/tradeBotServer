@@ -977,6 +977,7 @@ class CLICommandParser:
         
         logger.info(f"📊 Analyzing {symbol} for date {target_date} using strategy code")
         
+        saved_ts = getattr(self.trading_bot, '_current_bar_timestamp', None)
         try:
             # Store original get_historical_data method
             original_get_historical = self.trading_bot.get_historical_data
@@ -1109,6 +1110,17 @@ class CLICommandParser:
             # Create strategy instance
             strategy = OvernightRangeStrategy(self.trading_bot)
             
+            # Set as-of timestamp so track_overnight_range uses the overnight session that
+            # *ended* on the target date (not "today"). Otherwise it uses now or latest bar
+            # and requests a session that may be entirely after the cutoff, yielding 0 bars.
+            end_h, end_m = map(int, strategy.overnight_end.split(':'))
+            as_of_naive = datetime.combine(target_date, time(end_h, end_m, 0)) + timedelta(minutes=1)
+            if hasattr(et_tz, 'localize'):
+                as_of = et_tz.localize(as_of_naive)
+            else:
+                as_of = as_of_naive.replace(tzinfo=et_tz)
+            self.trading_bot._current_bar_timestamp = as_of
+            
             # Run strategy calculations for the target date
             # The strategy will use the mocked get_historical_data which filters to target date
             range_data = await strategy.track_overnight_range(symbol)
@@ -1122,9 +1134,6 @@ class CLICommandParser:
             long_order, short_order = await strategy.calculate_range_break_orders(symbol)
             if not long_order or not short_order:
                 return {"error": f"Could not calculate breakout orders for {symbol}"}
-            
-            # Restore original method
-            self.trading_bot.get_historical_data = original_get_historical
             
             # Format results
             result = {
@@ -1184,11 +1193,13 @@ class CLICommandParser:
             return result
             
         except Exception as e:
-            # Restore original method on error
-            if 'original_get_historical' in locals():
-                self.trading_bot.get_historical_data = original_get_historical
             logger.error(f"Error analyzing date: {e}", exc_info=True)
             return {"error": f"Error analyzing date: {str(e)}"}
+        finally:
+            # Always restore get_historical_data and _current_bar_timestamp
+            if 'original_get_historical' in locals():
+                self.trading_bot.get_historical_data = original_get_historical
+            self.trading_bot._current_bar_timestamp = saved_ts
     
     async def _handle_simulate(self, args: List[str]) -> Dict[str, Any]:
         """

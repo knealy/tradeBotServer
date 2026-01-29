@@ -31,7 +31,7 @@ export LOG_FILE
 cd "$PROJECT_ROOT"
 caffeinate -dimsu python3 core/strategy_executor.py \
   --symbols=mnq,mes,mgc \
-  --timeframe=5m \
+  --timeframe=2m \
   --strategy=overnight_range \
   --account_select=${ACCOUNT_NUM} \
-  --max-pending=3
+  --risk-config '{"MNQ":{"max_quantity":3,"cooldown":60.0,"max_pending":2},"MES":{"max_quantity":3,"cooldown":60.0,"max_pending":2},"MGC":{"max_quantity":2,"cooldown":60.0,"max_pending":1}}'

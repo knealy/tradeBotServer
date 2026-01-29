@@ -123,8 +123,12 @@ class OvernightRangeStrategy(BaseStrategy):
         
         # Load strategy-specific configuration from environment
         self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
-        self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '08:00')  # 8am EST
-        self.market_open_time = os.getenv('MARKET_OPEN_TIME', '08:00')  # 8am EST
+        self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '09:30')  # 8am EST
+        self.market_open_time = os.getenv('MARKET_OPEN_TIME', '09:30')  # 8am EST
+        # MOR.pine uses 30m bar open at session open for daily zones; set to "1m" to use 1m (legacy)
+        self.zone_open_source = (os.getenv('OVERNIGHT_ZONE_OPEN_SOURCE', '30m') or '30m').lower()
+        # Zone anchor time: for MOR.pine compat with futures, use 08:30 (MOR: openHour-1 for isFutures)
+        self.zone_anchor_time = os.getenv('ZONE_ANCHOR_TIME', self.market_open_time)
         if pytz:
             self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
         else:
@@ -854,6 +858,90 @@ class OvernightRangeStrategy(BaseStrategy):
         """
         await self.stop()
     
+    async def recalculate_current_atr(self, symbol: str, period: int = None, timeframe: str = None) -> Optional[float]:
+        """
+        Recalculate ONLY the current (intraday) ATR at order placement time.
+        
+        This bypasses the cache to get the most recent volatility reading for stop-loss
+        calculations. The daily ATR and zones are NOT recalculated.
+        
+        Args:
+            symbol: Trading symbol
+            period: Number of bars for ATR (default: from config)
+            timeframe: Timeframe for bars (default: from config)
+        
+        Returns:
+            Current ATR value, or None if error
+        """
+        try:
+            period = period or self.atr_period
+            timeframe = timeframe or self.atr_timeframe
+            
+            # Fetch fresh bars (no cache)
+            atr_history_bars = int(os.getenv("ATR_HISTORY_BARS", "200"))
+            intraday_limit = max(period + 1, atr_history_bars)
+            
+            bars = await self.trading_bot.get_historical_data(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=intraday_limit
+            )
+            
+            if not bars or len(bars) < period + 1:
+                logger.warning(f"Insufficient bars for dynamic ATR: {len(bars) if bars else 0}")
+                return None
+            
+            # Sort bars chronologically
+            def _bar_time_utc(bar: Dict) -> Optional[datetime]:
+                ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
+                if not ts:
+                    return None
+                if isinstance(ts, datetime):
+                    dt = ts
+                elif isinstance(ts, str):
+                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    if ts > 1e12:
+                        dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                    else:
+                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                else:
+                    return None
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            
+            bars_sorted = sorted(bars, key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc))
+            
+            # Calculate True Range
+            true_ranges = []
+            for i in range(1, len(bars_sorted)):
+                current_bar = bars_sorted[i]
+                prev_bar = bars_sorted[i - 1]
+                
+                high = current_bar.get('high', current_bar.get('h', 0))
+                low = current_bar.get('low', current_bar.get('l', 0))
+                prev_close = prev_bar.get('close', prev_bar.get('c', 0))
+                
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                true_ranges.append(tr)
+            
+            if len(true_ranges) < period:
+                logger.warning(f"Insufficient TRs for dynamic ATR: {len(true_ranges)} < {period}")
+                return None
+            
+            # Wilder's smoothing
+            current_atr = sum(true_ranges[:period]) / period
+            for tr in true_ranges[period:]:
+                current_atr = ((current_atr * (period - 1)) + tr) / period
+            
+            logger.info(f"🔄 Recalculated dynamic current ATR for {symbol} ({timeframe}): {current_atr:.2f}")
+            return current_atr
+            
+        except Exception as e:
+            logger.error(f"Error recalculating dynamic ATR for {symbol}: {e}")
+            return None
+
     async def calculate_atr(self, symbol: str, period: int = None, timeframe: str = None) -> Optional[ATRData]:
         """
         Calculate ATR (Average True Range) for a symbol.
@@ -866,7 +954,8 @@ class OvernightRangeStrategy(BaseStrategy):
         
         This is identical to TradingView's ta.atr() which uses ta.rma() internally.
         
-        Uses caching to avoid redundant API calls (5-minute TTL).
+        Uses caching to avoid redundant API calls (5-minute TTL). For dynamic recalculation
+        at order placement time, use recalculate_current_atr() instead.
         
         Args:
             symbol: Trading symbol (e.g., "MNQ", "ES")
@@ -1028,116 +1117,180 @@ class OvernightRangeStrategy(BaseStrategy):
                 logger.debug(f"  Applied Wilder's smoothing for {smoothing_steps} additional bars")
             logger.debug(f"  Final {timeframe} ATR: {current_atr:.4f}")
             
-            # ALWAYS calculate daily ATR from daily bars using Wilder's smoothing (required for accurate zone calculations)
-            # Use only complete daily bars (exclude the current incomplete day)
+            # Daily ATR: match MOR.pine / request.security("D", ta.atr(14))
+            # MOR uses session-aligned "D" bars that roll at 18:00 ET. We build those from 1h bars
+            # (1h avoids the adapter overwriting end_time for 5m when end is in the past, e.g. analyze_date).
+            # DAILY_BAR_ROLL_TIME="18:00" (default) to match MOR; fall back to exchange 1d if disabled/insufficient.
             daily_atr = current_atr  # Default fallback
-            try:
-                # Get enough daily bars for ATR calculation, but limit to reasonable number
-                # Use period + 5 extra bars to ensure we have enough data after excluding incomplete bars
-                daily_bars = await self.trading_bot.get_historical_data(
-                    symbol=symbol,
-                    timeframe='1d',
-                    limit=min(period + 5, 50)  # Limit to 50 daily bars max to avoid getting incomplete bars
-                )
-                
-                if daily_bars and len(daily_bars) >= period + 1:
-                    daily_bars_sorted = sorted(
-                        daily_bars,
-                        key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc)
-                    )
-                    
-                    # Exclude the most recent daily bar if it's the current incomplete day
-                    # In backtest mode, determine the current date from available bars
-                    current_date = None
-                    try:
-                        latest_bar = bars_sorted[-1] if bars_sorted else None
-                        if latest_bar:
-                            bar_ts = latest_bar.get('timestamp') or latest_bar.get('time')
-                            if bar_ts:
-                                if isinstance(bar_ts, str):
-                                    bar_dt = datetime.fromisoformat(bar_ts.replace('Z', '+00:00'))
-                                elif isinstance(bar_ts, datetime):
-                                    bar_dt = bar_ts
-                                else:
-                                    bar_dt = None
-                                if bar_dt:
-                                    if bar_dt.tzinfo is None:
-                                        bar_dt = bar_dt.replace(tzinfo=timezone.utc)
-                                    if pytz:
-                                        bar_dt_local = bar_dt.astimezone(self.timezone)
-                                    else:
-                                        bar_dt_local = bar_dt.astimezone(self.timezone)
-                                    current_date = bar_dt_local.date()
-                    except Exception:
-                        pass
-                    
-                    if current_date is None:
-                        current_date = datetime.now(self.timezone).date()
-                    
-                    # Filter out the current incomplete daily bar
-                    # Daily bars are sorted oldest first, so the last one is the most recent
-                    complete_daily_bars = []
-                    for bar in daily_bars_sorted:
-                        bar_ts = _bar_time_utc(bar)
-                        if bar_ts:
-                            if bar_ts.tzinfo is None:
-                                bar_ts = bar_ts.replace(tzinfo=timezone.utc)
-                            if pytz:
-                                bar_date = bar_ts.astimezone(self.timezone).date()
-                            else:
-                                bar_date = bar_ts.astimezone(self.timezone).date()
-                            # Only include bars from before the current date (complete daily bars)
-                            if bar_date < current_date:
-                                complete_daily_bars.append(bar)
-                    
-                    # If we don't have enough complete bars, use all bars but log a warning
-                    if len(complete_daily_bars) < period + 1:
-                        logger.warning(f"Only {len(complete_daily_bars)} complete daily bars available, using all {len(daily_bars_sorted)} bars for ATR calculation")
-                        complete_daily_bars = daily_bars_sorted
-                    
-                    # Use only the most recent complete bars (enough for ATR period)
-                    if len(complete_daily_bars) > period + 1:
-                        complete_daily_bars = complete_daily_bars[-(period + 1):]
-                    
-                    daily_true_ranges = []
-                    for i in range(1, len(complete_daily_bars)):
-                        current_bar = complete_daily_bars[i]
-                        prev_bar = complete_daily_bars[i - 1]
-                        
-                        high = current_bar.get('high', current_bar.get('h', 0))
-                        low = current_bar.get('low', current_bar.get('l', 0))
-                        prev_close = prev_bar.get('close', prev_bar.get('c', 0))
-                        
-                        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                        daily_true_ranges.append(tr)
-                    
-                    if daily_true_ranges and len(daily_true_ranges) >= period:
-                        # Calculate daily ATR using Wilder's smoothing (matches PineScript ta.atr())
-                        first_daily_atr = sum(daily_true_ranges[:period]) / period  # First ATR = SMA
-                        daily_atr = first_daily_atr
-                        logger.debug(f"Daily ATR Calculation:")
-                        logger.debug(f"  Period: {period}, Total daily TR values: {len(daily_true_ranges)}")
-                        logger.debug(f"  First daily ATR (SMA of first {period} TRs): {first_daily_atr:.4f}")
-                        
-                        # Apply Wilder's smoothing (RMA) for remaining TR values
-                        daily_smoothing_steps = 0
-                        for tr in daily_true_ranges[period:]:
-                            prev_daily_atr = daily_atr
-                            daily_atr = ((daily_atr * (period - 1)) + tr) / period  # Wilder's smoothing
-                            daily_smoothing_steps += 1
-                            # Log first few and last few iterations
-                            if daily_smoothing_steps <= 3 or daily_smoothing_steps >= len(daily_true_ranges[period:]) - 2:
-                                logger.debug(f"  Daily RMA step {daily_smoothing_steps}: prev={prev_daily_atr:.4f}, TR={tr:.4f}, new={daily_atr:.4f}")
-                        
-                        if daily_smoothing_steps > 0:
-                            logger.debug(f"  Applied Wilder's smoothing for {daily_smoothing_steps} additional daily bars")
-                        logger.info(f"Daily ATR (Wilder's RMA) calculated from {len(complete_daily_bars)} complete daily bars: {daily_atr:.2f}")
+            session_aligned = os.getenv("DAILY_ATR_SESSION_ALIGNED", "true").lower() in ("true", "1", "yes", "on")
+            daily_atr_from_session = False
+            roll_str = os.getenv("DAILY_BAR_ROLL_TIME", "18:00")  # 18:00 ET to match MOR; do not use overnight_start
+
+            # Prefer as-of time from analyze_date/backtest when set; otherwise latest bar or now.
+            # analyze_date sets _current_bar_timestamp to 1min after overnight_end on the target date
+            # so we compute session date and 1h window for that day, not "today".
+            as_of_et = datetime.now(self.timezone)
+            _cb = getattr(self.trading_bot, "_current_bar_timestamp", None)
+            if _cb is not None and hasattr(_cb, "astimezone"):
+                as_of_et = _cb.astimezone(self.timezone) if _cb.tzinfo else _cb.replace(tzinfo=timezone.utc).astimezone(self.timezone)
+            else:
+                try:
+                    lb = bars_sorted[-1] if bars_sorted else None
+                    if lb:
+                        bt = _bar_time_utc(lb)
+                        if bt:
+                            as_of_et = bt.astimezone(self.timezone)
+                except Exception:
+                    pass
+
+            if session_aligned:
+                try:
+                    roll_h, roll_m = map(int, roll_str.split(":"))
+                    roll_time = time(roll_h, roll_m, 0)
+                    now_et = as_of_et
+                    # Session date containing "now": day D = [ (D-1) 18:00, D 18:00 ). Bar at 18:00 goes to D+1.
+                    base = now_et.replace(hour=roll_h, minute=roll_m, second=0, microsecond=0)
+                    if now_et >= base:
+                        session_date = (base + timedelta(days=1)).date()
                     else:
-                        logger.warning(f"Could not calculate daily ATR from daily bars, using current ATR approximation")
-                else:
-                    logger.warning(f"Insufficient daily bars for ATR: {len(daily_bars) if daily_bars else 0}, using current ATR approximation")
-            except Exception as e:
-                logger.warning(f"Error fetching daily bars for ATR calculation: {e}, using current ATR approximation")
+                        session_date = base.date()
+                    # Need (period+1)+ buffer session days of 1h (360+ bars for period=14). Use 1h; in date-range
+                    # the adapter uses API 1h directly. 24 days ensures 360+ bars even with market-hour-only APIs.
+                    start_et = datetime.combine(session_date - timedelta(days=24), roll_time)
+                    if hasattr(self.timezone, 'localize'):
+                        start_et = self.timezone.localize(start_et)
+                    else:
+                        start_et = start_et.replace(tzinfo=self.timezone)
+                    end_et = now_et + timedelta(hours=1)
+                    start_utc = start_et.astimezone(pytz.UTC if pytz else timezone.utc)
+                    end_utc = end_et.astimezone(pytz.UTC if pytz else timezone.utc)
+                    # 24 days * 24 = 576 1h bars (request 600 to have buffer)
+                    intra = await self.trading_bot.get_historical_data(
+                        symbol=symbol, timeframe="1h", limit=600, start_time=start_utc, end_time=end_utc
+                    )
+                    min_bars = 24 * (period + 1)  # at least (period+1) days of 1h
+                    if not intra or len(intra) < min_bars:
+                        logger.warning(
+                            f"Session-aligned daily ATR: 1h bars insufficient (got {len(intra) if intra else 0}, need {min_bars}), using 1d fallback"
+                        )
+                    if intra and len(intra) >= min_bars:
+                        intra_sorted = sorted(
+                            intra,
+                            key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc),
+                        )
+                        # Debug: log 1h bar range for session-aligned daily ATR
+                        if intra_sorted:
+                            first_bar_time = _bar_time_utc(intra_sorted[0])
+                            last_bar_time = _bar_time_utc(intra_sorted[-1])
+                            logger.info(
+                                f"Session-aligned daily ATR: {len(intra_sorted)} 1h bars from "
+                                f"{first_bar_time.astimezone(self.timezone) if first_bar_time else 'N/A'} to "
+                                f"{last_bar_time.astimezone(self.timezone) if last_bar_time else 'N/A'}"
+                            )
+                        # Group by session date: D if (D-1) 18:00 <= bar < D 18:00; bar at 18:00 -> D+1
+                        agg: Dict[date, Dict] = {}
+                        for b in intra_sorted:
+                            bt = _bar_time_utc(b)
+                            if not bt:
+                                continue
+                            if bt.tzinfo is None:
+                                bt = bt.replace(tzinfo=timezone.utc)
+                            be = bt.astimezone(self.timezone)
+                            if be.time() >= roll_time:
+                                sd = (be.date() + timedelta(days=1))
+                            else:
+                                sd = be.date()
+                            o = b.get("open", b.get("o", 0))
+                            h = b.get("high", b.get("h", 0))
+                            l = b.get("low", b.get("l", 0))
+                            c = b.get("close", b.get("c", 0))
+                            if sd not in agg:
+                                agg[sd] = {"open": o, "high": h, "low": l, "close": c}
+                            else:
+                                agg[sd]["high"] = max(agg[sd]["high"], h)
+                                agg[sd]["low"] = min(agg[sd]["low"], l)
+                                agg[sd]["close"] = c
+                        # Build daily list for last (period+5) session dates we care about
+                        wanted = [session_date - timedelta(days=k) for k in range(period + 5)]
+                        daily_list = []
+                        for d in sorted(agg.keys()):
+                            if wanted and min(wanted) <= d <= max(wanted):
+                                daily_list.append((d, agg[d]))
+                        daily_list.sort(key=lambda x: x[0])
+                        daily_list = daily_list[-(period + 5) :] if len(daily_list) > period + 5 else daily_list
+                        # Debug: log session dates and sample OHLC
+                        if daily_list:
+                            logger.info(
+                                f"Session-aligned: {len(agg)} total session dates, using {len(daily_list)} "
+                                f"from {daily_list[0][0]} to {daily_list[-1][0]}"
+                            )
+                            for i, (sd, ohlc) in enumerate(daily_list[:3]):
+                                logger.info(f"  Session {sd}: O={ohlc['open']:.2f} H={ohlc['high']:.2f} L={ohlc['low']:.2f} C={ohlc['close']:.2f}")
+                            if len(daily_list) > 3:
+                                logger.info(f"  ... ({len(daily_list)-6} more sessions)")
+                            for i, (sd, ohlc) in enumerate(daily_list[-3:]):
+                                logger.info(f"  Session {sd}: O={ohlc['open']:.2f} H={ohlc['high']:.2f} L={ohlc['low']:.2f} C={ohlc['close']:.2f}")
+                        if len(daily_list) >= period + 1:
+                            trs = []
+                            for i in range(1, len(daily_list)):
+                                cur = daily_list[i][1]
+                                prev = daily_list[i - 1][1]
+                                tr = max(
+                                    cur["high"] - cur["low"],
+                                    abs(cur["high"] - prev["close"]),
+                                    abs(cur["low"] - prev["close"]),
+                                )
+                                trs.append(tr)
+                            if len(trs) >= period:
+                                first = sum(trs[:period]) / period
+                                daily_atr = first
+                                for tr in trs[period:]:
+                                    daily_atr = ((daily_atr * (period - 1)) + tr) / period
+                                daily_atr_from_session = True
+                                logger.info(
+                                    f"Daily ATR (18:00-aligned, match MOR.pine) from {len(daily_list)} session days: {daily_atr:.2f}"
+                                )
+                except Exception as e:
+                    logger.warning(f"Session-aligned daily ATR failed, falling back to 1d: {e}")
+
+            if not daily_atr_from_session:
+                try:
+                    daily_bars = await self.trading_bot.get_historical_data(
+                        symbol=symbol, timeframe="1d", limit=min(period + 5, 50)
+                    )
+                    if daily_bars and len(daily_bars) >= period + 1:
+                        daily_bars_sorted = sorted(
+                            daily_bars,
+                            key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc),
+                        )
+                        current_date = as_of_et.date()
+                        complete_daily_bars = []
+                        for b in daily_bars_sorted:
+                            t = _bar_time_utc(b)
+                            if t and t.astimezone(self.timezone).date() <= current_date:
+                                complete_daily_bars.append(b)
+                        if len(complete_daily_bars) < period + 1:
+                            complete_daily_bars = daily_bars_sorted
+                        if len(complete_daily_bars) > period + 1:
+                            complete_daily_bars = complete_daily_bars[-(period + 1) :]
+                        trs = []
+                        for i in range(1, len(complete_daily_bars)):
+                            cb = complete_daily_bars[i]
+                            pb = complete_daily_bars[i - 1]
+                            trs.append(
+                                max(
+                                    cb.get("high", cb.get("h", 0)) - cb.get("low", cb.get("l", 0)),
+                                    abs(cb.get("high", cb.get("h", 0)) - pb.get("close", pb.get("c", 0))),
+                                    abs(cb.get("low", cb.get("l", 0)) - pb.get("close", pb.get("c", 0))),
+                                )
+                            )
+                        if len(trs) >= period:
+                            daily_atr = sum(trs[:period]) / period
+                            for tr in trs[period:]:
+                                daily_atr = ((daily_atr * (period - 1)) + tr) / period
+                            logger.info(f"Daily ATR (1d fallback) from {len(complete_daily_bars)} bars: {daily_atr:.2f}")
+                except Exception as e:
+                    logger.warning(f"Error fetching daily bars for ATR: {e}, using current ATR approximation")
             
             # Get current price for ATR zones
             current_price = bars_sorted[-1].get('close', bars_sorted[-1].get('c', 0))
@@ -1146,57 +1299,48 @@ class OvernightRangeStrategy(BaseStrategy):
             atr_zone_high = current_price + daily_atr
             atr_zone_low = current_price - daily_atr
             
-            # Get market open price (exact 9:30am 1-minute candle open) - CRITICAL for accurate zone calculations
-            # Use 1-minute bars to get the exact market open time, not a fallback
+            # Get market open price for zone anchor. MOR.pine uses 30m bar open at session open.
+            # OVERNIGHT_ZONE_OPEN_SOURCE: "30m" (default, match MOR.pine) or "1m"
+            # ZONE_ANCHOR_TIME: time to fetch (default=MARKET_OPEN_TIME). Set to '08:30' for MOR
+            # compatibility with futures (MOR uses openHour-1 = 8:30 for isFutures).
             market_open_price = 0.0
-            # In backtest mode, use the date from the latest bar, not system date
-            now = datetime.now(self.timezone)
-            try:
-                # Try to get the date from the latest bar (for backtest mode)
-                latest_bar = bars_sorted[-1] if bars_sorted else None
-                if latest_bar:
-                    bar_ts = latest_bar.get('timestamp') or latest_bar.get('time')
-                    if bar_ts:
-                        if isinstance(bar_ts, str):
-                            bar_dt = datetime.fromisoformat(bar_ts.replace('Z', '+00:00'))
-                        elif isinstance(bar_ts, datetime):
-                            bar_dt = bar_ts
-                        else:
-                            bar_dt = None
-                        if bar_dt:
-                            if bar_dt.tzinfo is None:
-                                bar_dt = bar_dt.replace(tzinfo=timezone.utc)
-                            if pytz:
-                                bar_dt_local = bar_dt.astimezone(self.timezone)
-                            else:
-                                bar_dt_local = bar_dt.astimezone(self.timezone)
-                            # Use the date from the bar, but keep the current time for market open calculation
-                            now = bar_dt_local
-            except Exception:
-                pass  # Use system date as fallback
-            
-            open_hour, open_min = map(int, self.market_open_time.split(':'))
-            market_open_today = now.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
+            # Use as_of_et so analyze_date/backtest get market open for the target date
+            open_hour, open_min = map(int, self.zone_anchor_time.split(':'))
+            market_open_today = as_of_et.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
             
             try:
-                # Convert market open time to UTC for API request
-                if pytz:
-                    market_open_utc = market_open_today.astimezone(pytz.UTC)
+                # MOR.pine uses 30m bar open at session open for daily boundary anchor
+                if self.zone_open_source == "30m":
+                    start_utc = (market_open_today - timedelta(minutes=90)).astimezone(pytz.UTC if pytz else timezone.utc)
+                    end_utc = (market_open_today + timedelta(minutes=90)).astimezone(pytz.UTC if pytz else timezone.utc)
+                    bars_30m = await self.trading_bot.get_historical_data(
+                        symbol=symbol, timeframe='30m', start_time=start_utc, end_time=end_utc, limit=10
+                    )
+                    if bars_30m:
+                        for b in sorted(bars_30m, key=lambda x: _bar_time_utc(x) or datetime.min.replace(tzinfo=timezone.utc)):
+                            bt = _bar_time_utc(b)
+                            if bt:
+                                if bt.tzinfo is None:
+                                    bt = bt.replace(tzinfo=timezone.utc)
+                                bt_local = bt.astimezone(self.timezone).replace(second=0, microsecond=0)
+                                if bt_local == market_open_today:
+                                    market_open_price = b.get('open', b.get('o', 0))
+                                    logger.info(f"Market open price (30m, match MOR.pine) for {symbol}: {bt_local.strftime('%Y-%m-%d %H:%M')} @ {market_open_price:.2f}")
+                                    break
+                
+                # 1m fallback when 30m not used or 30m bar not found
+                if market_open_price is None or market_open_price == 0:
+                    start_time_utc = (market_open_today - timedelta(minutes=30)).astimezone(pytz.UTC if pytz else timezone.utc)
+                    end_time_utc = (market_open_today + timedelta(minutes=30)).astimezone(pytz.UTC if pytz else timezone.utc)
+                    open_bars = await self.trading_bot.get_historical_data(
+                        symbol=symbol,
+                        timeframe='1m',
+                        start_time=start_time_utc,
+                        end_time=end_time_utc,
+                        limit=60
+                    )
                 else:
-                    market_open_utc = market_open_today.astimezone(timezone.utc)
-                
-                # Fetch 1-minute bars around market open time (get a window to ensure we capture it)
-                # Get bars from 30 minutes before market open to 30 minutes after
-                start_time_utc = (market_open_today - timedelta(minutes=30)).astimezone(pytz.UTC if pytz else timezone.utc)
-                end_time_utc = (market_open_today + timedelta(minutes=30)).astimezone(pytz.UTC if pytz else timezone.utc)
-                
-                open_bars = await self.trading_bot.get_historical_data(
-                    symbol=symbol,
-                    timeframe='1m',
-                    start_time=start_time_utc,
-                    end_time=end_time_utc,
-                    limit=60  # 60 minutes should be enough
-                )
+                    open_bars = []
                 
                 if open_bars and len(open_bars) > 0:
                     market_open_price = None
@@ -1255,11 +1399,13 @@ class OvernightRangeStrategy(BaseStrategy):
                         logger.warning(f"Could not find market open 1m bar for {symbol}, using current price as fallback")
                         market_open_price = current_price
                 else:
-                    logger.warning(f"No 1m bars returned for market open lookup for {symbol}, using current price")
-                    market_open_price = current_price
+                    if market_open_price is None or market_open_price == 0:
+                        logger.warning(f"No 1m bars returned for market open lookup for {symbol}, using current price")
+                        market_open_price = current_price
             except Exception as e:
-                logger.warning(f"Error fetching 1m market open price for {symbol}: {e}, using current price as fallback")
-                market_open_price = current_price
+                if market_open_price is None or market_open_price == 0:
+                    logger.warning(f"Error fetching market open price for {symbol}: {e}, using current price as fallback")
+                    market_open_price = current_price
             
             # Calculate daily ATR zones.
             # Use the market open price (8:00 AM / 9:30 AM) for zone calculations
@@ -1295,7 +1441,7 @@ class OvernightRangeStrategy(BaseStrategy):
             )
             
             logger.info(f"ATR calculated for {symbol}: Current={current_atr:.2f}, Daily={daily_atr:.2f}")
-            logger.info(f"  Market Open (1m): {market_open_price:.2f}")
+            logger.info(f"  Market Open ({self.zone_open_source}): {market_open_price:.2f}")
             logger.info(f"  day_dist = daily_atr * 0.5 = {daily_atr:.2f} * 0.5 = {day_dist:.2f}")
             logger.info(f"  Upper ATR Zone: [{day_bull_price:.2f}, {day_bull_price1:.2f}]")
             logger.info(f"  Lower ATR Zone: [{day_bear_price1:.2f}, {day_bear_price:.2f}]")
@@ -1303,7 +1449,7 @@ class OvernightRangeStrategy(BaseStrategy):
             # Cache the result with date-based key
             if symbol not in self._atr_cache:
                 self._atr_cache[symbol] = {}
-            self._atr_cache[symbol][date_cache_key] = (atr_data, now)
+            self._atr_cache[symbol][date_cache_key] = (atr_data, as_of_et)
             
             return atr_data
             
@@ -1588,11 +1734,113 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.error(f"Error tracking overnight range for {symbol}: {e}")
             return None
     
+    async def get_previous_day_atr_zones(self, symbol: str, atr_data: ATRData) -> Optional[Dict]:
+        """
+        Calculate previous day's ATR zones for better profit targeting.
+        
+        When current zones overlap with overnight range, we can look at previous
+        day's zones to find farther profit targets.
+        
+        Returns:
+            Dict with 'upper' and 'lower' zone bounds, or None if can't calculate
+        """
+        try:
+            # Get yesterday's date in strategy timezone
+            now_et = datetime.now(self.timezone)
+            _cb = getattr(self.trading_bot, "_current_bar_timestamp", None)
+            if _cb is not None and hasattr(_cb, "astimezone"):
+                now_et = _cb.astimezone(self.timezone) if _cb.tzinfo else _cb.replace(tzinfo=timezone.utc).astimezone(self.timezone)
+            
+            yesterday = (now_et - timedelta(days=1)).date()
+            
+            # Get historical 30m/1m bar at market open from yesterday for zone anchor
+            open_hour, open_min = map(int, self.zone_anchor_time.split(':'))
+            yesterday_open = datetime.combine(yesterday, time(open_hour, open_min, 0))
+            if hasattr(self.timezone, 'localize'):
+                yesterday_open = self.timezone.localize(yesterday_open)
+            else:
+                yesterday_open = yesterday_open.replace(tzinfo=self.timezone)
+            
+            # Fetch bars around yesterday's market open
+            start_utc = (yesterday_open - timedelta(minutes=90)).astimezone(timezone.utc)
+            end_utc = (yesterday_open + timedelta(minutes=90)).astimezone(timezone.utc)
+            
+            prev_open_price = None
+            if self.zone_open_source == "30m":
+                bars_30m = await self.trading_bot.get_historical_data(
+                    symbol=symbol, timeframe='30m', start_time=start_utc, end_time=end_utc, limit=10
+                )
+                if bars_30m:
+                    for b in sorted(bars_30m, key=lambda x: b.get('timestamp') or b.get('time') or datetime.min):
+                        ts = b.get('timestamp') or b.get('time')
+                        if isinstance(ts, str):
+                            bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        elif isinstance(ts, datetime):
+                            bar_time = ts
+                        else:
+                            continue
+                        if bar_time.tzinfo is None:
+                            bar_time = bar_time.replace(tzinfo=timezone.utc)
+                        bar_local = bar_time.astimezone(self.timezone).replace(second=0, microsecond=0)
+                        if bar_local == yesterday_open:
+                            prev_open_price = b.get('open', b.get('o', 0))
+                            break
+            
+            # Fallback to 1m if 30m not found or configured
+            if prev_open_price is None or prev_open_price == 0:
+                bars_1m = await self.trading_bot.get_historical_data(
+                    symbol=symbol, timeframe='1m', start_time=start_utc, end_time=end_utc, limit=60
+                )
+                if bars_1m:
+                    for b in sorted(bars_1m, key=lambda x: b.get('timestamp') or b.get('time') or datetime.min):
+                        ts = b.get('timestamp') or b.get('time')
+                        if isinstance(ts, str):
+                            bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        elif isinstance(ts, datetime):
+                            bar_time = ts
+                        else:
+                            continue
+                        if bar_time.tzinfo is None:
+                            bar_time = bar_time.replace(tzinfo=timezone.utc)
+                        bar_local = bar_time.astimezone(self.timezone).replace(second=0, microsecond=0)
+                        if bar_local == yesterday_open:
+                            prev_open_price = b.get('open', b.get('o', 0))
+                            break
+            
+            if not prev_open_price or prev_open_price == 0:
+                logger.debug(f"Could not find previous day's market open price for {symbol}")
+                return None
+            
+            # Calculate zones using same formula as current day
+            day_dist = atr_data.daily_atr * 0.5
+            zone_near_mult = float(os.getenv("ATR_ZONE_NEAR_MULT", "0.5"))
+            zone_far_mult = float(os.getenv("ATR_ZONE_FAR_MULT", "0.618"))
+            
+            prev_upper_lower = prev_open_price + day_dist * zone_near_mult
+            prev_upper_upper = prev_open_price + day_dist * zone_far_mult
+            prev_lower_upper = prev_open_price - day_dist * zone_near_mult
+            prev_lower_lower = prev_open_price - day_dist * zone_far_mult
+            
+            logger.debug(f"Previous day ({yesterday}) zones: Upper=[{prev_upper_lower:.2f}, {prev_upper_upper:.2f}], Lower=[{prev_lower_lower:.2f}, {prev_lower_upper:.2f}]")
+            
+            return {
+                'upper': {'lower': prev_upper_lower, 'upper': prev_upper_upper, 'midpoint': (prev_upper_lower + prev_upper_upper) / 2},
+                'lower': {'lower': prev_lower_lower, 'upper': prev_lower_upper, 'midpoint': (prev_lower_lower + prev_lower_upper) / 2}
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error calculating previous day ATR zones: {e}")
+            return None
+
     async def calculate_range_break_orders(self, symbol: str) -> Tuple[Optional[RangeBreakOrder], Optional[RangeBreakOrder]]:
         """
         Calculate range breakout orders (long and short) based on overnight range and ATR.
         
         All prices are rounded to valid tick sizes to prevent order rejections.
+        
+        For profit targets when zones overlap:
+        - Checks previous day's ATR zones
+        - Uses the farther target between 2*current_atr and previous day's zone
         
         Returns:
             Tuple of (long_order, short_order) or (None, None) if error
@@ -1606,11 +1854,32 @@ class OvernightRangeStrategy(BaseStrategy):
                 if not range_data:
                     return None, None
             
-            # Calculate ATR
+            # Calculate ATR - use cached for daily/zones, but recalc current if placing orders
+            # Check if we're being called from place_range_break_orders (use dynamic ATR)
+            use_dynamic_atr = os.getenv("USE_DYNAMIC_ATR_FOR_ORDERS", "true").lower() in ("true", "1", "yes", "on")
+            
             atr_data = await self.calculate_atr(symbol)
             if not atr_data:
                 logger.error(f"Failed to calculate ATR for {symbol}")
                 return None, None
+            
+            # Recalculate current ATR dynamically if enabled (for more accurate stops at order time)
+            if use_dynamic_atr:
+                dynamic_current_atr = await self.recalculate_current_atr(symbol)
+                if dynamic_current_atr:
+                    # Replace current_atr with fresh calculation, keep daily/zones from cache
+                    atr_data = ATRData(
+                        current_atr=dynamic_current_atr,
+                        daily_atr=atr_data.daily_atr,
+                        atr_zone_high=atr_data.atr_zone_high,
+                        atr_zone_low=atr_data.atr_zone_low,
+                        period=atr_data.period,
+                        market_open_price=atr_data.market_open_price,
+                        day_bull_price=atr_data.day_bull_price,
+                        day_bull_price1=atr_data.day_bull_price1,
+                        day_bear_price=atr_data.day_bear_price,
+                        day_bear_price1=atr_data.day_bear_price1
+                    )
             
             # Get tick size for proper price rounding
             tick_size = await self.get_tick_size(symbol)
@@ -1648,9 +1917,22 @@ class OvernightRangeStrategy(BaseStrategy):
             upper_zone_midpoint = (atr_data.day_bull_price + atr_data.day_bull_price1) / 2.0
             
             if upper_zone_overlaps:
-                # ATR zone overlaps with range - use ATR * 2
-                logger.debug(f"  Upper ATR zone overlaps overnight range - using 2*current_atr for TP")
-                long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
+                # ATR zone overlaps with range - use larger of 2*current_atr or previous day's upper zone
+                default_tp = long_entry_raw + (atr_data.current_atr * 2.0)
+                long_tp_raw = default_tp
+                
+                # Try to find better target using previous day's zones
+                prev_zones = await self.get_previous_day_atr_zones(symbol, atr_data)
+                if prev_zones and prev_zones['upper']:
+                    prev_upper_midpoint = prev_zones['upper']['midpoint']
+                    # Use previous day's zone if it's above current overnight range and farther than 2*ATR
+                    if prev_upper_midpoint > range_data.high and prev_upper_midpoint > default_tp:
+                        long_tp_raw = prev_upper_midpoint
+                        logger.debug(f"  Using previous day's upper zone midpoint {long_tp_raw:.2f} (better than 2*ATR {default_tp:.2f})")
+                    else:
+                        logger.debug(f"  Using 2*current_atr for TP (prev zone not better: {prev_upper_midpoint:.2f})")
+                else:
+                    logger.debug(f"  Upper ATR zone overlaps overnight range - using 2*current_atr for TP")
             elif atr_data.day_bull_price > range_data.high:
                 # ATR zone is completely ABOVE range - TARGET THE MIDPOINT of the zone
                 logger.debug(f"  Upper ATR zone above overnight range - targeting zone midpoint at {upper_zone_midpoint:.2f} (zone: [{atr_data.day_bull_price:.2f}, {atr_data.day_bull_price1:.2f}])")
@@ -1685,9 +1967,22 @@ class OvernightRangeStrategy(BaseStrategy):
             lower_zone_midpoint = (atr_data.day_bear_price + atr_data.day_bear_price1) / 2.0
             
             if lower_zone_overlaps:
-                # ATR zone overlaps with range - use ATR * 2
-                logger.debug(f"  Lower ATR zone overlaps overnight range - using 2*current_atr for TP")
-                short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
+                # ATR zone overlaps with range - use larger of 2*current_atr or previous day's lower zone
+                default_tp = short_entry_raw - (atr_data.current_atr * 2.0)
+                short_tp_raw = default_tp
+                
+                # Try to find better target using previous day's zones
+                prev_zones = await self.get_previous_day_atr_zones(symbol, atr_data)
+                if prev_zones and prev_zones['lower']:
+                    prev_lower_midpoint = prev_zones['lower']['midpoint']
+                    # Use previous day's zone if it's below current overnight range and farther than 2*ATR
+                    if prev_lower_midpoint < range_data.low and prev_lower_midpoint < default_tp:
+                        short_tp_raw = prev_lower_midpoint
+                        logger.debug(f"  Using previous day's lower zone midpoint {short_tp_raw:.2f} (better than 2*ATR {default_tp:.2f})")
+                    else:
+                        logger.debug(f"  Using 2*current_atr for TP (prev zone not better: {prev_lower_midpoint:.2f})")
+                else:
+                    logger.debug(f"  Lower ATR zone overlaps overnight range - using 2*current_atr for TP")
             elif atr_data.day_bear_price1 < range_data.low:
                 # ATR zone is completely BELOW range - TARGET THE MIDPOINT of the zone
                 # For SHORT orders, TP must be BELOW entry, so we use the midpoint of the lower zone
@@ -2723,6 +3018,8 @@ class OvernightRangeStrategy(BaseStrategy):
             ['MARKET_OPEN_TIME', 'OVERNIGHT_MARKET_OPEN_TIME', 'OVERNIGHT_RANGE_MARKET_OPEN_TIME'],
             '09:30'
         )
+        self.zone_open_source = (os.getenv('OVERNIGHT_ZONE_OPEN_SOURCE', '30m') or '30m').lower()
+        self.zone_anchor_time = os.getenv('ZONE_ANCHOR_TIME', self.market_open_time)
         if pytz:
             self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
         else:
@@ -2747,7 +3044,7 @@ class OvernightRangeStrategy(BaseStrategy):
         if hasattr(self, 'config'):
             self.config.trading_start_time = self.overnight_start
             self.config.trading_end_time = self.overnight_end
-        logger.info(f"🔄 Reloaded config from environment: Overnight={self.overnight_start}-{self.overnight_end}, Market Open={self.market_open_time}")
+        logger.info(f"🔄 Reloaded config from environment: Overnight={self.overnight_start}-{self.overnight_end}, Market Open={self.market_open_time}, Zone Anchor={self.zone_anchor_time}")
     
     async def start(self, symbols: List[str] = None):
         """

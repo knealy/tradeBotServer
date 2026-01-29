@@ -2396,9 +2396,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.debug(f"end_time {end_time} is before last market close {last_close} - using as-is")
             
             # For short timeframes (seconds, 1-10m), ensure end_time is very recent to get latest data
-            # This is especially important when market is closed to get data up to last close
+            # This is especially important when market is closed to get data up to last close.
+            # Skip when _skip_aggregation: we're fetching 1m for aggregation (e.g. 1h/5m) and must respect
+            # the requested end_time; overwriting to "now" breaks session-aligned daily ATR and analyze_date.
             timeframe_lower = timeframe.lower()
-            if timeframe_lower.endswith("s") or timeframe_lower in ["1m", "2m", "3m", "5m", "10m"]:
+            if not _skip_aggregation and (timeframe_lower.endswith("s") or timeframe_lower in ["1m", "2m", "3m", "5m", "10m"]):
                 current_time = datetime.now(timezone.utc)
                 time_diff = (current_time - end_time).total_seconds()
                 # Get the threshold based on timeframe
@@ -2511,6 +2513,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "accept": "text/plain"
             }
             
+            # API expects unit as AggregateBarUnit (integer enum), not string. 1=Second, 2=Minute, 3=Hour, 4=Day, 5=Week, 6=Month.
+            is_1d = (unit == 4 and unit_number == 1)
+            if is_1d:
+                logger.debug("📊 1d timeframe: using API unit=4 (Day), unitNumber=1 for deep history retention")
+
             # Determine API limit based on mode
             # Date range mode: fetch ALL bars between dates (up to API max)
             # Bar count mode: request extra bars to account for gaps/closures
@@ -2539,6 +2546,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 api_limit = min(limit * 3, 20000)
                 logger.debug(f"📊 Bar count mode: requesting {limit} {timeframe} bars (API limit: {api_limit})")
             
+            # API expects RetrieveBarRequest at body root. unit is an AggregateBarUnit enum value (integer).
             bars_request = {
                 "contractId": contract_id,
                 "live": False,
@@ -2546,16 +2554,15 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "endTime": end_str,
                 "unit": unit,
                 "unitNumber": unit_number,
-                "limit": api_limit,
-                "includePartialBar": True
+                "limit": api_limit
             }
-            
+
             logger.debug(f"Fetching {timeframe} bars for {symbol_up} from {start_str} to {end_str}")
             try:
                 logger.debug(f"🔍 History API request: {json.dumps(bars_request, indent=2)}")
             except Exception as e:
                 logger.debug(f"🔍 History API request (json serialization failed): {bars_request}")
-            
+
             response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
             
             # Debug: log response structure
@@ -2632,7 +2639,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             if not bars_data:
                 logger.warning("API returned empty bars data")
-                logger.warning(f"Request was: contractId={contract_id}, startTime={start_str}, endTime={end_str}, unit={unit}, unitNumber={unit_number}, limit={api_limit}")
+                logger.warning(f"Request was: contractId={contract_id}, unit={unit}, unitNumber={unit_number}, limit={api_limit}, startTime={start_str}, endTime={end_str}")
                 
                 # If we got an empty response and we're in bar count mode, try adjusting the time range
                 # to avoid weekends/closed periods
@@ -2658,7 +2665,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                             start_time = friday_open_utc
                             start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
                             
-                            # Retry the request with adjusted time range
+                            # Retry with same payload (camelCase inner props)
                             bars_request = {
                                 "contractId": contract_id,
                                 "live": False,
@@ -2666,10 +2673,9 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                                 "endTime": end_str,
                                 "unit": unit,
                                 "unitNumber": unit_number,
-                                "limit": api_limit,
-                                "includePartialBar": True
+                                "limit": api_limit
                             }
-                            
+
                             logger.info(f"🔄 Retrying with adjusted time range: startTime={start_str}, endTime={end_str}")
                             response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
                             
@@ -2747,20 +2753,22 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     continue
             
             # If timeframe > 1m, use 1m aggregation strategy (fetch 1m data and aggregate)
-            # This ensures accurate, up-to-date data using reliable 1m source
-            # For daily bars, ALWAYS aggregate from 1m to enforce 18:00-18:00 boundaries
+            # For 1d we use API daily bars (barType "Day") for deep history; skip aggregation.
+            # For 2d+ we still aggregate from 1m (short retention) unless we add 1d→2d aggregation.
             # Skip aggregation if we're already fetching 1m data (prevents recursion)
             target_seconds = self._parse_timeframe_to_seconds(timeframe)
             is_daily = timeframe.endswith('d')
-            
-            # For daily bars, skip API daily bars and always aggregate from 1m to ensure 18:00-18:00 boundaries
-            if is_daily and not _skip_aggregation:
-                logger.info(f"📊 Daily bars requested: aggregating from 1m bars to enforce 18:00-18:00 boundaries (skipping API daily bars)")
-                # Clear API daily bars - we'll aggregate from 1m instead
+
+            # For 2d+ daily bars, aggregate from 1m (short retention). For 1d we used API daily bars above.
+            if is_daily and not _skip_aggregation and not is_1d:
+                logger.info(f"📊 Daily bars ({timeframe}) requested: aggregating from 1m bars (API daily only supports 1d)")
                 bars = []
-            
-            # Aggregate from 1m bars for timeframes > 1m OR for daily bars (to enforce 18:00-18:00)
-            if not _skip_aggregation and target_seconds and (target_seconds > 60 or is_daily):
+
+            # Aggregate from 1m bars for timeframes > 1m OR for 2d+ daily. Never for 1d (we use API daily bars).
+            # For 1h in date-range mode, use API 1h directly: 1m aggregation would need 21.6k+ 1m bars
+            # for 15 session days but the API limit is 20k, yielding ~333h; session-aligned daily ATR
+            # needs 360+ 1h bars. Skipping aggregation for 1h when start_time was provided fixes that.
+            if not _skip_aggregation and not is_1d and target_seconds and (target_seconds > 60 or (is_daily and not is_1d)) and not (timeframe_lower == '1h' and original_start_time_provided):
                 logger.debug(f"📊 Using 1m aggregation strategy: will fetch 1m data and aggregate to {timeframe}")
                 
                 # Fetch 1m data instead (with _skip_aggregation=True to prevent recursion)
@@ -3285,14 +3293,12 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "live": False,
                 "startTime": start_time.isoformat(),
                 "endTime": now.isoformat(),
-                "unit": 2,  # Minutes
+                "unit": 2,  # AggregateBarUnit: 2 = Minute
                 "unitNumber": 1,
-                "limit": 5,
-                "includePartialBar": True
+                "limit": 5
             }
-            
             response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
-            
+
             if "error" not in response and response.get("success"):
                 bars = response.get("bars", [])
                 if bars:
