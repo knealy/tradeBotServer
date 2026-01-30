@@ -138,7 +138,7 @@ class OvernightRangeStrategy(BaseStrategy):
         
         # ATR configuration
         self.atr_period = int(os.getenv('ATR_PERIOD', '14'))  # 14 bars default
-        self.atr_timeframe = os.getenv('ATR_TIMEFRAME', '5m')  # 5-minute bars
+        self.atr_timeframe = os.getenv('ATR_TIMEFRAME', '15m')  # 15-minute bars (used for breakout stops/targets)
         
         # Risk management
         self.stop_atr_multiplier = float(os.getenv('STOP_ATR_MULTIPLIER', '1.25'))  # 1.0-1.5 ATR
@@ -1855,7 +1855,11 @@ class OvernightRangeStrategy(BaseStrategy):
             if _cb is not None and hasattr(_cb, "astimezone"):
                 now_et = _cb.astimezone(self.timezone) if _cb.tzinfo else _cb.replace(tzinfo=timezone.utc).astimezone(self.timezone)
             
+            # Find previous trading day (skip weekends)
             yesterday = (now_et - timedelta(days=1)).date()
+            # Skip backward over weekends to find last trading day
+            while yesterday.weekday() >= 5:  # 5=Saturday, 6=Sunday
+                yesterday = yesterday - timedelta(days=1)
             
             # Get historical 30m/1m bar at market open from yesterday for zone anchor
             open_hour, open_min = map(int, self.zone_anchor_time.split(':'))
@@ -2032,7 +2036,7 @@ class OvernightRangeStrategy(BaseStrategy):
                     # Use previous day's zone if it's above current overnight range and farther than 2*ATR
                     if prev_upper_midpoint > range_data.high and prev_upper_midpoint > default_tp:
                         long_tp_raw = prev_upper_midpoint
-                        logger.debug(f"  Using previous day's upper zone midpoint {long_tp_raw:.2f} (better than 2*ATR {default_tp:.2f})")
+                        logger.debug(f"  Using previous day's upper zone midpoint {long_tp_raw:.2f} (better than 2*current_atr {default_tp:.2f})")
                     else:
                         logger.debug(f"  Using 2*current_atr for TP (prev zone not better: {prev_upper_midpoint:.2f})")
                 else:
@@ -2082,7 +2086,7 @@ class OvernightRangeStrategy(BaseStrategy):
                     # Use previous day's zone if it's below current overnight range and farther than 2*ATR
                     if prev_lower_midpoint < range_data.low and prev_lower_midpoint < default_tp:
                         short_tp_raw = prev_lower_midpoint
-                        logger.debug(f"  Using previous day's lower zone midpoint {short_tp_raw:.2f} (better than 2*ATR {default_tp:.2f})")
+                        logger.debug(f"  Using previous day's lower zone midpoint {short_tp_raw:.2f} (better than 2*current_atr {default_tp:.2f})")
                     else:
                         logger.debug(f"  Using 2*current_atr for TP (prev zone not better: {prev_lower_midpoint:.2f})")
                 else:
