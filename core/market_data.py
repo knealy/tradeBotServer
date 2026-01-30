@@ -147,7 +147,7 @@ class ContractManager:
                     contract_symbol = str(contract_symbol).upper().strip()
                 
                 # Check if symbol matches
-                if contract_symbol == symbol:
+                if contract_symbol == symbol or contract_symbol.startswith(symbol):
                     # Extract metadata for sorting
                     expiration = contract.get('expiration') or contract.get('Expiration') or contract.get('expiry') or contract.get('Expiry')
                     volume = contract.get('volume') or contract.get('Volume') or contract.get('dailyVolume') or contract.get('openInterest') or 0
@@ -217,6 +217,138 @@ class ContractManager:
                 logger.debug(f"   Other matches: {[c['contract_id'] for c in matching_contracts[1:3]]}")
             
             return str(contract_id)
+
+    def get_contract_ids_for_symbol(self, symbol: str, ascending: bool = True) -> List[str]:
+        """
+        Get all contract IDs for a symbol, sorted by expiration.
+
+        Args:
+            symbol: Root symbol (e.g., "MNQ")
+            ascending: If True, oldest -> newest. If False, newest -> oldest.
+
+        Returns:
+            List of contract IDs (strings).
+        """
+        symbol = symbol.upper()
+
+        with self._contract_cache_lock:
+            if self._contract_cache is None:
+                error_msg = (
+                    f"Contract cache is empty. "
+                    f"Please fetch contracts first using 'get_available_contracts()' or run 'contracts' command."
+                )
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+
+            contracts = self._contract_cache['contracts']
+            if not contracts:
+                error_msg = (
+                    f"Contract cache is empty (no contracts found). "
+                    f"Please fetch contracts first using 'get_available_contracts()' or run 'contracts' command."
+                )
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
+
+            def _parse_expiration_key(expiration_value: Any, contract_id: Optional[str]) -> tuple:
+                month_map = {
+                    "F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+                    "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12
+                }
+
+                # If already a datetime/date, use it directly
+                if isinstance(expiration_value, datetime):
+                    return (expiration_value.year, expiration_value.month, expiration_value.day)
+
+                exp_str = str(expiration_value or "").strip().upper()
+
+                # Try ISO-ish date formats
+                for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+                    try:
+                        dt = datetime.strptime(exp_str, fmt)
+                        return (dt.year, dt.month, dt.day)
+                    except Exception:
+                        pass
+
+                # Try futures code like H26 or H2026
+                m = re.match(r"^([FGHJKMNQUVXZ])(\d{2,4})$", exp_str)
+                if m:
+                    month = month_map.get(m.group(1), 12)
+                    year = int(m.group(2))
+                    if year < 100:
+                        year += 2000
+                    return (year, month, 1)
+
+                # Try parsing from contractId suffix if expiration not available
+                if contract_id and "." in str(contract_id):
+                    suffix = str(contract_id).split(".")[-1].strip().upper()
+                    m2 = re.match(r"^([FGHJKMNQUVXZ])(\d{2,4})$", suffix)
+                    if m2:
+                        month = month_map.get(m2.group(1), 12)
+                        year = int(m2.group(2))
+                        if year < 100:
+                            year += 2000
+                        return (year, month, 1)
+
+                # Unknown expiration goes last
+                return (9999, 12, 31)
+
+            matching_contracts = []
+            for contract in contracts:
+                if not isinstance(contract, dict):
+                    continue
+
+                contract_id = (
+                    contract.get('contractId') or
+                    contract.get('ContractId') or
+                    contract.get('id') or
+                    contract.get('Id') or
+                    contract.get('contract_id') or
+                    contract.get('contractID')
+                )
+                if not contract_id:
+                    continue
+
+                contract_symbol = (
+                    contract.get('symbol') or
+                    contract.get('Symbol') or
+                    contract.get('ticker') or
+                    contract.get('Ticker') or
+                    contract.get('instrument') or
+                    contract.get('Instrument')
+                )
+
+                if not contract_symbol and contract_id:
+                    if '.' in str(contract_id):
+                        parts = str(contract_id).split('.')
+                        if len(parts) >= 5:
+                            contract_symbol = parts[3]
+                        elif len(parts) >= 4:
+                            contract_symbol = parts[-2]
+
+                if contract_symbol:
+                    contract_symbol = str(contract_symbol).upper().strip()
+
+                if contract_symbol == symbol:
+                    expiration = contract.get('expiration') or contract.get('Expiration') or contract.get('expiry') or contract.get('Expiry')
+                    volume = contract.get('volume') or contract.get('Volume') or contract.get('dailyVolume') or contract.get('openInterest') or 0
+                    if not isinstance(volume, (int, float)):
+                        volume = 0
+                    exp_key = _parse_expiration_key(expiration, str(contract_id))
+                    matching_contracts.append({
+                        "contract_id": str(contract_id),
+                        "expiration_key": exp_key,
+                        "volume": volume
+                    })
+
+            if not matching_contracts:
+                raise ValueError(f"Symbol '{symbol}' not found in contract cache.")
+
+            # Sort by expiration, then volume as tiebreaker
+            matching_contracts.sort(key=lambda c: (c["expiration_key"], -c["volume"]))
+            if not ascending:
+                matching_contracts.reverse()
+
+            return [c["contract_id"] for c in matching_contracts]
     
     def extract_symbol_from_contract_id(self, contract_id: str) -> Optional[str]:
         """

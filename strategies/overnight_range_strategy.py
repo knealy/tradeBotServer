@@ -1188,6 +1188,15 @@ class OvernightRangeStrategy(BaseStrategy):
                                 f"{last_bar_time.astimezone(self.timezone) if last_bar_time else 'N/A'}"
                             )
                         # Group by session date: D if (D-1) 18:00 <= bar < D 18:00; bar at 18:00 -> D+1
+                        #
+                        # IMPORTANT (TradingView parity):
+                        # TradingView's `MNQ1!` daily series can OMIT certain holiday "trading days" (e.g., MLK Day)
+                        # as a separate daily candle. It does NOT ignore the price action; it effectively FOLDS the
+                        # holiday session's OHLC into the next trading day's candle.
+                        #
+                        # Therefore we must NOT simply "skip" holiday sessions here (that would discard price action
+                        # and distort ATR). Instead, we build the full 18:00-aligned daily series, then merge any
+                        # holiday session date into the next non-holiday session before computing ATR.
                         agg: Dict[date, Dict] = {}
                         for b in intra_sorted:
                             bt = _bar_time_utc(b)
@@ -1218,6 +1227,97 @@ class OvernightRangeStrategy(BaseStrategy):
                                 daily_list.append((d, agg[d]))
                         daily_list.sort(key=lambda x: x[0])
                         daily_list = daily_list[-(period + 5) :] if len(daily_list) > period + 5 else daily_list
+
+                        # Merge holiday session-days into the next session-day (TradingView behavior).
+                        def _observed_us_holiday(d: date) -> date:
+                            # Fixed-date holiday observation rule (Sat->Fri, Sun->Mon)
+                            if d.weekday() == 5:
+                                return d - timedelta(days=1)
+                            if d.weekday() == 6:
+                                return d + timedelta(days=1)
+                            return d
+
+                        def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+                            first = date(year, month, 1)
+                            offset = (weekday - first.weekday() + 7) % 7
+                            return first + timedelta(days=offset + 7 * (n - 1))
+
+                        def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+                            import calendar
+                            last_day = calendar.monthrange(year, month)[1]
+                            last = date(year, month, last_day)
+                            offset = (last.weekday() - weekday + 7) % 7
+                            return last - timedelta(days=offset)
+
+                        def _easter_sunday(year: int) -> date:
+                            # Meeus/Jones/Butcher algorithm
+                            a = year % 19
+                            b = year // 100
+                            c = year % 100
+                            d = b // 4
+                            e = b % 4
+                            f = (b + 8) // 25
+                            g = (b - f + 1) // 3
+                            h = (19 * a + b - d - g + 15) % 30
+                            i = c // 4
+                            k = c % 4
+                            l = (32 + 2 * e + 2 * i - h - k) % 7
+                            m = (a + 11 * h + 22 * l) // 451
+                            month = (h + l - 7 * m + 114) // 31
+                            day = ((h + l - 7 * m + 114) % 31) + 1
+                            return date(year, month, day)
+
+                        def _holiday_set(year: int) -> set[date]:
+                            hs: set[date] = set()
+                            # Fixed-date (observed)
+                            hs.add(_observed_us_holiday(date(year, 1, 1)))    # New Year's Day
+                            hs.add(_observed_us_holiday(date(year, 6, 19)))   # Juneteenth
+                            hs.add(_observed_us_holiday(date(year, 7, 4)))    # Independence Day
+                            hs.add(_observed_us_holiday(date(year, 12, 25)))  # Christmas
+                            # Monday-based
+                            hs.add(_nth_weekday_of_month(year, 1, 0, 3))       # MLK Day
+                            hs.add(_nth_weekday_of_month(year, 2, 0, 3))       # Presidents' Day
+                            hs.add(_last_weekday_of_month(year, 5, 0))         # Memorial Day
+                            hs.add(_nth_weekday_of_month(year, 9, 0, 1))       # Labor Day
+                            # Thanksgiving
+                            hs.add(_nth_weekday_of_month(year, 11, 3, 4))      # Thanksgiving
+                            # Good Friday
+                            hs.add(_easter_sunday(year) - timedelta(days=2))
+                            return hs
+
+                        if daily_list:
+                            years = sorted({d.year for d, _ in daily_list})
+                            holidays = set()
+                            for y in years:
+                                holidays |= _holiday_set(y)
+
+                            merged_daily: list[tuple[date, dict]] = []
+                            carry: Optional[dict] = None
+                            for sd, ohlc in daily_list:
+                                if sd in holidays:
+                                    # Accumulate holiday session(s); fold into next non-holiday day.
+                                    if carry is None:
+                                        carry = dict(ohlc)
+                                    else:
+                                        carry["high"] = max(float(carry["high"]), float(ohlc["high"]))
+                                        carry["low"] = min(float(carry["low"]), float(ohlc["low"]))
+                                        carry["close"] = ohlc["close"]
+                                    continue
+
+                                if carry is not None:
+                                    # Fold carry into this day: open from carry, close from today.
+                                    ohlc = {
+                                        "open": carry["open"],
+                                        "high": max(float(carry["high"]), float(ohlc["high"])),
+                                        "low": min(float(carry["low"]), float(ohlc["low"])),
+                                        "close": ohlc["close"],
+                                    }
+                                    carry = None
+
+                                merged_daily.append((sd, ohlc))
+
+                            # If the requested window ends on a holiday (no next day available), drop the carry.
+                            daily_list = merged_daily
                         # Debug: log session dates and sample OHLC
                         if daily_list:
                             logger.info(
@@ -1256,7 +1356,11 @@ class OvernightRangeStrategy(BaseStrategy):
             if not daily_atr_from_session:
                 try:
                     daily_bars = await self.trading_bot.get_historical_data(
-                        symbol=symbol, timeframe="1d", limit=min(period + 5, 50)
+                        symbol=symbol,
+                        timeframe="1d",
+                        limit=min(period + 10, 120),
+                        continuous_daily=True,
+                        include_partial_daily=False
                     )
                     if daily_bars and len(daily_bars) >= period + 1:
                         daily_bars_sorted = sorted(

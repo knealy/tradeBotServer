@@ -11,7 +11,9 @@ import json
 import asyncio
 import logging
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date, time
+from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 from core.interfaces import (
     OrderInterface,
@@ -2171,12 +2173,18 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             cache_key = None
             if _use_cache and not _skip_aggregation:
                 import time
+                contract_id_override = kwargs.get("contract_id_override")
+                continuous_daily = kwargs.get("continuous_daily")
+                include_partial_daily = kwargs.get("include_partial_daily")
                 cache_key = (
                     symbol_up,
                     timeframe,
                     limit,
                     start_time.isoformat() if start_time else None,
-                    end_time.isoformat() if end_time else None
+                    end_time.isoformat() if end_time else None,
+                    contract_id_override,
+                    continuous_daily,
+                    include_partial_daily
                 )
                 
                 async with self._cache_lock:
@@ -2261,6 +2269,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         _skip_aggregation: bool = False,
+        contract_id_override: Optional[str] = None,
+        _continuous_roll: bool = False,
         **kwargs
     ) -> List[Bar]:
         """
@@ -2269,15 +2279,26 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         """
         try:
             symbol_up = symbol.upper()
-            
+            timeframe_lower = timeframe.lower()
+            continuous_daily = kwargs.pop("continuous_daily", None)
+            include_partial_daily = kwargs.pop("include_partial_daily", None)
+
+            if continuous_daily is None:
+                continuous_daily = (timeframe_lower == "1d")
+            if include_partial_daily is None:
+                include_partial_daily = (timeframe_lower == "1d")
+
             # Get contract ID
-            try:
-                contract_id = self.contract_manager.get_contract_id(symbol_up)
-            except ValueError:
-                # Contract cache might be empty - try fetching contracts
-                logger.info("Contract cache empty, fetching contracts...")
-                await self.get_available_contracts(use_cache=False)
-                contract_id = self.contract_manager.get_contract_id(symbol_up)
+            if contract_id_override:
+                contract_id = contract_id_override
+            else:
+                try:
+                    contract_id = self.contract_manager.get_contract_id(symbol_up)
+                except ValueError:
+                    # Contract cache might be empty - try fetching contracts
+                    logger.info("Contract cache empty, fetching contracts...")
+                    await self.get_available_contracts(use_cache=False)
+                    contract_id = self.contract_manager.get_contract_id(symbol_up)
             
             # Parse timeframe to API format
             # Simplified parser - supports common timeframes
@@ -2290,7 +2311,6 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 'M': 6   # Months
             }
             
-            timeframe_lower = timeframe.lower()
             unit = None
             unit_number = 1
             
@@ -2396,30 +2416,34 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.debug(f"end_time {end_time} is before last market close {last_close} - using as-is")
             
             # For short timeframes (seconds, 1-10m), ensure end_time is very recent to get latest data
-            # This is especially important when market is closed to get data up to last close.
-            # Skip when _skip_aggregation: we're fetching 1m for aggregation (e.g. 1h/5m) and must respect
-            # the requested end_time; overwriting to "now" breaks session-aligned daily ATR and analyze_date.
+            # when the request is "live" (end_time within last 24h). Do NOT overwrite when end_time
+            # is far in the past (e.g. analyze_date, backtest) or when _skip_aggregation (1m for 5m/1h).
+            # Skip when _skip_aggregation: we're fetching 1m for aggregation and must respect end_time.
             timeframe_lower = timeframe.lower()
             if not _skip_aggregation and (timeframe_lower.endswith("s") or timeframe_lower in ["1m", "2m", "3m", "5m", "10m"]):
                 current_time = datetime.now(timezone.utc)
                 time_diff = (current_time - end_time).total_seconds()
-                # Get the threshold based on timeframe
-                if timeframe_lower.endswith("s"):
-                    threshold = max(int(timeframe_lower[:-1]) * 2, 60)  # At least 1 minute for seconds
-                elif timeframe_lower in ["1m", "2m"]:
-                    threshold = 120  # 2 minutes
+                # Do not overwrite when end_time is far in the past (analyze_date / backtest)
+                if time_diff <= 86400:  # 24 hours
+                    # Get the threshold based on timeframe (slightly stale = freshen)
+                    if timeframe_lower.endswith("s"):
+                        threshold = max(int(timeframe_lower[:-1]) * 2, 60)  # At least 1 minute for seconds
+                    elif timeframe_lower in ["1m", "2m"]:
+                        threshold = 120  # 2 minutes
+                    else:
+                        threshold = 600  # 10 minutes for 5m/10m
+                    # If end_time is older than threshold but within 24h, update to fresh
+                    if time_diff > threshold:
+                        potential_end = min(current_time, last_close)
+                        if potential_end > end_time:
+                            logger.info(
+                                f"📊 {timeframe} timeframe: end_time is {time_diff:.0f}s old, updating to {potential_end} for fresh data"
+                            )
+                            end_time = potential_end
                 else:
-                    threshold = 600  # 10 minutes for 5m/10m
-                
-                # If end_time is older than threshold, update it
-                if time_diff > threshold:
-                    # Use the earlier of current time or last market close
-                    potential_end = min(current_time, last_close)
-                    if potential_end > end_time:
-                        logger.info(
-                            f"📊 {timeframe} timeframe: end_time is {time_diff:.0f}s old, updating to {potential_end} for fresh data"
-                        )
-                        end_time = potential_end
+                    logger.debug(
+                        f"📊 {timeframe} timeframe: end_time is {time_diff:.0f}s in the past (historical), not overwriting"
+                    )
             
             # Track if start_time was originally provided (date range mode)
             original_start_time_provided = start_time is not None
@@ -2546,6 +2570,58 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 api_limit = min(limit * 3, 20000)
                 logger.debug(f"📊 Bar count mode: requesting {limit} {timeframe} bars (API limit: {api_limit})")
             
+            # If requested, stitch daily history across multiple contracts (continuous history)
+            if continuous_daily and timeframe_lower == "1d" and not _continuous_roll and not contract_id_override:
+                try:
+                    contract_ids = self.contract_manager.get_contract_ids_for_symbol(symbol_up, ascending=True)
+                except Exception as e:
+                    logger.warning(f"Failed to get contract list for {symbol_up}: {e}")
+                    contract_ids = [contract_id]
+                
+                if contract_ids:
+                    logger.info(
+                        f"📅 Continuous daily: {symbol_up} contracts={len(contract_ids)} "
+                        f"first={contract_ids[0]} last={contract_ids[-1]}"
+                    )
+                else:
+                    logger.warning(f"📅 Continuous daily: no contracts found for {symbol_up}, using current only")
+                    contract_ids = [contract_id]
+
+                merged_by_date: Dict[datetime.date, Bar] = {}
+                for cid in contract_ids:
+                    bars = await self._fetch_historical_data_impl(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        limit=limit,
+                        start_time=start_time,
+                        end_time=end_time,
+                        _skip_aggregation=_skip_aggregation,
+                        contract_id_override=cid,
+                        _continuous_roll=True,
+                        continuous_daily=False,
+                        include_partial_daily=False,
+                        **kwargs
+                    )
+                    for b in bars or []:
+                        if not getattr(b, "timestamp", None):
+                            continue
+                        merged_by_date[b.timestamp.date()] = b  # newer contracts override older
+
+                merged = sorted(merged_by_date.values(), key=lambda b: b.timestamp)
+
+                if include_partial_daily:
+                    partial_bar = await self._build_partial_daily_bar(
+                        symbol=symbol,
+                        end_time=end_time,
+                        contract_id_override=contract_ids[-1] if contract_ids else contract_id
+                    )
+                    if partial_bar and (not merged or partial_bar.timestamp > merged[-1].timestamp):
+                        merged.append(partial_bar)
+
+                if not original_start_time_provided and len(merged) > limit:
+                    merged = merged[-limit:]
+                return merged
+
             # API expects RetrieveBarRequest at body root. unit is an AggregateBarUnit enum value (integer).
             bars_request = {
                 "contractId": contract_id,
@@ -2647,8 +2723,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.info("🔄 Empty response in bar count mode - trying to adjust time range to avoid closed periods")
                     # Try going back further to ensure we hit market-open periods
                     # For weekends, go back to last Friday's market open
-                    import pytz
-                    et_tz = pytz.timezone('US/Eastern')
+                    et_tz = self._get_et_tz()
                     now_et = datetime.now(et_tz)
                     weekday = now_et.weekday()
                     
@@ -2751,7 +2826,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 except Exception as e:
                     logger.warning(f"Failed to parse bar: {e}")
                     continue
-            
+
             # If timeframe > 1m, use 1m aggregation strategy (fetch 1m data and aggregate)
             # For 1d we use API daily bars (barType "Day") for deep history; skip aggregation.
             # For 2d+ we still aggregate from 1m (short retention) unless we add 1d→2d aggregation.
@@ -2999,6 +3074,11 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 bars = filtered_bars
                 if len(bars) < len(bars_by_date):
                     logger.info(f"✅ Filtered daily bars: {len(bars)} bars remaining after removing {len(bars_by_date) - len(bars)} Saturday bars")
+
+                # After converting to "display timestamps" (trading-day labels), apply the holiday-merge again.
+                # This is the path that drives the CLI `history <symbol> 1d ...` output.
+                if timeframe_lower == "1d" and os.getenv("MERGE_DAILY_HOLIDAY_BARS", "true").lower() in ("1", "true", "yes", "on"):
+                    bars = self._merge_holiday_daily_bars_into_next(bars)
             
             # CRITICAL: Sort by timestamp (oldest first) before limiting
             # This ensures we always get the most recent bars, regardless of API response order
@@ -3009,6 +3089,16 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if not original_start_time_provided and len(bars) > limit:
                 bars = bars[-limit:]
             
+            # Optionally append current partial daily bar (aggregated from 1m)
+            if include_partial_daily and timeframe_lower == "1d":
+                partial_bar = await self._build_partial_daily_bar(
+                    symbol=symbol,
+                    end_time=end_time,
+                    contract_id_override=contract_id_override or contract_id
+                )
+                if partial_bar and (not bars or partial_bar.timestamp > bars[-1].timestamp):
+                    bars.append(partial_bar)
+
             # Additional debug: log parsed last bar timestamp vs now
             if bars:
                 try:
@@ -3031,6 +3121,93 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             logger.error(f"Failed to fetch historical data: {str(e)}")
             return []
     
+    async def _build_partial_daily_bar(
+        self,
+        symbol: str,
+        end_time: Optional[datetime],
+        contract_id_override: Optional[str] = None
+    ) -> Optional[Bar]:
+        """
+        Build a partial current daily bar by aggregating 1m bars from the current daily session.
+        """
+        try:
+            symbol_up = symbol.upper()
+            from datetime import datetime, timezone
+
+            end_time = end_time or datetime.now(timezone.utc)
+            session_start = self._get_daily_bar_start_time(end_time)
+
+            one_min_bars = await self.get_historical_data(
+                symbol=symbol,
+                timeframe="1m",
+                limit=20000,
+                start_time=session_start,
+                end_time=end_time,
+                _skip_aggregation=True,
+                contract_id_override=contract_id_override,
+                _continuous_roll=True,
+                continuous_daily=False,
+                include_partial_daily=False
+            )
+            if not one_min_bars:
+                return None
+
+            bars_dict = []
+            for bar in one_min_bars:
+                if hasattr(bar, "timestamp"):
+                    ts = int(bar.timestamp.timestamp())
+                    bars_dict.append({
+                        "timestamp": ts,
+                        "time": ts,
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.volume
+                    })
+                elif isinstance(bar, dict):
+                    ts = bar.get("timestamp") or bar.get("time")
+                    if ts is None:
+                        continue
+                    bars_dict.append({
+                        "timestamp": int(ts),
+                        "time": int(ts),
+                        "open": bar.get("open", bar.get("o", 0)),
+                        "high": bar.get("high", bar.get("h", 0)),
+                        "low": bar.get("low", bar.get("l", 0)),
+                        "close": bar.get("close", bar.get("c", 0)),
+                        "volume": bar.get("volume", bar.get("v", 0))
+                    })
+
+            if not bars_dict:
+                return None
+
+            bars_dict.sort(key=lambda b: b["timestamp"])
+            daily_dicts = self._aggregate_bars(bars_dict, "1d")
+            if not daily_dicts:
+                return None
+
+            last = daily_dicts[-1]
+            ts = last.get("timestamp") or last.get("time")
+            if ts is None:
+                return None
+
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            return Bar(
+                timestamp=dt,
+                open=float(last.get("open", 0)),
+                high=float(last.get("high", 0)),
+                low=float(last.get("low", 0)),
+                close=float(last.get("close", 0)),
+                volume=int(last.get("volume", 0)),
+                symbol=symbol_up,
+                timeframe="1d",
+                raw_data=last
+            )
+        except Exception as e:
+            logger.debug(f"Failed to build partial daily bar for {symbol}: {e}")
+            return None
+
     def _get_daily_bar_start_time(self, timestamp: datetime) -> datetime:
         """
         Get the start time for a daily bar based on EST market hours.
@@ -3046,12 +3223,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         - Thursday bar: Wednesday 18:00 ET to Thursday 18:00 ET
         - Friday bar: Thursday 18:00 ET to Friday 18:00 ET
         """
-        try:
-            import pytz
-            et_tz = pytz.timezone('US/Eastern')
-        except ImportError:
-            # Fallback if pytz not available
-            et_tz = timezone(timedelta(hours=-5))  # EST offset (approximate)
+        et_tz = self._get_et_tz()
         
         # Convert to EST
         if timestamp.tzinfo is None:
@@ -3089,11 +3261,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         - Bar starting Wednesday 18:00 ET should display as Thursday's date
         - Bar starting Thursday 18:00 ET should display as Friday's date
         """
-        try:
-            import pytz
-            et_tz = pytz.timezone('US/Eastern')
-        except ImportError:
-            et_tz = timezone(timedelta(hours=-5))
+        et_tz = self._get_et_tz()
         
         # Convert to EST
         if bar_start_timestamp.tzinfo is None:
@@ -3133,11 +3301,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         - Daily bars end at 18:00 ET (6pm) the next day
         - This aligns with the overnight session: 18:00 to 18:00
         """
-        try:
-            import pytz
-            et_tz = pytz.timezone('US/Eastern')
-        except ImportError:
-            et_tz = timezone(timedelta(hours=-5))
+        et_tz = self._get_et_tz()
         
         # Convert to EST
         if bar_start.tzinfo is None:
@@ -3149,6 +3313,148 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         
         # Convert back to UTC
         return bar_end_et.astimezone(timezone.utc)
+
+    def _get_et_tz(self) -> ZoneInfo:
+        """America/New_York timezone (handles DST without pytz)."""
+        return ZoneInfo("America/New_York")
+
+    @staticmethod
+    def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+        """Return the n-th weekday (0=Mon) in a given month."""
+        first = date(year, month, 1)
+        offset = (weekday - first.weekday() + 7) % 7
+        return first + timedelta(days=offset + 7 * (n - 1))
+
+    @staticmethod
+    def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+        """Return the last weekday (0=Mon) in a given month."""
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        last = date(year, month, last_day)
+        offset = (last.weekday() - weekday + 7) % 7
+        return last - timedelta(days=offset)
+
+    @staticmethod
+    def _easter_sunday(year: int) -> date:
+        """Anonymous Gregorian computus (Meeus/Jones/Butcher)."""
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
+
+    @staticmethod
+    def _observed_us_holiday(d: date) -> date:
+        """Observed date for fixed-date holidays (Sat->Fri, Sun->Mon)."""
+        if d.weekday() == 5:  # Saturday
+            return d - timedelta(days=1)
+        if d.weekday() == 6:  # Sunday
+            return d + timedelta(days=1)
+        return d
+
+    @lru_cache(maxsize=32)
+    def _cme_equity_index_holidays(self, year: int) -> frozenset[date]:
+        """
+        Approximation of US holidays that TradingView commonly omits as separate *daily candles*
+        for CME equity index futures continuous series.
+        """
+        holidays: set[date] = set()
+        # Fixed-date (observed)
+        holidays.add(self._observed_us_holiday(date(year, 1, 1)))   # New Year's Day
+        holidays.add(self._observed_us_holiday(date(year, 6, 19)))  # Juneteenth (observed)
+        holidays.add(self._observed_us_holiday(date(year, 7, 4)))   # Independence Day (observed)
+        holidays.add(self._observed_us_holiday(date(year, 12, 25))) # Christmas (observed)
+
+        # Monday-based
+        holidays.add(self._nth_weekday_of_month(year, 1, 0, 3))  # MLK Day (3rd Monday Jan)
+        holidays.add(self._nth_weekday_of_month(year, 2, 0, 3))  # Presidents' Day (3rd Monday Feb)
+        holidays.add(self._last_weekday_of_month(year, 5, 0))    # Memorial Day (last Monday May)
+        holidays.add(self._nth_weekday_of_month(year, 9, 0, 1))  # Labor Day (1st Monday Sep)
+
+        # Thanksgiving
+        holidays.add(self._nth_weekday_of_month(year, 11, 3, 4))  # 4th Thursday Nov
+
+        # Good Friday (2 days before Easter)
+        holidays.add(self._easter_sunday(year) - timedelta(days=2))
+
+        return frozenset(holidays)
+
+    def _merge_holiday_daily_bars_into_next(self, bars: List[Bar]) -> List[Bar]:
+        """
+        Merge any daily bar whose *display-date* falls on a holiday into the next non-holiday bar.
+        This matches TradingView behavior where the holiday candle is absent but its price action
+        is reflected in the next trading day's OHLC.
+        """
+        if not bars:
+            return bars
+
+        et_tz = self._get_et_tz()
+        sorted_bars = sorted(
+            [b for b in bars if getattr(b, "timestamp", None)],
+            key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc),
+        )
+        passthrough = [b for b in bars if not getattr(b, "timestamp", None)]
+
+        carry: Optional[Bar] = None
+        out: List[Bar] = []
+
+        def merge_into(target: Bar, prior: Bar) -> Bar:
+            return Bar(
+                timestamp=target.timestamp,
+                open=prior.open,
+                high=max(prior.high, target.high),
+                low=min(prior.low, target.low),
+                close=target.close,
+                volume=int(getattr(prior, "volume", 0) or 0) + int(getattr(target, "volume", 0) or 0),
+                symbol=target.symbol,
+                timeframe=target.timeframe,
+                raw_data={"merged_holiday_into_next": True, "prior_raw": getattr(prior, "raw_data", None), "target_raw": getattr(target, "raw_data", None)},
+            )
+
+        for bar in sorted_bars:
+            et_day = bar.timestamp.astimezone(et_tz).date()
+            holidays = self._cme_equity_index_holidays(et_day.year)
+
+            if et_day in holidays:
+                if carry is None:
+                    carry = bar
+                else:
+                    # Extend the carry window across consecutive holiday bars.
+                    carry = Bar(
+                        timestamp=carry.timestamp,
+                        open=carry.open,
+                        high=max(carry.high, bar.high),
+                        low=min(carry.low, bar.low),
+                        close=bar.close,
+                        volume=int(getattr(carry, "volume", 0) or 0) + int(getattr(bar, "volume", 0) or 0),
+                        symbol=carry.symbol,
+                        timeframe=carry.timeframe,
+                        raw_data={"merged_holiday_chain": True, "parts": [getattr(carry, "raw_data", None), getattr(bar, "raw_data", None)]},
+                    )
+                logger.info(f"📅 Holiday daily bar detected ({et_day}); will merge into next trading day to match TradingView")
+                continue
+
+            if carry is not None:
+                bar = merge_into(bar, carry)
+                carry = None
+
+            out.append(bar)
+
+        # If the last bar(s) were holiday bars with no following bar, drop them (can't merge forward).
+        # This matches TradingView's "missing candle" behavior best, and avoids inventing a candle.
+        merged = out + passthrough
+        merged.sort(key=lambda b: b.timestamp if getattr(b, "timestamp", None) else datetime.min.replace(tzinfo=timezone.utc))
+        return merged
     
     def _parse_timeframe_to_seconds(self, timeframe: str) -> Optional[int]:
         """Parse timeframe string to seconds."""

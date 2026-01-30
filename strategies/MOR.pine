@@ -71,11 +71,20 @@ var float day_bull_price1 = na
 var float day_bear_price = na
 var float day_bear_price1 = na
 
+var float mkt_open_price = na
+var line mkt_open_lvl = na
+
 var int open_bar_index = na
 var line day_bull_lvl = na
 var line day_bear_lvl = na
 var line day_bull_lvl1 = na
 var line day_bear_lvl1 = na
+
+var line day_bear_lvl_ext = na
+var line day_bear_lvl1_ext = na
+var line day_bull_lvl_ext = na
+var line day_bull_lvl1_ext = na
+
 var label day_bull_label = na
 var label day_bear_label = na
 var float last_plotted_day_bull = na
@@ -120,7 +129,7 @@ if isFutures
     closeHour := closeHour - 1
 
 is_open = hour == openHour and minute == openMin 
-open_price = ta.valuewhen(is_open, request.security(syminfo.tickerid,'30',open),0) 
+open_price = ta.valuewhen(is_open,open,0) 
 is_close = hour == closeHour and minute == closeMin
 
 oH = str.tostring(openHour)
@@ -217,7 +226,7 @@ else if barstate.islast
                          style=label.style_text_outline,
                          tooltip="Daily Bull Level",
                          color=DAY_BND_COLOR,
-         textcolor=color.black,
+                         textcolor=color.black,
                          size=size.tiny,
                          textalign=text.align_right)
         last_plotted_day_bull := day_bull_price
@@ -284,11 +293,30 @@ day_bear_price1 := open_price - day_dist * 0.618
 day_bull_price := open_price + day_dist * 0.5
 day_bull_price1 := open_price + day_dist * 0.618
 
+mkt_open_price := open_price
+
+day_bear_price_ext = open_price - day_dist * 1.5
+day_bear_price1_ext = open_price - day_dist * 1.618
+
+day_bull_price_ext = open_price + day_dist * 1.5
+day_bull_price1_ext = open_price + day_dist * 1.618
+
+
 // ===== DAILY BOUNDARY LINES =====
 // At open time, store the bar index and create initial lines
 if is_open
     open_bar_index := bar_index
 
+    mkt_open_lvl := line.new(
+         x1 = bar_index, 
+         y1 = mkt_open_price, 
+         x2 = bar_index, 
+         y2 = mkt_open_price, 
+         xloc = xloc.bar_index,
+         color = color.green, 
+         style = line.style_dotted,
+         width = 2
+     ) 
     // Create new lines with start point at open, but don't extend them yet
     day_bull_lvl1 := line.new(
          x1 = bar_index, 
@@ -299,17 +327,6 @@ if is_open
          color = color.white, 
          style = line.style_dotted
      ) 
-    
-    day_bear_lvl1 := line.new(
-         x1 = bar_index, 
-         y1 = day_bear_price1, 
-         x2 = bar_index, 
-         y2 = day_bear_price1, 
-         xloc = xloc.bar_index,
-         color = color.white, 
-         style = line.style_dotted
-     )
-
     
     // Create new lines with start point at open, but don't extend them yet
     day_bull_lvl := line.new(
@@ -331,6 +348,55 @@ if is_open
          color = color.white, 
          style = line.style_dotted
      )
+    day_bear_lvl1 := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price1, 
+         x2 = bar_index, 
+         y2 = day_bear_price1, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+    day_bear_lvl1_ext := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price1_ext, 
+         x2 = bar_index, 
+         y2 = day_bear_price1_ext, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+    day_bear_lvl_ext := line.new(
+         x1 = bar_index, 
+         y1 = day_bear_price_ext, 
+         x2 = bar_index, 
+         y2 = day_bear_price_ext, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+    day_bull_lvl1_ext := line.new(
+         x1 = bar_index, 
+         y1 = day_bull_price1_ext, 
+         x2 = bar_index, 
+         y2 = day_bull_price1_ext, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
+
+    day_bull_lvl_ext := line.new(
+         x1 = bar_index, 
+         y1 = day_bull_price_ext, 
+         x2 = bar_index, 
+         y2 = day_bull_price_ext, 
+         xloc = xloc.bar_index,
+         color = color.white, 
+         style = line.style_dotted
+     )
 
 // At every bar, update the end point of the lines to the current bar (including overnight)
 if not na(open_bar_index) and not na(day_bull_lvl) and not na(day_bear_lvl)
@@ -338,11 +404,21 @@ if not na(open_bar_index) and not na(day_bull_lvl) and not na(day_bear_lvl)
     line.set_x2(day_bear_lvl, bar_index)
     line.set_x2(day_bull_lvl1, bar_index)
     line.set_x2(day_bear_lvl1, bar_index)
+
+    line.set_x2(mkt_open_lvl, bar_index)
     
+    line.set_x2(day_bear_lvl_ext, bar_index)
+    line.set_x2(day_bear_lvl1_ext, bar_index)
+
+    line.set_x2(day_bull_lvl_ext, bar_index)
+    line.set_x2(day_bull_lvl1_ext, bar_index)
+
     // Only create fills during active session (not overnight)
     if not is_close
         linefill.new(day_bull_lvl,day_bull_lvl1,color.new(DAY_BND_COLOR,80))
         linefill.new(day_bear_lvl,day_bear_lvl1,color.new(DAY_BND_COLOR,80))
+        linefill.new(day_bull_lvl_ext,day_bull_lvl1_ext,color.new(color.purple,90))
+        linefill.new(day_bear_lvl_ext,day_bear_lvl1_ext,color.new(color.purple,90))
     
 
 // At close time, finalize the line length for the day but don't reset open_bar_index
@@ -353,6 +429,9 @@ if is_close
         line.set_x2(day_bear_lvl, bar_index)
         line.set_x2(day_bull_lvl1, bar_index)
         line.set_x2(day_bear_lvl1, bar_index)
+        line.set_x2(mkt_open_lvl, bar_index)
+
+    
     // Note: open_bar_index is NOT reset here, so lines continue extending overnight
 
 // ===== PLOTTING =====
@@ -376,3 +455,21 @@ RangeLow = plot(showONR ? orb_low : na,
 
 // Filling the ORB Range Color
 fill(RangeHigh, RangeLow, color= showONR and not (not in_session or is_close) ? plotColor: na)
+
+// showDATR = label.new(bar_index, high,
+//                 text=str.tostring(getDailyLevelATR()),
+//                 xloc=xloc.bar_index,
+//                 style=label.style_label_down,
+//                 color=color.black,
+//                 textcolor=color.white,
+//                 size=size.small,
+//                 textalign=text.align_right)
+
+// showATR = label.new(bar_index, high,
+//                 text=str.tostring(ta.atr(14)),
+//                 xloc=xloc.bar_index,
+//                 style=label.style_label_down,
+//                 color=color.black,
+//                 textcolor=color.white,
+//                 size=size.small,
+//                 textalign=text.align_right)

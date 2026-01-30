@@ -1658,6 +1658,104 @@
         "Use VARCHAR for all account_id columns",
         "Add type hints to enforce str type for account_id parameters"
       ]
+    },
+    "daily_atr_zone_discrepancy_vs_morpine": {
+      "problem": "Daily ATR zones calculated by overnight_range_strategy differ from MOR.pine by ~6 points",
+      "symptoms": [
+        "Python zones: upper 25694.96-25715.71, lower 25498.29-25519.04",
+        "MOR.pine zones: upper 25700.75-25722.5, lower 25490.75-25513.5",
+        "Both zones are ~6 points off (upper too low, lower too high)",
+        "daily_bar.open shown as 25607.0 in JSON but logs show 25609.75"
+      ],
+      "root_cause_verified": {
+        "market_open_price": "25607.0 is CORRECT ✓ (9:30 AM bar, matches MOR.pine calculation center)",
+        "zone_formula": "CORRECT ✓ (day_dist × 0.5 and day_dist × 0.618)",
+        "daily_atr": "351.82 is TOO LOW ✗ (should be ~374.39 for MOR zones)",
+        "difference": "22.57 points (6.4% lower) → causes ~6 point zone offset on each side"
+      },
+      "why_daily_atr_differs": [
+        "TradingView's `MNQ1!` daily series can OMIT certain US holiday 'trading days' (e.g., MLK Day 2026-01-19) as a separate daily candle",
+        "TradingView does NOT ignore the price action on those sessions; it effectively FOLDS the holiday session's OHLC into the next trading day's candle (e.g., Tue 2026-01-20 open/high from the holiday session, low/close from the next session)",
+        "TopStepX returns a separate 1d bar for the holiday session, which adds an extra True Range step and shifts the ATR sequence",
+        "If we skip the holiday bar outright, we incorrectly DISCARD price action and distort ATR; correct parity requires 'holiday folding' (merge into next day), not skipping"
+      ],
+      "calculation_verification": {
+        "from_mor_upper_zone": "25700.75 = 25607 + day_dist×0.5 → day_dist = 187.50",
+        "from_mor_upper_upper": "25722.5 = 25607 + day_dist×0.618 → day_dist = 186.89",
+        "average_day_dist": "187.20",
+        "required_daily_atr": "187.20 × 2 = 374.39",
+        "python_daily_atr": "351.82",
+        "shortfall": "22.57 points (6.4%)"
+      },
+      "json_output_terminology_issue": {
+        "problem": "JSON shows 'daily_bar.open': 25607.0 (misleading)",
+        "reality": {
+          "zone_anchor_price": "25607.0 (market open @ 9:30, used for zones)",
+          "actual_daily_bar_open": "25609.75 (overnight session start @ 18:00)"
+        },
+        "fix_needed": "Rename JSON field to 'zone_anchor_price' or show both values separately"
+      },
+      "analyze_date_daily_atr_failure_mode": {
+        "problem": "analyze_date produced daily ATR equal to intraday ATR (e.g., 12.15) and microscopic ATR zones",
+        "symptom_log": "Error fetching daily bars for ATR: TopStepXTradingBot.get_historical_data() got an unexpected keyword argument 'continuous_daily', using current ATR approximation",
+        "root_causes": [
+          "CLICommandParser._handle_analyze_date mocks trading_bot.get_historical_data with a signature that did not accept **kwargs",
+          "TopStepXTradingBot.get_historical_data() wrapper did not accept or forward **kwargs to broker_adapter",
+          "overnight_range_strategy requests daily bars with continuous_daily/include_partial_daily kwargs, causing both the mock AND the real method to raise"
+        ],
+        "fixes_applied": [
+          "Updated analyze_date and simulate mocks in core/cli_command_parser.py to accept **kwargs and forward to original_get_historical",
+          "Updated TopStepXTradingBot.get_historical_data() in trading_bot.py to accept **kwargs and forward to broker_adapter.get_historical_data()",
+          "Made timestamp filtering in mocks tolerate both dict bars and Bar objects"
+        ]
+      },
+      "solutions": [
+        {
+          "priority": 1,
+          "fix": "Match TradingView daily candle series (holiday folding)",
+          "details": "Merge any holiday-labeled daily bar into the next non-holiday day: open from holiday, high=max, low=min, close from next day. Apply AFTER daily timestamps are normalized to the 18:00 ET 'display date' so date labels align (and do not apply the merge twice).",
+          "files": [
+            "brokers/topstepx_adapter.py",
+            "strategies/overnight_range_strategy.py"
+          ]
+        },
+        {
+          "priority": 2,
+          "fix": "Export and compare TradingView daily data (verify parity)",
+          "steps": [
+            "Export TradingView daily bars for MNQ (Jan 5-23) to CSV",
+            "Compare OHLC values with TopStepX session-aligned bars",
+            "Calculate ATR(14) manually from both datasets",
+            "Identify which bar definition TradingView uses"
+          ]
+        },
+        {
+          "priority": 3,
+          "fix": "Add DAILY_ATR_OVERRIDE environment variable",
+          "code": "DAILY_ATR_OVERRIDE=374.39  # Override with TradingView value when known",
+          "use_case": "For specific dates where TV value is verified"
+        },
+        {
+          "priority": 4,
+          "fix": "Correct JSON output terminology",
+          "file": "core/cli_command_parser.py",
+          "line": "~1160",
+          "change": "Split 'daily_bar.open' into 'zone_anchor_price' (25607.0) and 'daily_bar.open' (25609.75)"
+        }
+      ],
+      "prevention": [
+        "Document that session-aligned daily ATR may differ from TradingView by ~6%",
+        "Provide option to match TradingView bar definition if exact match required",
+        "Add tests comparing ATR calculations against known TradingView values",
+        "Export both Python and TV daily bars for validation when discrepancies found"
+      ],
+      "related_files": [
+        "strategies/overnight_range_strategy.py",
+        "strategies/MOR.pine",
+        "core/cli_command_parser.py",
+        "ATR_ZONE_DISCREPANCY_CORRECTED.md"
+      ],
+      "status": "IMPLEMENTED - TradingView parity fix added: holiday daily bars are folded into the next trading day (instead of skipped or treated as separate). This removes the extra MLK day candle and should align daily ATR/zone levels with MOR.pine."
     }
   }
 }

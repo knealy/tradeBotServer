@@ -999,7 +999,8 @@ class CLICommandParser:
                 timeframe: str = "1m",
                 limit: int = 100,
                 start_time: Optional[datetime] = None,
-                end_time: Optional[datetime] = None
+                end_time: Optional[datetime] = None,
+                **kwargs
             ) -> List[Dict]:
                 """Mock that filters data to only include bars up to target date."""
                 # If end_time is provided and it's after cutoff_time, cap it at cutoff_time
@@ -1020,20 +1021,32 @@ class CLICommandParser:
                     timeframe,
                     limit,
                     start_time,
-                    effective_end_time
+                    effective_end_time,
+                    **kwargs
                 )
                 
                 logger.debug(f"Mock get_historical_data: received {len(bars) if bars else 0} bars from original method")
                 
                 # Filter bars to only include those up to cutoff_time (safety check)
+                def _bar_time_utc_obj(b: Any) -> Optional[datetime]:
+                    ts = None
+                    if isinstance(b, dict):
+                        ts = b.get("timestamp") or b.get("time")
+                    else:
+                        ts = getattr(b, "timestamp", None) or getattr(b, "time", None)
+                    if isinstance(ts, str):
+                        try:
+                            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        except Exception:
+                            return None
+                    if isinstance(ts, datetime):
+                        return ts
+                    return None
+
                 filtered_bars = []
                 for bar in bars:
-                    ts = bar.get('timestamp') or bar.get('time')
-                    if isinstance(ts, str):
-                        bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                    elif isinstance(ts, datetime):
-                        bar_time = ts
-                    else:
+                    bar_time = _bar_time_utc_obj(bar)
+                    if not bar_time:
                         continue
                     
                     if bar_time.tzinfo is None:
@@ -1056,16 +1069,13 @@ class CLICommandParser:
                             timeframe,
                             limit * 2,  # Request more to account for filtering
                             start_time,
-                            None  # No end_time - let API return most recent bars
+                            None,  # No end_time - let API return most recent bars
+                            **kwargs
                         )
                         # Filter to only include bars up to cutoff
                         for bar in more_bars:
-                            ts = bar.get('timestamp') or bar.get('time')
-                            if isinstance(ts, str):
-                                bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                            elif isinstance(ts, datetime):
-                                bar_time = ts
-                            else:
+                            bar_time = _bar_time_utc_obj(bar)
+                            if not bar_time:
                                 continue
                             
                             if bar_time.tzinfo is None:
@@ -1078,12 +1088,8 @@ class CLICommandParser:
                         seen_timestamps = set()
                         unique_bars = []
                         for bar in filtered_bars:
-                            ts = bar.get('timestamp') or bar.get('time')
-                            if isinstance(ts, str):
-                                bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                            elif isinstance(ts, datetime):
-                                bar_time = ts
-                            else:
+                            bar_time = _bar_time_utc_obj(bar)
+                            if not bar_time:
                                 continue
                             
                             if bar_time.tzinfo is None:
@@ -1095,7 +1101,7 @@ class CLICommandParser:
                                 unique_bars.append(bar)
                         
                         # Sort by timestamp
-                        unique_bars.sort(key=lambda b: (b.get('timestamp') or b.get('time') or datetime.min))
+                        unique_bars.sort(key=lambda b: (_bar_time_utc_obj(b) or datetime.min.replace(tzinfo=timezone.utc)))
                         filtered_bars = unique_bars[-limit:] if len(unique_bars) > limit else unique_bars
                         logger.debug(f"After fallback fetch: {len(filtered_bars)} bars")
                     except Exception as e:
@@ -1320,7 +1326,8 @@ class CLICommandParser:
                 timeframe: str = "1m",
                 limit: int = 100,
                 start_time: Optional[datetime] = None,
-                end_time: Optional[datetime] = None
+                end_time: Optional[datetime] = None,
+                **kwargs
             ) -> List[Dict]:
                 """Mock that filters data to only include bars up to target date."""
                 # If both start_time and end_time are provided, respect them (strategy knows what it needs)
@@ -1348,7 +1355,8 @@ class CLICommandParser:
                     timeframe,
                     limit,
                     effective_start_time,
-                    effective_end_time
+                    effective_end_time,
+                    **kwargs
                 )
                 
                 if not bars:
@@ -1365,14 +1373,25 @@ class CLICommandParser:
                                f"filtering for range [{effective_start_time}, {effective_end_time}] up to cutoff {cutoff_time}")
                 
                 # Filter bars based on the request type
+                def _bar_time_utc_obj(b: Any) -> Optional[datetime]:
+                    ts = None
+                    if isinstance(b, dict):
+                        ts = b.get("timestamp") or b.get("time")
+                    else:
+                        ts = getattr(b, "timestamp", None) or getattr(b, "time", None)
+                    if isinstance(ts, str):
+                        try:
+                            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        except Exception:
+                            return None
+                    if isinstance(ts, datetime):
+                        return ts
+                    return None
+
                 filtered_bars = []
                 for bar in bars:
-                    ts = bar.get('timestamp') or bar.get('time')
-                    if isinstance(ts, str):
-                        bar_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                    elif isinstance(ts, datetime):
-                        bar_time = ts
-                    else:
+                    bar_time = _bar_time_utc_obj(bar)
+                    if not bar_time:
                         continue
                     
                     if bar_time.tzinfo is None:
@@ -1403,11 +1422,7 @@ class CLICommandParser:
                     if filtered_bars:
                         # Return the bar closest to cutoff_time (most recent)
                         # Sort by timestamp descending to get the most recent bar
-                        filtered_bars.sort(key=lambda b: (
-                            datetime.fromisoformat(b.get('timestamp', '').replace('Z', '+00:00')) 
-                            if isinstance(b.get('timestamp'), str) 
-                            else (b.get('timestamp') if isinstance(b.get('timestamp'), datetime) else datetime.min.replace(tzinfo=timezone.utc))
-                        ), reverse=True)
+                        filtered_bars.sort(key=lambda b: (_bar_time_utc_obj(b) or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
                         latest_bar = filtered_bars[0]
                         latest_bar_time = latest_bar.get('timestamp')
                         # Convert to ET to check if it's from the target date

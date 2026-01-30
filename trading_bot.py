@@ -6976,13 +6976,21 @@ class TopStepXTradingBot:
     
     async def get_historical_data(self, symbol: str, timeframe: str = "1m",
                                   limit: int = 100, start_time: datetime = None,
-                                  end_time: datetime = None) -> List[Dict]:
+                                  end_time: datetime = None, **kwargs) -> List[Dict]:
         """
         Get historical price data for a symbol.
 
         This is now a thin wrapper around the canonical implementation in
         `TopStepXAdapter.get_historical_data`, so ALL paths (CLI, dashboard,
         strategies) share one source of truth for historical bar logic.
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Bar timeframe (e.g., "1m", "5m", "1h", "1d")
+            limit: Maximum number of bars
+            start_time: Optional start time
+            end_time: Optional end time
+            **kwargs: Additional arguments (e.g., continuous_daily, include_partial_daily)
         """
         try:
             logger.info(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
@@ -6994,6 +7002,7 @@ class TopStepXTradingBot:
                 limit=limit,
                 start_time=start_time,
                 end_time=end_time,
+                **kwargs
             )
 
             # Convert Bar objects to normalized dicts for backward compatibility.

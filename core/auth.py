@@ -172,9 +172,9 @@ class AuthManager:
                 
                 if endpoint == "/api/History/retrieveBars":
                     try:
-                        logger.info(f"📦 retrieveBars payload: {json.dumps(cleaned_data, default=str)}")
-                    except Exception as dbg_err:
-                        logger.info(f"📦 retrieveBars payload (non-JSON): {cleaned_data}")
+                        logger.debug(f"📦 retrieveBars payload: {json.dumps(cleaned_data, default=str)}")
+                    except Exception:
+                        logger.debug(f"📦 retrieveBars payload (non-JSON): {cleaned_data}")
                 
                 response = self._http_session.post(
                     url,
