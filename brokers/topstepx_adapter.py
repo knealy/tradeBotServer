@@ -54,6 +54,16 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
     providing a clean interface for the trading bot core.
     """
     
+    # Mapping for micro contracts with limited API history → use full-size contract for historical data
+    # Only include contracts that have insufficient daily history (< 15 bars typically)
+    # MNQ, MES, MYM already have good history and should NOT use proxy
+    HISTORY_PROXY_MAP: Dict[str, str] = {
+        # Intentionally empty for now.
+        #
+        # IMPORTANT: For MGC TradingView parity, we *must* stitch MGC contract months directly
+        # (e.g. CON.F.US.MGC.G26 + CON.F.US.MGC.J26). Proxying to GC introduces vendor differences.
+    }
+    
     def __init__(
         self,
         auth_manager: AuthManager,
@@ -2572,8 +2582,16 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             # If requested, stitch daily history across multiple contracts (continuous history)
             if continuous_daily and timeframe_lower == "1d" and not _continuous_roll and not contract_id_override:
+                # History proxy (optional): for some micros we can use a larger contract.
+                # NOTE: For MGC specifically, TradingView parity requires using MGC contract months directly
+                # (MGC.G26, MGC.J26, ...) rather than GC, because tiny vendor differences compound.
+                history_symbol = self.HISTORY_PROXY_MAP.get(symbol_up, symbol_up)
+                use_history_proxy = history_symbol != symbol_up
+                if use_history_proxy:
+                    logger.info(f"📊 Using {history_symbol} history for {symbol_up} (history proxy)")
+                
                 try:
-                    contract_ids = self.contract_manager.get_contract_ids_for_symbol(symbol_up, ascending=True)
+                    contract_ids = self.contract_manager.get_contract_ids_for_symbol(history_symbol, ascending=True)
                 except Exception as e:
                     logger.warning(f"Failed to get contract list for {symbol_up}: {e}")
                     contract_ids = [contract_id]
@@ -2587,12 +2605,300 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"📅 Continuous daily: no contracts found for {symbol_up}, using current only")
                     contract_ids = [contract_id]
 
+                # For history proxy (MGC→GC), fetch 1h bars and aggregate to daily with session-aligned logic
+                # TradingView continuous symbols roll across contract months. For best parity:
+                # - Stitch *daily* bars across inferred contract months
+                # - Use a deterministic roll rule (see below)
+                # - Optionally build a partial "today" bar from 1h if the API hasn't emitted the latest 1d bar
+                #
+                # We run this path for:
+                # - history proxies (history_symbol != symbol_up)
+                # - MGC specifically (needs multi-contract stitching even without proxy to match TradingView)
+                if use_history_proxy or symbol_up == "MGC":
+                    logger.info(f"📊 Continuous daily stitching for {symbol_up}: base_symbol={history_symbol}")
+
+                    # Infer likely contract IDs around the currently available contract.
+                    # Example for GC: CON.F.US.GCE.J26 (Apr) and CON.F.US.GCE.G26 (Feb) both return data.
+                    month_cycle = "GJMQZ"  # Gold/Metals standard months (best-effort)
+                    month_to_num = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6, "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
+
+                    def _parse_suffix(sfx: str) -> Optional[tuple]:
+                        sfx = str(sfx or "").strip().upper()
+                        if len(sfx) == 3 and sfx[0].isalpha() and sfx[1:].isdigit():
+                            return (sfx[0], int(sfx[1:]))
+                        return None
+
+                    def _suffix_key(sfx: str) -> tuple:
+                        parsed = _parse_suffix(sfx)
+                        if not parsed:
+                            return (9999, 12)
+                        m, yy = parsed
+                        year = 2000 + yy
+                        return (year, month_to_num.get(m, 12))
+
+                    def _prev_suffix(cur_sfx: str) -> Optional[str]:
+                        parsed = _parse_suffix(cur_sfx)
+                        if not parsed:
+                            return None
+                        cur_m, cur_yy = parsed
+                        if cur_m not in month_cycle:
+                            return None
+                        idx = month_cycle.index(cur_m)
+                        prev_m = month_cycle[idx - 1] if idx > 0 else month_cycle[-1]
+                        prev_yy = cur_yy if idx > 0 else (cur_yy - 1)
+                        return f"{prev_m}{prev_yy:02d}"
+
+                    # Choose a base contract to infer prefix/suffix from
+                    base_cid = contract_ids[-1] if contract_ids else contract_id
+                    base_parts = str(base_cid).split(".")
+                    # Expect CON.F.US.<SYMBOL>.<SUFFIX>
+                    base_suffix = base_parts[-1] if len(base_parts) >= 2 else ""
+                    symbol_id = ".".join(base_parts[1:4]) if len(base_parts) >= 5 else None  # e.g. F.US.GCE
+                    cid_prefix = f"CON.{symbol_id}." if symbol_id else None
+
+                    candidate_cids: List[str] = []
+                    if cid_prefix and base_suffix:
+                        prev1 = _prev_suffix(base_suffix)
+                        prev2 = _prev_suffix(prev1) if prev1 else None
+                        for sfx in [prev2, prev1, base_suffix]:
+                            if sfx:
+                                candidate_cids.append(f"{cid_prefix}{sfx}")
+                    else:
+                        # Fallback to current contract id only
+                        candidate_cids = [str(base_cid)]
+
+                    # De-dup while preserving order
+                    seen = set()
+                    candidate_cids = [c for c in candidate_cids if not (c in seen or seen.add(c))]
+
+                    per_contract_limit = max(limit * 6, 120)  # extra buffer for overlap/roll detection / partial-day stitching
+
+                    # Collect bars per contract by ET date (TradingView-style daily date).
+                    by_contract_day: Dict[str, Dict[date, Bar]] = {}
+                    et_tz = self._get_et_tz()
+
+                    for cand_cid in candidate_cids:
+                        try:
+                            bars = await self._fetch_historical_data_impl(
+                                symbol=history_symbol,
+                                timeframe="1d",
+                                limit=per_contract_limit,
+                                start_time=start_time,
+                                end_time=end_time,
+                                _skip_aggregation=_skip_aggregation,
+                                contract_id_override=cand_cid,
+                                _continuous_roll=True,
+                                continuous_daily=False,
+                                include_partial_daily=False,
+                                **kwargs,
+                            )
+                        except Exception as e:
+                            logger.info(f"📊 History proxy: contract {cand_cid} fetch failed: {e}")
+                            continue
+
+                        if not bars:
+                            continue
+
+                        cand_suffix = str(cand_cid).split(".")[-1]
+                        cand_key = _suffix_key(cand_suffix)
+
+                        for b in bars:
+                            if not getattr(b, "timestamp", None):
+                                continue
+                            bar_start_dt = b.timestamp if b.timestamp.tzinfo else b.timestamp.replace(tzinfo=timezone.utc)
+                            # TradingView daily candle date (for these TopStepX 1d bars) matches the
+                            # ET calendar date of the bar's timestamp (typically 18:00 ET).
+                            # Important: do NOT +1 day here; doing so shifts bars onto weekends and
+                            # mislabels Thu/Fri sessions.
+                            bar_start_et = bar_start_dt.astimezone(et_tz)
+                            display_date_et = bar_start_et.date()
+                            # Use 18:00 ET on the display date as the canonical timestamp (converted to UTC).
+                            display_dt = datetime(
+                                display_date_et.year,
+                                display_date_et.month,
+                                display_date_et.day,
+                                18, 0, 0,
+                                tzinfo=et_tz,
+                            ).astimezone(timezone.utc)
+                            day_key = display_date_et
+
+                            vol = int(getattr(b, "volume", 0) or 0)
+                            new_bar = Bar(
+                                timestamp=display_dt,
+                                open=b.open,
+                                high=b.high,
+                                low=b.low,
+                                close=b.close,
+                                volume=vol,
+                                symbol=symbol_up,
+                                timeframe="1d",
+                                raw_data={
+                                    "proxy_symbol": history_symbol,
+                                    "source_contract_id": cand_cid,
+                                    "source_contract_suffix": cand_suffix,
+                                    "source_contract_key": cand_key,
+                                    "bar_start": bar_start_dt.isoformat(),
+                                    "bar_start_et": bar_start_et.isoformat(),
+                                    "display_date_et": str(display_date_et),
+                                },
+                            )
+
+                            by_contract_day.setdefault(cand_suffix, {})[day_key] = new_bar
+
+                    # Determine a deterministic roll schedule that matches TradingView 1! behavior better
+                    # than pure volume for Gold: roll the Feb (G) contract to Apr (J) near end of Jan.
+                    # Heuristic: roll on the last business day of the month prior to delivery month, minus 1 business day.
+                    def _last_business_day(year: int, month: int) -> date:
+                        from calendar import monthrange
+                        d = date(year, month, monthrange(year, month)[1])
+                        while d.weekday() >= 5:
+                            d = d - timedelta(days=1)
+                        return d
+
+                    def _roll_threshold_for_old(old_suffix: str) -> Optional[date]:
+                        parsed = _parse_suffix(old_suffix)
+                        if not parsed:
+                            return None
+                        m, yy = parsed
+                        delivery_month = month_to_num.get(m)
+                        if not delivery_month:
+                            return None
+                        year = 2000 + yy
+                        # Month prior to delivery month
+                        prior_month = delivery_month - 1
+                        prior_year = year
+                        if prior_month == 0:
+                            prior_month = 12
+                            prior_year -= 1
+                        lbd = _last_business_day(prior_year, prior_month)
+                        # Roll one business day before last business day
+                        roll = lbd - timedelta(days=1)
+                        while roll.weekday() >= 5:
+                            roll = roll - timedelta(days=1)
+                        return roll
+
+                    # Choose old/new suffixes from inferred candidates (prev1 as old, base_suffix as new)
+                    old_suffix = _prev_suffix(base_suffix) if base_suffix else None
+                    new_suffix = base_suffix if base_suffix else None
+                    roll_threshold = _roll_threshold_for_old(old_suffix) if old_suffix else None
+
+                    # Build merged bars by selecting contract based on roll threshold.
+                    all_days: List[date] = sorted({d for m in by_contract_day.values() for d in m.keys()})
+                    merged: List[Bar] = []
+                    for d in all_days:
+                        chosen: Optional[Bar] = None
+                        if old_suffix and new_suffix and roll_threshold:
+                            # Before threshold -> old; on/after threshold -> new
+                            prefer = new_suffix if d >= roll_threshold else old_suffix
+                            chosen = by_contract_day.get(prefer, {}).get(d)
+                            if chosen is None:
+                                # Fallback to the other if missing
+                                other = old_suffix if prefer == new_suffix else new_suffix
+                                chosen = by_contract_day.get(other, {}).get(d)
+                        else:
+                            # If we couldn't infer roll, just take the newest suffix available for that day
+                            for sfx in sorted(by_contract_day.keys(), key=_suffix_key, reverse=True):
+                                cand = by_contract_day[sfx].get(d)
+                                if cand:
+                                    chosen = cand
+                                    break
+                        if chosen:
+                            merged.append(chosen)
+
+                    merged.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                    if merged:
+                        # If the API hasn't emitted the most recent 1d bar yet (common around rollover/session cutoffs),
+                        # build the next day bar from 1h data for the *new* contract (best match for TradingView's latest day).
+                        try:
+                            last_day = merged[-1].timestamp.astimezone(et_tz).date()
+                            next_day = last_day + timedelta(days=1)
+                            # Skip weekend days
+                            while next_day.weekday() >= 5:
+                                next_day = next_day + timedelta(days=1)
+
+                            # For MGC (and some contracts), TradingView's table often includes the current
+                            # partially-formed daily candle. Build it from 1h once the session has opened.
+                            should_try_partial = (symbol_up == "MGC") or (len(merged) < limit)
+                            if not original_start_time_provided and should_try_partial and new_suffix and cid_prefix:
+                                # TradingView's latest daily candle (e.g. Fri 30) may not be present in API 1d yet.
+                                # Build it from intraday bars spanning the full futures session:
+                                #   (prev_day 18:00 ET) → (day 17:00 ET)
+                                now_et = datetime.now(et_tz)
+                                session_start_et = datetime(next_day.year, next_day.month, next_day.day, 18, 0, 0, tzinfo=et_tz) - timedelta(days=1)
+                                session_end_et = datetime(next_day.year, next_day.month, next_day.day, 17, 0, 0, tzinfo=et_tz)
+                                # Only build once the session is complete (after 17:00 ET on that day)
+                                if now_et >= session_end_et:
+                                    start_utc = session_start_et.astimezone(timezone.utc)
+                                    end_utc = session_end_et.astimezone(timezone.utc)
+                                    one_h = await self._fetch_historical_data_impl(
+                                        symbol=history_symbol,
+                                        timeframe="1h",
+                                        limit=2000,
+                                        start_time=start_utc,
+                                        end_time=end_utc,
+                                        _skip_aggregation=True,
+                                        contract_id_override=f"{cid_prefix}{new_suffix}",
+                                        _continuous_roll=True,
+                                        continuous_daily=False,
+                                        include_partial_daily=False,
+                                        **kwargs,
+                                    )
+                                    one_h = [b for b in (one_h or []) if getattr(b, "timestamp", None)]
+                                    if one_h:
+                                        one_h.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                                        o = one_h[0].open
+                                        h = max(b.high for b in one_h)
+                                        l = min(b.low for b in one_h)
+                                        c = one_h[-1].close
+                                        v = int(sum(int(getattr(b, "volume", 0) or 0) for b in one_h))
+                                        # Use 18:00 ET of the trading day as the canonical daily timestamp
+                                        daily_ts = datetime(next_day.year, next_day.month, next_day.day, 18, 0, 0, tzinfo=et_tz).astimezone(timezone.utc)
+                                        merged.append(Bar(
+                                            timestamp=daily_ts,
+                                            open=o,
+                                            high=h,
+                                            low=l,
+                                            close=c,
+                                            volume=v,
+                                            symbol=symbol_up,
+                                            timeframe="1d",
+                                            raw_data={
+                                                "proxy_symbol": history_symbol,
+                                                "source_contract_id": f"{cid_prefix}{new_suffix}",
+                                                "built_full_session_from_1h": True,
+                                                "session_start_et": session_start_et.isoformat(),
+                                                "session_end_et": session_end_et.isoformat(),
+                                                "session_start_utc": start_utc.isoformat(),
+                                                "session_end_utc": end_utc.isoformat(),
+                                            },
+                                        ))
+                                        merged.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                        except Exception as _e:
+                            logger.info(f"📊 Partial daily build skipped/failed for {symbol_up}: {_e}")
+
+                        # Apply holiday folding to match TradingView missing-holiday-candle behavior.
+                        merged = self._merge_holiday_daily_bars_into_next(merged)
+                        merged.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                        if not original_start_time_provided and len(merged) > limit:
+                            merged = merged[-limit:]
+                        logger.info(
+                            f"✅ History proxy: stitched {len(merged)} daily bars for {symbol_up} "
+                            f"from {history_symbol} using candidates={candidate_cids}"
+                        )
+                        return merged
+
+                    logger.warning(f"History proxy: no daily bars produced for {symbol_up} from {history_symbol}; falling back to 1h aggregation")
+                
+                # Standard flow for non-proxy symbols (or fallback if proxy fails)
+                # Request more bars per contract so we get as much history as the API has (commodities
+                # like MGC often return very few daily bars per contract; indices like MNQ return more).
+                per_contract_limit = max(limit, 500)
                 merged_by_date: Dict[datetime.date, Bar] = {}
                 for cid in contract_ids:
                     bars = await self._fetch_historical_data_impl(
-                        symbol=symbol,
+                        symbol=history_symbol,  # Use history symbol for fetching
                         timeframe=timeframe,
-                        limit=limit,
+                        limit=per_contract_limit,
                         start_time=start_time,
                         end_time=end_time,
                         _skip_aggregation=_skip_aggregation,
@@ -2605,6 +2911,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     for b in bars or []:
                         if not getattr(b, "timestamp", None):
                             continue
+                        # Use original symbol for bar objects
+                        b.symbol = symbol_up
                         merged_by_date[b.timestamp.date()] = b  # newer contracts override older
 
                 merged = sorted(merged_by_date.values(), key=lambda b: b.timestamp)
@@ -2620,6 +2928,72 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
 
                 if not original_start_time_provided and len(merged) > limit:
                     merged = merged[-limit:]
+
+                # Fallback for instruments (e.g. MGC) where API returns very few daily bars per contract:
+                # build daily bars from 1h bars so ATR/zones can be calculated.
+                min_bars_required = min(limit, 14)  # at least 14 for ATR(14)
+                if len(merged) < min_bars_required and start_time is not None and end_time is not None:
+                    logger.info(
+                        f"📊 Only {len(merged)} daily bars for {symbol_up} (need {min_bars_required}); "
+                        f"building daily from 1h bars (commodity/limited-history fallback)"
+                    )
+                    try:
+                        # Request enough 1h bars to build at least min_bars_required days (and up to 60 days)
+                        n_1h = 24 * max(limit, min_bars_required, 60)
+                        # Use history_symbol if available (e.g. GC for MGC)
+                        fallback_symbol = self.HISTORY_PROXY_MAP.get(symbol_up, symbol)
+                        if fallback_symbol != symbol:
+                            logger.info(f"📊 1h fallback: using {fallback_symbol} history for {symbol_up}")
+                        one_h_bars = await self.get_historical_data(
+                            symbol=fallback_symbol,
+                            timeframe="1h",
+                            limit=n_1h,
+                            start_time=start_time,
+                            end_time=end_time,
+                            _skip_aggregation=True,
+                            contract_id_override=None,  # Let it resolve the correct contract for fallback_symbol
+                            continuous_daily=False,
+                            include_partial_daily=False,
+                            **kwargs
+                        )
+                        if one_h_bars and len(one_h_bars) >= 24:
+                            one_h_bars.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                            bars_dict = [
+                                {
+                                    "timestamp": int(b.timestamp.timestamp()) if b.timestamp else 0,
+                                    "time": int(b.timestamp.timestamp()) if b.timestamp else 0,
+                                    "open": b.open,
+                                    "high": b.high,
+                                    "low": b.low,
+                                    "close": b.close,
+                                    "volume": getattr(b, "volume", 0) or 0,
+                                }
+                                for b in one_h_bars
+                            ]
+                            daily_dicts = self._aggregate_bars(bars_dict, "1d")
+                            if daily_dicts:
+                                merged = []
+                                for d in daily_dicts:
+                                    dt = datetime.fromtimestamp(d["timestamp"], tz=timezone.utc)
+                                    merged.append(Bar(
+                                        timestamp=dt,
+                                        open=float(d["open"]),
+                                        high=float(d["high"]),
+                                        low=float(d["low"]),
+                                        close=float(d["close"]),
+                                        volume=int(d.get("volume", 0)),
+                                        symbol=symbol_up,
+                                        timeframe="1d",
+                                    ))
+                                if os.getenv("MERGE_DAILY_HOLIDAY_BARS", "true").lower() in ("1", "true", "yes", "on"):
+                                    merged = self._merge_holiday_daily_bars_into_next(merged)
+                                merged.sort(key=lambda b: b.timestamp if b.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+                                if not original_start_time_provided and len(merged) > limit:
+                                    merged = merged[-limit:]
+                                logger.info(f"✅ Built {len(merged)} daily bars from 1h for {symbol_up}")
+                    except Exception as fallback_err:
+                        logger.warning(f"1h→daily fallback failed for {symbol_up}: {fallback_err}")
+
                 return merged
 
             # API expects RetrieveBarRequest at body root. unit is an AggregateBarUnit enum value (integer).
@@ -2853,6 +3227,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     limit=limit * (target_seconds // 60) + 100,  # Request enough 1m bars
                     start_time=start_time,
                     end_time=end_time,
+                    contract_id_override=contract_id_override,
                     _skip_aggregation=True,  # Prevent recursion
                     **kwargs
                 )

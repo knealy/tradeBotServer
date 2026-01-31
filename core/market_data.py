@@ -106,6 +106,35 @@ class ContractManager:
                     contract.get('contractID')
                 )
                 
+                # If contractId is null, try to build from symbolId or name
+                if not contract_id:
+                    symbol_id = contract.get('symbolId') or contract.get('SymbolId')
+                    name = contract.get('name') or contract.get('Name')
+                    if symbol_id:
+                        # symbolId like "F.US.MGC" → use as contract ID with expiration from name
+                        if name:
+                            # name like "MGCJ6" → extract J6 using string operations
+                            name_upper = str(name).upper()
+                            # Find first digit position to extract expiration code
+                            exp_start = -1
+                            for i, c in enumerate(name_upper):
+                                if c in 'FGHJKMNQUVXZ' and i + 1 < len(name_upper) and name_upper[i+1].isdigit():
+                                    exp_start = i
+                                    break
+                            if exp_start >= 0:
+                                exp = name_upper[exp_start:exp_start+2]  # e.g. "J6"
+                                # Convert J6 → J26 (assume 20xx)
+                                if len(exp) == 2 and exp[1].isdigit():
+                                    exp = exp[0] + '2' + exp[1]
+                                contract_id = f"CON.{symbol_id}.{exp}"
+                            else:
+                                contract_id = f"CON.{symbol_id}"
+                        else:
+                            contract_id = f"CON.{symbol_id}"
+                    elif name:
+                        # Use name as contract ID (e.g. "MGCJ6")
+                        contract_id = name
+                
                 if not contract_id:
                     continue
                 
@@ -130,17 +159,31 @@ class ContractManager:
                         elif len(parts) >= 4:
                             contract_symbol = parts[-2]
                 
-                # Also try extracting from name field
+                # Also try extracting from name field or symbolId
                 if not contract_symbol:
+                    symbol_id = contract.get('symbolId') or contract.get('SymbolId')
                     name = contract.get('name') or contract.get('Name') or contract.get('description') or contract.get('Description')
-                    if name:
+                    
+                    # Try symbolId first: "F.US.MGC" → "MGC"
+                    if symbol_id and '.' in str(symbol_id):
+                        parts = str(symbol_id).split('.')
+                        contract_symbol = parts[-1]
+                    # Then try name: "MGCJ6" → "MGC", "GCJ6" → "GC"
+                    elif name:
                         name_str = str(name).upper()
-                        for test_symbol in [symbol, symbol[:3], symbol[:2]]:
-                            if test_symbol in name_str:
-                                pattern = r'\b' + re.escape(test_symbol) + r'\b'
-                                if re.search(pattern, name_str):
-                                    contract_symbol = test_symbol
-                                    break
+                        # Extract leading letters, stopping at month code (F,G,H,J,K,M,N,Q,U,V,X,Z)
+                        symbol_part = ""
+                        month_codes = "FGHJKMNQUVXZ"
+                        for i, c in enumerate(name_str):
+                            if c.isalpha():
+                                # Check if this is a month code followed by a digit (expiration code)
+                                if c in month_codes and i + 1 < len(name_str) and name_str[i+1].isdigit():
+                                    break  # Stop before month code
+                                symbol_part += c
+                            else:
+                                break
+                        if symbol_part:
+                            contract_symbol = symbol_part
                 
                 # Normalize symbol for comparison
                 if contract_symbol:
@@ -305,6 +348,30 @@ class ContractManager:
                     contract.get('contract_id') or
                     contract.get('contractID')
                 )
+                
+                # If contractId is null, try to build from symbolId or name
+                if not contract_id:
+                    symbol_id = contract.get('symbolId') or contract.get('SymbolId')
+                    name = contract.get('name') or contract.get('Name')
+                    if symbol_id:
+                        # symbolId like "F.US.MGC" → use as contract ID with expiration from name
+                        if name:
+                            # name like "MGCJ6" → extract J6 and build CON.F.US.MGC.J26
+                            exp_match = re.search(r'([FGHJKMNQUVXZ]\d+)$', str(name).upper())
+                            if exp_match:
+                                exp = exp_match.group(1)
+                                # Convert J6 → J26 (assume 20xx)
+                                if len(exp) == 2:
+                                    exp = exp[0] + '2' + exp[1]
+                                contract_id = f"CON.{symbol_id}.{exp}"
+                            else:
+                                contract_id = f"CON.{symbol_id}"
+                        else:
+                            contract_id = f"CON.{symbol_id}"
+                    elif name:
+                        # Use name as contract ID (e.g. "MGCJ6")
+                        contract_id = name
+                
                 if not contract_id:
                     continue
 
@@ -324,11 +391,36 @@ class ContractManager:
                             contract_symbol = parts[3]
                         elif len(parts) >= 4:
                             contract_symbol = parts[-2]
+                
+                # Also try extracting from symbolId or name
+                if not contract_symbol:
+                    symbol_id = contract.get('symbolId') or contract.get('SymbolId')
+                    name = contract.get('name') or contract.get('Name')
+                    if symbol_id and '.' in str(symbol_id):
+                        # "F.US.MGC" → "MGC"
+                        parts = str(symbol_id).split('.')
+                        contract_symbol = parts[-1]
+                    elif name:
+                        # "MGCJ6" → "MGC", "GCJ6" → "GC" - extract leading letters, stop at month code
+                        name_str = str(name).upper()
+                        symbol_part = ""
+                        month_codes = "FGHJKMNQUVXZ"
+                        for i, c in enumerate(name_str):
+                            if c.isalpha():
+                                # Check if this is a month code followed by a digit (expiration code)
+                                if c in month_codes and i + 1 < len(name_str) and name_str[i+1].isdigit():
+                                    break  # Stop before month code
+                                symbol_part += c
+                            else:
+                                break
+                        if symbol_part:
+                            contract_symbol = symbol_part
 
                 if contract_symbol:
                     contract_symbol = str(contract_symbol).upper().strip()
 
-                if contract_symbol == symbol:
+                # Match if exact match or if contract_symbol starts with symbol (e.g. "GCE" starts with "GC")
+                if contract_symbol == symbol or (contract_symbol and contract_symbol.startswith(symbol)):
                     expiration = contract.get('expiration') or contract.get('Expiration') or contract.get('expiry') or contract.get('Expiry')
                     volume = contract.get('volume') or contract.get('Volume') or contract.get('dailyVolume') or contract.get('openInterest') or 0
                     if not isinstance(volume, (int, float)):

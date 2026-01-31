@@ -1368,11 +1368,30 @@ class OvernightRangeStrategy(BaseStrategy):
                             key=lambda b: _bar_time_utc(b) or datetime.min.replace(tzinfo=timezone.utc),
                         )
                         current_date = as_of_et.date()
+                        # TradingView zone logic typically uses the last *completed* daily ATR value at the
+                        # time zones are created (e.g. at the cash open). In analyze_date/backtests, our
+                        # "as_of" time is before the daily session completes, so including the current day's
+                        # full daily candle would leak future information (lookahead) and diverge from TV.
+                        #
+                        # To preserve existing behavior for indices while fixing MGC parity, this is
+                        # configurable via env var and defaults to excluding the current day for MGC only.
+                        exclude_symbols = {
+                            s.strip().upper()
+                            for s in os.getenv("DAILY_ATR_EXCLUDE_CURRENT_DAY_SYMBOLS", "MGC").split(",")
+                            if s.strip()
+                        }
+                        exclude_current_day = symbol.upper() in exclude_symbols
                         complete_daily_bars = []
                         for b in daily_bars_sorted:
                             t = _bar_time_utc(b)
-                            if t and t.astimezone(self.timezone).date() <= current_date:
-                                complete_daily_bars.append(b)
+                            if t:
+                                bd = t.astimezone(self.timezone).date()
+                                if exclude_current_day:
+                                    if bd < current_date:
+                                        complete_daily_bars.append(b)
+                                else:
+                                    if bd <= current_date:
+                                        complete_daily_bars.append(b)
                         if len(complete_daily_bars) < period + 1:
                             complete_daily_bars = daily_bars_sorted
                         if len(complete_daily_bars) > period + 1:
@@ -1409,16 +1428,52 @@ class OvernightRangeStrategy(BaseStrategy):
             # compatibility with futures (MOR uses openHour-1 = 8:30 for isFutures).
             market_open_price = 0.0
             # Use as_of_et so analyze_date/backtest get market open for the target date
-            open_hour, open_min = map(int, self.zone_anchor_time.split(':'))
+            # TradingView parity for MGC1!: the "market open" anchor is not the cash open.
+            # Additionally, MGC must use the *active contract for that date* (G26 vs J26), otherwise
+            # we anchor off the wrong intraday series and zones drift badly.
+            #
+            # - Anchor time: defaults to 07:00 ET for MGC unless ZONE_ANCHOR_TIME is explicitly set.
+            # - Contract selection: resolve the source contract from the continuous stitched daily bar.
+            zone_anchor_time = self.zone_anchor_time
+            if symbol.upper() == "MGC" and os.getenv("ZONE_ANCHOR_TIME") is None:
+                zone_anchor_time = "07:00"
+
+            open_hour, open_min = map(int, zone_anchor_time.split(':'))
             market_open_today = as_of_et.replace(hour=open_hour, minute=open_min, second=0, microsecond=0)
             
             try:
                 # MOR.pine uses 30m bar open at session open for daily boundary anchor
+                # For MGC, resolve the correct contract month for the target date (matches the 1d stitched series)
+                contract_id_override = None
+                if symbol.upper() == "MGC":
+                    try:
+                        daily_bars_for_contract = await self.trading_bot.broker_adapter.get_historical_data(
+                            symbol=symbol,
+                            timeframe="1d",
+                            limit=60,
+                            continuous_daily=True,
+                            include_partial_daily=False,
+                        )
+                        for db in daily_bars_for_contract or []:
+                            if not getattr(db, "timestamp", None):
+                                continue
+                            if db.timestamp.astimezone(self.timezone).date() == current_date:
+                                rd = getattr(db, "raw_data", None) or {}
+                                contract_id_override = rd.get("source_contract_id") or rd.get("source_contract") or rd.get("contractId")
+                                break
+                    except Exception:
+                        contract_id_override = None
+
                 if self.zone_open_source == "30m":
                     start_utc = (market_open_today - timedelta(minutes=90)).astimezone(pytz.UTC if pytz else timezone.utc)
                     end_utc = (market_open_today + timedelta(minutes=90)).astimezone(pytz.UTC if pytz else timezone.utc)
                     bars_30m = await self.trading_bot.get_historical_data(
-                        symbol=symbol, timeframe='30m', start_time=start_utc, end_time=end_utc, limit=10
+                        symbol=symbol,
+                        timeframe='30m',
+                        start_time=start_utc,
+                        end_time=end_utc,
+                        limit=10,
+                        contract_id_override=contract_id_override,
                     )
                     if bars_30m:
                         for b in sorted(bars_30m, key=lambda x: _bar_time_utc(x) or datetime.min.replace(tzinfo=timezone.utc)):
@@ -1429,7 +1484,10 @@ class OvernightRangeStrategy(BaseStrategy):
                                 bt_local = bt.astimezone(self.timezone).replace(second=0, microsecond=0)
                                 if bt_local == market_open_today:
                                     market_open_price = b.get('open', b.get('o', 0))
-                                    logger.info(f"Market open price (30m, match MOR.pine) for {symbol}: {bt_local.strftime('%Y-%m-%d %H:%M')} @ {market_open_price:.2f}")
+                                    logger.info(
+                                        f"Market open price (30m, match MOR.pine) for {symbol}: "
+                                        f"{bt_local.strftime('%Y-%m-%d %H:%M')} @ {market_open_price:.2f}"
+                                    )
                                     break
                 
                 # 1m fallback when 30m not used or 30m bar not found
@@ -1441,7 +1499,8 @@ class OvernightRangeStrategy(BaseStrategy):
                         timeframe='1m',
                         start_time=start_time_utc,
                         end_time=end_time_utc,
-                        limit=60
+                        limit=60,
+                        contract_id_override=contract_id_override,
                     )
                 else:
                     open_bars = []
@@ -1861,8 +1920,14 @@ class OvernightRangeStrategy(BaseStrategy):
             while yesterday.weekday() >= 5:  # 5=Saturday, 6=Sunday
                 yesterday = yesterday - timedelta(days=1)
             
-            # Get historical 30m/1m bar at market open from yesterday for zone anchor
-            open_hour, open_min = map(int, self.zone_anchor_time.split(':'))
+            # Get historical 30m/1m bar at market open from yesterday for zone anchor.
+            # For MGC parity, anchor at 07:00 ET (unless explicitly overridden) and use the
+            # correct contract month for that date (continuous daily source contract).
+            zone_anchor_time = self.zone_anchor_time
+            if symbol.upper() == "MGC" and os.getenv("ZONE_ANCHOR_TIME") is None:
+                zone_anchor_time = "07:00"
+
+            open_hour, open_min = map(int, zone_anchor_time.split(':'))
             yesterday_open = datetime.combine(yesterday, time(open_hour, open_min, 0))
             if hasattr(self.timezone, 'localize'):
                 yesterday_open = self.timezone.localize(yesterday_open)
@@ -1874,9 +1939,34 @@ class OvernightRangeStrategy(BaseStrategy):
             end_utc = (yesterday_open + timedelta(minutes=90)).astimezone(timezone.utc)
             
             prev_open_price = None
+            contract_id_override = None
+            if symbol.upper() == "MGC":
+                try:
+                    daily_bars_for_contract = await self.trading_bot.broker_adapter.get_historical_data(
+                        symbol=symbol,
+                        timeframe="1d",
+                        limit=80,
+                        continuous_daily=True,
+                        include_partial_daily=False,
+                    )
+                    for db in daily_bars_for_contract or []:
+                        if not getattr(db, "timestamp", None):
+                            continue
+                        if db.timestamp.astimezone(self.timezone).date() == yesterday:
+                            rd = getattr(db, "raw_data", None) or {}
+                            contract_id_override = rd.get("source_contract_id") or rd.get("source_contract") or rd.get("contractId")
+                            break
+                except Exception:
+                    contract_id_override = None
+
             if self.zone_open_source == "30m":
                 bars_30m = await self.trading_bot.get_historical_data(
-                    symbol=symbol, timeframe='30m', start_time=start_utc, end_time=end_utc, limit=10
+                    symbol=symbol,
+                    timeframe='30m',
+                    start_time=start_utc,
+                    end_time=end_utc,
+                    limit=10,
+                    contract_id_override=contract_id_override,
                 )
                 if bars_30m:
                     for b in sorted(bars_30m, key=lambda x: b.get('timestamp') or b.get('time') or datetime.min):
@@ -1897,7 +1987,12 @@ class OvernightRangeStrategy(BaseStrategy):
             # Fallback to 1m if 30m not found or configured
             if prev_open_price is None or prev_open_price == 0:
                 bars_1m = await self.trading_bot.get_historical_data(
-                    symbol=symbol, timeframe='1m', start_time=start_utc, end_time=end_utc, limit=60
+                    symbol=symbol,
+                    timeframe='1m',
+                    start_time=start_utc,
+                    end_time=end_utc,
+                    limit=60,
+                    contract_id_override=contract_id_override,
                 )
                 if bars_1m:
                     for b in sorted(bars_1m, key=lambda x: b.get('timestamp') or b.get('time') or datetime.min):

@@ -6591,8 +6591,24 @@ class TopStepXTradingBot:
                 
                 writer.writeheader()
                 for bar in data:
+                    # For daily bars, TradingView displays the trading day date (ET) rather than the raw
+                    # UTC timestamp (often 23:00Z due to 18:00 ET session boundaries). To make CSV parity
+                    # checks deterministic, export the **ET date** as YYYY-MM-DD.
+                    time_value = bar.get('time', bar.get('timestamp', 'N/A'))
+                    if str(timeframe).lower().endswith('d') and time_value not in (None, '', 'N/A'):
+                        try:
+                            from datetime import datetime as _dt, timezone as _tz
+                            from zoneinfo import ZoneInfo
+                            dt = _dt.fromisoformat(str(time_value).replace('Z', '+00:00'))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=_tz.utc)
+                            et = ZoneInfo("America/New_York")
+                            time_value = dt.astimezone(et).date().isoformat()
+                        except Exception:
+                            # If parsing fails, keep raw value
+                            pass
                     writer.writerow({
-                        'Time': bar.get('time', bar.get('timestamp', 'N/A')),
+                        'Time': time_value,
                         'Open': bar.get('open', 0),
                         'High': bar.get('high', 0),
                         'Low': bar.get('low', 0),
