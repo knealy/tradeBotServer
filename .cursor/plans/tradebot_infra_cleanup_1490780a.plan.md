@@ -34,7 +34,7 @@ todos:
     status: completed
   - id: phase2-trading-bot-split
     content: Shrink trading_bot.py from 10.5K lines to <5K by relocating quote/depth caches, websocket pool, and SignalR bootstrap into existing core/ modules
-    status: pending
+    status: in_progress
   - id: phase2-rust-decision
     content: "Decide on Rust hotpath: freeze and document (default TOPSTEPX_USE_RUST=0, no longer maintain build scripts) or commit to finishing it with benchmark gates"
     status: completed
@@ -67,7 +67,7 @@ todos:
     status: completed
   - id: phase2-startup-cost
     content: "Lazy-import strategies via importlib and defer heavy libs (pandas/numpy/scipy/matplotlib/seaborn/polars) to functions that use them; track python -X importtime, cap <2s; drop requests dep once async I/O cutover done"
-    status: pending
+    status: completed
   - id: phase2-hot-path
     content: "Hot-path microopts: orjson for JSON, __slots__ on Quote/Bar/Position/Order/Event, time.monotonic in tick loops, lru_cache on contract resolver, dedupe per-symbol quote subs, shared aiohttp ClientSession with TCPConnector(limit=64, keepalive=30)"
     status: completed

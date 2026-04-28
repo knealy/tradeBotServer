@@ -7,6 +7,16 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Changed
+- **`trading_bot.py` slimming / startup** — Removed unused multi-tier historical cache + bar reaggregation
+  block (~700 lines; canonical history lives in [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)).
+  Quote/depth subscription is [WebSocketManager](../core/websocket_manager.py)-only (no legacy `_market_hub`
+  fallback). FIFO trade consolidation and stats moved to [core/trade_consolidation.py](../core/trade_consolidation.py).
+  [StrategyManager](../strategies/strategy_manager.py) is built on first `strategy_manager` access so
+  `import trading_bot` no longer imports strategy modules. [strategies/trend_scalping_strategy.py](../strategies/trend_scalping_strategy.py)
+  loads NumPy/Pandas only inside `calculate_ema`. [load_env.py](../load_env.py) drops defaults for removed
+  cache/WebSocket-pool env keys. [.env.example](../.env.example) trimmed to secrets + common infra (see
+  [docs/ENV_VARS.md](ENV_VARS.md)). **Remaining:** `trading_bot.py` is still ~6.2k lines; further splits
+  (e.g. user-hub handlers, bracket flows) needed for a &lt;5k target.
 - **Plan closure (remaining todos)** — [core/websocket_manager.py](../core/websocket_manager.py)
   waits for SignalR `on_open` via `asyncio.Event` (+ thread-safe `set`/`clear`) instead of a 50ms
   spin loop; fallback poll only if no running loop. [core/account_tracker.py](../core/account_tracker.py)
@@ -18,7 +28,7 @@ changes runtime behavior or conventions adds an entry here AND updates
   clusters); fixed links in [PHASE3_CHANGES_SUMMARY.md](PHASE3_CHANGES_SUMMARY.md) and
   [OPTIMIZATION_QUICK_REFERENCE.md](OPTIMIZATION_QUICK_REFERENCE.md). [docs/perf/BASELINE.md](perf/BASELINE.md)
   documents operator-run py-spy / importtime capture. **Still deferred in plan:** `trading_bot.py`
-  decomposition (`phase2-trading-bot-split`), lazy heavy imports (`phase2-startup-cost`).
+  further decomposition to &lt;5k lines (`phase2-trading-bot-split`).
 - **Plan / tooling sync** — [Makefile](../Makefile) adds `make test`, `make verify`, `make map`,
   `make bench`; [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) runs
   [scripts/verify_handoff.sh](../scripts/verify_handoff.sh) (optional: `pip install pre-commit &&

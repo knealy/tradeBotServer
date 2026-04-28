@@ -7,7 +7,6 @@
 ## Reference material
 
 - [reference/DATABASE_ARCHITECTURE.md](reference/DATABASE_ARCHITECTURE.md) — table-oriented notes.
-- [archive/old-versions/POSTGRESQL_SETUP.md](archive/old-versions/POSTGRESQL_SETUP.md) — historical setup steps (verify against current `.env.example`).
 
 ## Ops
 

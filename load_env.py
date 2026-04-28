@@ -46,24 +46,6 @@ def load_env_file():
     else:
         logger.debug("USE_PROJECTX_SDK=%s (from .env or environment)", os.environ.get('USE_PROJECTX_SDK'))
     
-    # Set cache expiration defaults (in minutes)
-    if 'CACHE_TTL_MARKET_HOURS' not in os.environ:
-        os.environ['CACHE_TTL_MARKET_HOURS'] = '2'  # 2 minutes during market hours (high volatility)
-    if 'CACHE_TTL_OFF_HOURS' not in os.environ:
-        os.environ['CACHE_TTL_OFF_HOURS'] = '15'  # 15 minutes during off-hours (low volatility)
-    if 'CACHE_TTL_DEFAULT' not in os.environ:
-        os.environ['CACHE_TTL_DEFAULT'] = '5'  # 5 minutes default fallback
-    
-    # Set cache format and memory cache defaults
-    if 'CACHE_FORMAT' not in os.environ:
-        os.environ['CACHE_FORMAT'] = 'parquet'  # Use Parquet for faster caching (or 'pickle' for compatibility)
-    if 'MEMORY_CACHE_MAX_SIZE' not in os.environ:
-        os.environ['MEMORY_CACHE_MAX_SIZE'] = '50'  # Cache up to 50 symbol/timeframe combinations in memory
-    
-    # Set WebSocket connection pool defaults
-    if 'WEBSOCKET_POOL_MAX_SIZE' not in os.environ:
-        os.environ['WEBSOCKET_POOL_MAX_SIZE'] = '5'  # Max 5 concurrent WebSocket connections in pool
-    
     # Set prefetch defaults
     if 'PREFETCH_ENABLED' not in os.environ:
         os.environ['PREFETCH_ENABLED'] = 'true'  # Enable prefetch for common symbols/timeframes

@@ -22,8 +22,6 @@ import asyncio
 import logging
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple, Any
-import numpy as np
-import pandas as pd
 
 from .strategy_base import BaseStrategy, StrategyConfig, StrategyStatus
 from core.strategy_config import load_strategy_config
@@ -106,8 +104,10 @@ class TrendScalpingStrategy(BaseStrategy):
         """
         if len(prices) < period:
             return None
-        
-        # Use numpy for efficiency
+
+        import numpy as np
+        import pandas as pd
+
         prices_array = np.array(prices)
         ema = pd.Series(prices_array).ewm(span=period, adjust=False).mean().iloc[-1]
         

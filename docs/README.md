@@ -2,7 +2,7 @@
 
 **Read first:** [AGENTS.md](../AGENTS.md) → [HANDOFF.md](HANDOFF.md) → [MAP.md](MAP.md) → [PLAYBOOK.md](PLAYBOOK.md).
 
-This page lists the **canonical** topics. Deeper or historical material lives under [reference/](reference/), [archive/](archive/), and [perf/](perf/).
+This page lists the **canonical** topics. Deeper notes live under [reference/](reference/) and [perf/](perf/). Superseded docs were removed; use `git log` / history for old write-ups.
 
 ---
 
@@ -31,7 +31,6 @@ This page lists the **canonical** topics. Deeper or historical material lives un
 ## Legacy and reference
 
 - **[reference/](reference/)** — long-form deployment, env, Rust, and API notes.
-- **[archive/](archive/)** — dated fix write-ups and old versions; not kept in sync with code.
 - **[01-QUICK-START.md](01-QUICK-START.md)** — optional fast path (may be stale; prefer HANDOFF + PLAYBOOK).
 
 ---
