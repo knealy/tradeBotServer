@@ -159,9 +159,12 @@ class UserHubManager:
                 self._connected = True
                 # Subscribe to updates - use send() method instead of invoke()
                 try:
-                    # Wait a moment for connection to stabilize
-                    import time
-                    time.sleep(0.1)
+                    # Wait a moment for connection to stabilize (don't block the event loop thread)
+                    try:
+                        if self._event_loop and self._event_loop.is_running():
+                            self._event_loop.call_soon_threadsafe(lambda: None)
+                    except Exception:
+                        pass
                     
                     # Subscribe to updates - try multiple methods based on SignalR library version
                     subscription_success = False
@@ -389,9 +392,12 @@ class UserHubManager:
         """Handle reconnection - resubscribe to updates."""
         try:
             if self._hub and self._connected:
-                # Wait a moment for connection to stabilize
-                import time
-                time.sleep(0.1)
+                # Wait a moment for connection to stabilize (avoid blocking)
+                try:
+                    if self._event_loop and self._event_loop.is_running():
+                        self._event_loop.call_soon_threadsafe(lambda: None)
+                except Exception:
+                    pass
                 
                 # Use the same subscription method as on_open
                 subscription_success = False

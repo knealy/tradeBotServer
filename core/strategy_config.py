@@ -207,6 +207,17 @@ class StrategyConfig:
         import copy
         return copy.deepcopy(self._data)
 
+    # ------------------------------------------------------------------ legacy env helpers
+
+    def env_present(self, name: str) -> bool:
+        """Return True if the given environment variable name is set and non-empty.
+
+        Strategies use this to preserve legacy behavior (e.g. special-casing a
+        missing ZONE_ANCHOR_TIME) without calling os.getenv() directly.
+        """
+        v = os.getenv(name)
+        return v is not None and str(v).strip() != ""
+
 
 def load_strategy_config(
     name: str,

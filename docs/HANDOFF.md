@@ -1,4 +1,4 @@
-<!-- Last verified by: cursor-agent against commit 5f5eb66b7a6119b7a582ce1734b6448d400284c3 on 2026-04-28 -->
+<!-- Last verified by: cursor-agent against commit f39f234b5bc7ad9805ae1a4eabff2b9cae97ccd4 on 2026-04-28 -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 
@@ -233,7 +233,7 @@ See [docs/CHANGELOG.md](CHANGELOG.md) for the full entry. Summary:
 
 ## What is intentionally left for later
 
-See [docs/COMPREHENSIVE_ROADMAP.md](COMPREHENSIVE_ROADMAP.md) (legacy) and the `[Unreleased]` section of [docs/CHANGELOG.md](CHANGELOG.md). Key deferreds:
+See [docs/ROADMAP.md](ROADMAP.md) (canonical) and the `[Unreleased]` section of [docs/CHANGELOG.md](CHANGELOG.md). Older narrative: [docs/COMPREHENSIVE_ROADMAP.md](COMPREHENSIVE_ROADMAP.md). Key deferreds:
 
 - **`trading_bot.py` decomposition**: the 10 k-line god module must be split into cohesive sub-modules (auth, connection, order management, session management). No timeline set; do not add new top-level logic there.
 - **Full Rust hotpath or removal**: only 3 paths wired. Either complete the migration or remove the FFI entirely. Currently opt-in via `TOPSTEPX_USE_RUST=1`.

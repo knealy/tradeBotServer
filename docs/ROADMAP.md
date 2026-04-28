@@ -46,11 +46,9 @@ linking back to [`.cursor/plans/tradebot_infra_cleanup_<id>.plan.md`](../.cursor
   and [strategies/overnight_range_strategy.py:3107](../strategies/overnight_range_strategy.py).
 - Replace silent `except: pass` clusters in `trading_bot.py`,
   `gui/chart_html.py`, `core/websocket_manager.py`, `infrastructure/database.py`.
-- Remove "NOV 3 DEBUG" / "NOV 5 DEBUG" lines at
-  [servers/dashboard.py:1693](../servers/dashboard.py),
-  [servers/dashboard.py:1700](../servers/dashboard.py).
-- Move `strategies/MOR.pine` and `strategies/mom_current.pine` into
-  `strategies/pine/` (or a sibling repo).
+- ~~Remove "NOV 3 DEBUG" / "NOV 5 DEBUG"~~ — removed from [servers/dashboard.py](../servers/dashboard.py).
+- Pine references: [strategies/pine/MOR.pine](../strategies/pine/MOR.pine),
+  [strategies/pine/mom_current.pine](../strategies/pine/mom_current.pine).
 - Decide whether `servers/scheduled_tasks.py` is wired up; delete if not.
 
 ## Phase 4 — docs consolidation + README rewrite

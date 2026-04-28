@@ -108,6 +108,8 @@ class AccountTracker:
         self.accounts: Dict[str, AccountState] = {}
         self.lock = Lock()
         self.current_account_id: Optional[str] = None  # Track current active account
+        # Last positions list passed to update_unrealised_pnl (symbol-keyed) for get_state()
+        self._positions_snapshot: Dict[str, Dict[str, dict]] = {}
         
         # Only load persisted state if explicitly requested (e.g., for reporting/analysis)
         # For normal trading, accounts will be initialized on-demand when selected
@@ -315,6 +317,19 @@ class AccountTracker:
                 
                 total_unrealised += position_pnl
             
+            snap: Dict[str, dict] = {}
+            for pos in positions:
+                sym = str(pos.get("symbol", "") or "").upper()
+                if not sym:
+                    continue
+                snap[sym] = {
+                    "symbol": sym,
+                    "qty": pos.get("qty", 0),
+                    "entry_price": pos.get("entry_price", 0),
+                    "side": str(pos.get("side", "") or ""),
+                }
+            self._positions_snapshot[str(account_id)] = snap
+
             state.unrealised_PnL = total_unrealised
             
             # Recalculate current balance
@@ -458,6 +473,7 @@ class AccountTracker:
                 }
             
             state = self.accounts[target_id]
+            positions = dict(self._positions_snapshot.get(str(target_id), {}))
             return {
                 'account_id': state.account_id,
                 'account_name': state.account_name,
@@ -467,8 +483,8 @@ class AccountTracker:
                 'unrealized_pnl': state.unrealised_PnL,
                 'total_pnl': state.net_PnL,
                 'highest_eod_balance': state.highest_EOD_balance,
-                'position_count': 0,  # TODO: Track positions
-                'positions': {},  # TODO: Track positions
+                'position_count': len(positions),
+                'positions': positions,
                 'last_update': state.last_update,
                 'account_type': state.account_type
             }

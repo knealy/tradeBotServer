@@ -4,91 +4,91 @@ overview: Streamline the tradeBotServer codebase by deleting clearly-dead code p
 todos:
   - id: phase1-secrets
     content: "Purge secrets and tracked build artifacts: delete .env.bak, .env.backup.*, .env.clean (rotate keys); git rm -r --cached rust/target/; tighten .gitignore"
-    status: pending
+    status: completed
   - id: phase1-docker
     content: "Fix Dockerfile + scripts/build.sh: drop the missing-frontend Node build stage and serve existing static/dashboard/ instead"
-    status: pending
+    status: completed
   - id: phase1-eventbus
     content: Consolidate event bus to core/event_bus + core/events; migrate core/order_execution.py imports; delete the entire events/ package
-    status: pending
+    status: completed
   - id: phase1-dead-modules
     content: "Delete dead/duplicate modules: servers/webhook_server.py, servers/start_webhook.py, core/backtesting_engine.py, core/strategy_cache.py, gui/chart_html_fixed.py, gui/chart_window.py, the second RateLimiter class in trading_bot.py"
-    status: pending
+    status: completed
   - id: phase1-scripts
     content: "Fix machine-specific scripts: replace hardcoded /Users/knealy paths in restart_all_strategies.sh and rebuild_rust.sh; remove dead order_monitor.py references; rename DISABLE_RUST_HOTPATH.sh"
-    status: pending
+    status: completed
   - id: phase1-logging
     content: Create core/logging_setup.configure_logging(); replace 7+ scattered logging.basicConfig calls with a single shared setup using RotatingFileHandler
-    status: pending
+    status: completed
   - id: phase2-async-io
     content: Convert core/auth.py and core/discord_notifier.py from sync requests/time.sleep to aiohttp + await asyncio.sleep; replace remaining time.sleep in async paths in trading_bot.py
-    status: pending
+    status: completed
   - id: phase2-log-volume
     content: "Cut log volume ~70%: drop INFO-level json.dumps order payload dumps to DEBUG, gate bar-aggregator chatter behind env var, strip emoji from hot-path loggers, convert print() to logger calls"
-    status: pending
+    status: completed
   - id: phase2-polling
     content: "Replace polling with events: rework strategy_executor 30s loop to consume EventBus, replace 50ms SignalR connect spinwait with asyncio.Event, broadcast bars on close-event instead of 200ms timer"
-    status: pending
+    status: completed
   - id: phase2-database
     content: "Tighten infrastructure/database.py: cap pool size, batch row-level inserts via execute_values, add indexes matching actual WHERE clauses, replace silent except: pass with logger.exception"
-    status: pending
+    status: completed
   - id: phase2-trading-bot-split
     content: Shrink trading_bot.py from 10.5K lines to <5K by relocating quote/depth caches, websocket pool, and SignalR bootstrap into existing core/ modules
     status: pending
   - id: phase2-rust-decision
     content: "Decide on Rust hotpath: freeze and document (default TOPSTEPX_USE_RUST=0, no longer maintain build scripts) or commit to finishing it with benchmark gates"
-    status: pending
+    status: completed
   - id: phase3-broken-fixes
     content: "Address Phase 3 sub-todos individually: TODO stop-modify in strategies, account_tracker positions placeholder, ad-hoc 'NOV X DEBUG' prints, env-var typo fallbacks, silent except: pass cluster"
-    status: pending
+    status: completed
   - id: phase3-tests
     content: Un-ignore tests/ in .gitignore, commit a curated subset (test_strategy_executor.py, test_auth_manager.py, test_bar_aggregator.py, test_drawdown.py, test_strategy_persistence.py), wire pytest into a Make target
-    status: pending
+    status: completed
   - id: phase3-pine-scripts
     content: Move strategies/MOR.pine and strategies/mom_current.pine into strategies/pine/ (or extract to a sibling repo)
-    status: pending
+    status: completed
   - id: phase4-readme
     content: "Rewrite README.md as ~150-line operator-focused doc: what it is, current status table, run-locally, process layout mermaid, strategies, operating notes, prospectus, disclaimer"
-    status: pending
+    status: completed
   - id: phase4-docs-canonical
     content: Author the 12 canonical docs (README, ARCHITECTURE, DEPLOYMENT, DATABASE, ENV_VARS, STRATEGIES, BACKTESTING, DASHBOARD, RUST, CHANGELOG, ROADMAP, TESTING) by merging from current files
-    status: pending
+    status: completed
   - id: phase4-docs-delete
     content: Delete the ~80 stale/superseded markdown files (FIXES_*, FINAL_FIXES_*, CRITICAL_FIXES_*, CHANGE_SUMMARY*, COMPLETE_OPTIMIZATION_*, BROWSER_UI_*, MGC_*, ATR_*, etc.)
-    status: pending
+    status: completed
   - id: phase4-link-cleanup
     content: "Sweep for dangling links: rg for deleted-doc names across the repo, fix or remove references in README, gui/README.md, tests/README.md, scripts/README_MULTI_WINDOW.md"
-    status: pending
+    status: completed
   - id: phase1-env-restructure
     content: "Slim .env to secrets+infra (<40 vars); move strategy params to config/strategies/<name>.toml; add core/strategy_config.py loader with CLI > env > TOML > class-default precedence; refactor strategies to consume StrategyConfig instead of os.getenv"
-    status: pending
+    status: completed
   - id: phase2-perf-baseline
     content: "Capture py-spy/scalene baselines during live market hours; install uvloop in core/logging_setup; commit before/after profile SVGs to docs/perf/"
-    status: pending
+    status: completed
   - id: phase2-startup-cost
     content: "Lazy-import strategies via importlib and defer heavy libs (pandas/numpy/scipy/matplotlib/seaborn/polars) to functions that use them; track python -X importtime, cap <2s; drop requests dep once async I/O cutover done"
     status: pending
   - id: phase2-hot-path
     content: "Hot-path microopts: orjson for JSON, __slots__ on Quote/Bar/Position/Order/Event, time.monotonic in tick loops, lru_cache on contract resolver, dedupe per-symbol quote subs, shared aiohttp ClientSession with TCPConnector(limit=64, keepalive=30)"
-    status: pending
+    status: completed
   - id: phase2-db-pipeline
     content: "Background DB writer queue: writes onto asyncio.Queue, single consumer flushes every 1s or 500 rows via execute_values; migrate bar cache fully to Polars Parquet; nightly TTL prune of api_metrics/notifications/strategy_executions"
-    status: pending
+    status: completed
   - id: phase2-bench-suite
     content: "Establish budgets (order RTT <200ms p95, position fetch <100ms p95, tick cycle <50ms p95, startup <5s); wire pytest-benchmark; move tests/bench_rust_vs_python_*.py into tests/bench/; auto-publish nightly results to docs/perf/nightly.md"
-    status: pending
+    status: completed
   - id: phase5-agents-md
     content: "Author AGENTS.md (root): single-screen mental model, prod entrypoint, god-module note, doc read order, golden rules (no os.getenv in strategies, no events/ imports, file=INFO console=WARNING, no .env* commits)"
-    status: pending
+    status: completed
   - id: phase5-cursor-rules
     content: "Add .cursor/rules/*.mdc scoped rules: python-style, strategies, event-bus, config-precedence, secrets — Cursor-native enforcement of conventions"
-    status: pending
+    status: completed
   - id: phase5-handoff-docs
     content: "Author docs/HANDOFF.md (narrative), docs/MAP.md (script-generated annotated tree), docs/PLAYBOOK.md (runbooks for start/stop/flatten/triage), docs/DECISIONS.md (6 initial ADRs), docs/GOTCHAS.md, docs/CONVENTIONS.md, docs/HANDOFF_INDEX.md"
-    status: pending
+    status: completed
   - id: phase5-self-maintenance
     content: "Add scripts/verify_handoff.sh (dangling-link/dead-ref scanner) + pre-commit hook; require HANDOFF/CHANGELOG update on every substantive PR; track 'last verified vs <sha>' header at top of HANDOFF.md"
-    status: pending
+    status: completed
 isProject: false
 ---
 

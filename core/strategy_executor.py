@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Now import trading_bot (it will override logging config with force=True, but will use same LOG_FILE)
 from trading_bot import TopStepXTradingBot
 from infrastructure.database import get_database
+from core.events import Event, EventType
 
 
 class StrategyExecutor:
@@ -49,7 +50,24 @@ class StrategyExecutor:
         self.ws_client = None
         self.ws_port = None
         self.ws_connected = False
-    
+        self._lifecycle_bound = None
+
+    async def _on_strategy_lifecycle_event(self, event: Event) -> None:
+        """EventBus subscriber: run health check when strategies start/stop."""
+        try:
+            await self._check_strategy_status()
+        except Exception as exc:
+            logger.debug("Strategy lifecycle handler: %s", exc)
+
+    async def _heartbeat_loop(self) -> None:
+        """DB process heartbeat on a fixed interval (no strategy polling here)."""
+        try:
+            while self.is_running:
+                await self._update_process_state()
+                await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            raise
+
     async def start_strategy(self, strategy_name: str, symbols: Optional[List[str]] = None, 
                             account_id: Optional[str] = None, risk_config: Optional[Dict[str, Dict[str, Any]]] = None) -> bool:
         """Start a strategy."""
@@ -174,48 +192,61 @@ class StrategyExecutor:
         
         # Register this process in the database
         await self._register_process()
-        
-        # Monitor and keep running
+
+        bus = getattr(self.trading_bot, "event_bus", None)
+        if bus and getattr(bus, "_running", False):
+            self._lifecycle_bound = self._on_strategy_lifecycle_event
+            bus.subscribe(EventType.STRATEGY_STARTED, self._lifecycle_bound)
+            bus.subscribe(EventType.STRATEGY_STOPPED, self._lifecycle_bound)
+            logger.debug("Subscribed strategy executor to STRATEGY_STARTED / STRATEGY_STOPPED")
+
+        await self._check_strategy_status()
+
         logger.info("🔄 Strategy executor running... (Press Ctrl+C to stop)")
+        hang = asyncio.get_running_loop().create_future()
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         try:
-            while self.is_running:
-                # Update process state in database
-                await self._update_process_state()
-                
-                # Check for strategy status
-                await self._check_strategy_status()
-                
-                # Sleep for a bit
-                await asyncio.sleep(30)  # Check every 30 seconds
-        except KeyboardInterrupt:
-            logger.info("🛑 Stopping strategy executor...")
+            await hang
+        except asyncio.CancelledError:
+            logger.info("🛑 Strategy executor shutting down...")
         finally:
-            # Stop event bus
-            if hasattr(self.trading_bot, 'event_bus') and self.trading_bot.event_bus:
+            self.is_running = False
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+            if bus and self._lifecycle_bound:
+                try:
+                    bus.unsubscribe(EventType.STRATEGY_STARTED, self._lifecycle_bound)
+                    bus.unsubscribe(EventType.STRATEGY_STOPPED, self._lifecycle_bound)
+                except Exception as exc:
+                    logger.debug("Could not unsubscribe lifecycle handler: %s", exc)
+                self._lifecycle_bound = None
+
+            for strategy_name in list(self.running_strategies.keys()):
+                await self.stop_strategy(strategy_name)
+
+            if hasattr(self.trading_bot, "event_bus") and self.trading_bot.event_bus:
                 try:
                     await self.trading_bot.event_bus.stop()
                     logger.info("📡 Event bus stopped")
                 except Exception as e:
                     logger.debug(f"Could not stop event bus: {e}")
-            
-            # Stop all strategies
-            for strategy_name in list(self.running_strategies.keys()):
-                await self.stop_strategy(strategy_name)
-            
-            # Mark process as stopped
+
             try:
                 db = get_database()
                 if db:
                     db.save_process_state(
                         process_id=self.process_id,
-                        process_type='strategy_executor',
-                        status='stopped',
-                        account_id=self._get_account_id()
+                        process_type="strategy_executor",
+                        status="stopped",
+                        account_id=self._get_account_id(),
                     )
             except Exception as e:
                 logger.debug(f"Could not update process state on shutdown: {e}")
-            
-            self.is_running = False
+
             logger.info("✅ Strategy executor stopped")
     
     async def _register_process(self):
@@ -403,19 +434,30 @@ async def main():
     parser.add_argument('--max-quantity', type=int, help='Default max quantity per instrument (overridden by risk-config)')
     parser.add_argument('--cooldown', type=float, help='Default order cooldown in seconds (overridden by risk-config)')
     parser.add_argument('--max-pending', type=int, help='Default max pending orders per symbol/side (overridden by risk-config)')
+    parser.add_argument('--reload', action='store_true', help='Enable cheap hot-reload for config/strategies/*.toml (mtime poll)')
     args = parser.parse_args()
+
+    if args.reload:
+        os.environ["STRATEGY_CONFIG_RELOAD"] = "true"
     
     # Get credentials
-    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
-    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
+    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSTEPX_USERNAME') or os.getenv('TOPSETPX_USERNAME')
     
     if not api_key or not username:
         logger.error("❌ Missing API credentials. Set PROJECT_X_API_KEY and PROJECT_X_USERNAME")
         sys.exit(1)
     
-    # Initialize trading bot
+    # Initialize trading bot (narrow lazy registration when running a single strategy)
     logger.info("🤖 Initializing trading bot...")
-    trading_bot = TopStepXTradingBot(api_key=api_key, username=username)
+    strategy_registration_subset = None
+    if args.strategy and not args.all:
+        strategy_registration_subset = [args.strategy]
+    trading_bot = TopStepXTradingBot(
+        api_key=api_key,
+        username=username,
+        strategy_registration_subset=strategy_registration_subset,
+    )
     
     # Determine strategies to run
     strategies = []

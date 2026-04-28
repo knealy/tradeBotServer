@@ -1,23 +1,31 @@
-# Performance benches
+# Performance benches (`tests/bench/`)
 
-Benches for the trading bot, run via `pytest-benchmark`.
+Run via **`pytest-benchmark`**:
 
-Phase 2.11 of the cleanup plan adds:
+```bash
+# from repo root
+./scripts/run_bench.sh
+```
 
-- `test_bar_aggregator_throughput.py`
-- `test_event_bus_publish_latency.py`
-- `test_db_write_batch.py`
-- `test_orjson_vs_json.py`
+Or: `pytest tests/bench -m bench --override-ini="testpaths="`
 
-Targets enforced via `make bench`:
+## Modules
 
-- `place_market_order` RTT — < 200 ms p95
-- `get_positions` — < 100 ms p95
-- Tick → aggregator → broadcast — < 50 ms p95
-- Strategy startup — < 5 s
+- `test_orjson_vs_json.py` — `json_fast` vs stdlib `json`
+- `test_bar_aggregator_throughput.py` — `BarAggregator.add_quote` burst
+- `test_event_bus_publish_latency.py` — `EventBus` publish + drain
+- `test_db_write_batch.py` — batch row / JSONB string prep (no live Postgres)
+- `test_aggregation.py` — `BarBuilder.add_tick`
+- `test_orders.py` — order-shaped payload serialize/parse
 
-The two existing rust-vs-python benches at the repo top level move here:
-[bench_rust_vs_python_aggregation.py](../bench_rust_vs_python_aggregation.py),
-[bench_rust_vs_python_orders.py](../bench_rust_vs_python_orders.py).
+## Plan budgets (manual / future CI)
 
-Nightly results land at [docs/perf/nightly.md](../../docs/perf/nightly.md).
+See [docs/perf/nightly.md](../../docs/perf/nightly.md): `place_market_order`, `get_positions`,
+tick→aggregator, strategy startup.
+
+## Standalone Rust / live scripts
+
+These stay as **runnable scripts** under `tests/` (not pytest):
+
+- [bench_rust_vs_python_aggregation.py](../bench_rust_vs_python_aggregation.py)
+- [bench_rust_vs_python_orders.py](../bench_rust_vs_python_orders.py) (sandbox only; places real orders when enabled)

@@ -33,9 +33,6 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from collections import deque, OrderedDict
 import time
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 # SignalR is optional - imported conditionally where needed
 try:
     from signalrcore.hub_connection_builder import HubConnectionBuilder
@@ -50,25 +47,20 @@ except ImportError:
 from core.discord_notifier import DiscordNotifier
 from core.account_tracker import AccountTracker
 from core.session_trade_tracker import SessionTradeTracker
-from strategies.overnight_range_strategy import OvernightRangeStrategy
-from strategies.mean_reversion_strategy import MeanReversionStrategy
-from strategies.trend_following_strategy import TrendFollowingStrategy
-from strategies.simple_momentum_strategy import SimpleMomentumStrategy
-from strategies.simple_candle_strategy import SimpleCandleStrategy
-from strategies.trend_scalping_strategy import TrendScalpingStrategy
 from strategies.strategy_manager import StrategyManager
 from infrastructure.performance_metrics import get_metrics_tracker
 from infrastructure.database import get_database
 
 # Import new modular architecture components
 from core.auth import AuthManager
-from core.rate_limiter import RateLimiter as RateLimiterModule
+from core.rate_limiter import RateLimiter
 from core.market_data import ContractManager
 from core.risk_management import RiskManager
 from core.position_management import PositionManager
 from core.websocket_manager import WebSocketManager
 from core.user_hub_manager import UserHubManager
 from core.order_execution import OrderExecutor
+from core.json_fast import dumps_str, loads as json_fast_loads
 from brokers.topstepx_adapter import TopStepXAdapter
 # EventBus is imported where needed (core.event_bus)
 
@@ -98,77 +90,19 @@ logger = logging.getLogger(__name__)
 BOT_ORDER_TAG_PREFIX = "TradingBot-v1.0"
 
 
-class RateLimiter:
-    """
-    Rate limiter using sliding window algorithm.
-    Prevents API rate limit violations by tracking calls within a time window.
-    """
-    def __init__(self, max_calls: int = 60, period: int = 60):
-        """
-        Initialize rate limiter.
-        
-        Args:
-            max_calls: Maximum number of calls allowed in the period
-            period: Time period in seconds (default: 60 seconds)
-        """
-        self.max_calls = max_calls
-        self.period = period
-        self.calls = deque()
-        self.lock = Lock()
-    
-    def acquire(self) -> None:
-        """
-        Acquire permission to make an API call.
-        Blocks if necessary until rate limit allows the call.
-        """
-        with self.lock:
-            now = time.time()
-            
-            # Remove calls older than the period
-            while self.calls and self.calls[0] < now - self.period:
-                self.calls.popleft()
-            
-            # If we're at the limit, wait until the oldest call expires
-            if len(self.calls) >= self.max_calls:
-                sleep_time = self.period - (now - self.calls[0])
-                if sleep_time > 0:
-                    logger.debug(f"Rate limit reached, waiting {sleep_time:.2f}s before next API call")
-                    try:
-                        time.sleep(sleep_time)
-                    except KeyboardInterrupt:
-                        # Allow KeyboardInterrupt to propagate for graceful shutdown
-                        raise
-                    # Update now after sleep
-                    now = time.time()
-                    # Remove any additional expired calls
-                    while self.calls and self.calls[0] < now - self.period:
-                        self.calls.popleft()
-            
-            # Record this call
-            self.calls.append(now)
-    
-    def get_remaining_calls(self) -> int:
-        """Get number of remaining calls in current period."""
-        with self.lock:
-            now = time.time()
-            # Remove expired calls
-            while self.calls and self.calls[0] < now - self.period:
-                self.calls.popleft()
-            return max(0, self.max_calls - len(self.calls))
-    
-    def reset(self) -> None:
-        """Reset the rate limiter (clear call history)."""
-        with self.lock:
-            self.calls.clear()
-
-
 class TopStepXTradingBot:
     """
     A real trading bot for TopStepX prop firm futures accounts.
     Uses actual ProjectX API calls via cURL.
     """
     
-    def __init__(self, api_key: str = None, username: str = None, base_url: str = "https://api.topstepx.com"):
+    def __init__(
+        self,
+        api_key: str = None,
+        username: str = None,
+        base_url: str = "https://api.topstepx.com",
+        strategy_registration_subset: Optional[List[str]] = None,
+    ):
         """
         Initialize the trading bot.
         
@@ -176,9 +110,12 @@ class TopStepXTradingBot:
             api_key: TopStepX API key
             username: TopStepX username
             base_url: TopStepX API base URL
+            strategy_registration_subset: When set (e.g. strategy executor ``--strategy=``), only those
+                built-in ids are pre-registered; other built-ins still load on demand. When ``None``,
+                registration follows ``config/strategies/*.toml`` + ``REGISTER_STRATEGIES`` or all built-ins.
         """
-        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
-        self.username = username or os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
+        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+        self.username = username or os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSTEPX_USERNAME') or os.getenv('TOPSETPX_USERNAME')
         self.base_url = base_url
         
         # Try to load JWT token from environment (useful for Railway deployment)
@@ -231,7 +168,10 @@ class TopStepXTradingBot:
         self._pending_symbols = set()
         self._raw_quote_log_count = 0
         self._missing_symbol_log_count = 0
-        
+        self._market_hub_open_event = asyncio.Event()
+        self._quote_ready_events: Dict[str, asyncio.Event] = {}
+        self._depth_ready_events: Dict[str, asyncio.Event] = {}
+
         # WebSocket connection pool: {url: hub_connection}
         # Reuses connections for multiple symbols to reduce overhead
         self._websocket_pool: Dict[str, Any] = {}
@@ -280,14 +220,9 @@ class TopStepXTradingBot:
         self.event_bus = EventBus()
         logger.info("📡 Event bus initialized (will start with main loop)")
         
-        # Register strategy classes (but don't instantiate yet - lazy loading)
-        self.strategy_manager.register_strategy("overnight_range", OvernightRangeStrategy)
-        self.strategy_manager.register_strategy("mean_reversion", MeanReversionStrategy)
-        self.strategy_manager.register_strategy("trend_following", TrendFollowingStrategy)
-        self.strategy_manager.register_strategy("simple_momentum", SimpleMomentumStrategy)
-        self.strategy_manager.register_strategy("simple_candle", SimpleCandleStrategy)
-        self.strategy_manager.register_strategy("trend_scalping", TrendScalpingStrategy)
-        logger.debug("Strategy classes registered (lazy loading enabled)")
+        # Register built-ins lazily (subset for executor CLI; TOML/env/full catalog otherwise)
+        self.strategy_manager.register_builtin_strategies(subset=strategy_registration_subset)
+        logger.debug("Built-in strategy lazy registration complete")
         
         # NOTE: Strategies are no longer auto-loaded during init for performance
         # They will be instantiated on-demand when explicitly started
@@ -366,7 +301,8 @@ class TopStepXTradingBot:
         # Initialize WebSocketManager (handles SignalR real-time data)
         self.websocket_manager = WebSocketManager(
             auth_manager=self.auth_manager,
-            contract_manager=self.contract_manager
+            contract_manager=self.contract_manager,
+            event_bus=self.event_bus,
         )
         # Register quote callback to update local cache
         self.websocket_manager.register_quote_callback(self._on_websocket_quote)
@@ -430,13 +366,52 @@ class TopStepXTradingBot:
         self._prefetch_symbols = [s.strip().upper() for s in os.getenv('PREFETCH_SYMBOLS', 'MNQ,ES,NQ,MES').split(',')]
         self._prefetch_timeframes = [tf.strip() for tf in os.getenv('PREFETCH_TIMEFRAMES', '1m,5m').split(',')]
         self._prefetch_task = None
-        
-        # HTTP session with connection pooling for efficient API calls
-        self._http_session = self._create_http_session()
 
     # ---------------------------
     # SignalR Market Hub Support
     # ---------------------------
+    def _notify_quote_cache_update(self, symbol: str) -> None:
+        sym = symbol.upper()
+        ev = self._quote_ready_events.get(sym)
+        if ev and not ev.is_set():
+            ev.set()
+
+    def _notify_depth_cache_update(self, symbol: str) -> None:
+        sym = symbol.upper()
+        ev = self._depth_ready_events.get(sym)
+        if ev and not ev.is_set():
+            ev.set()
+
+    async def _wait_for_quote_cache(self, symbol_up: str, timeout: float) -> None:
+        with self._quote_cache_lock:
+            live = self._quote_cache.get(symbol_up)
+            if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
+                return
+        waiter = asyncio.Event()
+        self._quote_ready_events[symbol_up] = waiter
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            if self._quote_ready_events.get(symbol_up) is waiter:
+                del self._quote_ready_events[symbol_up]
+
+    async def _wait_for_depth_cache(self, symbol_up: str, timeout: float) -> None:
+        with self._depth_cache_lock:
+            dd = self._depth_cache.get(symbol_up)
+            if dd and (dd.get("bids") or dd.get("asks")):
+                return
+        waiter = asyncio.Event()
+        self._depth_ready_events[symbol_up] = waiter
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            if self._depth_ready_events.get(symbol_up) is waiter:
+                del self._depth_ready_events[symbol_up]
+
     def _on_websocket_quote(self, symbol: str, data: Dict):
         """
         Callback for WebSocket quote events.
@@ -456,7 +431,9 @@ class TopStepXTradingBot:
                 if "volume" in data:
                     entry["volume"] = data.get("volume")
                 entry["ts"] = datetime.now(timezone.utc).isoformat()
-            
+
+            self._notify_quote_cache_update(symbol)
+
             # Feed quote to bar aggregator for real-time bar updates
             if hasattr(self, 'bar_aggregator') and self.bar_aggregator:
                 last_price = data.get("lastPrice")
@@ -474,10 +451,10 @@ class TopStepXTradingBot:
                             self._quote_log_count = {}
                         count = self._quote_log_count.get(symbol, 0)
                         if count < 5:
-                            logger.info(f"📈 Quote #{count+1} for {symbol}: ${last_price} (vol: {volume}) → bar aggregator")
+                            logger.debug(f"Quote #{count+1} for {symbol}: ${last_price} (vol: {volume}) → bar aggregator")
                             self._quote_log_count[symbol] = count + 1
                         elif count == 5:
-                            logger.info(f"📈 Quote flow confirmed for {symbol} (suppressing further logs)")
+                            logger.debug(f"Quote flow confirmed for {symbol} (suppressing further logs)")
                             self._quote_log_count[symbol] = count + 1
                     except Exception as e:
                         logger.debug(f"Error adding quote to bar aggregator for {symbol}: {e}")
@@ -503,6 +480,8 @@ class TopStepXTradingBot:
                     entry["bids"] = order_book.get("bids", [])
                     entry["asks"] = order_book.get("asks", [])
                 entry["ts"] = datetime.now(timezone.utc).isoformat()
+
+            self._notify_depth_cache_update(symbol)
         except Exception as e:
             logger.debug(f"Failed processing depth message: {e}")
     
@@ -560,8 +539,11 @@ class TopStepXTradingBot:
                                     if loop.is_running():
                                         positions_task = asyncio.create_task(self.get_open_positions(account_id=account_id_str))
                                         # Wait a bit for result
-                                        import time
-                                        time.sleep(0.1)
+                                        try:
+                                            # Yield to the event loop instead of blocking.
+                                            await asyncio.sleep(0.1)
+                                        except Exception:
+                                            pass
                                         if positions_task.done():
                                             positions = positions_task.result()
                                     else:
@@ -1022,11 +1004,14 @@ class TopStepXTradingBot:
         if hasattr(self, 'websocket_manager'):
             if self.websocket_manager.is_connected():
                 self._market_hub_connected = True
+                self._market_hub_open_event.set()
                 return
+            self._market_hub_open_event.clear()
             # Start WebSocketManager connection
             success = await self.websocket_manager.start()
             if success:
                 self._market_hub_connected = True
+                self._market_hub_open_event.set()
                 # Sync subscribed symbols
                 self._subscribed_symbols = self.websocket_manager.get_subscribed_symbols()
                 return
@@ -1034,6 +1019,8 @@ class TopStepXTradingBot:
         # Fallback to legacy SignalR implementation for backward compatibility
         if self._market_hub_connected:
             return
+
+        self._market_hub_open_event.clear()
         
         # Don't auto-start SDK realtime - it will start on-demand when needed
         # This avoids unnecessary overhead and WebSocket errors
@@ -1085,6 +1072,10 @@ class TopStepXTradingBot:
         def on_open():
             logger.info("✅ SignalR Market Hub connected")
             self._market_hub_connected = True
+            try:
+                self._market_hub_open_event.set()
+            except Exception:
+                pass
             # Flush any pending subscriptions
             try:
                 for sym in list(self._pending_symbols):
@@ -1096,6 +1087,10 @@ class TopStepXTradingBot:
         def on_close():
             logger.warning("⚠️  SignalR Market Hub disconnected")
             self._market_hub_connected = False
+            try:
+                self._market_hub_open_event.clear()
+            except Exception:
+                pass
 
         def on_error(err):
             try:
@@ -1171,7 +1166,9 @@ class TopStepXTradingBot:
                     if "volume" in data:
                         entry["volume"] = data.get("volume")
                     entry["ts"] = datetime.now(datetime.UTC).isoformat()
-                
+
+                self._notify_quote_cache_update(symbol)
+
                 # Feed quote to bar aggregator for real-time bar updates
                 if hasattr(self, 'bar_aggregator') and self.bar_aggregator:
                     last_price = data.get("lastPrice")
@@ -1189,10 +1186,10 @@ class TopStepXTradingBot:
                                 self._quote_log_count = {}
                             count = self._quote_log_count.get(symbol, 0)
                             if count < 5:
-                                logger.info(f"📈 Quote #{count+1} for {symbol}: ${last_price} (vol: {volume}) → bar aggregator")
+                                logger.debug(f"Quote #{count+1} for {symbol}: ${last_price} (vol: {volume}) → bar aggregator")
                                 self._quote_log_count[symbol] = count + 1
                             elif count == 5:
-                                logger.info(f"📈 Quote flow confirmed for {symbol} (suppressing further logs)")
+                                logger.debug(f"Quote flow confirmed for {symbol} (suppressing further logs)")
                                 self._quote_log_count[symbol] = count + 1
                         except Exception as e:
                             logger.debug(f"Error adding quote to bar aggregator for {symbol}: {e}")
@@ -1244,6 +1241,8 @@ class TopStepXTradingBot:
                         entry["bids"] = order_book.get("bids", [])
                         entry["asks"] = order_book.get("asks", [])
                     entry["ts"] = datetime.now(datetime.UTC).isoformat()
+
+                self._notify_depth_cache_update(symbol)
             except Exception as e:
                 logger.debug(f"Failed processing depth message: {e}")
 
@@ -1282,11 +1281,10 @@ class TopStepXTradingBot:
         hub.start()
         self._market_hub = hub
 
-        # Wait until connection opens before allowing subscriptions
-        import time
-        start = time.time()
-        while not self._market_hub_connected and time.time() - start < 10:
-            time.sleep(0.05)
+        try:
+            await asyncio.wait_for(self._market_hub_open_event.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("SignalR Market Hub did not open within 10s (continuing)")
 
     async def _ensure_quote_subscription(self, symbol: str) -> None:
         """
@@ -1388,166 +1386,79 @@ class TopStepXTradingBot:
         if not self.api_key or not self.username:
             raise ValueError("API key and username must be provided either as parameters or environment variables")
     
-    def _create_http_session(self) -> requests.Session:
+    async def _make_http_request(
+        self,
+        method: str,
+        endpoint: str,
+        data: Dict = None,
+        headers: Dict = None,
+        skip_rate_limit: bool = False,
+        suppress_errors: bool = False,
+    ) -> Dict:
         """
-        Create a reusable HTTP session with connection pooling.
-        This significantly improves performance by reusing TCP connections.
-        
-        Returns:
-            requests.Session: Configured session with connection pooling
+        REST call via AuthManager's shared aiohttp session (non-blocking for the event loop).
+
+        Preserves trading_bot rate limiting and performance metrics behavior.
         """
-        session = requests.Session()
-        
-        # Configure connection pooling
-        # Use HTTPAdapter with connection pool for better performance
-        adapter = HTTPAdapter(
-            pool_connections=10,  # Number of connection pools to cache
-            pool_maxsize=20,  # Maximum number of connections to save in the pool
-            max_retries=Retry(
-                total=3,
-                backoff_factor=0.3,
-                status_forcelist=[500, 502, 503, 504],
-                allowed_methods=["GET", "POST"]
-            )
-        )
-        
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        return session
-    
-    def _make_curl_request(self, method: str, endpoint: str, data: Dict = None, headers: Dict = None, skip_rate_limit: bool = False, suppress_errors: bool = False) -> Dict:
-        """
-        Make HTTP request using requests library with connection pooling and rate limiting.
-        
-        This replaces the previous subprocess curl implementation for better performance.
-        Connection pooling reduces latency by reusing TCP connections.
-        Rate limiting prevents API rate limit violations.
-        
-        Args:
-            method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint
-            data: Request data (for POST requests)
-            headers: Request headers
-            skip_rate_limit: If True, skip rate limiting (for critical operations)
-            suppress_errors: If True, log errors as debug instead of error (for expected failures)
-            
-        Returns:
-            Dict: Response data
-        """
-        # Start performance tracking
         start_time = time.time()
         status_code = None
         success = False
         error_message = None
-        
-        # Check if token is expired (synchronous check)
-        # Note: Actual refresh must be done by caller if 401/403 is returned
+        api_timeout = int(os.getenv("API_TIMEOUT", "30"))
+
         if endpoint != "/api/Auth/loginKey" and self._is_token_expired():
-            logger.warning("⚠️  Token expired or missing - request may fail. Caller should refresh token.")
-        
-        # Apply rate limiting (unless skipped for critical operations)
-        if not skip_rate_limit:
-            self._rate_limiter.acquire()
-        
-        try:
-            url = f"{self.base_url}{endpoint}"
-            
-            # Get timeout from environment or use default
-            api_timeout = int(os.getenv('API_TIMEOUT', '30'))
-            
-            # Prepare request kwargs
-            request_kwargs = {
-                'timeout': api_timeout,
-                'headers': headers or {}
-            }
-            
-            # Add JSON data for POST/PUT requests
-            if data and method.upper() in ('POST', 'PUT', 'PATCH'):
-                # Remove None values from data (TopStepX API may reject None values)
-                cleaned_data = {k: v for k, v in data.items() if v is not None}
-                request_kwargs['json'] = cleaned_data
-                if 'Content-Type' not in request_kwargs['headers']:
-                    request_kwargs['headers']['Content-Type'] = 'application/json'
-            
-            # Log request details (especially for order placement)
-            if endpoint == "/api/Order/place" and data:
-                logger.info(f"📤 Sending order to /api/Order/place:")
-                logger.info(f"   JSON payload: {json.dumps(data, indent=2)}")
-                logger.info(f"   Token: {self.session_token[:20] + '...' if self.session_token else 'MISSING'}")
-            
-            logger.debug(f"HTTP {method} request to {endpoint}")
-            
-            # Make request using session (connection pooling enabled)
-            response = self._http_session.request(
-                method=method,
-                url=url,
-                **request_kwargs
+            logger.warning(
+                "⚠️  Token expired or missing - request may fail. Caller should refresh token."
             )
-            
-            status_code = response.status_code
-            
-            # Handle response
-            try:
-                response.raise_for_status()  # Raise exception for bad status codes
-            except requests.exceptions.HTTPError as e:
-                error_message = f"HTTP {response.status_code}: {str(e)}"
-                if suppress_errors:
-                    logger.debug(f"HTTP error {response.status_code}: {e}")
-                else:
-                    logger.error(f"HTTP error {response.status_code}: {e}")
-                    # Log response body for 500 errors to help debug
-                    if status_code == 500:
-                        try:
-                            error_body = response.text[:500]
-                            logger.error(f"   500 Error response body: {error_body}")
-                        except:
-                            pass
-                return {"error": error_message}
-            
-            # Parse JSON response
-            try:
-                # Handle empty response (common for successful operations)
-                if not response.text.strip():
-                    success = True
-                    return {"success": True, "message": "Operation completed successfully"}
-                
-                response_data = response.json()
-                success = True
-                return response_data
-            except json.JSONDecodeError as e:
-                error_message = f"Invalid JSON response: {e}"
-                logger.error(f"Failed to parse JSON response: {e}")
-                logger.error(f"Raw response: {response.text[:500]}")  # Log first 500 chars
-                return {"error": error_message}
-                
-        except requests.exceptions.Timeout:
-            error_message = "Request timed out"
-            logger.error(f"HTTP request timed out after {api_timeout}s")
-            return {"error": error_message}
-        except requests.exceptions.ConnectionError as e:
-            error_message = f"Connection error: {str(e)}"
-            logger.error(f"HTTP connection error: {e}")
-            return {"error": error_message}
+
+        if not skip_rate_limit:
+            await self._rate_limiter.acquire_async()
+
+        self.auth_manager.session_token = self.session_token
+        self.auth_manager.token_expiry = self.token_expiry
+
+        try:
+            if endpoint == "/api/Order/place" and data:
+                logger.debug("Sending order to /api/Order/place")
+                logger.debug(f"   JSON payload: {dumps_str(data)}")
+                logger.debug(
+                    f"   Token: {self.session_token[:20] + '...' if self.session_token else 'MISSING'}"
+                )
+
+            logger.debug("HTTP %s request to %s", method, endpoint)
+
+            response = await self.auth_manager._make_request(
+                method,
+                endpoint,
+                data,
+                headers,
+                timeout=api_timeout,
+                quiet_client_errors=suppress_errors,
+            )
+            if isinstance(response, dict):
+                status_code = response.get("status_code")
+                success = "error" not in response
+                if "error" in response:
+                    error_message = str(response.get("error"))
+            return response
         except Exception as e:
             error_message = str(e)
-            logger.error(f"HTTP request failed: {str(e)}")
-            return {"error": str(e)}
+            logger.error("HTTP request failed: %s", e)
+            return {"error": error_message}
         finally:
-            # Record performance metrics
             duration_ms = (time.time() - start_time) * 1000
             try:
-                metrics_tracker = get_metrics_tracker(db=getattr(self, 'db', None))
+                metrics_tracker = get_metrics_tracker(db=getattr(self, "db", None))
                 metrics_tracker.record_api_call(
                     endpoint=endpoint,
                     method=method,
                     duration_ms=duration_ms,
                     status_code=status_code,
                     success=success,
-                    error_message=error_message
+                    error_message=error_message,
                 )
             except Exception as metrics_err:
-                logger.debug(f"Failed to record metrics: {metrics_err}")
+                logger.debug("Failed to record metrics: %s", metrics_err)
     
     async def authenticate(self) -> bool:
         """
@@ -1572,7 +1483,7 @@ class TopStepXTradingBot:
             }
             
             # Make login request
-            response = self._make_curl_request("POST", "/api/Auth/loginKey", data=login_data, headers=headers)
+            response = await self._make_http_request("POST", "/api/Auth/loginKey", data=login_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Authentication failed: {response['error']}")
@@ -1581,7 +1492,8 @@ class TopStepXTradingBot:
             # Check if login was successful
             if response.get("success") and response.get("token"):
                 self.session_token = response["token"]
-                
+                self.auth_manager.session_token = self.session_token
+
                 # Parse JWT to extract expiration time
                 try:
                     import jwt
@@ -1634,6 +1546,7 @@ class TopStepXTradingBot:
                 
                 logger.info(f"Successfully authenticated as: {self.username}")
                 logger.info(f"Session token obtained: {self.session_token[:20]}...")
+                self.auth_manager.token_expiry = self.token_expiry
                 # Best-effort start market hub after auth for real-time quotes
                 try:
                     await self._ensure_market_socket_started()
@@ -1666,7 +1579,9 @@ class TopStepXTradingBot:
         if expired:
             self.session_token = None
             self.token_expiry = None
-        
+            self.auth_manager.session_token = None
+            self.auth_manager.token_expiry = None
+
         return expired
     
     async def _ensure_valid_token(self) -> bool:
@@ -1993,7 +1908,7 @@ class TopStepXTradingBot:
             for endpoint in endpoints_to_try:
                 try:
                     logger.debug(f"Trying account info endpoint: {endpoint}")
-                    response = self._make_curl_request("GET", endpoint, headers=headers, suppress_errors=True)
+                    response = await self._make_http_request("GET", endpoint, headers=headers, suppress_errors=True)
                     
                     if "error" not in response and response:
                         logger.info(f"Found account info from {endpoint}")
@@ -2229,7 +2144,9 @@ class TopStepXTradingBot:
                         }
 
                         logger.info(f"📢 Sending Discord notification for filled order: {order_id} ({symbol} {side} x{quantity} @ ${fill_price})")
-                        self.discord_notifier.send_order_fill_notification(notification_data, account_name)
+                        asyncio.create_task(
+                            self.discord_notifier.send_order_fill_notification(notification_data, account_name)
+                        )
                         self._notified_orders.add(unique_id)
                         filled_orders.append(order_id)
 
@@ -2326,7 +2243,9 @@ class TopStepXTradingBot:
                                 'position_id': tracked_id
                             }
 
-                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                            asyncio.create_task(
+                                self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                            )
                             self._notified_positions.add(tracked_id)
 
                         except Exception as notif_err:
@@ -2433,7 +2352,9 @@ class TopStepXTradingBot:
                             'position_id': position_id
                         }
                         
-                        self.discord_notifier.send_order_fill_notification(notification_data, account_name)
+                        asyncio.create_task(
+                            self.discord_notifier.send_order_fill_notification(notification_data, account_name)
+                        )
                         self._notified_orders.add(unique_id)
                         
                         logger.info(f"Sent Discord notification for closing order {order_id}")
@@ -2579,13 +2500,13 @@ class TopStepXTradingBot:
                         "reduceOnly": True
                     }
             
-            # EMERGENCY DEBUG LOGGING
-            logger.info("===== ORDER PLACEMENT DEBUG =====")
-            logger.info(f"Symbol: {symbol}, Side: {side}, Quantity: {quantity}")
-            logger.info(f"Account ID: {target_account}")
-            logger.info(f"Contract ID: {contract_id}")
-            logger.info(f"Order Data: {json.dumps(order_data, indent=2)}")
-            logger.info("=================================")
+            # Order placement debug (kept at DEBUG to avoid log spam).
+            logger.debug("===== ORDER PLACEMENT DEBUG =====")
+            logger.debug(f"Symbol: {symbol}, Side: {side}, Quantity: {quantity}")
+            logger.debug(f"Account ID: {target_account}")
+            logger.debug(f"Contract ID: {contract_id}")
+            logger.debug(f"Order Data: {dumps_str(order_data)}")
+            logger.debug("=================================")
             
             # Make real API call to place order using session token
             headers = {
@@ -2594,14 +2515,14 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            response = self._make_curl_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            response = await self._make_http_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
-            # Log FULL API response
-            logger.info("===== API RESPONSE =====")
-            logger.info(f"Response Type: {type(response)}")
-            logger.info(f"Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
-            logger.info(f"Full Response: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
-            logger.info("========================")
+            # Full API response is useful but extremely noisy; keep at DEBUG.
+            logger.debug("===== API RESPONSE =====")
+            logger.debug(f"Response Type: {type(response)}")
+            logger.debug(f"Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
+            logger.debug(f"Full Response: {dumps_str(response) if isinstance(response, dict) else str(response)}")
+            logger.debug("========================")
             
             # Check for explicit errors first
             if "error" in response:
@@ -2619,17 +2540,18 @@ class TopStepXTradingBot:
                 error_code = response.get("errorCode", "Unknown")
                 error_message = response.get("errorMessage", response.get("message", "No error message"))
                 logger.error(f"Order failed - success={success}, errorCode={error_code}, message={error_message}")
-                logger.error(f"Full response: {json.dumps(response, indent=2)}")
+                logger.debug(f"Full response: {dumps_str(response)}")
                 return {"error": f"Order failed: {error_message} (Code: {error_code})"}
 
             # Check for order ID - real orders always have IDs
             order_id = response.get("orderId") or response.get("id") or response.get("data", {}).get("orderId")
             if not order_id:
-                logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
+                logger.error("API returned success but NO order ID (see DEBUG for full response).")
+                logger.debug(f"Full response: {dumps_str(response)}")
                 return {"error": "Order rejected: No order ID returned", "api_response": response}
 
             logger.info(f"Order placed successfully with ID: {order_id}")
-            logger.info(f"Full response: {json.dumps(response, indent=2)}")
+            logger.debug(f"Full response: {dumps_str(response)}")
 
             # Activate monitoring for market orders (not limit orders)
             if order_type.lower() == "market":
@@ -2737,7 +2659,7 @@ class TopStepXTradingBot:
                     'status': order_status,
                     'account_id': target_account
                 }
-                self.discord_notifier.send_order_notification(notification_data, account_name)
+                asyncio.create_task(self.discord_notifier.send_order_notification(notification_data, account_name))
             except Exception as notif_err:
                 logger.warning(f"Failed to send Discord notification: {notif_err}")
 
@@ -2826,7 +2748,7 @@ class TopStepXTradingBot:
                     logger.warning(f"Adapter contract fetch failed, falling back to direct API: {adapter_err}")
             
             # Fallback to direct API call
-            response = self._make_curl_request(
+            response = await self._make_http_request(
                 "POST",
                 "/api/Contract/available",
                 data={"live": False},  # Use False for simulation/paper trading contracts
@@ -3286,7 +3208,9 @@ class TopStepXTradingBot:
                                 'pnl': position_details.get('unrealizedPnl', 0) or position_details.get('unrealized_pnl', 0),
                                 'position_id': position_id
                             }
-                            self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                            asyncio.create_task(
+                                self.discord_notifier.send_position_close_notification(notification_data, account_name)
+                            )
                     except Exception as notif_err:
                         logger.warning(f"Failed to send Discord notification: {notif_err}")
                     
@@ -4544,8 +4468,7 @@ class TopStepXTradingBot:
             logger.info(f"Entry order placed successfully: {entry_result}")
             
             # Wait a moment for the position to be established
-            import time
-            time.sleep(1)
+            await asyncio.sleep(1)
             
             # Get the position ID for the new position
             positions = await self.get_open_positions(target_account)
@@ -4976,7 +4899,7 @@ class TopStepXTradingBot:
             logger.info(f"Request data: {search_data}")
             
             # Call the official TopStepX Gateway API
-            response = self._make_curl_request("POST", "/api/Order/search", data=search_data, headers=headers)
+            response = await self._make_http_request("POST", "/api/Order/search", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"TopStepX Gateway API failed: {response['error']}")
@@ -5348,7 +5271,7 @@ class TopStepXTradingBot:
                 "Authorization": f"Bearer {self.session_token}"
             }
             
-            response = self._make_curl_request("POST", "/api/Order/place", data=stop_data, headers=headers)
+            response = await self._make_http_request("POST", "/api/Order/place", data=stop_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to place stop order: {response['error']}")
@@ -5864,15 +5787,7 @@ class TopStepXTradingBot:
             try:
                 await self._ensure_market_socket_started()
                 await self._ensure_quote_subscription(symbol_up)
-                # Briefly wait for first live tick
-                import time
-                start_wait = time.time()
-                while time.time() - start_wait < 1.0:  # Increased wait time to 1.0s for SignalR to connect
-                    with self._quote_cache_lock:
-                        live = self._quote_cache.get(symbol_up)
-                    if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
-                        break
-                    time.sleep(0.05)  # Check every 50ms
+                await self._wait_for_quote_cache(symbol_up, timeout=1.0)
                 with self._quote_cache_lock:
                     live = self._quote_cache.get(symbol_up)
                 if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
@@ -5901,7 +5816,7 @@ class TopStepXTradingBot:
                 
                 quote_resp = None
                 for path in quote_paths:
-                    resp = self._make_curl_request("GET", path, headers=headers, suppress_errors=True)
+                    resp = await self._make_http_request("GET", path, headers=headers, suppress_errors=True)
                     if resp and "error" not in resp:
                         quote_resp = resp
                         break
@@ -5953,14 +5868,14 @@ class TopStepXTradingBot:
                 "unitNumber": 1,
                 "limit": 5
             }
-            response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+            response = await self._make_http_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
             if "error" in response or not response.get("success"):
                 # Retry with non-live over a wider window
                 from datetime import timedelta as _td
                 start_time2 = now - _td(seconds=30)
                 bars_request2 = dict(bars_request)
                 bars_request2.update({"live": False, "startTime": start_time2.isoformat()})
-                response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
+                response = await self._make_http_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
                 if "error" in response or not response.get("success"):
                     # Last resort: return any cached last if present
                     with self._quote_cache_lock:
@@ -5981,7 +5896,7 @@ class TopStepXTradingBot:
                 start_time2 = now - _td(seconds=30)
                 bars_request2 = dict(bars_request)
                 bars_request2.update({"live": False, "startTime": start_time2.isoformat()})
-                response = self._make_curl_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
+                response = await self._make_http_request("POST", "/api/History/retrieveBars", data=bars_request2, headers=headers)
                 bars = response.get("bars", []) if response and response.get("success") else []
                 if not bars:
                     with self._quote_cache_lock:
@@ -6040,19 +5955,11 @@ class TopStepXTradingBot:
             try:
                 await self._ensure_market_socket_started()
                 await self._ensure_depth_subscription(symbol_up)
-                
-                # Wait for depth data to arrive
-                import time
-                start_wait = time.time()
-                depth_data = None
-                
-                while time.time() - start_wait < 2.0:  # Wait up to 2 seconds
-                    with self._depth_cache_lock:
-                        depth_data = self._depth_cache.get(symbol_up)
-                    if depth_data and (depth_data.get('bids') or depth_data.get('asks')):
-                        break
-                    time.sleep(0.05)
-                
+
+                await self._wait_for_depth_cache(symbol_up, timeout=2.0)
+                with self._depth_cache_lock:
+                    depth_data = self._depth_cache.get(symbol_up)
+
                 if depth_data and (depth_data.get('bids') or depth_data.get('asks')):
                     logger.info(f"Got market depth data via SignalR for {symbol_up}")
                     return {
@@ -6066,9 +5973,8 @@ class TopStepXTradingBot:
                     # Try to get basic depth from quote data (bid/ask)
                     try:
                         await self._ensure_quote_subscription(symbol_up)
-                        import time
-                        time.sleep(0.2)  # Wait a bit longer for quote data
-                        
+                        await self._wait_for_quote_cache(symbol_up, timeout=0.35)
+
                         with self._quote_cache_lock:
                             quote_data = self._quote_cache.get(symbol_up)
                         
@@ -6125,7 +6031,7 @@ class TopStepXTradingBot:
                         # Try with contract_id as parameter using both GET and POST
                         for method in ["GET", "POST"]:
                             try:
-                                response = self._make_curl_request(method, endpoint, headers=headers, data={"contractId": contract_id})
+                                response = await self._make_http_request(method, endpoint, headers=headers, data={"contractId": contract_id})
                                 if response and "error" not in response and response != {"success": True, "message": "Operation completed successfully"}:
                                     logger.info(f"Successfully got response from endpoint: {endpoint} ({method})")
                                     break
@@ -6138,7 +6044,7 @@ class TopStepXTradingBot:
                         # Try both GET and POST for specific contract endpoints
                         for method in ["GET", "POST"]:
                             try:
-                                response = self._make_curl_request(method, endpoint, headers=headers)
+                                response = await self._make_http_request(method, endpoint, headers=headers)
                                 if response and "error" not in response and response != {"success": True, "message": "Operation completed successfully"}:
                                     logger.info(f"Successfully got response from endpoint: {endpoint} ({method})")
                                     break
@@ -6152,7 +6058,7 @@ class TopStepXTradingBot:
                     continue
             
             if not response:
-                response = self._make_curl_request("GET", f"/api/MarketData/depth/{contract_id}", headers=headers)
+                response = await self._make_http_request("GET", f"/api/MarketData/depth/{contract_id}", headers=headers)
             
             # Debug logging to see actual API response
             logger.info(f"Raw market depth API response: {response}")
@@ -8757,7 +8663,12 @@ class TopStepXTradingBot:
                     print(f"\n📦 Available Strategies:")
                     print(f"="*60)
                     
-                    for name, strategy_class in self.strategy_manager.available_strategies.items():
+                    _names = (
+                        self.strategy_manager.catalog_strategy_names()
+                        if hasattr(self.strategy_manager, "catalog_strategy_names")
+                        else self.strategy_manager.registered_strategy_names()
+                    )
+                    for name in _names:
                         strategy_instance = self.strategy_manager.strategies.get(name)
                         
                         if strategy_instance:
@@ -8821,7 +8732,12 @@ class TopStepXTradingBot:
                         print("❌ Usage: strategies start <name> [--symbols=SYM1,SYM2] [--timeframe=TIMEFRAME]")
                         print("   Example: strategies start simple_candle --timeframe=1m --symbols=MNQ")
                         print("   Available strategies:")
-                        for name in self.strategy_manager.available_strategies.keys():
+                        _avail = (
+                            self.strategy_manager.catalog_strategy_names()
+                            if hasattr(self.strategy_manager, "catalog_strategy_names")
+                            else self.strategy_manager.registered_strategy_names()
+                        )
+                        for name in _avail:
                             print(f"     - {name}")
                         continue
                     
@@ -10468,8 +10384,8 @@ def main():
     print()
     
     # Check for environment variables
-    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
-    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
+    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSTEPX_USERNAME') or os.getenv('TOPSETPX_USERNAME')
     
     if not api_key or not username:
         print("⚠️  Environment variables not found.")
@@ -10477,8 +10393,9 @@ def main():
         print("  export PROJECT_X_API_KEY='your_api_key_here'")
         print("  export PROJECT_X_USERNAME='your_username_here'")
         print("  OR")
-        print("  export TOPSETPX_API_KEY='your_api_key_here'")
-        print("  export TOPSETPX_USERNAME='your_username_here'")
+        print("  export TOPSTEPX_API_KEY='your_api_key_here'")
+        print("  export TOPSTEPX_USERNAME='your_username_here'")
+        print("  (legacy typo still accepted: TOPSETPX_API_KEY / TOPSETPX_USERNAME)")
         print()
         print("Or provide them manually:")
         

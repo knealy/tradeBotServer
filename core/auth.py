@@ -7,13 +7,13 @@ authentication methods or add new brokers.
 
 import os
 import logging
-import json
 import base64
+import asyncio
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime, timezone, timedelta
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import aiohttp
+
+from core.json_fast import dumps_str, loads as json_fast_loads
 
 # Try to import jwt (PyJWT), fallback to base64 if not available
 try:
@@ -52,8 +52,8 @@ class AuthManager:
             username: Username (or from environment)
             base_url: Base API URL
         """
-        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
-        self.username = username or os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
+        self.api_key = api_key or os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+        self.username = username or os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSTEPX_USERNAME') or os.getenv('TOPSETPX_USERNAME')
         self.base_url = base_url
         
         # Try to load JWT token from environment (useful for Railway deployment)
@@ -77,7 +77,7 @@ class AuthManager:
                     if len(parts) >= 2:
                         payload = parts[1]
                         payload += '=' * (4 - len(payload) % 4)
-                        decoded = json.loads(base64.urlsafe_b64decode(payload))
+                        decoded = json_fast_loads(base64.urlsafe_b64decode(payload))
                         exp_timestamp = decoded.get('exp')
                         if exp_timestamp:
                             self.token_expiry = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
@@ -90,31 +90,10 @@ class AuthManager:
         else:
             self.session_token = None
             self.token_expiry = None
-        
-        # HTTP session for authentication requests
-        self._http_session = self._create_http_session()
-    
-    def _create_http_session(self) -> requests.Session:
-        """
-        Create HTTP session with retry logic.
-        
-        Returns:
-            Configured requests.Session
-        """
-        session = requests.Session()
-        # Increased retries and backoff for 500 errors (server issues)
-        # 5 retries with exponential backoff: 2, 4, 8, 16, 32 seconds
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=2,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST", "GET"],
-            raise_on_status=False  # Don't raise on status, let us handle it
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        return session
+
+        # Shared aiohttp session (created lazily on first request)
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
     
     def _is_token_expired(self) -> bool:
         """
@@ -134,13 +113,34 @@ class AuthManager:
         buffer = datetime.now(timezone.utc) + timedelta(minutes=5)
         return buffer >= self.token_expiry
     
-    def _make_request(
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session and not self._session.closed:
+            return self._session
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                return self._session
+            timeout = aiohttp.ClientTimeout(
+                total=float(os.getenv("API_TIMEOUT", "30")),
+                connect=3,
+            )
+            connector = aiohttp.TCPConnector(limit=64, keepalive_timeout=30, enable_cleanup_closed=True)
+            self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            return self._session
+
+    async def close(self) -> None:
+        """Close the shared HTTP session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    async def _make_request(
         self,
         method: str,
         endpoint: str,
         data: Optional[Dict] = None,
         headers: Optional[Dict] = None,
-        timeout: int = 30
+        timeout: int = 30,
+        *,
+        quiet_client_errors: bool = False,
     ) -> Dict[str, Any]:
         """
         Make HTTP request to TopStepX API.
@@ -158,144 +158,79 @@ class AuthManager:
         url = f"{self.base_url}{endpoint}"
         request_headers = headers or {}
         
-        # Add auth header if we have a token
-        if self.session_token and "Authorization" not in request_headers:
+        # Add auth header if we have a token (never for unauthenticated auth endpoints)
+        skip_bearer = endpoint.startswith("/api/Auth/")
+        if self.session_token and "Authorization" not in request_headers and not skip_bearer:
             request_headers["Authorization"] = f"Bearer {self.session_token}"
         
         try:
-            if method.upper() == "POST":
-                # Remove None values (TopStepX rejects None)
-                if data:
-                    cleaned_data = {k: v for k, v in data.items() if v is not None}
-                else:
-                    cleaned_data = None
-                
-                if endpoint == "/api/History/retrieveBars":
-                    try:
-                        logger.debug(f"📦 retrieveBars payload: {json.dumps(cleaned_data, default=str)}")
-                    except Exception:
-                        logger.debug(f"📦 retrieveBars payload (non-JSON): {cleaned_data}")
-                
-                response = self._http_session.post(
-                    url,
-                    json=cleaned_data,
-                    headers=request_headers,
-                    timeout=timeout
-                )
-            else:
-                response = self._http_session.request(
-                    method=method,
-                    url=url,
-                    headers=request_headers,
-                    timeout=timeout
-                )
-            
-            # Handle response
-            try:
-                response.raise_for_status()
-            except requests.exceptions.HTTPError as e:
-                status_code = response.status_code
-                # Include server response body (TopStepX often puts the real reason here)
-                body_text = ""
+            cleaned_data = {k: v for k, v in data.items() if v is not None} if data else None
+
+            if endpoint == "/api/History/retrieveBars":
                 try:
-                    body_text = (response.text or "").strip()
+                    logger.debug(f"📦 retrieveBars payload: {dumps_str(cleaned_data)}")
                 except Exception:
-                    body_text = ""
+                    logger.debug(f"📦 retrieveBars payload (non-JSON): {cleaned_data}")
 
-                # Handle 429 errors with exponential backoff (if rate limiter available)
+            session = await self._get_session()
+            req_timeout = aiohttp.ClientTimeout(total=timeout)
+
+            async with session.request(
+                method=method.upper(),
+                url=url,
+                json=cleaned_data if method.upper() == "POST" else None,
+                headers=request_headers,
+                timeout=req_timeout,
+            ) as resp:
+                status_code = resp.status
+                body_text = (await resp.text()) or ""
+                body_text = body_text.strip()
+
                 if status_code == 429:
-                    # Extract endpoint from URL for tracking
-                    endpoint_key = endpoint.split('?')[0]  # Remove query params
-                    if hasattr(self, 'rate_limiter') and self.rate_limiter:
+                    endpoint_key = endpoint.split("?")[0]
+                    backoff_delay = 1.0
+                    if hasattr(self, "rate_limiter") and self.rate_limiter:
                         self.rate_limiter.record_429_error(endpoint_key)
-                        backoff_delay = self.rate_limiter.get_backoff_delay(endpoint_key)
-                        logger.warning(f"⏳ HTTP 429 Too Many Requests for {endpoint}. Waiting {backoff_delay:.2f}s before retry...")
-                        import time
-                        time.sleep(backoff_delay)
-                        # Retry the request once after backoff
-                        try:
-                            if method.upper() == "POST":
-                                cleaned_data = {k: v for k, v in data.items() if v is not None} if data else None
-                                response = self._http_session.post(url, json=cleaned_data, headers=request_headers, timeout=timeout)
-                            else:
-                                response = self._http_session.request(method=method, url=url, headers=request_headers, timeout=timeout)
-                            response.raise_for_status()
-                            # Success after retry - reset backoff
+                        backoff_delay = float(self.rate_limiter.get_backoff_delay(endpoint_key))
+                    logger.warning(f"⏳ HTTP 429 Too Many Requests for {endpoint}. Waiting {backoff_delay:.2f}s before retry...")
+                    await asyncio.sleep(backoff_delay)
+                    # Retry once
+                    async with session.request(
+                        method=method.upper(),
+                        url=url,
+                        json=cleaned_data if method.upper() == "POST" else None,
+                        headers=request_headers,
+                        timeout=req_timeout,
+                    ) as retry_resp:
+                        status_code = retry_resp.status
+                        body_text = ((await retry_resp.text()) or "").strip()
+                        if status_code == 429 and hasattr(self, "rate_limiter") and self.rate_limiter:
                             self.rate_limiter.reset_429_backoff(endpoint_key)
-                        except requests.exceptions.HTTPError as retry_e:
-                            # Still failed after retry
-                            error_msg = f"HTTP 429: Too Many Requests (retry failed: {str(retry_e)})"
-                            logger.error(f"❌ {error_msg} for {endpoint}")
-                            return {"error": error_msg, "status_code": 429, "response_text": body_text}
 
-                error_msg = f"HTTP {status_code}: {str(e)}"
-                if body_text:
-                    # Keep it single-line for logs; preserve full body in return payload.
+                if status_code >= 400:
                     snippet = body_text.replace("\n", " ")
                     if len(snippet) > 600:
                         snippet = snippet[:600] + "…"
-                    error_msg = f"{error_msg} | body: {snippet}"
-                
-                # Handle 404 errors gracefully - some endpoints may not exist
-                if status_code == 404:
-                    # For /api/Fill/search, this is expected (endpoint may not exist)
-                    if "/api/Fill/search" in endpoint:
-                        logger.debug(f"Endpoint not found (404): {endpoint} - this is expected, skipping")
+                    error_msg = f"HTTP {status_code} | body: {snippet}" if snippet else f"HTTP {status_code}"
+                    if status_code == 404 and "/api/Fill/search" in endpoint:
+                        logger.debug(f"Endpoint not found (404): {endpoint} - expected, skipping")
+                        return {"error": error_msg, "status_code": status_code, "response_text": body_text}
+                    if quiet_client_errors:
+                        logger.debug(error_msg)
                     else:
-                        logger.warning(f"Endpoint not found (404): {endpoint}")
+                        logger.error(error_msg)
                     return {"error": error_msg, "status_code": status_code, "response_text": body_text}
-                
-                # Provide more context for 500 errors
-                if status_code == 500:
-                    logger.error(f"Server error (500) from {endpoint}")
-                    logger.warning("⚠️  500 errors might indicate:")
-                    logger.warning("   1. TopStepX server is temporarily unavailable")
-                    logger.warning("   2. Token may have expired (will attempt refresh on retry)")
-                    logger.warning("   3. Account settings issue (check 'Auto OCO Brackets' for bracket orders)")
-                    # Try to get error message from response body
-                    try:
-                        error_body = response.json() if response.text else {}
-                        if error_body:
-                            logger.debug(f"Error response body: {error_body}")
-                    except:
-                        pass
-                
-                logger.error(error_msg)
-                return {"error": error_msg, "status_code": status_code, "response_text": body_text}
-            
-            # Parse JSON response
-            try:
-                if not response.text.strip():
+
+                if not body_text:
                     return {"success": True, "message": "Operation completed successfully"}
-                json_response = response.json()
-                # Remove None values from error fields to prevent false error logs
-                if isinstance(json_response, dict) and "error" in json_response and json_response["error"] is None:
-                    # Remove None error field to prevent false error detection
-                    json_response = {k: v for k, v in json_response.items() if k != "error" or v is not None}
-                return json_response
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {e}")
-                return {"error": f"Invalid JSON response: {e}"}
-                
-        except requests.exceptions.Timeout:
-            error_msg = f"Request timed out after {timeout}s"
-            logger.error(error_msg)
-            return {"error": error_msg}
-        except requests.exceptions.ConnectionError as e:
-            error_msg = f"Connection error: {str(e)}"
-            logger.error(error_msg)
-            return {"error": error_msg}
-        except requests.exceptions.RetryError as e:
-            # This happens when all retries are exhausted
-            error_msg = f"Request failed after all retries: {str(e)}"
-            logger.error(error_msg)
-            # Check if it's a 500 error - might be token-related
-            if "500" in str(e) or "too many 500" in str(e).lower():
-                logger.warning("⚠️  Multiple 500 errors received. This might indicate:")
-                logger.warning("   1. Server is temporarily unavailable")
-                logger.warning("   2. Token may have expired (try refreshing)")
-                logger.warning("   3. Account settings issue (check 'Auto OCO Brackets' setting)")
-            return {"error": error_msg, "retry_exhausted": True}
+                try:
+                    json_response = json_fast_loads(body_text)
+                    if isinstance(json_response, dict) and json_response.get("error") is None:
+                        json_response = {k: v for k, v in json_response.items() if k != "error" or v is not None}
+                    return json_response
+                except ValueError as e:
+                    logger.error(f"Failed to parse JSON response: {e}")
+                    return {"error": f"Invalid JSON response: {e}", "response_text": body_text}
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Request failed: {error_msg}")
@@ -335,7 +270,7 @@ class AuthManager:
             }
             
             # Make login request
-            response = self._make_request("POST", "/api/Auth/loginKey", data=login_data, headers=headers)
+            response = await self._make_request("POST", "/api/Auth/loginKey", data=login_data, headers=headers)
             
             # Check for actual errors (not just presence of "error" key with None/empty value)
             # Only treat as error if error key exists AND has a truthy, non-None value
@@ -404,7 +339,7 @@ class AuthManager:
                         # Decode payload (add padding if needed)
                         payload = parts[1]
                         payload += '=' * (4 - len(payload) % 4)
-                        decoded = json.loads(base64.urlsafe_b64decode(payload))
+                        decoded = json_fast_loads(base64.urlsafe_b64decode(payload))
                         exp_timestamp = decoded.get("exp")
                         if exp_timestamp:
                             self.token_expiry = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
@@ -502,7 +437,7 @@ class AuthManager:
                 "onlyActiveAccounts": True
             }
             
-            response = self._make_request("POST", "/api/Account/search", data=search_data, headers=headers)
+            response = await self._make_request("POST", "/api/Account/search", data=search_data, headers=headers)
             
             # If we get 401/403, try refreshing token and retry once
             if response.get("status_code") in (401, 403):
@@ -510,7 +445,7 @@ class AuthManager:
                 if await self.authenticate():
                     # Retry the request with new token
                     headers["Authorization"] = f"Bearer {self.session_token}"
-                    response = self._make_request("POST", "/api/Account/search", data=search_data, headers=headers)
+                    response = await self._make_request("POST", "/api/Account/search", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch accounts: {response['error']}")

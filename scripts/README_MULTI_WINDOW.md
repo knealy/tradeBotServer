@@ -1,5 +1,7 @@
 # Multi-Window Trading Setup
 
+**Ops / lifecycle:** prefer [docs/PLAYBOOK.md](../docs/PLAYBOOK.md) and [docs/HANDOFF.md](../docs/HANDOFF.md) for production start/stop. This file is a dev-oriented multi-window layout.
+
 This guide explains how to use the multi-window trading setup for testing strategies with real-time monitoring.
 
 ## Overview

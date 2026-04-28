@@ -15,7 +15,6 @@ Strategy Logic:
 - Exit when: MA crossover reverses or stop hit
 """
 
-import os
 import logging
 import asyncio
 from datetime import datetime
@@ -23,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from core.strategy_config import load_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -68,21 +68,25 @@ class TrendFollowingStrategy(BaseStrategy):
         
         # Initialize base strategy
         super().__init__(trading_bot, config)
+
+        # Strategy-specific config loader (TOML > env > defaults).
+        # Legacy env prefix for this strategy is TREND_*.
+        self._cfg = load_strategy_config("trend_following", env_prefix="TREND_")
         
         # Trend following specific configuration
-        self.fast_ma_period = int(os.getenv('TREND_FAST_MA_PERIOD', '10'))
-        self.slow_ma_period = int(os.getenv('TREND_SLOW_MA_PERIOD', '30'))
-        self.ma_type = os.getenv('TREND_MA_TYPE', 'EMA')  # SMA or EMA
+        self.fast_ma_period = int(self._cfg.get_int("fast_ma_period", 10))
+        self.slow_ma_period = int(self._cfg.get_int("slow_ma_period", 30))
+        self.ma_type = self._cfg.get_str("ma_type", "EMA")  # SMA or EMA
         
-        self.atr_period = int(os.getenv('TREND_ATR_PERIOD', '14'))
-        self.atr_stop_multiplier = float(os.getenv('TREND_ATR_STOP', '2.0'))
-        self.atr_trailing_multiplier = float(os.getenv('TREND_ATR_TRAILING', '3.0'))
+        self.atr_period = int(self._cfg.get_int("atr_period", 14))
+        self.atr_stop_multiplier = float(self._cfg.get_float("atr_stop_multiplier", 2.0))
+        self.atr_trailing_multiplier = float(self._cfg.get_float("atr_trailing_multiplier", 3.0))
         
-        self.min_trend_strength = float(os.getenv('TREND_MIN_STRENGTH', '0.5'))  # MA separation
-        self.pyramid_enabled = os.getenv('TREND_PYRAMID_ENABLED', 'false').lower() == 'true'
-        self.pyramid_max_adds = int(os.getenv('TREND_PYRAMID_MAX_ADDS', '2'))
+        self.min_trend_strength = float(self._cfg.get_float("min_trend_strength", 0.5))  # MA separation
+        self.pyramid_enabled = self._cfg.get_bool("pyramid_enabled", False)
+        self.pyramid_max_adds = int(self._cfg.get_int("pyramid_max_adds", 2))
         
-        self.timeframe = os.getenv('TREND_TIMEFRAME', '15m')
+        self.timeframe = self._cfg.get_str("timeframe", "15m")
         
         # State tracking
         self.is_trading = False
@@ -387,6 +391,36 @@ class TrendFollowingStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"Error executing signal: {e}")
             return False
+
+    async def _sync_trailing_stop_to_broker(
+        self, symbol: str, broker_position: dict, new_stop: float
+    ) -> None:
+        """Push tightened trailing stop to the broker when we have a position id."""
+        position_id = (
+            broker_position.get("id")
+            or broker_position.get("positionId")
+            or broker_position.get("position_id")
+        )
+        acct = getattr(self.trading_bot, "selected_account", None)
+        account_id = acct.get("id") if isinstance(acct, dict) else None
+        if not (account_id and position_id):
+            logger.debug(
+                "Trailing stop for %s updated locally only (missing account_id or position_id)",
+                symbol,
+            )
+            return
+        try:
+            res = await self.trading_bot.modify_stop_loss(
+                str(position_id), float(new_stop), account_id=str(account_id)
+            )
+            if isinstance(res, dict) and res.get("error"):
+                logger.debug(
+                    "Broker trailing stop not updated for %s: %s",
+                    symbol,
+                    res.get("error"),
+                )
+        except Exception as exc:
+            logger.debug("modify_stop_loss failed for %s: %s", symbol, exc, exc_info=True)
     
     async def manage_positions(self):
         """
@@ -431,7 +465,7 @@ class TrendFollowingStrategy(BaseStrategy):
                     if new_stop > current_stop:
                         self.trailing_stops[symbol] = new_stop
                         logger.info(f"🔼 Trailing stop updated for {symbol}: {current_stop:.2f} -> {new_stop:.2f}")
-                        # TODO: Modify stop order via API
+                        await self._sync_trailing_stop_to_broker(symbol, broker_position, new_stop)
                         
                 elif side == "SHORT":
                     # For SHORT: Trail stop down as price decreases
@@ -439,7 +473,7 @@ class TrendFollowingStrategy(BaseStrategy):
                     if new_stop < current_stop:
                         self.trailing_stops[symbol] = new_stop
                         logger.info(f"🔽 Trailing stop updated for {symbol}: {current_stop:.2f} -> {new_stop:.2f}")
-                        # TODO: Modify stop order via API
+                        await self._sync_trailing_stop_to_broker(symbol, broker_position, new_stop)
                 
                 # Check for MA crossover reversal (exit signal)
                 fast_ma = await self.calculate_moving_average(symbol, self.fast_ma_period)

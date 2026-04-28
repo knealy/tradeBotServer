@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(slots=True)
 class Position:
     """Position data structure."""
     position_id: str
@@ -23,7 +23,7 @@ class Position:
     raw_data: Optional[Dict[str, Any]] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class CloseResponse:
     """Response from position close operation."""
     success: bool

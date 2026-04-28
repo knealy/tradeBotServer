@@ -12,6 +12,8 @@ from typing import Dict, Set, Optional, Any, Callable
 from threading import Lock
 from datetime import datetime, timezone
 
+from core.events import Event, EventType
+
 logger = logging.getLogger(__name__)
 
 # SignalR is optional - imported conditionally
@@ -38,7 +40,8 @@ class WebSocketManager:
         contract_manager,
         market_hub_url: Optional[str] = None,
         quote_event_name: Optional[str] = None,
-        subscribe_method: Optional[str] = None
+        subscribe_method: Optional[str] = None,
+        event_bus: Optional[Any] = None,
     ):
         """
         Initialize WebSocket manager.
@@ -69,6 +72,9 @@ class WebSocketManager:
             "PROJECT_X_UNSUBSCRIBE_METHOD",
             "UnsubscribeQuote"
         )
+
+        # Optional in-process fan-out (strategies, GUI, etc.)
+        self.event_bus = event_bus
         
         self._hub = None
         self._connected = False
@@ -82,6 +88,8 @@ class WebSocketManager:
         
         # Store event loop reference for async operations from sync callbacks
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Set from SignalR on_open (thread-safe via call_soon_threadsafe); replaces 50ms spin-wait.
+        self._connect_ready = asyncio.Event()
         
         # Event callbacks
         self._quote_callbacks: list[Callable] = []
@@ -104,8 +112,8 @@ class WebSocketManager:
             if self._hub:
                 try:
                     self._hub.stop()
-                except:
-                    pass
+                except Exception:
+                    logger.debug("SignalR hub.stop() failed before start()", exc_info=True)
                 self._hub = None
         
         if not SIGNALR_AVAILABLE:
@@ -177,6 +185,9 @@ class WebSocketManager:
                     self._connected = True
                     # Clear warning set so we can log warnings again if hub disconnects
                     self._hub_not_running_warned.clear()
+                loop = self._event_loop
+                if loop and loop.is_running():
+                    loop.call_soon_threadsafe(self._connect_ready.set)
                 # Flush pending subscriptions - safely handle async from sync callback
                 # SignalR callbacks are synchronous, so we need to handle event loop carefully
                 if self._event_loop and self._event_loop.is_running():
@@ -202,6 +213,9 @@ class WebSocketManager:
                     if self._connected:
                         logger.warning("⚠️  SignalR Market Hub disconnected")
                         self._connected = False
+                        loop = self._event_loop
+                        if loop and loop.is_running():
+                            loop.call_soon_threadsafe(self._connect_ready.clear)
                         # Schedule reconnection attempt for network interruptions
                         # Use create_task if loop is running, otherwise schedule in thread
                         if self._event_loop and self._event_loop.is_running():
@@ -309,8 +323,13 @@ class WebSocketManager:
                         return
                     
                     logger.error(f"SignalR Market Hub error: {error_text}")
-                except Exception:
-                    logger.error(f"SignalR Market Hub error: {err}")
+                except Exception as handler_exc:
+                    logger.error(
+                        "SignalR on_error handler failed: %s (original err=%s)",
+                        handler_exc,
+                        err,
+                        exc_info=True,
+                    )
             
             def on_quote(*args):
                 """Handle quote events."""
@@ -338,6 +357,25 @@ class WebSocketManager:
                     
                     if not symbol:
                         return
+
+                    # EventBus fan-out (safe from SignalR threads)
+                    bus = getattr(self, "event_bus", None)
+                    loop = getattr(self, "_event_loop", None)
+                    if bus is not None and getattr(bus, "_running", False) and loop is not None and loop.is_running():
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                bus.publish(
+                                    Event(
+                                        type=EventType.QUOTE_UPDATED,
+                                        data={"symbol": symbol, "quote": data},
+                                        timestamp=datetime.now(timezone.utc),
+                                        source="websocket_manager",
+                                    )
+                                ),
+                                loop,
+                            )
+                        except Exception:
+                            logger.debug("Failed publishing QUOTE_UPDATED to EventBus", exc_info=True)
                     
                     # Call registered callbacks
                     for callback in self._quote_callbacks:
@@ -405,26 +443,39 @@ class WebSocketManager:
                         hub.on(ev, on_quote)
                         seen.add(ev)
                         logger.debug(f"Registered quote handler for event '{ev}'")
-                    except Exception:
-                        pass
+                    except Exception as reg_exc:
+                        logger.debug(
+                            "hub.on skipped for quote event %r: %s", ev, reg_exc, exc_info=True
+                        )
             
             # Register depth event handlers
             depth_events = ["Depth", "OrderBook", "Level2", "MarketDepth", "GatewayDepth"]
             for ev in depth_events:
                 try:
                     hub.on(ev, on_depth)
-                except Exception:
-                    pass
+                except Exception as reg_exc:
+                    logger.debug(
+                        "hub.on skipped for depth event %r: %s", ev, reg_exc, exc_info=True
+                    )
             
             # Start connection
+            if self._event_loop:
+                self._connect_ready.clear()
             hub.start()
             self._hub = hub
             
-            # Wait for connection to be established
-            import time
-            start = time.time()
-            while not self._connected and time.time() - start < 10:
-                await asyncio.sleep(0.05)
+            # Wait for connection to be established (on_open sets _connect_ready)
+            if self._event_loop:
+                try:
+                    await asyncio.wait_for(self._connect_ready.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning("⚠️  SignalR connection timeout")
+                    return False
+            else:
+                import time
+                deadline = time.time() + 10.0
+                while not self._connected and time.time() < deadline:
+                    await asyncio.sleep(0.05)
             
             if not self._connected:
                 logger.warning("⚠️  SignalR connection timeout")
@@ -485,8 +536,8 @@ class WebSocketManager:
                 if self._hub:
                     try:
                         self._hub.stop()
-                    except:
-                        pass
+                    except Exception:
+                        logger.debug("SignalR hub.stop() failed during network recovery", exc_info=True)
                     self._hub = None
                 
                 with self._lock:
@@ -538,8 +589,8 @@ class WebSocketManager:
             if self._hub:
                 try:
                     self._hub.stop()
-                except:
-                    pass
+                except Exception:
+                    logger.debug("SignalR hub.stop() failed during auth recovery", exc_info=True)
                 self._hub = None
             
             with self._lock:
@@ -617,10 +668,10 @@ class WebSocketManager:
                         with self._lock:
                             self._pending_symbols.add(sym)
                         return False
-            except:
-                pass  # If we can't check state, try anyway
+            except Exception:
+                logger.debug("Could not inspect SignalR hub transport state; attempting subscribe", exc_info=True)
             
-            logger.info(f"📡 Subscribing to live quotes for {sym} (contract: {contract_id})")
+            logger.debug(f"Subscribing to live quotes for {sym} (contract: {contract_id})")
             
             # Try subscription with retries (hub may take a moment to be fully ready)
             max_retries = 3
@@ -631,7 +682,7 @@ class WebSocketManager:
                     with self._lock:
                         self._subscribed_symbols.add(sym)
                     
-                    logger.info(f"✅ Subscribed to quotes for {sym} via {contract_id}")
+                    logger.debug(f"Subscribed to quotes for {sym} via {contract_id}")
                     return True
                 except Exception as retry_error:
                     if "not running" in str(retry_error).lower() or "cand send" in str(retry_error).lower():
@@ -756,6 +807,10 @@ class WebSocketManager:
             self._connected = False
             self._subscribed_symbols.clear()
             self._pending_symbols.clear()
+        try:
+            self._connect_ready.clear()
+        except Exception:
+            logger.debug("connect_ready clear after stop", exc_info=True)
         
         logger.info("SignalR Market Hub stopped")
 

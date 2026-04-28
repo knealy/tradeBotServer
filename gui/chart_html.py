@@ -334,8 +334,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     f"sl_ticks={stop_loss_ticks} tp_ticks={take_profit_ticks}"
                 )
             except Exception:
-                pass
-            
+                logger.debug("chart order payload log failed", exc_info=True)
+
             # Place order via trading bot
             # Check if this is a bracket order (either order_type is 'bracket' or enable_bracket is True with prices)
             # Distinguish between bracket order type (uses ticks) vs orders with bracket enabled (uses prices)
@@ -1293,7 +1293,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     if len(parts) >= 5:
                         return parts[3].strip().upper()
                 except Exception:
-                    pass
+                    logger.debug("extract_root_symbol failed for %r", contract_id, exc_info=True)
                 return None
 
             # Group by symbol
@@ -1451,7 +1451,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                     if (datetime.now(timezone.utc) - last_dt).total_seconds() > heartbeat_ttl_seconds:
                                         continue
                             except Exception:
-                                pass
+                                logger.debug(
+                                    "heartbeat TTL check failed for process %s",
+                                    process.get("process_id"),
+                                    exc_info=True,
+                                )
                             metadata = process.get('metadata', {})
                             if isinstance(metadata, str):
                                 import json
@@ -1507,8 +1511,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                     if task.get_name() == name:
                                         has_running_task = True
                                         break
-                                except:
-                                    pass
+                                except Exception:
+                                    logger.debug("task.get_name failed while scanning strategy tasks", exc_info=True)
                     
                     # Strategy is considered active if:
                     # - In active list, OR
@@ -1561,6 +1565,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             # If a strategy stored a string, pass it through and let the UI show it
                             start_time_iso = start_time
                     except Exception:
+                        logger.debug("strategy start_time normalize failed: %r", start_time, exc_info=True)
                         start_time_iso = str(start_time) if start_time else None
                     
                     # If strategy is actually active but not in active list, treat it as fully active
@@ -1589,6 +1594,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             # Add strategies that are running externally but not in local strategies dict
             for name, ext_info in external_strategies.items():
                 if name not in statuses:
+                    ext_started_at = ext_info.get("started_at")
                     # Try to get symbols from database
                     symbols = []
                     try:
@@ -1609,10 +1615,10 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     
                     # Calculate runtime if we have start time
                     runtime_str = None
-                    if ext_info.get('started_at'):
+                    if ext_started_at:
                         try:
                             from datetime import datetime, timezone
-                            started = ext_info['started_at']
+                            started = ext_started_at
                             if isinstance(started, str):
                                 started = datetime.fromisoformat(started.replace('Z', '+00:00'))
                             elif not isinstance(started, datetime):
@@ -1623,12 +1629,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             minutes = (runtime_seconds % 3600) // 60
                             runtime_str = f"{hours}h {minutes}m"
                         except Exception:
-                            pass
-                    
+                            logger.debug(
+                                "external strategy runtime from started_at failed: %r",
+                                ext_info.get("started_at"),
+                                exc_info=True,
+                            )
+
                     # Get start time as datetime or string
                     start_time_str = 'N/A'
-                    if ext_info.get('started_at'):
-                        started = ext_info['started_at']
+                    if ext_started_at:
+                        started = ext_started_at
                         try:
                             from datetime import datetime
                             if isinstance(started, datetime):
@@ -1638,6 +1648,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             else:
                                 start_time_str = str(started)
                         except Exception:
+                            logger.debug("external strategy start_time_str failed: %r", started, exc_info=True)
                             start_time_str = str(started) if started else 'N/A'
                     
                     # Get timeframe from state if available
@@ -1651,12 +1662,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                     import json
                                     try:
                                         settings = json.loads(settings)
-                                    except:
-                                        pass
+                                    except Exception as json_exc:
+                                        logger.debug("strategy settings JSON parse failed: %s", json_exc)
                                 if isinstance(settings, dict):
                                     timeframe = settings.get('timeframe', '5m')
                     except Exception:
-                        pass
+                        logger.debug("timeframe from DB state failed for %s", name, exc_info=True)
                     
                     statuses[name] = {
                         'name': name,
@@ -1665,14 +1676,21 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         'symbols': symbols,
                         'timeframe': timeframe,
                         'start_time': start_time_str,
-                        'runtime_seconds': int((datetime.now(timezone.utc) - started).total_seconds()) if started and isinstance(started, datetime) else None,
+                        'runtime_seconds': int((datetime.now(timezone.utc) - started).total_seconds())
+                        if ext_started_at and isinstance(started, datetime)
+                        else None,
                         'runtime_str': runtime_str,
                         'positions': 0,
                         'monitoring': True,  # External strategies are monitored
                     }
             
             # Get all available strategies (registered but not necessarily loaded)
-            available_strategies = list(trading_bot.strategy_manager.available_strategies.keys()) if hasattr(trading_bot.strategy_manager, 'available_strategies') else []
+            sm = trading_bot.strategy_manager
+            available_strategies = (
+                sm.catalog_strategy_names()
+                if hasattr(sm, "catalog_strategy_names")
+                else sm.registered_strategy_names()
+            )
             
             # Add available strategies that aren't loaded yet
             for name in available_strategies:
@@ -2163,9 +2181,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         hours = runtime_seconds // 3600
                         minutes = (runtime_seconds % 3600) // 60
                         runtime_str = f"{hours}h {minutes}m"
-                    except:
-                        pass
-            
+                    except Exception:
+                        logger.debug(
+                            "strategy detail runtime from start_time str failed: %r",
+                            start_time,
+                            exc_info=True,
+                        )
+
             details = {
                 'name': strategy_name,
                 'status': getattr(strategy, 'status', {}).name if hasattr(getattr(strategy, 'status', None), 'name') else str(getattr(strategy, 'status', 'unknown')),
@@ -2996,9 +3018,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 try:
                     # Get default risk per trade from risk manager
                     risk_per_trade = getattr(trading_bot.risk_manager, 'risk_per_trade', 0.0)
-                except:
-                    pass
-            
+                except Exception:
+                    logger.debug("risk_per_trade from risk_manager failed", exc_info=True)
+
             risk_metrics = {
                 'account_id': account_id,
                 'dll_limit': dll_limit,
@@ -3117,9 +3139,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 current_balance = float(account_state.get('balance', 0))
                 realized_pnl = float(account_state.get('realized_pnl', 0))
                 starting_balance = current_balance - realized_pnl
-            except:
-                pass
-            
+            except Exception:
+                logger.debug("drawdown helper: account_state parse failed", exc_info=True)
+
             # Helper to get sortable timestamp from trade
             def get_trade_timestamp(t):
                 """Get a sortable timestamp from trade data."""
@@ -3744,7 +3766,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         if data.get('type') == 'ping':
                             await ws.send_json({'type': 'pong'})
                     except json.JSONDecodeError:
-                        pass
+                        logger.debug("chart WS ignored non-JSON message")
                 elif msg.type == web.WSMsgType.ERROR:
                     logger.error(f'WebSocket error: {ws.exception()}')
         finally:
@@ -3791,8 +3813,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     _ws_broadcast_queue.get_nowait()
                     _ws_broadcast_queue.put_nowait(data)
                 except asyncio.QueueEmpty:
-                    pass
-    
+                    logger.debug("WS broadcast queue race: empty after full signal")
+
     async def _process_broadcast_batch():
         """Process batched WebSocket updates every 83ms (12x/sec) for fast updates."""
         while True:
@@ -3898,7 +3920,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     'message': message
                 }
         except Exception:
-            pass
+            logger.debug("parse log line failed: %r", line, exc_info=True)
         return None
     
     # Track last sent data to avoid redundant broadcasts

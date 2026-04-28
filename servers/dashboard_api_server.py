@@ -289,11 +289,20 @@ class DashboardAPIServer:
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
             strategies = []
-            for name, strategy_class in self.trading_bot.strategy_manager.available_strategies.items():
+            sm = self.trading_bot.strategy_manager
+            from strategies.strategy_manager import BUILTIN_STRATEGY_SPECS
+
+            for name in sm.catalog_strategy_names():
+                spec = BUILTIN_STRATEGY_SPECS.get(name)
+                if spec:
+                    description = spec[2]
+                else:
+                    strategy_class = sm.get_strategy_class(name)
+                    description = getattr(strategy_class, '__doc__', '') if strategy_class else ''
                 strategies.append({
                     "name": name,
-                    "description": getattr(strategy_class, '__doc__', ''),
-                    "enabled": name in self.trading_bot.strategy_manager.active_strategies
+                    "description": description,
+                    "enabled": name in sm.active_strategies
                 })
             
             return web.json_response(strategies)
@@ -487,8 +496,8 @@ async def main():
     configure_logging()
     
     # Initialize trading bot
-    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
-    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
+    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSTEPX_USERNAME') or os.getenv('TOPSETPX_USERNAME')
     
     if not api_key or not username:
         logger.error("PROJECT_X_API_KEY and PROJECT_X_USERNAME must be set")

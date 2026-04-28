@@ -15,7 +15,6 @@ Strategy Logic:
 - Stop loss: 1.5x ATR from entry
 """
 
-import os
 import logging
 import asyncio
 from datetime import datetime
@@ -23,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from core.strategy_config import load_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -67,22 +67,26 @@ class MeanReversionStrategy(BaseStrategy):
         
         # Initialize base strategy
         super().__init__(trading_bot, config)
+
+        # Strategy-specific config loader (TOML > env > defaults).
+        # Legacy env prefix for this strategy is MEAN_REV_*.
+        self._cfg = load_strategy_config("mean_reversion", env_prefix="MEAN_REV_")
         
         # Mean reversion specific configuration
-        self.rsi_period = int(os.getenv('MEAN_REV_RSI_PERIOD', '14'))
-        self.rsi_overbought = float(os.getenv('MEAN_REV_RSI_OVERBOUGHT', '70'))
-        self.rsi_oversold = float(os.getenv('MEAN_REV_RSI_OVERSOLD', '30'))
+        self.rsi_period = int(self._cfg.get_int("rsi_period", 14))
+        self.rsi_overbought = float(self._cfg.get_float("rsi_overbought", 70.0))
+        self.rsi_oversold = float(self._cfg.get_float("rsi_oversold", 30.0))
         
-        self.ma_period = int(os.getenv('MEAN_REV_MA_PERIOD', '20'))
-        self.ma_type = os.getenv('MEAN_REV_MA_TYPE', 'SMA')  # SMA or EMA
+        self.ma_period = int(self._cfg.get_int("ma_period", 20))
+        self.ma_type = self._cfg.get_str("ma_type", "SMA")  # SMA or EMA
         
-        self.atr_period = int(os.getenv('MEAN_REV_ATR_PERIOD', '14'))
-        self.atr_deviation_threshold = float(os.getenv('MEAN_REV_ATR_DEVIATION', '2.0'))  # 2x ATR from MA
+        self.atr_period = int(self._cfg.get_int("atr_period", 14))
+        self.atr_deviation_threshold = float(self._cfg.get_float("atr_deviation_threshold", 2.0))  # 2x ATR from MA
         
-        self.stop_atr_multiplier = float(os.getenv('MEAN_REV_STOP_ATR', '1.5'))
-        self.target_ma_return = os.getenv('MEAN_REV_TARGET_MA_RETURN', 'true').lower() == 'true'
+        self.stop_atr_multiplier = float(self._cfg.get_float("stop_atr_multiplier", 1.5))
+        self.target_ma_return = self._cfg.get_bool("target_ma_return", True)
         
-        self.timeframe = os.getenv('MEAN_REV_TIMEFRAME', '5m')
+        self.timeframe = self._cfg.get_str("timeframe", "5m")
         
         # State tracking
         self.is_trading = False

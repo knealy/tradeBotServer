@@ -17,16 +17,8 @@ from uuid import uuid4
 from aiohttp import web
 import aiohttp
 
-# CORS support - make import optional
-try:
-    from aiohttp_cors import setup as cors_setup, ResourceOptions
-    CORS_AVAILABLE = True
-except ImportError:
-    CORS_AVAILABLE = False
-    # Create a dummy ResourceOptions class if not available
-    class ResourceOptions:
-        pass
-    cors_setup = None
+# CORS is required for the dashboard SPA (pinned in requirements.txt as aiohttp-cors).
+from aiohttp_cors import setup as cors_setup, ResourceOptions
 
 # Add project root to Python path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -123,26 +115,14 @@ class AsyncWebhookServer:
             self.scheduled_tasks = None
         
         # Setup CORS for React frontend (before routes)
-        if CORS_AVAILABLE:
-            self.cors = cors_setup(self.app, defaults={
-                "*": ResourceOptions(
-                    allow_credentials=True,
-                    expose_headers="*",
-                    allow_headers="*",
-                    allow_methods="*"
-                )
-            })
-        else:
-            self.cors = None
-            # Add manual CORS headers via middleware
-            @web.middleware
-            async def cors_middleware(request: web.Request, handler):
-                response = await handler(request)
-                response.headers['Access-Control-Allow-Origin'] = '*'
-                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-                return response
-            self.app.middlewares.append(cors_middleware)
+        self.cors = cors_setup(self.app, defaults={
+            "*": ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods="*"
+            )
+        })
         
         # Setup routes
         self._setup_routes()
@@ -151,9 +131,8 @@ class AsyncWebhookServer:
         self._setup_static_routes()
         
         # Apply CORS to all routes
-        if self.cors:
-            for route in list(self.app.router.routes()):
-                self.cors.add(route)
+        for route in list(self.app.router.routes()):
+            self.cors.add(route)
         
         # Server state
         self.server_start_time = None
@@ -1069,10 +1048,8 @@ class AsyncWebhookServer:
             if not hasattr(self.trading_bot, 'strategy_manager'):
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
-            strategy_exists = (
-                strategy_name in self.trading_bot.strategy_manager.available_strategies or
-                strategy_name in self.trading_bot.strategy_manager.strategies
-            )
+            sm = self.trading_bot.strategy_manager
+            strategy_exists = sm.is_strategy_registered(strategy_name) or strategy_name in sm.strategies
             
             if not strategy_exists:
                 return web.json_response({
@@ -1514,25 +1491,19 @@ class AsyncWebhookServer:
                 logger.error("Strategy manager not available")
                 return web.json_response({"error": "Strategy manager not available"}, status=503)
             
-            # Check if strategy exists
-            if not hasattr(self.trading_bot.strategy_manager, 'available_strategies'):
-                logger.error("Strategy manager has no available_strategies")
-                return web.json_response({"error": "Strategy manager not properly initialized"}, status=503)
-            
-            # Check both available_strategies (classes) and strategies (instances)
-            available_classes = list(self.trading_bot.strategy_manager.available_strategies.keys()) if hasattr(self.trading_bot.strategy_manager, 'available_strategies') else []
-            available_instances = list(self.trading_bot.strategy_manager.strategies.keys()) if hasattr(self.trading_bot.strategy_manager, 'strategies') else []
-            available = list(set(available_classes + available_instances))
-            
-            logger.info(f"Available strategy classes: {available_classes}")
-            logger.info(f"Available strategy instances: {available_instances}")
-            logger.info(f"All available strategies: {available}")
-            
-            # Check if strategy exists in either dict
-            strategy_exists = (
-                strategy_name in self.trading_bot.strategy_manager.available_strategies or
-                strategy_name in self.trading_bot.strategy_manager.strategies
+            sm = self.trading_bot.strategy_manager
+            registered = (
+                sm.catalog_strategy_names()
+                if hasattr(sm, "catalog_strategy_names")
+                else sm.registered_strategy_names()
             )
+            available_instances = list(sm.strategies.keys())
+            available = sorted(set(registered + available_instances))
+            
+            logger.debug(f"Registered strategies: {registered}")
+            logger.debug(f"Strategy instances: {available_instances}")
+            
+            strategy_exists = sm.is_strategy_registered(strategy_name) or strategy_name in sm.strategies
             
             if not strategy_exists:
                 logger.error(f"Strategy '{strategy_name}' not found. Available: {available}")
@@ -2236,7 +2207,11 @@ class AsyncWebhookServer:
             # Parse JSON payload
             try:
                 payload = await request.json()
-                logger.info(f"📨 Webhook received: {json.dumps(payload, indent=2)}")
+                if isinstance(payload, dict):
+                    logger.info("Webhook received keys=%s", list(payload.keys()))
+                else:
+                    logger.info("Webhook received type=%s", type(payload).__name__)
+                logger.debug("Webhook payload: %s", json.dumps(payload, default=str)[:4000])
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON payload: {e}")
                 return web.json_response(
@@ -2504,8 +2479,8 @@ async def main():
     # Get configuration from environment
     host = os.getenv('WEBHOOK_HOST', '0.0.0.0')
     port = int(os.getenv('WEBHOOK_PORT', '8080'))
-    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')
-    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSETPX_USERNAME')
+    api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')
+    username = os.getenv('PROJECT_X_USERNAME') or os.getenv('TOPSTEPX_USERNAME') or os.getenv('TOPSETPX_USERNAME')
     
     if not api_key or not username:
         logger.error("❌ Missing API credentials in environment")

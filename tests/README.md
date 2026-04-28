@@ -1,48 +1,29 @@
-# Unit Tests for HTTP Optimization
+# Tests
 
-This directory contains unit tests for the HTTP optimization implementation (replacing subprocess curl with requests library).
+**Start here:** [docs/TESTING.md](../docs/TESTING.md) — curated `pytest` defaults, full-tree override, benches.
 
-## Test Coverage
-
-The test suite covers:
-
-1. **Session Creation**
-   - HTTP session initialization with connection pooling
-   - Proper adapter configuration
-
-2. **Request Methods**
-   - GET requests
-   - POST requests with JSON data
-   - PUT/PATCH requests
-   - Custom headers support
-
-3. **Error Handling**
-   - Timeout errors
-   - Connection errors
-   - HTTP error status codes (5xx)
-   - Invalid JSON responses
-   - Empty responses
-
-4. **Connection Pooling**
-   - Session reuse across multiple requests
-   - Proper timeout configuration from environment variables
-
-## Running Tests
-
-### Install Dependencies
-
-First, install the test dependencies:
+From the **repository root** (recommended):
 
 ```bash
-pip install -r requirements.txt
+make test
+# or: pytest
 ```
 
-This will install:
-- `pytest>=7.0.0`
-- `pytest-asyncio>=0.21.0`
-- `pytest-mock>=3.10.0`
+Default [pytest.ini](../pytest.ini) runs a small fast subset. Legacy modules here may be stale:
 
-### Run All Tests
+```bash
+pytest --override-ini="testpaths=tests"
+```
+
+Microbenchmarks: `tests/bench/`, `make bench` (see [scripts/run_bench.sh](../scripts/run_bench.sh)).
+
+---
+
+## Historical: HTTP optimization notes
+
+Older docs in this file referred to `test_http_optimization.py` and session pooling. Those tests may still exist; run by filename if needed:
+
+### Run targeted tests
 
 ```bash
 # Using pytest directly

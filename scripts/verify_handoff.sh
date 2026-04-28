@@ -23,6 +23,16 @@ err()  { printf '[verify_handoff] ERROR %s\n' "$*" >&2; fail=1; }
 # files) are cleaned up in Phase 4 of the cleanup plan; ignore them here.
 KIT_FILES=(
     "AGENTS.md"
+    "docs/README.md"
+    "docs/ARCHITECTURE.md"
+    "docs/DEPLOYMENT.md"
+    "docs/DATABASE.md"
+    "docs/ENV_VARS.md"
+    "docs/STRATEGIES.md"
+    "docs/BACKTESTING.md"
+    "docs/DASHBOARD.md"
+    "docs/RUST.md"
+    "docs/TESTING.md"
     "docs/HANDOFF.md"
     "docs/HANDOFF_INDEX.md"
     "docs/PLAYBOOK.md"

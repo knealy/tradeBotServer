@@ -339,8 +339,8 @@ if not bot._market_hub_connected:
 
 ## 📚 Related Documentation
 
-- [COMPLETE_OPTIMIZATION_SUMMARY.md](./COMPLETE_OPTIMIZATION_SUMMARY.md) - Full optimization details
-- [PHASE3_IMPLEMENTATION_COMPLETE.md](./PHASE3_IMPLEMENTATION_COMPLETE.md) - Phase 3 specifics
+- [CHANGELOG.md](./CHANGELOG.md) — substantive runtime changes
+- [perf/README.md](./perf/README.md) — profiling and baselines
 - [StateCache Documentation](../core/state_cache.py) - Cache implementation
 - [SignalR_ENDPOINT_USAGE.md](./SignalR_ENDPOINT_USAGE.md) - SignalR guide
 

@@ -6,11 +6,11 @@ This interface abstracts market data fetching across different brokers.
 
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 
-@dataclass
+@dataclass(slots=True)
 class Bar:
     """OHLCV bar data."""
     timestamp: datetime
@@ -24,7 +24,7 @@ class Bar:
     raw_data: Optional[Dict[str, Any]] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class Quote:
     """Market quote (bid/ask/last)."""
     symbol: str
@@ -36,7 +36,7 @@ class Quote:
     raw_data: Optional[Dict[str, Any]] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class DepthLevel:
     """Order book depth level."""
     price: float
@@ -44,7 +44,7 @@ class DepthLevel:
     side: str  # "BID" or "ASK"
 
 
-@dataclass
+@dataclass(slots=True)
 class Depth:
     """Market depth (order book)."""
     symbol: str

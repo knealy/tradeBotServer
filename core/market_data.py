@@ -26,6 +26,7 @@ class ContractManager:
         """Initialize contract manager."""
         self._contract_cache: Optional[Dict] = None
         self._contract_cache_lock = Lock()
+        self._resolved_ids: Dict[str, str] = {}
         logger.debug("ContractManager initialized")
     
     def set_contract_cache(self, contracts: List[Dict], ttl_minutes: int = 60) -> None:
@@ -42,6 +43,7 @@ class ContractManager:
                 'timestamp': datetime.now(),
                 'ttl_minutes': ttl_minutes
             }
+            self._resolved_ids.clear()
             logger.debug(f"Cached {len(contracts)} contracts")
     
     def get_contract_cache(self) -> Optional[Dict]:
@@ -53,6 +55,7 @@ class ContractManager:
         """Clear the contract cache."""
         with self._contract_cache_lock:
             self._contract_cache = None
+            self._resolved_ids.clear()
             logger.debug("Contract cache cleared")
     
     def get_contract_id(self, symbol: str) -> str:
@@ -71,8 +74,12 @@ class ContractManager:
             ValueError: If contract cache is empty or symbol not found
         """
         symbol = symbol.upper()
-        
+
         with self._contract_cache_lock:
+            hit = self._resolved_ids.get(symbol)
+            if hit is not None:
+                return hit
+
             if self._contract_cache is None:
                 error_msg = (
                     f"Contract cache is empty. "
@@ -259,7 +266,9 @@ class ContractManager:
             if len(matching_contracts) > 1:
                 logger.debug(f"   Other matches: {[c['contract_id'] for c in matching_contracts[1:3]]}")
             
-            return str(contract_id)
+            cid = str(contract_id)
+            self._resolved_ids[symbol] = cid
+            return cid
 
     def get_contract_ids_for_symbol(self, symbol: str, ascending: bool = True) -> List[str]:
         """

@@ -10,6 +10,7 @@ One-line description of every file in the handoff kit.
 |------|-------------|
 | [`AGENTS.md`](../AGENTS.md) | Entry point for any LLM agent or new dev: project summary, golden rules, entrypoints, change checklist. |
 | [`.cursor/rules/*.mdc`](../.cursor/rules/) | Cursor-specific coding constraints enforced at agent invocation; authoritative if present, otherwise defer to AGENTS.md golden rules. |
+| [`docs/README.md`](README.md) | Canonical doc index (architecture, deploy, DB, env, strategies, backtest, dashboard, Rust, testing). |
 | [`docs/HANDOFF.md`](HANDOFF.md) | Deep-dive mental model: tick lifecycle, process layout, config flow, operating notes, what was cleaned up, what is deferred. |
 | [`docs/MAP.md`](MAP.md) | Annotated directory tree — every non-trivial file and module explained in one line; regenerate with `scripts/gen_map.sh`. |
 | [`docs/PLAYBOOK.md`](PLAYBOOK.md) | Operational runbooks: start/stop procedures, Railway deploy, account switch, log drain, credential rotation. |
@@ -17,7 +18,7 @@ One-line description of every file in the handoff kit.
 | [`docs/GOTCHAS.md`](GOTCHAS.md) | Known footguns and subtle bugs: TOPSETPX_* typo aliases (trading_bot.py:180–181), logs/ file-vs-dir collision, Rust hotpath coverage gaps, caffeinate dependency, JWT race on reconnect. |
 | [`docs/CONVENTIONS.md`](CONVENTIONS.md) | Code style, async patterns, naming conventions, test approach, import rules (no `requests` in async, no `os.getenv` in strategies). |
 | [`docs/CHANGELOG.md`](CHANGELOG.md) | Running record of all notable changes; add to `[Unreleased]` on every PR. |
-| [`docs/COMPREHENSIVE_ROADMAP.md`](COMPREHENSIVE_ROADMAP.md) | Long-horizon roadmap: trading_bot.py decomposition, full Rust migration or removal, WebSocket dashboard push, strategy TOML completion. |
+| [`docs/ROADMAP.md`](ROADMAP.md) | Prioritized roadmap and open work; prefer this over older `COMPREHENSIVE_ROADMAP.md`. |
 | [`docs/perf/`](perf/) | Performance analysis documents: Rust vs Python benchmarks, hot-path profiling notes, optimization summaries. |
 
 ---

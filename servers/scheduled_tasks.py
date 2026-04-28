@@ -34,13 +34,19 @@ class ScheduledTaskManager:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._last_restart_date: Optional[str] = None
-        
+        self._last_telemetry_prune_date: Optional[str] = None
+
         # Configuration
         self.restart_time = time(8, 0)  # 8:00 AM
+        self.telemetry_prune_time = time(3, 30)  # nightly DB TTL prune (Phase 2.10)
         self.timezone = pytz.timezone('US/Eastern')  # ET timezone
-        
+
         logger.info("📅 Scheduled Task Manager initialized")
         logger.info(f"   Strategy restart: {self.restart_time.strftime('%H:%M')} ET (weekdays only)")
+        logger.info(
+            "   DB telemetry prune: %s ET (api_metrics, notifications, strategy_executions + bars)",
+            self.telemetry_prune_time.strftime('%H:%M'),
+        )
     
     async def start(self):
         """Start the scheduled task manager."""
@@ -89,7 +95,15 @@ class ScheduledTaskManager:
                     logger.info(f"⏰ Scheduled strategy restart triggered at {current_time.strftime('%H:%M:%S')} ET")
                     await self._restart_strategy()
                     self._last_restart_date = current_date
-                
+
+                should_prune = (
+                    self.telemetry_prune_time <= current_time < time(3, 35)
+                    and self._last_telemetry_prune_date != current_date
+                )
+                if should_prune:
+                    await self._prune_telemetry_tables()
+                    self._last_telemetry_prune_date = current_date
+
                 # Check every minute
                 await asyncio.sleep(60)
                 
@@ -147,7 +161,20 @@ class ScheduledTaskManager:
             logger.error(f"❌ Error restarting strategy: {e}")
             import traceback
             traceback.print_exc()
-    
+
+    async def _prune_telemetry_tables(self) -> None:
+        """Delete DB rows older than retention (see DatabaseManager.cleanup_old_data)."""
+        try:
+            bot = self.trading_bot
+            db = getattr(bot, "db", None)
+            if not db or not getattr(db, "pool", None):
+                logger.debug("Skipping telemetry prune: no database pool on trading bot")
+                return
+            await asyncio.to_thread(bot.db.cleanup_old_data)
+            logger.info("✅ Nightly DB telemetry prune finished")
+        except Exception as e:
+            logger.error("❌ Telemetry prune failed: %s", e, exc_info=True)
+
     def get_next_restart_time(self) -> Optional[datetime]:
         """
         Get the next scheduled restart time.

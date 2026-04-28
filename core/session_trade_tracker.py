@@ -11,13 +11,14 @@ Based on TopstepX requirements:
 """
 
 import logging
-import json
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from collections import deque
 from threading import Lock
 from enum import Enum
+
+from core.json_fast import dumps_str
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class FillSide(Enum):
     SELL = 1
 
 
-@dataclass
+@dataclass(slots=True)
 class Fill:
     """Represents a single fill/execution."""
     fill_id: str
@@ -52,7 +53,7 @@ class Fill:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class Trade:
     """Represents a completed trade (entry + exit)."""
     trade_id: str
@@ -83,7 +84,7 @@ class Trade:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class SessionState:
     """Trading session state."""
     session_id: str
@@ -411,59 +412,73 @@ class SessionTradeTracker:
     def _persist_trades(self, account_id: str, trades: List[Trade]) -> None:
         """Persist trades to database."""
         try:
-            if not self.db:
+            if not self.db or not trades:
                 return
-            
+            from psycopg2.extras import execute_values
+
+            aid = str(account_id)
+            trade_ids = [t.trade_id for t in trades if t.trade_id]
+            rows = []
             with self.db.get_connection() as conn:
                 with conn.cursor() as cur:
+                    existing: set = set()
+                    if trade_ids:
+                        cur.execute(
+                            """
+                            SELECT metadata->>'trade_id' FROM trade_history
+                            WHERE account_id = %s AND metadata->>'trade_id' = ANY(%s)
+                            """,
+                            (aid, trade_ids),
+                        )
+                        existing = {r[0] for r in cur.fetchall() if r and r[0]}
                     for trade in trades:
-                        # Use trade_id as unique identifier if available, otherwise generate one
-                        trade_id = trade.trade_id
-                        
-                        # Check if trade already exists (avoid duplicates)
-                        cur.execute("""
-                            SELECT id FROM trade_history 
-                            WHERE metadata->>'trade_id' = %s
-                            LIMIT 1
-                        """, (trade_id,))
-                        
-                        if cur.fetchone():
-                            logger.debug(f"Trade {trade_id} already exists, skipping")
+                        if trade.trade_id in existing:
+                            logger.debug("Trade %s already exists, skipping", trade.trade_id)
                             continue
-                        
-                        cur.execute("""
+                        rows.append(
+                            (
+                                trade.account_id,
+                                trade.symbol,
+                                trade.side,
+                                trade.quantity,
+                                trade.entry_price,
+                                trade.exit_price,
+                                trade.net_pnl,
+                                trade.entry_time,
+                                trade.exit_time,
+                                trade.duration_seconds,
+                                dumps_str(
+                                    {
+                                        "trade_id": trade.trade_id,
+                                        "entry_fill_id": trade.entry_fill_id,
+                                        "exit_fill_id": trade.exit_fill_id,
+                                        "gross_pnl": trade.gross_pnl,
+                                        "commission": trade.commission,
+                                        "fee": trade.fee,
+                                        "point_value": trade.point_value,
+                                        "session_id": trade.session_id,
+                                    }
+                                ),
+                            )
+                        )
+                    if rows:
+                        execute_values(
+                            cur,
+                            """
                             INSERT INTO trade_history (
                                 account_id, symbol, side, quantity,
                                 entry_price, exit_price, pnl,
                                 entry_time, exit_time, duration_seconds,
                                 metadata
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (
-                            trade.account_id,
-                            trade.symbol,
-                            trade.side,
-                            trade.quantity,
-                            trade.entry_price,
-                            trade.exit_price,
-                            trade.net_pnl,
-                            trade.entry_time,
-                            trade.exit_time,
-                            trade.duration_seconds,
-                            json.dumps({
-                                'trade_id': trade.trade_id,
-                                'entry_fill_id': trade.entry_fill_id,
-                                'exit_fill_id': trade.exit_fill_id,
-                                'gross_pnl': trade.gross_pnl,
-                                'commission': trade.commission,
-                                'fee': trade.fee,
-                                'point_value': trade.point_value,
-                                'session_id': trade.session_id
-                            })
-                        ))
-                    conn.commit()
-                    logger.debug(f"✅ Persisted {len(trades)} trades to database")
+                            ) VALUES %s
+                            """,
+                            rows,
+                            page_size=100,
+                        )
+            if rows:
+                logger.debug("Persisted %d trades to database", len(rows))
         except Exception as e:
-            logger.error(f"Failed to persist trades: {e}")
+            logger.error("Failed to persist trades: %s", e, exc_info=True)
     
     def get_session_trades(self, account_id: str, limit: int = 100) -> List[Dict]:
         """

@@ -20,13 +20,13 @@ Exit Logic:
 
 import asyncio
 import logging
-import os
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
 from .strategy_base import BaseStrategy, StrategyConfig, StrategyStatus
+from core.strategy_config import load_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -52,30 +52,33 @@ class TrendScalpingStrategy(BaseStrategy):
             config: Optional strategy configuration
         """
         if config is None:
+            cfg = load_strategy_config("trend_scalping", env_prefix="TREND_SCALP_")
             config = StrategyConfig(
                 name="trend_scalping",
-                symbols=os.getenv('STRATEGY_SYMBOLS', 'MNQ').split(','),
+                symbols=cfg.get_list("symbols", ["MNQ"]),
                 enabled=True
             )
         
         super().__init__(trading_bot, config)
+
+        self._cfg = load_strategy_config("trend_scalping", env_prefix="TREND_SCALP_")
         
         # EMA parameters
-        self.ema_short = int(os.getenv('TREND_SCALP_EMA_SHORT', '89'))
-        self.ema_long = int(os.getenv('TREND_SCALP_EMA_LONG', '233'))
+        self.ema_short = int(self._cfg.get_int("ema_short", 89))
+        self.ema_long = int(self._cfg.get_int("ema_long", 233))
         
         # Timeframe
-        self.timeframe = os.getenv('TREND_SCALP_TIMEFRAME', '1m')
+        self.timeframe = self._cfg.get_str("timeframe", "1m")
         
         # Risk management
-        self.risk_reward_ratio = float(os.getenv('TREND_SCALP_RR_RATIO', '2.0'))
-        self.max_hold_time_seconds = int(os.getenv('TREND_SCALP_MAX_HOLD_TIME', '1800'))  # 30 min default
-        self.trailing_stop_enabled = os.getenv('TREND_SCALP_TRAILING_STOP', 'true').lower() == 'true'
-        self.breakeven_trigger_r = float(os.getenv('TREND_SCALP_BREAKEVEN_R', '1.0'))  # Move to BE after +1R
+        self.risk_reward_ratio = float(self._cfg.get_float("risk_reward_ratio", 2.0))
+        self.max_hold_time_seconds = int(self._cfg.get_int("max_hold_time_seconds", 1800))  # 30 min default
+        self.trailing_stop_enabled = self._cfg.get_bool("trailing_stop_enabled", True)
+        self.breakeven_trigger_r = float(self._cfg.get_float("breakeven_trigger_r", 1.0))  # Move to BE after +1R
         
         # Market structure parameters
-        self.lookback_bars = int(os.getenv('TREND_SCALP_LOOKBACK', '20'))  # Bars to look back for structure
-        self.swing_threshold = float(os.getenv('TREND_SCALP_SWING_THRESHOLD', '0.5'))  # % move to confirm swing
+        self.lookback_bars = int(self._cfg.get_int("lookback_bars", 20))  # Bars to look back for structure
+        self.swing_threshold = float(self._cfg.get_float("swing_threshold", 0.5))  # % move to confirm swing
         
         # Position tracking
         self.active_positions: Dict[str, Dict] = {}

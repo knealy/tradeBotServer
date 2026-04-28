@@ -8,6 +8,7 @@ to WebSocket clients for real-time chart updates.
 import asyncio
 import logging
 import os
+import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Callable, Any, Iterable, Set, List
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(slots=True)
 class Bar:
     """OHLCV bar data."""
     symbol: str
@@ -30,7 +31,7 @@ class Bar:
     tick_count: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class BarBuilder:
     """Builds a bar from tick data."""
     symbol: str
@@ -104,9 +105,8 @@ class BarAggregator:
         self.bar_builders: Dict[str, Dict[str, BarBuilder]] = defaultdict(dict)  # {symbol: {timeframe: BarBuilder}}
         self.completed_bars: Dict[str, Dict[str, Bar]] = defaultdict(dict)  # {symbol: {timeframe: Bar}}
         self._broadcast_log_counts: Dict[str, int] = defaultdict(int)
-        self.lock = asyncio.Lock()
-        self.update_interval = 0.2  # 5 updates per second (200ms)
-        self._update_task: Optional[asyncio.Task] = None
+        self._last_partial_emit: Dict[str, float] = {}
+        self._aggregator_loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
         # Determine default timeframes (support env override)
         env_frames = os.getenv('BAR_DEFAULT_TIMEFRAMES')
@@ -126,86 +126,126 @@ class BarAggregator:
         self.symbol_timeframes: Dict[str, Set[str]] = defaultdict(set)
         
     async def start(self):
-        """Start the bar aggregator update loop."""
+        """Start the bar aggregator (event-driven broadcasts; no periodic poll)."""
         if self._running:
             logger.warning("⚠️  Bar aggregator already running")
             return
         self._running = True
-        self._update_task = asyncio.create_task(self._update_loop())
-        logger.info(f"📊 Bar aggregator started - tracking {len(self.default_timeframes)} timeframes: {', '.join(self.default_timeframes)}")
-    
+        try:
+            self._aggregator_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._aggregator_loop = None
+        logger.info(
+            "📊 Bar aggregator started - tracking %d timeframes: %s",
+            len(self.default_timeframes),
+            ", ".join(self.default_timeframes),
+        )
+
     async def stop(self):
         """Stop the bar aggregator."""
         self._running = False
-        if self._update_task:
-            self._update_task.cancel()
-            try:
-                await self._update_task
-            except asyncio.CancelledError:
-                pass
+        self._aggregator_loop = None
         logger.info("📊 Bar aggregator stopped")
-    
-    async def _update_loop(self):
-        """Periodic update loop to broadcast bar updates."""
-        while self._running:
-            try:
-                await asyncio.sleep(self.update_interval)
-                await self._broadcast_updates()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in bar aggregator update loop: {e}")
-    
-    async def _broadcast_updates(self):
-        """Broadcast current bar updates to WebSocket clients."""
-        if not self.broadcast_callback:
+
+    def _partial_min_interval(self) -> float:
+        try:
+            return float(os.getenv("BAR_PARTIAL_MIN_INTERVAL", "0.15"))
+        except ValueError:
+            return 0.15
+
+    def _enqueue_broadcast(self, message: Dict[str, Any], debug_key: Optional[str] = None) -> None:
+        """Schedule broadcast on the aggregator loop (safe from SignalR threads)."""
+        if not self.broadcast_callback or not self._running:
             return
-        
-        async with self.lock:
-            for symbol, timeframes in self.bar_builders.items():
-                for timeframe, builder in timeframes.items():
-                    if builder.last_update and builder.close is not None:
-                        # Only broadcast if bar was updated recently (within last 2 seconds)
-                        time_since_update = (datetime.now(timezone.utc) - builder.last_update).total_seconds()
-                        if time_since_update > 2.0:
-                            continue  # Skip stale bars
-                        
-                        # Create partial bar update
-                        bar_data = {
-                            "symbol": symbol,
-                            "timeframe": timeframe,
-                            "timestamp": builder.bar_start.isoformat(),
-                            "bar": {
-                                "open": builder.open,
-                                "high": builder.high or builder.open,
-                                "low": builder.low or builder.open,
-                                "close": builder.close,
-                                "volume": builder.volume,
-                            },
-                            "is_partial": True,  # Indicates this is a forming bar
-                        }
-                        
-                        # Broadcast via callback
-                        if self.broadcast_callback:
-                            try:
-                                self.broadcast_callback({
-                                    "type": "market_update",
-                                    "data": bar_data,
-                                    "timestamp": datetime.now(timezone.utc).isoformat()
-                                })
-                                key = f"{symbol}:{timeframe}"
-                                count = self._broadcast_log_counts[key]
-                                if count < 5:
-                                    logger.info(
-                                        f"📡 Broadcasted {timeframe} bar update for {symbol}: "
-                                        f"O:{bar_data['bar']['open']} H:{bar_data['bar']['high']} "
-                                        f"L:{bar_data['bar']['low']} C:{bar_data['bar']['close']} "
-                                        f"(tick_count={builder.tick_count})"
-                                    )
-                                    self._broadcast_log_counts[key] = count + 1
-                            except Exception as e:
-                                logger.debug(f"Error broadcasting bar update: {e}")
-    
+        loop = self._aggregator_loop
+        if loop is None:
+            return
+
+        def _run() -> None:
+            try:
+                self.broadcast_callback(message)
+            except Exception as exc:
+                logger.debug("Error broadcasting bar update: %s", exc)
+                return
+            if (
+                debug_key
+                and os.getenv("BAR_AGG_DEBUG", "0").lower() in ("1", "true", "yes", "on")
+            ):
+                count = self._broadcast_log_counts[debug_key]
+                if count < 5:
+                    data = message.get("data") or {}
+                    b = data.get("bar") or {}
+                    logger.info(
+                        "📡 Broadcasted %s bar update for %s: O:%s H:%s L:%s C:%s",
+                        data.get("timeframe"),
+                        data.get("symbol"),
+                        b.get("open"),
+                        b.get("high"),
+                        b.get("low"),
+                        b.get("close"),
+                    )
+                    self._broadcast_log_counts[debug_key] = count + 1
+
+        try:
+            loop.call_soon_threadsafe(_run)
+        except RuntimeError:
+            _run()
+
+    def _emit_partial_bar(self, symbol_key: str, timeframe: str, builder: BarBuilder) -> None:
+        if builder.close is None or builder.open is None:
+            return
+        key = f"{symbol_key}:{timeframe}"
+        now = time.monotonic()
+        min_iv = self._partial_min_interval()
+        last = self._last_partial_emit.get(key, 0.0)
+        if now - last < min_iv:
+            return
+        self._last_partial_emit[key] = now
+        bar_data = {
+            "symbol": symbol_key,
+            "timeframe": timeframe,
+            "timestamp": builder.bar_start.isoformat(),
+            "bar": {
+                "open": builder.open,
+                "high": builder.high or builder.open,
+                "low": builder.low or builder.open,
+                "close": builder.close,
+                "volume": builder.volume,
+            },
+            "is_partial": True,
+        }
+        self._enqueue_broadcast(
+            {
+                "type": "market_update",
+                "data": bar_data,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            debug_key=key,
+        )
+
+    def _emit_completed_bar(self, bar: Bar) -> None:
+        bar_data = {
+            "symbol": bar.symbol,
+            "timeframe": bar.timeframe,
+            "timestamp": bar.timestamp.isoformat(),
+            "bar": {
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+            },
+            "is_partial": False,
+        }
+        self._enqueue_broadcast(
+            {
+                "type": "market_update",
+                "data": bar_data,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            debug_key=f"{bar.symbol}:{bar.timeframe}",
+        )
+
     def add_quote(self, symbol: str, price: float, volume: int = 0, timestamp: Optional[datetime] = None):
         """
         Add a quote update to the aggregator.
@@ -233,15 +273,17 @@ class BarAggregator:
                     completed_bar = builder.to_bar()
                     self.completed_bars[symbol_key][timeframe] = completed_bar
                     logger.debug(f"Completed bar for {symbol_key} {timeframe}: {completed_bar.close}")
-                
+                    self._emit_completed_bar(completed_bar)
+
                 # Start new bar
                 bar_start = self._get_bar_start_time(timestamp, timeframe)
                 builder = BarBuilder(symbol_key, timeframe, bar_start)
                 self.bar_builders[symbol_key][timeframe] = builder
-            
+
             # Add tick to current bar
             builder.add_tick(price, volume, timestamp)
-    
+            self._emit_partial_bar(symbol_key, timeframe, builder)
+
     def subscribe_timeframe(self, symbol: str, timeframe: str):
         """
         Subscribe to bar updates for a symbol/timeframe.

@@ -38,6 +38,7 @@ class EventType(Enum):
     STRATEGY_STARTED = "strategy_started"
     STRATEGY_STOPPED = "strategy_stopped"
     SIGNAL_GENERATED = "signal_generated"
+    STRATEGY_CONFIG_RELOADED = "strategy_config_reloaded"
     
     # GUI events
     GUI_REFRESH_REQUESTED = "gui_refresh_requested"
@@ -48,7 +49,7 @@ class EventType(Enum):
     SHUTDOWN_REQUESTED = "shutdown_requested"
 
 
-@dataclass
+@dataclass(slots=True)
 class Event:
     """
     System event with metadata.

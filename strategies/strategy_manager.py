@@ -8,11 +8,76 @@ market conditions, and coordinates their execution.
 import os
 import logging
 import asyncio
-from typing import Dict, List, Optional, Type, Any
+import importlib
+import tomllib
+from pathlib import Path
+from typing import Dict, List, Optional, Type, Any, Tuple, Set
 from datetime import datetime, timezone
 from strategies.strategy_base import BaseStrategy, StrategyConfig, StrategyStatus, MarketCondition
+from core.events import Event, EventType
 
 logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_STRATEGIES_CONFIG_DIR = _REPO_ROOT / "config" / "strategies"
+
+# Built-in strategies: (import path, class name, short description for UIs without importing).
+BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
+    "overnight_range": (
+        "strategies.overnight_range_strategy",
+        "OvernightRangeStrategy",
+        "Overnight range breakout",
+    ),
+    "mean_reversion": (
+        "strategies.mean_reversion_strategy",
+        "MeanReversionStrategy",
+        "Mean reversion",
+    ),
+    "trend_following": (
+        "strategies.trend_following_strategy",
+        "TrendFollowingStrategy",
+        "Trend following",
+    ),
+    "simple_momentum": (
+        "strategies.simple_momentum_strategy",
+        "SimpleMomentumStrategy",
+        "Simple momentum",
+    ),
+    "simple_candle": (
+        "strategies.simple_candle_strategy",
+        "SimpleCandleStrategy",
+        "Simple candle patterns",
+    ),
+    "trend_scalping": (
+        "strategies.trend_scalping_strategy",
+        "TrendScalpingStrategy",
+        "Trend scalping",
+    ),
+}
+
+
+def _normalize_strategy_id(name: str) -> str:
+    return str(name).strip().lower().replace("-", "_")
+
+
+def _strategy_ids_enabled_in_toml() -> Set[str]:
+    """Strategy ids with config/strategies/<id>.toml and meta.enabled != false."""
+    out: Set[str] = set()
+    if not _STRATEGIES_CONFIG_DIR.is_dir():
+        return out
+    for path in _STRATEGIES_CONFIG_DIR.glob("*.toml"):
+        if path.name.startswith("_"):
+            continue
+        try:
+            with path.open("rb") as fh:
+                data = tomllib.load(fh)
+            meta = data.get("meta") or {}
+            if meta.get("enabled", True) is False:
+                continue
+            out.add(path.stem.lower())
+        except Exception as exc:
+            logger.warning("Skipping strategy TOML %s: %s", path, exc)
+    return out
 
 
 class StrategyManager:
@@ -38,12 +103,15 @@ class StrategyManager:
         self.strategies: Dict[str, BaseStrategy] = {}
         self.strategy_classes: Dict[str, Type[BaseStrategy]] = {}
         self.available_strategies: Dict[str, Type[BaseStrategy]] = {}  # Alias for strategy_classes
+        # Deferred imports: name -> (module_path, class_name) — imported on first use
+        self._lazy_strategy_specs: Dict[str, Tuple[str, str]] = {}
         self.active_strategies: List[str] = []
         
         # Global settings
-        self.max_concurrent_strategies = int(os.getenv('MAX_CONCURRENT_STRATEGIES', '3'))
-        self.auto_select_enabled = os.getenv('AUTO_SELECT_STRATEGIES', 'false').lower() == 'true'
-        self.market_condition_check_interval = int(os.getenv('MARKET_CONDITION_CHECK_INTERVAL', '300'))  # 5 minutes
+        # Env-only infra settings (strategy knobs live in config/strategies/*.toml).
+        self.max_concurrent_strategies = int(os.environ.get('MAX_CONCURRENT_STRATEGIES', '3'))
+        self.auto_select_enabled = os.environ.get('AUTO_SELECT_STRATEGIES', 'false').lower() == 'true'
+        self.market_condition_check_interval = int(os.environ.get('MARKET_CONDITION_CHECK_INTERVAL', '300'))  # 5 minutes
         
         # State
         self._tasks: List[asyncio.Task] = []
@@ -51,6 +119,134 @@ class StrategyManager:
         self._state_cache: Dict[str, Dict] = {}
         
         logger.info("✨ Strategy Manager initialized")
+
+    async def _publish_strategy_lifecycle(self, event_type: EventType, strategy_name: str) -> None:
+        """Notify EventBus when a strategy starts or stops (for event-driven monitors)."""
+        bus = getattr(self.trading_bot, "event_bus", None)
+        if not bus or not getattr(bus, "_running", False):
+            return
+        try:
+            await bus.publish(
+                Event(
+                    type=event_type,
+                    data={"strategy": strategy_name, "strategy_name": strategy_name},
+                    source="strategy_manager",
+                )
+            )
+        except Exception as exc:
+            logger.debug("Strategy lifecycle event not published: %s", exc)
+
+    def _all_registered_names(self) -> List[str]:
+        """Strategy keys including lazy-registered (not yet imported)."""
+        names: Set[str] = set(self.strategy_classes.keys()) | set(self._lazy_strategy_specs.keys())
+        return sorted(names)
+
+    def registered_strategy_names(self) -> List[str]:
+        """Public: all strategy ids registered with this manager (lazy or eager)."""
+        return self._all_registered_names()
+
+    def catalog_strategy_names(self) -> List[str]:
+        """Full built-in catalog plus any extra registered/loaded ids (for UIs, CLI lists)."""
+        return sorted(
+            set(self.builtin_strategy_ids())
+            | set(self._all_registered_names())
+            | set(self.strategies.keys())
+        )
+
+    @staticmethod
+    def builtin_strategy_ids() -> List[str]:
+        """All built-in strategy ids (catalog); does not import strategy modules."""
+        return sorted(BUILTIN_STRATEGY_SPECS.keys())
+
+    def _is_registered(self, name: str) -> bool:
+        n = _normalize_strategy_id(name)
+        return n in self.strategy_classes or n in self._lazy_strategy_specs
+
+    def is_builtin_strategy(self, name: str) -> bool:
+        return _normalize_strategy_id(name) in BUILTIN_STRATEGY_SPECS
+
+    def _is_known_strategy(self, name: str) -> bool:
+        """Built-in id, or explicitly registered (lazy/eager), or ad-hoc test class."""
+        n = _normalize_strategy_id(name)
+        return n in BUILTIN_STRATEGY_SPECS or n in self.strategy_classes or n in self._lazy_strategy_specs
+
+    def is_strategy_registered(self, name: str) -> bool:
+        """True if this id can be started or configured (built-in or registered in this process)."""
+        return self._is_known_strategy(name)
+
+    def get_strategy_class(self, name: str) -> Optional[Type[BaseStrategy]]:
+        """Resolve and return the strategy class, importing lazily if needed."""
+        n = _normalize_strategy_id(name)
+        if n in self.strategy_classes:
+            return self.strategy_classes[n]
+        if n not in BUILTIN_STRATEGY_SPECS and n not in self._lazy_strategy_specs:
+            return None
+        try:
+            return self._ensure_strategy_class(n)
+        except Exception:
+            logger.exception("Failed to load strategy class for %s", n)
+            return None
+
+    def _ensure_strategy_class(self, name: str) -> Type[BaseStrategy]:
+        """Return strategy class, importing lazily if needed."""
+        n = _normalize_strategy_id(name)
+        if n in self.strategy_classes:
+            return self.strategy_classes[n]
+        spec_pair = self._lazy_strategy_specs.get(n)
+        if not spec_pair:
+            spec = BUILTIN_STRATEGY_SPECS.get(n)
+            if not spec:
+                raise KeyError(n)
+            spec_pair = (spec[0], spec[1])
+            self._lazy_strategy_specs[n] = spec_pair
+        module_path, class_name = spec_pair
+        mod = importlib.import_module(module_path)
+        cls = getattr(mod, class_name)
+        self.strategy_classes[n] = cls
+        self.available_strategies[n] = cls
+        return cls
+
+    def register_builtin_strategies(self, subset: Optional[List[str]] = None) -> None:
+        """
+        Register lazy imports for this process.
+
+        - If ``subset`` is a non-empty list: only those built-in ids (e.g. executor ``--strategy=``).
+        - Else: ids with ``config/strategies/<id>.toml`` and ``meta.enabled`` not false, plus
+          optional env ``REGISTER_STRATEGIES=comma,list``.
+        - If that yields nothing: register all built-ins (dashboard / dev default).
+        """
+        if subset:
+            for raw in subset:
+                n = _normalize_strategy_id(raw)
+                if n not in BUILTIN_STRATEGY_SPECS:
+                    logger.warning("Unknown strategy id %r ignored (not in built-in catalog)", raw)
+                    continue
+                spec = BUILTIN_STRATEGY_SPECS[n]
+                self.register_strategy_lazy(n, spec[0], spec[1])
+            logger.info(
+                "Registered %d built-in strategy module(s) for this process (explicit subset)",
+                len(self._all_registered_names()),
+            )
+            return
+
+        selected: Set[str] = set(_strategy_ids_enabled_in_toml())
+        extra = os.environ.get("REGISTER_STRATEGIES", "").strip()
+        if extra:
+            for part in extra.split(","):
+                n = _normalize_strategy_id(part)
+                if n in BUILTIN_STRATEGY_SPECS:
+                    selected.add(n)
+        # Keep only ids that map to lazy built-in modules (ignore unknown TOML stems).
+        selected = {n for n in selected if n in BUILTIN_STRATEGY_SPECS}
+        if not selected:
+            selected = set(BUILTIN_STRATEGY_SPECS.keys())
+        for n in sorted(selected):
+            spec = BUILTIN_STRATEGY_SPECS[n]
+            self.register_strategy_lazy(n, spec[0], spec[1])
+        logger.info(
+            "Registered %d built-in strategy module(s) for this process (TOML/env/default)",
+            len(selected),
+        )
     
     def register_strategy(self, name: str, strategy_class: Type[BaseStrategy]):
         """
@@ -60,9 +256,19 @@ class StrategyManager:
             name: Strategy identifier
             strategy_class: Strategy class (not instance)
         """
-        self.strategy_classes[name] = strategy_class
-        self.available_strategies[name] = strategy_class  # Keep alias in sync
-        logger.info(f"📝 Registered strategy: {name}")
+        n = _normalize_strategy_id(name)
+        self.strategy_classes[n] = strategy_class
+        self.available_strategies[n] = strategy_class  # Keep alias in sync
+        self._lazy_strategy_specs.pop(n, None)
+        logger.info(f"📝 Registered strategy: {n}")
+
+    def register_strategy_lazy(self, name: str, module_path: str, class_name: str) -> None:
+        """Register a strategy without importing its module until first use."""
+        n = _normalize_strategy_id(name)
+        if n in self.strategy_classes:
+            return
+        self._lazy_strategy_specs[n] = (module_path, class_name)
+        logger.debug("Registered strategy (lazy): %s", n)
 
     async def broadcast_signal(self, signal_data: Dict[str, Any]) -> None:
         """
@@ -83,11 +289,15 @@ class StrategyManager:
                         account_name = self.trading_bot.selected_account.get('name', 'Unknown')
                     else:
                         account_name = str(self.trading_bot.selected_account)
-                self.trading_bot.discord_notifier.send_signal_notification(
-                    signal_type=str(signal_data.get('type', 'SIGNAL')),
-                    symbol=str(signal_data.get('symbol', 'Unknown')),
-                    account_name=account_name,
-                    details=signal_data,
+                # Discord notifier uses synchronous HTTP; offload to a thread to avoid
+                # blocking the event loop in StrategyManager async code.
+                asyncio.create_task(
+                    self.trading_bot.discord_notifier.send_signal_notification(
+                        signal_type=str(signal_data.get('type', 'SIGNAL')),
+                        symbol=str(signal_data.get('symbol', 'Unknown')),
+                        account_name=account_name,
+                        details=signal_data,
+                    )
                 )
         except Exception as e:
             logger.debug(f"Could not send Discord notification for signal: {e}")
@@ -117,8 +327,9 @@ class StrategyManager:
         """
         logger.info("🔄 Loading strategies from configuration...")
         
-        for name, strategy_class in self.strategy_classes.items():
+        for name in self._all_registered_names():
             try:
+                strategy_class = self._ensure_strategy_class(name)
                 # Load config from env
                 config = StrategyConfig.from_env(name)
                 
@@ -133,7 +344,7 @@ class StrategyManager:
             except Exception as e:
                 logger.error(f"❌ Failed to load strategy {name}: {e}")
         
-        logger.info(f"📊 Total strategies loaded: {len(self.strategies)}/{len(self.strategy_classes)}")
+        logger.info(f"📊 Total strategies loaded: {len(self.strategies)}/{len(self._all_registered_names())}")
     
     def load_strategies_from_config(self):
         """Alias for load_strategies() for backward compatibility."""
@@ -153,11 +364,23 @@ class StrategyManager:
         # Get persisted states for this account
         persisted_states = {}
         if db and account_id:
-            persisted_states = db.get_strategy_states(account_id)
+            raw_persisted = db.get_strategy_states(account_id)
+            persisted_states = {_normalize_strategy_id(k): v for k, v in raw_persisted.items()}
             logger.info(f"📋 Loaded {len(persisted_states)} persisted strategy states for account {account_id}")
+        else:
+            persisted_states = {}
 
-        for name, strategy_class in self.strategy_classes.items():
+        names = sorted(
+            set(persisted_states.keys())
+            | set(self._all_registered_names())
+            | set(self.strategies.keys())
+        )
+        for name in names:
+            if not self._is_known_strategy(name):
+                logger.debug("Skipping auto-start for unknown strategy id: %s", name)
+                continue
             try:
+                strategy_class = self._ensure_strategy_class(name)
                 # Check persisted state first (per-account configuration)
                 persisted_state = persisted_states.get(name)
                 should_start = False
@@ -241,17 +464,18 @@ class StrategyManager:
         Returns:
             tuple: (success: bool, message: str)
         """
-        if name not in self.available_strategies:
+        n = _normalize_strategy_id(name)
+        if not self._is_known_strategy(n):
             return False, f"Unknown strategy: {name}"
 
         # Get or create strategy instance
-        if name not in self.strategies:
-            strategy_class = self.available_strategies[name]
-            config = StrategyConfig.from_env(name)
+        if n not in self.strategies:
+            strategy_class = self._ensure_strategy_class(n)
+            config = StrategyConfig.from_env(n)
             strategy = strategy_class(self.trading_bot, config)
-            self.strategies[name] = strategy
+            self.strategies[n] = strategy
 
-        strategy = self.strategies[name]
+        strategy = self.strategies[n]
 
         # Update config fields
         if symbols is not None:
@@ -273,17 +497,17 @@ class StrategyManager:
             strategy_specific_settings = strategy_params.copy()
         
         self._save_strategy_state(
-            name,
+            n,
             strategy.config.enabled,
             strategy.config.symbols,
             persist=True,
             strategy_specific_settings=strategy_specific_settings
         )
 
-        logger.info(f"📝 Updated config for {name}: symbols={strategy.config.symbols}, "
+        logger.info(f"📝 Updated config for {n}: symbols={strategy.config.symbols}, "
                    f"position_size={strategy.config.position_size}, max_positions={strategy.config.max_positions}")
 
-        return True, f"Configuration updated for {name}"
+        return True, f"Configuration updated for {n}"
 
     def _get_account_id(self) -> Optional[str]:
         """Resolve the currently selected account id from the trading bot."""
@@ -402,35 +626,35 @@ class StrategyManager:
             # Only apply database settings if env vars are not set (env vars take precedence)
             # This ensures .env file changes are respected even if database has old values
             if 'overnight_start_time' in settings:
-                if os.getenv('OVERNIGHT_START_TIME'):
-                    logger.info(f"🌍 Using OVERNIGHT_START_TIME from .env ({os.getenv('OVERNIGHT_START_TIME')}) instead of database ({settings['overnight_start_time']})")
+                if os.environ.get('OVERNIGHT_START_TIME'):
+                    logger.info(f"🌍 Using OVERNIGHT_START_TIME from .env ({os.environ.get('OVERNIGHT_START_TIME')}) instead of database ({settings['overnight_start_time']})")
                 else:
                     strategy.overnight_start = str(settings['overnight_start_time'])
             if 'overnight_end_time' in settings:
-                if os.getenv('OVERNIGHT_END_TIME'):
-                    logger.info(f"🌍 Using OVERNIGHT_END_TIME from .env ({os.getenv('OVERNIGHT_END_TIME')}) instead of database ({settings['overnight_end_time']})")
+                if os.environ.get('OVERNIGHT_END_TIME'):
+                    logger.info(f"🌍 Using OVERNIGHT_END_TIME from .env ({os.environ.get('OVERNIGHT_END_TIME')}) instead of database ({settings['overnight_end_time']})")
                 else:
                     strategy.overnight_end = str(settings['overnight_end_time'])
             if 'market_open_time' in settings:
-                if os.getenv('MARKET_OPEN_TIME'):
-                    logger.info(f"🌍 Using MARKET_OPEN_TIME from .env ({os.getenv('MARKET_OPEN_TIME')}) instead of database ({settings['market_open_time']})")
+                if os.environ.get('MARKET_OPEN_TIME'):
+                    logger.info(f"🌍 Using MARKET_OPEN_TIME from .env ({os.environ.get('MARKET_OPEN_TIME')}) instead of database ({settings['market_open_time']})")
                 else:
                     strategy.market_open_time = str(settings['market_open_time'])
-            if 'strategy_timezone' in settings and not os.getenv('STRATEGY_TIMEZONE'):
+            if 'strategy_timezone' in settings and not os.environ.get('STRATEGY_TIMEZONE'):
                 strategy.timezone = pytz.timezone(str(settings['strategy_timezone']))
-            if 'atr_period' in settings and not os.getenv('ATR_PERIOD'):
+            if 'atr_period' in settings and not os.environ.get('ATR_PERIOD'):
                 strategy.atr_period = int(settings['atr_period'])
-            if 'atr_timeframe' in settings and not os.getenv('ATR_TIMEFRAME'):
+            if 'atr_timeframe' in settings and not os.environ.get('ATR_TIMEFRAME'):
                 strategy.atr_timeframe = str(settings['atr_timeframe'])
-            if 'stop_atr_multiplier' in settings and not os.getenv('STOP_ATR_MULTIPLIER'):
+            if 'stop_atr_multiplier' in settings and not os.environ.get('STOP_ATR_MULTIPLIER'):
                 strategy.stop_atr_multiplier = float(settings['stop_atr_multiplier'])
-            if 'tp_atr_multiplier' in settings and not os.getenv('TP_ATR_MULTIPLIER'):
+            if 'tp_atr_multiplier' in settings and not os.environ.get('TP_ATR_MULTIPLIER'):
                 strategy.tp_atr_multiplier = float(settings['tp_atr_multiplier'])
-            if 'breakeven_enabled' in settings and not os.getenv('BREAKEVEN_ENABLED'):
+            if 'breakeven_enabled' in settings and not os.environ.get('BREAKEVEN_ENABLED'):
                 strategy.breakeven_enabled = bool(settings['breakeven_enabled'])
-            if 'breakeven_profit_points' in settings and not os.getenv('BREAKEVEN_PROFIT_POINTS'):
+            if 'breakeven_profit_points' in settings and not os.environ.get('BREAKEVEN_PROFIT_POINTS'):
                 strategy.breakeven_profit_points = float(settings['breakeven_profit_points'])
-            if 'range_break_offset' in settings and not os.getenv('RANGE_BREAK_OFFSET'):
+            if 'range_break_offset' in settings and not os.environ.get('RANGE_BREAK_OFFSET'):
                 strategy.range_break_offset = float(settings['range_break_offset'])
             logger.debug(f"Applied overnight_range specific settings to {strategy_name} (env vars take precedence)")
     
@@ -492,7 +716,7 @@ class StrategyManager:
     
     def get_strategy(self, name: str) -> Optional[BaseStrategy]:
         """Get strategy by name."""
-        return self.strategies.get(name)
+        return self.strategies.get(_normalize_strategy_id(name))
     
     def get_all_strategies(self) -> List[BaseStrategy]:
         """Get all loaded strategies."""
@@ -520,10 +744,20 @@ class StrategyManager:
             return
         
         logger.info("💾 Loading persisted strategy state...")
-        persisted_states = db.get_strategy_states(account_id)
+        raw_persisted = db.get_strategy_states(account_id)
+        persisted_states = {_normalize_strategy_id(k): v for k, v in raw_persisted.items()}
         self._state_cache = dict(persisted_states)
-        
-        for name, strategy_class in self.available_strategies.items():
+
+        names = sorted(
+            set(persisted_states.keys())
+            | set(self._all_registered_names())
+            | set(self.strategies.keys())
+        )
+        for name in names:
+            if not self._is_known_strategy(name):
+                logger.warning("Skipping persisted state for unknown strategy id: %s", name)
+                continue
+            strategy_class = self._ensure_strategy_class(name)
             strategy = self.strategies.get(name)
             state = persisted_states.get(name)
             
@@ -573,45 +807,60 @@ class StrategyManager:
         """
         summaries: List[Dict[str, Any]] = []
         account_id = self._get_account_id()
-        persisted = self._state_cache
-        
-        # Refresh cache from DB if available
         db = getattr(self.trading_bot, 'db', None)
         if db and account_id:
-            persisted = db.get_strategy_states(account_id)
+            raw_persisted = db.get_strategy_states(account_id)
+            persisted = {_normalize_strategy_id(k): v for k, v in raw_persisted.items()}
             self._state_cache = dict(persisted)
-        
-        for name, strategy_class in self.available_strategies.items():
+        else:
+            persisted = {_normalize_strategy_id(k): v for k, v in self._state_cache.items()}
+
+        for name in self.catalog_strategy_names():
             strategy = self.strategies.get(name)
             state = persisted.get(name, {})
-            
-            symbols = state.get('symbols') or (strategy.config.symbols if strategy else [])
+            spec = BUILTIN_STRATEGY_SPECS.get(name)
+            strategy_class = self.strategy_classes.get(name)
+
+            symbols = list(state.get('symbols') or (strategy.config.symbols if strategy else []))
+            if not symbols and spec:
+                try:
+                    symbols = list(StrategyConfig.from_env(name).symbols)
+                except Exception:
+                    symbols = []
+
             enabled = state.get('enabled')
             if enabled is None and strategy:
                 enabled = strategy.config.enabled
+            elif enabled is None and spec:
+                try:
+                    enabled = bool(StrategyConfig.from_env(name).enabled)
+                except Exception:
+                    enabled = False
             enabled = bool(enabled)
-            
+
             is_running = name in self.active_strategies
             status = 'running' if is_running else ('enabled' if enabled else 'disabled')
 
-            # Get settings from persisted state or strategy config
-            settings = state.get('settings') or {}
+            settings = dict(state.get('settings') or {})
             if not settings and strategy:
-                # Use strategy config values if no persisted settings
                 settings = {
                     "position_size": strategy.config.position_size,
                     "max_positions": strategy.config.max_positions,
                 }
             elif strategy:
-                # Ensure position_size and max_positions are always present
                 if 'position_size' not in settings:
                     settings['position_size'] = strategy.config.position_size
                 if 'max_positions' not in settings:
                     settings['max_positions'] = strategy.config.max_positions
 
+            if spec:
+                description = spec[2]
+            else:
+                description = (getattr(strategy_class, '__doc__', '') or '') if strategy_class else ''
+
             summaries.append({
                 "name": name,
-                "description": getattr(strategy_class, '__doc__', '') or '',
+                "description": description,
                 "status": status,
                 "enabled": enabled,
                 "is_running": is_running,
@@ -640,57 +889,60 @@ class StrategyManager:
         Returns:
             tuple: (success: bool, message: str)
         """
-        # Check if strategy exists in instances dict
-        if name not in self.strategies:
-            # Try to create instance from registered class
-            if name in self.available_strategies:
-                logger.info(f"Creating strategy instance for {name}")
-                try:
-                    strategy_class = self.available_strategies[name]
-                    # Use from_env to create proper config with all required fields
-                    from strategies.strategy_base import StrategyConfig
-                    config = StrategyConfig.from_env(name)
-                    # Override symbols if provided
-                    if symbols:
-                        config.symbols = symbols
-                    # Set risk config if provided
-                    if risk_config:
-                        config.risk_config = risk_config
-                    # Ensure enabled
-                    config.enabled = True
-                    strategy = strategy_class(self.trading_bot, config)
-                    self.strategies[name] = strategy
-                    logger.info(f"✅ Created strategy instance: {name}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to create strategy instance for {name}: {e}")
-                    logger.exception(e)
-                    return False, f"Failed to create strategy instance: {str(e)}"
-            else:
-                available = list(self.available_strategies.keys()) + list(self.strategies.keys())
-                logger.error(f"❌ Strategy not found: {name}. Available: {available}")
-                return False, f"Strategy not found: {name}. Available: {', '.join(available) if available else 'none'}"
-        
-        if name in self.active_strategies:
-            logger.warning(f"⚠️  Strategy already active: {name}")
-            return False, f"Strategy already active: {name}"
+        n = _normalize_strategy_id(name)
+        if n not in self.strategies:
+            if not self._is_known_strategy(n):
+                catalog = self.builtin_strategy_ids()
+                reg = self._all_registered_names()
+                logger.error(
+                    "❌ Strategy not found: %s. Built-ins: %s. Pre-registered: %s",
+                    name,
+                    ", ".join(catalog) if catalog else "none",
+                    ", ".join(reg) if reg else "none",
+                )
+                return False, (
+                    f"Strategy not found: {name}. "
+                    f"Built-ins: {', '.join(catalog) if catalog else 'none'}; "
+                    f"pre-registered: {', '.join(reg) if reg else 'none'}"
+                )
+            logger.info("Creating strategy instance for %s", n)
+            try:
+                strategy_class = self._ensure_strategy_class(n)
+                config = StrategyConfig.from_env(n)
+                if symbols:
+                    config.symbols = symbols
+                if risk_config:
+                    config.risk_config = risk_config
+                config.enabled = True
+                strategy = strategy_class(self.trading_bot, config)
+                self.strategies[n] = strategy
+                logger.info("✅ Created strategy instance: %s", n)
+            except Exception as e:
+                logger.error("❌ Failed to create strategy instance for %s: %s", n, e)
+                logger.exception(e)
+                return False, f"Failed to create strategy instance: {str(e)}"
+
+        if n in self.active_strategies:
+            logger.warning(f"⚠️  Strategy already active: {n}")
+            return False, f"Strategy already active: {n}"
         
         # Check concurrent limit
         if len(self.active_strategies) >= self.max_concurrent_strategies:
             logger.error(f"❌ Max concurrent strategies limit reached ({self.max_concurrent_strategies})")
             return False, f"Max concurrent strategies limit reached ({self.max_concurrent_strategies})"
         
-        strategy = self.strategies[name]
-        
+        strategy = self.strategies[n]
+
         # Update timeframe if provided and strategy supports it (e.g., SimpleCandleStrategy)
-        timeframe = os.getenv('SIMPLE_CANDLE_TIMEFRAME')
+        timeframe = os.environ.get('SIMPLE_CANDLE_TIMEFRAME')
         if timeframe and hasattr(strategy, 'timeframe'):
             strategy.timeframe = timeframe
-            logger.info(f"⏰ Updated timeframe for {name} to: {timeframe}")
-        
+            logger.info(f"⏰ Updated timeframe for {n} to: {timeframe}")
+
         # Override symbols if provided
         if symbols:
             strategy.config.symbols = symbols
-        
+
         # Set risk config if provided
         if risk_config:
             strategy.config.risk_config = risk_config
@@ -703,32 +955,31 @@ class StrategyManager:
             setattr(strategy, "start_time", now)
         except Exception:
             pass
-        
+
         strategy.status = StrategyStatus.ACTIVE
-        self.active_strategies.append(name)
+        self.active_strategies.append(n)
         strategy.config.enabled = True
-        
+
         # Strategies with their own event loop can implement an async start() or run() hook
         custom_start = getattr(strategy, 'start', None)
         custom_run = getattr(strategy, 'run', None)
-        
+
         if callable(custom_start) and asyncio.iscoroutinefunction(custom_start):
             await custom_start(symbols or strategy.config.symbols)
-            logger.debug(f"▶️  Invoked custom start() for strategy {name}")
+            logger.debug("▶️  Invoked custom start() for strategy %s", n)
         elif callable(custom_run) and asyncio.iscoroutinefunction(custom_run):
-            # If strategy has run() but no start(), create task for run()
             task = asyncio.create_task(custom_run())
             self._tasks.append(task)
-            logger.debug(f"▶️  Created task for custom run() method of strategy {name}")
+            logger.debug("▶️  Created task for custom run() method of strategy %s", n)
         else:
-            # Use standard monitoring loop
             task = asyncio.create_task(self._run_strategy(strategy))
             self._tasks.append(task)
-            logger.debug(f"▶️  Using standard monitoring loop for strategy {name}")
-        
-        logger.info(f"🚀 Started strategy: {name}")
-        self._save_strategy_state(name, enabled=True, symbols=strategy.config.symbols, persist=persist, process_id=process_id)
-        return True, f"Strategy started: {name} on {', '.join(strategy.config.symbols)}"
+            logger.debug("▶️  Using standard monitoring loop for strategy %s", n)
+
+        logger.info("🚀 Started strategy: %s", n)
+        self._save_strategy_state(n, enabled=True, symbols=strategy.config.symbols, persist=persist, process_id=process_id)
+        await self._publish_strategy_lifecycle(EventType.STRATEGY_STARTED, n)
+        return True, f"Strategy started: {n} on {', '.join(strategy.config.symbols)}"
     
     async def stop_strategy(self, name: str, persist: bool = True):
         """
@@ -740,13 +991,14 @@ class StrategyManager:
         Returns:
             tuple: (success: bool, message: str)
         """
-        if name not in self.active_strategies:
-            logger.warning(f"⚠️  Strategy not active: {name}")
-            return False, f"Strategy not active: {name}"
-        
-        strategy = self.strategies[name]
+        n = _normalize_strategy_id(name)
+        if n not in self.active_strategies:
+            logger.warning(f"⚠️  Strategy not active: {n}")
+            return False, f"Strategy not active: {n}"
+
+        strategy = self.strategies[n]
         strategy.status = StrategyStatus.IDLE
-        self.active_strategies.remove(name)
+        self.active_strategies.remove(n)
         strategy.config.enabled = False
 
         # Clear start time for UI
@@ -755,13 +1007,14 @@ class StrategyManager:
             setattr(strategy, "start_time", None)
         except Exception:
             pass
-        
+
         # Cleanup strategy
         await strategy.cleanup()
-        
-        logger.info(f"🛑 Stopped strategy: {name}")
-        self._save_strategy_state(name, enabled=False, symbols=strategy.config.symbols, persist=persist)
-        return True, f"Strategy stopped: {name}"
+
+        logger.info("🛑 Stopped strategy: %s", n)
+        self._save_strategy_state(n, enabled=False, symbols=strategy.config.symbols, persist=persist)
+        await self._publish_strategy_lifecycle(EventType.STRATEGY_STOPPED, n)
+        return True, f"Strategy stopped: {n}"
     
     async def start_all_strategies(self):
         """Start all enabled strategies."""
@@ -807,6 +1060,27 @@ class StrategyManager:
         
         try:
             while strategy.status == StrategyStatus.ACTIVE:
+                # Optional hot-reload for TOML configs (cheap mtime poll).
+                if os.environ.get("STRATEGY_CONFIG_RELOAD", "").strip().lower() in ("1", "true", "yes", "on"):
+                    cfg = getattr(strategy, "_cfg", None)
+                    if cfg is not None and hasattr(cfg, "maybe_reload"):
+                        try:
+                            if cfg.maybe_reload():
+                                bus = getattr(self.trading_bot, "event_bus", None)
+                                if bus and getattr(bus, "_running", False):
+                                    try:
+                                        await bus.publish(
+                                            Event(
+                                                type=EventType.STRATEGY_CONFIG_RELOADED,
+                                                data={"strategy": strategy.config.name, "strategy_name": strategy.config.name},
+                                                source="strategy_manager",
+                                            )
+                                        )
+                                    except Exception as exc:
+                                        logger.debug("Could not publish STRATEGY_CONFIG_RELOADED: %s", exc)
+                        except Exception as exc:
+                            logger.debug("Strategy config reload check failed for %s: %s", strategy.config.name, exc)
+
                 # Process each symbol
                 for symbol in strategy.config.symbols:
                     try:
@@ -821,7 +1095,12 @@ class StrategyManager:
                         
                         # Execute if signal present
                         if signal:
-                            logger.info(f"📊 {strategy.config.name} signal for {symbol}: {signal['action']}")
+                            logger.debug(
+                                "📊 %s signal for %s: %s",
+                                strategy.config.name,
+                                symbol,
+                                signal["action"],
+                            )
                             
                             # Broadcast signal to GUI if available
                             signal_data = {
@@ -854,13 +1133,15 @@ class StrategyManager:
                                         'reason': signal.get('reason', ''),
                                         'strategy': strategy.config.name
                                     }
-                                    self.trading_bot.discord_notifier.send_signal_notification(
-                                        signal_type=signal.get('action', 'SIGNAL'),
-                                        symbol=symbol,
-                                        account_name=account_name,
-                                        details=details
+                                    asyncio.create_task(
+                                        self.trading_bot.discord_notifier.send_signal_notification(
+                                            signal_type=signal.get('action', 'SIGNAL'),
+                                            symbol=symbol,
+                                            account_name=account_name,
+                                            details=details,
+                                        )
                                     )
-                                    logger.info(f"📧 Discord notification sent for {signal.get('action')} signal on {symbol} from {strategy.config.name}")
+                                    logger.debug(f"Discord notification queued for {signal.get('action')} signal on {symbol} from {strategy.config.name}")
                             except Exception as e:
                                 logger.debug(f"Could not send Discord notification for signal: {e}")
                             
@@ -873,7 +1154,7 @@ class StrategyManager:
                                     broadcast_func = getattr(chart_html_module, 'broadcast_update', None)
                                     if broadcast_func:
                                         await broadcast_func({'type': 'signal', 'data': signal_data})
-                                        logger.info(f"📡 Broadcasted signal to GUI: {signal_data['type']} {symbol} from {strategy.config.name} - Entry: {signal_data.get('entry_price')}, Stop: {signal_data.get('stop_loss')}, TP: {signal_data.get('take_profit')}")
+                                        logger.debug(f"Broadcasted signal to GUI: {signal_data['type']} {symbol} from {strategy.config.name}")
                                     else:
                                         logger.warning(f"broadcast_update function not found in chart_html_module")
                             except (ImportError, AttributeError, Exception) as e:
@@ -1063,7 +1344,7 @@ class StrategyManager:
             "strategies": strategy_statuses,
             "auto_select_enabled": self.auto_select_enabled,
             "max_concurrent": self.max_concurrent_strategies,
-            "registered_strategies": list(self.strategy_classes.keys()),
+            "registered_strategies": self._all_registered_names(),
             "loaded_strategies": list(self.strategies.keys()),
             "active_strategy_names": self.active_strategies
         }

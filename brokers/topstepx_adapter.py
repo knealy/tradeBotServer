@@ -7,9 +7,12 @@ the trading bot to work with TopStepX while remaining broker-agnostic.
 """
 
 import os
-import json
 import asyncio
+import hashlib
+import json
 import logging
+import time
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta, timezone, date, time
 from functools import lru_cache
@@ -29,6 +32,7 @@ from core.interfaces import (
     Depth,
     DepthLevel,
 )
+from core.json_fast import dumps_str
 from core.auth import AuthManager
 from core.rate_limiter import RateLimiter
 from core.market_data import ContractManager
@@ -86,10 +90,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         self.contract_manager = contract_manager or ContractManager()
         self.rate_limiter = rate_limiter
         self.base_url = base_url
-        
-        # Use auth manager's HTTP session
-        self._http_session = auth_manager._http_session
-        
+
         # Historical data cache to prevent duplicate requests
         # Key: (symbol, timeframe, limit, start_time_str, end_time_str)
         # Value: (bars, timestamp)
@@ -119,8 +120,116 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 self._use_rust = False
         else:
             logger.info("⚠️  Rust module not available. Using Python implementation.")
+
+        # On-disk Parquet tier for historical bars (Phase 2.10): warm repeat requests without Postgres/API.
+        _p = os.getenv("HISTORICAL_PARQUET_CACHE", "1").strip().lower()
+        self._parquet_cache_enabled: bool = _p not in ("0", "false", "no", "off")
+        self._parquet_cache_dir: Path = Path(
+            os.getenv("HISTORICAL_PARQUET_DIR", ".cache/historical_parquet")
+        ).resolve()
+        try:
+            self._parquet_ttl_minutes: float = float(
+                os.getenv("HISTORICAL_PARQUET_TTL_MINUTES", "60")
+            )
+        except ValueError:
+            self._parquet_ttl_minutes = 60.0
         
         logger.debug("TopStepX adapter initialized")
+
+    def _historical_parquet_path(self, cache_key: tuple) -> Path:
+        digest = hashlib.sha256(
+            json.dumps(cache_key, default=str, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return self._parquet_cache_dir / f"{digest}.parquet"
+
+    def _parquet_file_expired(self, path: Path) -> bool:
+        if not path.is_file():
+            return True
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        return (datetime.now(timezone.utc) - mtime) > timedelta(
+            minutes=self._parquet_ttl_minutes
+        )
+
+    def _bars_to_parquet_rows(self, bars: List[Bar]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for b in bars:
+            rows.append(
+                {
+                    "timestamp": b.timestamp.isoformat() if b.timestamp else "",
+                    "open": float(b.open),
+                    "high": float(b.high),
+                    "low": float(b.low),
+                    "close": float(b.close),
+                    "volume": int(b.volume or 0),
+                    "symbol": str(b.symbol or ""),
+                    "timeframe": str(b.timeframe or ""),
+                }
+            )
+        return rows
+
+    def _rows_to_bars(self, rows: List[Dict[str, Any]]) -> List[Bar]:
+        out: List[Bar] = []
+        for r in rows:
+            ts_raw = r.get("timestamp") or r.get("time")
+            if not ts_raw:
+                continue
+            if isinstance(ts_raw, datetime):
+                ts = ts_raw
+            else:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            out.append(
+                Bar(
+                    timestamp=ts,
+                    open=float(r["open"]),
+                    high=float(r["high"]),
+                    low=float(r["low"]),
+                    close=float(r["close"]),
+                    volume=int(r.get("volume") or 0),
+                    symbol=str(r.get("symbol") or ""),
+                    timeframe=str(r.get("timeframe") or ""),
+                    raw_data=None,
+                )
+            )
+        return out
+
+    def _load_parquet_disk_sync(self, path: Path) -> Optional[List[Bar]]:
+        try:
+            import polars as pl
+        except ImportError:
+            return None
+        if self._parquet_file_expired(path):
+            return None
+        try:
+            df = pl.read_parquet(path)
+            return self._rows_to_bars(df.to_dicts())
+        except Exception as exc:
+            logger.debug("Parquet historical cache read failed: %s", exc)
+            return None
+
+    def _save_parquet_disk_sync(self, path: Path, bars: List[Bar]) -> None:
+        import polars as pl
+
+        rows = self._bars_to_parquet_rows(bars)
+        if not rows:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df = pl.DataFrame(rows)
+        df.write_parquet(path, compression="lz4")
+
+    async def _parquet_disk_load(self, cache_key: tuple) -> Optional[List[Bar]]:
+        if not self._parquet_cache_enabled:
+            return None
+        path = self._historical_parquet_path(cache_key)
+        return await asyncio.to_thread(self._load_parquet_disk_sync, path)
+
+    async def _parquet_disk_save(self, cache_key: tuple, bars: List[Bar]) -> None:
+        if not self._parquet_cache_enabled or not bars:
+            return
+        path = self._historical_parquet_path(cache_key)
+        try:
+            await asyncio.to_thread(self._save_parquet_disk_sync, path, bars)
+        except Exception as exc:
+            logger.debug("Parquet historical cache write failed: %s", exc)
     
     def _make_request(
         self,
@@ -408,8 +517,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     # reduceOnly removed - brackets auto-attach after entry fills
                 }
         
-        # Log order details
-        logger.info(f"Order data: {json.dumps({k: v for k, v in order_data.items() if v is not None}, indent=2)}")
+        # Log order details (debug only; payloads are large and spammy at INFO).
+        logger.debug(f"Order data: {dumps_str({k: v for k, v in order_data.items() if v is not None})}")
         
         # Make API call
         headers = {
@@ -474,7 +583,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         # Check for order ID
         order_id = response.get("orderId") or response.get("id") or response.get("data", {}).get("orderId")
         if not order_id:
-            logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
+            logger.error("API returned success but NO order ID (see DEBUG for full response).")
+            logger.debug(f"Full response: {dumps_str(response)}")
             return OrderResponse(
                 success=False,
                 error="Order rejected: No order ID returned",
@@ -2182,7 +2292,6 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Check cache first (only for non-aggregation calls to avoid recursion issues)
             cache_key = None
             if _use_cache and not _skip_aggregation:
-                import time
                 contract_id_override = kwargs.get("contract_id_override")
                 continuous_daily = kwargs.get("continuous_daily")
                 include_partial_daily = kwargs.get("include_partial_daily")
@@ -2208,7 +2317,21 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                             # Cache expired, remove it
                             del self._historical_cache[cache_key]
                             logger.debug(f"📦 Cache EXPIRED for {symbol_up} {timeframe} {limit} bars (age: {age:.1f}s)")
-                    
+
+                if self._parquet_cache_enabled:
+                    pq_bars = await self._parquet_disk_load(cache_key)
+                    if pq_bars:
+                        logger.debug(
+                            "📦 Parquet disk HIT for %s %s (%d bars)",
+                            symbol_up,
+                            timeframe,
+                            len(pq_bars),
+                        )
+                        async with self._cache_lock:
+                            self._historical_cache[cache_key] = (pq_bars, time.time())
+                        return pq_bars
+
+                async with self._cache_lock:
                     # Check if there's a pending request for the same key (prevent duplicate requests)
                     if cache_key in self._pending_requests:
                         # Wait for the pending request to complete
@@ -2224,9 +2347,16 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Create a wrapper function that will be called to fetch data
             async def _fetch_data() -> List[Bar]:
                 """Internal function to fetch data - will be cached or awaited if pending."""
-                return await self._fetch_historical_data_impl(
+                bars = await self._fetch_historical_data_impl(
                     symbol_up, timeframe, limit, start_time, end_time, _skip_aggregation, **kwargs
                 )
+                if (
+                    self._parquet_cache_enabled
+                    and cache_key is not None
+                    and bars
+                ):
+                    await self._parquet_disk_save(cache_key, bars)
+                return bars
             
             # If caching enabled, create task and track it
             if _use_cache and not _skip_aggregation and cache_key:
@@ -2243,7 +2373,6 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 bars = await request_task
                 
                 # Store in cache and clean up
-                import time
                 async with self._cache_lock:
                     self._historical_cache[cache_key] = (bars, time.time())
                     if cache_key in self._pending_requests:
@@ -3009,7 +3138,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
 
             logger.debug(f"Fetching {timeframe} bars for {symbol_up} from {start_str} to {end_str}")
             try:
-                logger.debug(f"🔍 History API request: {json.dumps(bars_request, indent=2)}")
+                logger.debug(f"🔍 History API request: {dumps_str(bars_request)}")
             except Exception as e:
                 logger.debug(f"🔍 History API request (json serialization failed): {bars_request}")
 
@@ -3064,7 +3193,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"🔍 Response dict has no bars/data/candles/result fields. Available keys: {list(response.keys())}")
                     # Log a sample of the response (first 500 chars) to help debug
                     try:
-                        response_str = json.dumps(response, indent=2, default=str)
+                        response_str = dumps_str(response)
                         logger.debug(f"🔍 Full response (first 500 chars): {response_str[:500]}")
                     except Exception as e:
                         logger.debug(f"🔍 Full response (json serialization failed): {str(response)[:500]}")
@@ -3082,7 +3211,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 if not bars_data and isinstance(response, dict):
                     logger.warning(f"🔍 Empty bars array. Full response: success={response.get('success')}, errorCode={response.get('errorCode')}, errorMessage={response.get('errorMessage')}")
                     try:
-                        response_str = json.dumps(response, indent=2, default=str)
+                        response_str = dumps_str(response)
                         logger.debug(f"🔍 Full response structure: {response_str[:1000]}")
                     except Exception as e:
                         logger.debug(f"🔍 Full response (json serialization failed): {str(response)[:1000]}")
@@ -4598,7 +4727,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             }
             
             # Debug: Log order parameters
-            logger.debug(f"Stop bracket order data: {json.dumps(order_data, indent=2)}")
+            logger.debug(f"Stop bracket order data: {dumps_str(order_data)}")
             print(f"📋 Order parameters:")
             print(f"   Symbol: {symbol}, Side: {side}, Qty: {quantity}")
             print(f"   Entry (Stop): ${entry_price:.2f}")
@@ -4662,7 +4791,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             order_id = response.get("orderId") or response.get("id")
             if not order_id:
-                logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
+                logger.error("API returned success but NO order ID (see DEBUG for full response).")
+                logger.debug(f"Full response: {dumps_str(response)}")
                 return OrderResponse(success=False, error="Order rejected: No order ID returned", raw_response=response)
             
             # Send Discord notification for strategy-initiated orders
@@ -4688,7 +4818,9 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                         'take_profit': take_profit_price,
                         'strategy': strategy_name
                     }
-                    self._trading_bot.discord_notifier.send_order_notification(notification_data, account_name)
+                    asyncio.create_task(
+                        self._trading_bot.discord_notifier.send_order_notification(notification_data, account_name)
+                    )
                     logger.info(f"📧 Discord notification sent for strategy order: {strategy_name} - {side} {quantity} {symbol}")
                 except Exception as notif_err:
                     logger.debug(f"Could not send Discord notification for strategy order: {notif_err}")
@@ -4820,7 +4952,9 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     'take_profit': take_profit_price,
                     'strategy': strategy_name
                 }
-                self._trading_bot.discord_notifier.send_order_notification(notification_data, account_name)
+                asyncio.create_task(
+                    self._trading_bot.discord_notifier.send_order_notification(notification_data, account_name)
+                )
         except Exception as notif_err:
             logger.debug(f"Could not send Discord notification for strategy order (Rust path): {notif_err}")
 
@@ -4942,7 +5076,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             order_id = response.get("orderId") or response.get("id")
             if not order_id:
-                logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
+                logger.error("API returned success but NO order ID (see DEBUG for full response).")
+                logger.debug(f"Full response: {dumps_str(response)}")
                 return OrderResponse(success=False, error="Order rejected: No order ID returned", raw_response=response)
             
             logger.info(f"✅ Trailing stop order placed successfully with ID: {order_id}")
@@ -5343,7 +5478,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             order_id = response.get("orderId") or response.get("id")
             if not order_id:
-                logger.error(f"API returned success but NO order ID! Full response: {json.dumps(response, indent=2)}")
+                logger.error("API returned success but NO order ID (see DEBUG for full response).")
+                logger.debug(f"Full response: {dumps_str(response)}")
                 return OrderResponse(success=False, error="Order rejected: No order ID returned", raw_response=response)
             
             logger.info(f"✅ Bracket order created successfully with ID: {order_id}")

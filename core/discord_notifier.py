@@ -8,8 +8,9 @@ when orders are executed or errors occur.
 import os
 import logging
 import time
+import asyncio
 from typing import Dict, Optional
-import requests
+import aiohttp
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,26 @@ class DiscordNotifier:
         self.enabled = bool(self.webhook_url)
         self._last_notification_time = 0
         self._rate_limit_delay = 0.5  # 0.5 seconds between notifications
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
         
         if not self.enabled:
             logger.warning("Discord notifications disabled - DISCORD_WEBHOOK_URL not set")
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session and not self._session.closed:
+            return self._session
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                return self._session
+            timeout = aiohttp.ClientTimeout(total=5, connect=3)
+            connector = aiohttp.TCPConnector(limit=16, keepalive_timeout=30, enable_cleanup_closed=True)
+            self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
     
     def _rate_limit_check(self) -> bool:
         """Check if we can send a notification (rate limiting)"""
@@ -35,7 +53,22 @@ class DiscordNotifier:
         self._last_notification_time = current_time
         return True
     
-    def send_order_notification(self, order_data: Dict, account_name: str) -> bool:
+    async def _post(self, payload: Dict) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            session = await self._get_session()
+            async with session.post(self.webhook_url, json=payload) as resp:
+                # Discord webhooks return 204 on success
+                if resp.status == 204:
+                    return True
+                logger.warning(f"Discord webhook failed: HTTP {resp.status}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to send Discord webhook: {e}")
+            return False
+
+    async def send_order_notification(self, order_data: Dict, account_name: str) -> bool:
         """Send order execution notification to Discord"""
         if not self.enabled:
             return False
@@ -84,25 +117,16 @@ class DiscordNotifier:
                 embed["fields"].extend(bracket_fields)
             
             payload = {"embeds": [embed]}
-            
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=5
-            )
-            
-            if response.status_code == 204:
-                logger.info(f"Discord notification sent for {side} {quantity} {symbol}")
-                return True
-            else:
-                logger.warning(f"Discord notification failed: {response.status_code}")
-                return False
+            ok = await self._post(payload)
+            if ok:
+                logger.debug(f"Discord notification sent for {side} {quantity} {symbol}")
+            return ok
                 
         except Exception as e:
             logger.error(f"Failed to send Discord notification: {e}")
             return False
     
-    def send_error_notification(self, error_message: str, context: str = "") -> bool:
+    async def send_error_notification(self, error_message: str, context: str = "") -> bool:
         """Send error notification to Discord"""
         if not self.enabled:
             return False
@@ -119,20 +143,13 @@ class DiscordNotifier:
             }
             
             payload = {"embeds": [embed]}
-            
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=5
-            )
-            
-            return response.status_code == 204
+            return await self._post(payload)
             
         except Exception as e:
             logger.error(f"Failed to send Discord error notification: {e}")
             return False
     
-    def send_order_fill_notification(self, order_data: Dict, account_name: str) -> bool:
+    async def send_order_fill_notification(self, order_data: Dict, account_name: str) -> bool:
         """Send order fill notification to Discord"""
         if not self.enabled:
             return False
@@ -169,25 +186,16 @@ class DiscordNotifier:
             }
             
             payload = {"embeds": [embed]}
-            
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=5
-            )
-            
-            if response.status_code == 204:
-                logger.info(f"Discord order fill notification sent for {side} {quantity} {symbol}")
-                return True
-            else:
-                logger.warning(f"Discord order fill notification failed: {response.status_code}")
-                return False
+            ok = await self._post(payload)
+            if ok:
+                logger.debug(f"Discord order fill notification sent for {side} {quantity} {symbol}")
+            return ok
                 
         except Exception as e:
             logger.error(f"Failed to send Discord order fill notification: {e}")
             return False
     
-    def send_position_close_notification(self, position_data: Dict, account_name: str) -> bool:
+    async def send_position_close_notification(self, position_data: Dict, account_name: str) -> bool:
         """Send position close notification to Discord"""
         if not self.enabled:
             return False
@@ -234,25 +242,16 @@ class DiscordNotifier:
             }
             
             payload = {"embeds": [embed]}
-            
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=5
-            )
-            
-            if response.status_code == 204:
-                logger.info(f"Discord position close notification sent for {side} {quantity} {symbol}")
-                return True
-            else:
-                logger.warning(f"Discord position close notification failed: {response.status_code}")
-                return False
+            ok = await self._post(payload)
+            if ok:
+                logger.debug(f"Discord position close notification sent for {side} {quantity} {symbol}")
+            return ok
                 
         except Exception as e:
             logger.error(f"Failed to send Discord position close notification: {e}")
             return False
     
-    def send_signal_notification(self, signal_type: str, symbol: str, account_name: str, details: Dict = None) -> bool:
+    async def send_signal_notification(self, signal_type: str, symbol: str, account_name: str, details: Dict = None) -> bool:
         """Send signal processing notification to Discord"""
         if not self.enabled:
             return False
@@ -298,19 +297,10 @@ class DiscordNotifier:
                         })
             
             payload = {"embeds": [embed]}
-            
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=5
-            )
-            
-            if response.status_code == 204:
+            ok = await self._post(payload)
+            if ok:
                 logger.info(f"Discord signal notification sent for {signal_type} {symbol}")
-                return True
-            else:
-                logger.warning(f"Discord signal notification failed: {response.status_code}")
-                return False
+            return ok
                 
         except Exception as e:
             logger.error(f"Failed to send Discord signal notification: {e}")

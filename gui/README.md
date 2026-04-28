@@ -1,6 +1,8 @@
 # Trading Bot GUI - Chart Window
 
-A pop-out window GUI for displaying real-time trading charts directly from the terminal.
+**Canonical UI docs:** [docs/DASHBOARD.md](../docs/DASHBOARD.md) and [docs/README.md](../docs/README.md). Production dashboard assets live under `static/dashboard/` and are served by `servers/start_async_webhook.py`.
+
+A pop-out / dev-oriented chart path uses [chart_html.py](chart_html.py) (aiohttp) and [master_control.html](master_control.html). The notes below describe chart-style usage; prefer the static dashboard for Railway/production.
 
 ## Features
 

@@ -5,7 +5,6 @@ This module provides the foundation for creating pluggable trading strategies
 that can be dynamically loaded and managed based on market conditions.
 """
 
-import os
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Any
@@ -14,6 +13,7 @@ from datetime import datetime
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+from core.strategy_config import load_strategy_config
 
 
 class MarketCondition(Enum):
@@ -89,30 +89,30 @@ class StrategyConfig:
     
     @classmethod
     def from_env(cls, strategy_name: str) -> 'StrategyConfig':
-        """Load strategy config from environment variables."""
+        """Load strategy config from TOML + env + defaults."""
+        # Keep legacy env prefix behavior (e.g. MEAN_REV_), but prefer the TOML schema:
+        # - [meta].enabled / [meta].symbols
+        # - [risk].position_size / [risk].max_positions / [risk].max_daily_trades / [risk].risk_per_trade_pct
         prefix = f"{strategy_name.upper()}_"
-        
+        cfg = load_strategy_config(strategy_name.lower(), env_prefix=prefix)
+
         return cls(
-            name=strategy_name,
-            enabled=os.getenv(f"{prefix}ENABLED", "false").lower() == "true",
-            symbols=os.getenv(f"{prefix}SYMBOLS", "MNQ").split(","),
-            max_positions=int(os.getenv(f"{prefix}MAX_POSITIONS", "2")),
-            position_size=int(os.getenv(f"{prefix}POSITION_SIZE", "1")),
-            risk_per_trade_percent=float(os.getenv(f"{prefix}RISK_PERCENT", "0.5")),
-            max_daily_trades=int(os.getenv(f"{prefix}MAX_DAILY_TRADES", "10")),
-            preferred_conditions=cls._parse_conditions(
-                os.getenv(f"{prefix}PREFERRED_CONDITIONS", "")
-            ),
-            avoid_conditions=cls._parse_conditions(
-                os.getenv(f"{prefix}AVOID_CONDITIONS", "")
-            ),
-            trading_start_time=os.getenv(f"{prefix}START_TIME", "09:30"),
-            trading_end_time=os.getenv(f"{prefix}END_TIME", "15:45"),
-            no_trade_start=os.getenv(f"{prefix}NO_TRADE_START", "15:30"),
-            no_trade_end=os.getenv(f"{prefix}NO_TRADE_END", "16:00"),
-            respect_dll=os.getenv(f"{prefix}RESPECT_DLL", "true").lower() == "true",
-            respect_mll=os.getenv(f"{prefix}RESPECT_MLL", "true").lower() == "true",
-            max_dll_usage_percent=float(os.getenv(f"{prefix}MAX_DLL_USAGE", "0.75"))
+            name=strategy_name.lower(),
+            enabled=cfg.get_bool("meta.enabled", False),
+            symbols=[s.strip().upper() for s in cfg.get_list("meta.symbols", ["MNQ"])],
+            max_positions=int(cfg.get_int("risk.max_positions", 2)),
+            position_size=int(cfg.get_int("risk.position_size", 1)),
+            risk_per_trade_percent=float(cfg.get_float("risk.risk_per_trade_pct", 0.5)),
+            max_daily_trades=int(cfg.get_int("risk.max_daily_trades", 10)),
+            preferred_conditions=cls._parse_conditions(cfg.get_str("preferred_conditions", "")),
+            avoid_conditions=cls._parse_conditions(cfg.get_str("avoid_conditions", "")),
+            trading_start_time=cfg.get_str("start_time", "09:30"),
+            trading_end_time=cfg.get_str("end_time", "15:45"),
+            no_trade_start=cfg.get_str("no_trade_start", "15:30"),
+            no_trade_end=cfg.get_str("no_trade_end", "16:00"),
+            respect_dll=cfg.get_bool("respect_dll", True),
+            respect_mll=cfg.get_bool("respect_mll", True),
+            max_dll_usage_percent=float(cfg.get_float("max_dll_usage", 0.75)),
         )
 
 

@@ -70,6 +70,10 @@ class RateLimiter:
             
             # Record this call
             self.calls.append(now)
+
+    async def acquire_async(self) -> None:
+        """Same as ``acquire`` but does not block the event loop while waiting."""
+        await asyncio.to_thread(self.acquire)
     
     def get_backoff_delay(self, endpoint: str = "default") -> float:
         """

@@ -8,7 +8,6 @@ A very simple strategy that trades based on consecutive candle patterns:
 This strategy is designed to be active and make trades quickly.
 """
 
-import os
 import logging
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -16,6 +15,7 @@ from typing import Dict, List, Optional
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
 from core.trend_detector import TrendDetector
+from core.strategy_config import load_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,9 @@ class SimpleCandleStrategy(BaseStrategy):
             )
         
         super().__init__(trading_bot, config)
+
+        # Strategy config (legacy env keys for this strategy are unprefixed).
+        self._cfg = load_strategy_config("simple_candle", env_prefix="")
         
         # Strategy-specific settings
         self.candles_needed = 2  # Need 2 consecutive candles
@@ -68,7 +71,7 @@ class SimpleCandleStrategy(BaseStrategy):
         self.prev_emas: Dict[str, Dict[str, float]] = {}  # {symbol: {"fast": float, "slow": float}}
         
         # Trend detection (optional filter - VERY conservative to start)
-        self.use_trend_filter = os.getenv('USE_TREND_FILTER', 'true').lower() == 'true'
+        self.use_trend_filter = self._cfg.get_bool("USE_TREND_FILTER", True)
         if self.use_trend_filter:
             # VERY conservative: min_score=40 (out of 100)
             # This will only block the most choppy markets
@@ -90,7 +93,7 @@ class SimpleCandleStrategy(BaseStrategy):
         self._position_cache_ttl: float = 5.0  # Cache TTL in seconds
         
         # Get timeframe from environment variable or use default
-        self.timeframe = os.getenv('SIMPLE_CANDLE_TIMEFRAME', "30s")
+        self.timeframe = self._cfg.get_str("SIMPLE_CANDLE_TIMEFRAME", "30s")
         
         logger.debug(f"✅ Simple Candle Strategy initialized for {config.symbols}")
         logger.info(f"⏰ Timeframe: {self.timeframe}, ATR period: {self.atr_period}, Profit: {self.profit_multiplier}x ATR, Stop: {self.stop_multiplier}x ATR")
@@ -237,10 +240,6 @@ class SimpleCandleStrategy(BaseStrategy):
                     f"Distance={distance:.2f} points (threshold={threshold}), "
                     f"Fast EMA={fast_ema:.2f}, Slow EMA={slow_ema:.2f}, Direction={direction}"
                 )
-                print(
-                    f"🛑 EMA DISTANCE EXCEEDED: {distance:.2f} points >= {threshold} "
-                    f"({direction} direction) for {symbol}"
-                )
                 return True
             
             return False
@@ -267,7 +266,6 @@ class SimpleCandleStrategy(BaseStrategy):
                 return
             
             logger.warning(f"🛑 FLATTENING ALL POSITIONS AND ORDERS (triggered by EMA cross on {symbol if symbol else 'unknown'})")
-            print(f"🛑 FLATTENING ALL POSITIONS AND ORDERS (triggered by EMA cross on {symbol if symbol else 'unknown'})")
             
             # Use the same flatten method as the trading_bot flatten command
             # This uses broker_adapter.flatten_all_positions which properly closes all positions and cancels all orders
@@ -275,12 +273,10 @@ class SimpleCandleStrategy(BaseStrategy):
             
             if "error" in result:
                 logger.error(f"❌ Flatten failed: {result['error']}")
-                print(f"❌ Flatten failed: {result['error']}")
             else:
                 closed_count = result.get("positions_count", 0) or len(result.get("closed_positions", []))
                 canceled_count = result.get("orders_count", 0) or len(result.get("canceled_orders", []))
                 logger.info(f"✅ Flatten completed: {closed_count} positions closed, {canceled_count} orders canceled")
-                print(f"✅ Flatten completed: {closed_count} positions closed, {canceled_count} orders canceled")
                 
                 if result.get("failed_positions"):
                     logger.warning(f"⚠️  Failed to close {len(result['failed_positions'])} positions")
@@ -291,7 +287,6 @@ class SimpleCandleStrategy(BaseStrategy):
             logger.error(f"Error in flatten_all: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            print(f"❌ Error flattening: {e}")
     
     async def calculate_atr(self, symbol: str, period: int = None) -> Optional[float]:
         """
@@ -366,7 +361,7 @@ class SimpleCandleStrategy(BaseStrategy):
                 else:
                     account_id = self.trading_bot.selected_account
                 
-                logger.info(f"🔍 Position check for {symbol}: account_id={account_id}")
+                logger.debug(f"Position check for {symbol}: account_id={account_id}")
                 
                 if account_id:
                     # Use cached positions if available and fresh (reduces API calls)
@@ -383,7 +378,7 @@ class SimpleCandleStrategy(BaseStrategy):
                         self._position_cache_time = current_time
                         logger.debug(f"Fetched fresh positions from API")
                     
-                    logger.info(f"🔍 Retrieved {len(positions) if positions else 0} total positions")
+                    logger.debug(f"Retrieved {len(positions) if positions else 0} total positions")
                     
                     if positions:
                         for i, pos in enumerate(positions):
@@ -392,11 +387,10 @@ class SimpleCandleStrategy(BaseStrategy):
                                 continue
                             
                             # Log FULL position data to debug symbol and side issues
-                            logger.warning(f"🔍 RAW Position {i} (FULL DATA): {pos}")
-                            print(f"🔍 RAW Position {i}: {pos}")
+                            logger.debug("RAW Position %s (full): %s", i, pos)
                             
                             pos_symbol = pos.get('symbol') or pos.get('Symbol') or pos.get('ticker') or ''
-                            logger.info(f"🔍 Position {i}: symbol='{pos_symbol}' (checking against '{symbol}')")
+                            logger.debug(f"Position {i}: symbol='{pos_symbol}' (checking against '{symbol}')")
                             
                             # Check if this position matches our symbol
                             if pos_symbol.upper() != symbol.upper():
@@ -411,16 +405,16 @@ class SimpleCandleStrategy(BaseStrategy):
                             # Also check if Position object already converted side to string
                             side_str = pos.get('side') if isinstance(pos.get('side'), str) else None
                             
-                            logger.info(f"🔍 Matched position for {symbol}: side_val={side_val} (type={type(side_val)}), qty={qty}, pos_type={pos_type}, side_str={side_str}")
+                            logger.debug(f"Matched position for {symbol}: side_val={side_val} (type={type(side_val)}), qty={qty}, pos_type={pos_type}, side_str={side_str}")
                             
                             # Priority 1: Check type field (TopStepX may use type: 1=LONG, 2=SHORT)
                             if pos_type is not None:
                                 if pos_type == 1:
                                     pos_side = "LONG"
-                                    logger.info(f"Position side determined from type field: {pos_side} (type={pos_type})")
+                                    logger.debug(f"Position side determined from type field: {pos_side} (type={pos_type})")
                                 elif pos_type == 2:
                                     pos_side = "SHORT"
-                                    logger.info(f"Position side determined from type field: {pos_side} (type={pos_type})")
+                                    logger.debug(f"Position side determined from type field: {pos_side} (type={pos_type})")
                             
                             # Priority 2: Check if side is already a string (most reliable)
                             if pos_side is None and side_str:
@@ -456,7 +450,6 @@ class SimpleCandleStrategy(BaseStrategy):
                             # If type field exists and conflicts with side_val, trust type
                             if pos_side and side_val_side and pos_side != side_val_side:
                                 logger.warning(f"⚠️  CONFLICT: type={pos_type} says {pos_side}, but side_val={side_val} says {side_val_side}. Using type field ({pos_side}).")
-                                print(f"⚠️  CONFLICT: type={pos_type} ({pos_side}) vs side_val={side_val} ({side_val_side}). Using {pos_side}.")
                             elif pos_side is None and side_val_side:
                                 pos_side = side_val_side
                             
@@ -474,29 +467,27 @@ class SimpleCandleStrategy(BaseStrategy):
                                         qty_side = side_val_side
                                     else:
                                         qty_side = "LONG"  # Default to LONG for positive qty
-                                logger.info(f"Quantity-based side: {qty_side} (qty={qty}, side_val={side_val})")
+                                logger.debug(f"Quantity-based side: {qty_side} (qty={qty}, side_val={side_val})")
                             
                             # Final determination: pos_side should already be set from type or side_val
                             # If still None, use quantity as last resort
                             if pos_side is None:
                                 if qty_side:
                                     pos_side = qty_side
-                                    logger.info(f"Position side determined from quantity as fallback: {pos_side}")
+                                    logger.debug(f"Position side determined from quantity as fallback: {pos_side}")
                                 else:
                                     logger.error(f"❌ Could not determine position side: side_val={side_val}, qty={qty}, type={pos_type}")
                             
                             # First match is enough
                             if pos_side:
                                 logger.warning(f"✅ Found {pos_side} position for {symbol}: qty={qty}, side_val={side_val}")
-                                print(f"✅ POSITION DETECTED: {pos_side} {qty} {symbol} (side_val={side_val})")
                                 break
                             else:
                                 logger.error(f"❌ Could not determine position side for {symbol}: side_val={side_val}, qty={qty}")
-                                print(f"❌ FAILED TO PARSE POSITION: symbol={symbol}, side_val={side_val}, qty={qty}")
                     else:
-                        logger.info(f"🔍 No positions returned for account {account_id}")
+                        logger.debug(f"No positions returned for account {account_id}")
                 else:
-                    logger.warning(f"🔍 No account_id available for position check")
+                    logger.warning("No account_id available for position check")
                     
                 if pos_side:
                     logger.warning(f"📊 DETECTED {pos_side} POSITION for {symbol}")
@@ -547,10 +538,6 @@ class SimpleCandleStrategy(BaseStrategy):
                                 f"ATR: {trend_score.atr_expansion_score}, "
                                 f"Candles: {trend_score.candle_consistency_score}) - "
                                 f"Skipping trade"
-                            )
-                            print(
-                                f"🚫 CHOPPY: Score {trend_score.total_score}/100 "
-                                f"(min: {self.trend_detector.min_trend_score}) - Trade BLOCKED"
                             )
                             return None  # Block trade in choppy market
                         else:
@@ -616,11 +603,9 @@ class SimpleCandleStrategy(BaseStrategy):
             if long_distance_ok and not allow_long:
                 msg = f"🚫 LONG signal BLOCKED for {symbol} - Current position is {pos_side}, cannot add opposing orders"
                 logger.warning(msg)
-                print(msg)
             if short_distance_ok and not allow_short:
                 msg = f"🚫 SHORT signal BLOCKED for {symbol} - Current position is {pos_side}, cannot add opposing orders"
                 logger.warning(msg)
-                print(msg)
 
             if long_distance_ok and allow_long:
                 # 2 consecutive bullish candles = LONG signal
@@ -724,7 +709,6 @@ class SimpleCandleStrategy(BaseStrategy):
             
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
-            print(f"❌ Error analyzing {symbol}: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
@@ -744,7 +728,6 @@ class SimpleCandleStrategy(BaseStrategy):
             
             # Skip should_trade check for testing - we want to see if orders work at all
             # (normally should_trade checks time, limits, compliance, etc.)
-            print(f"⚡ TESTING MODE: Bypassing should_trade() checks")
             logger.info(f"⚡ TESTING MODE: Bypassing should_trade() checks")
             
             # Get account ID
@@ -755,7 +738,6 @@ class SimpleCandleStrategy(BaseStrategy):
                 account_id = self.trading_bot.selected_account
             
             if not account_id:
-                print("❌ No account selected")
                 logger.error("No account selected")
                 return False
             
@@ -763,11 +745,9 @@ class SimpleCandleStrategy(BaseStrategy):
             side = "BUY" if action == "LONG" else "SELL"
             quantity = self.config.position_size
 
-            print(f"📈 Executing {action} on {symbol}: Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
             logger.info(f"📈 Executing {action} on {symbol}: Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
 
             # Use the verified working bracket order method from BaseStrategy
-            print("📝 Placing bracket order (verified working method)...")
             logger.info("Using BaseStrategy.place_bracket_order() - same path as CLI stop_bracket")
             
             result = await self.place_bracket_order(
@@ -782,26 +762,20 @@ class SimpleCandleStrategy(BaseStrategy):
 
             if result.get("error"):
                 error_msg = result.get("error")
-                print(f"❌ Stop bracket order failed: {error_msg}")
                 logger.error(f"Stop bracket order failed: {error_msg}")
                 return False
 
             # Success!
             order_id = result.get('orderId')
             method = result.get('method', 'unknown')
-            print(f"✅ Stop bracket order placed successfully!")
-            print(f"   Order ID: {order_id}")
-            print(f"   Method: {method}")
             logger.info(f"✅ Stop bracket placed: Order ID {order_id}, Method: {method}")
             self.daily_trades += 1
             return True
                 
         except Exception as e:
-            print(f"❌ Error executing signal: {e}")
             logger.error(f"Error executing signal: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            print(traceback.format_exc())
             return False
     
     async def manage_positions(self):
@@ -838,7 +812,6 @@ class SimpleCandleStrategy(BaseStrategy):
     
     async def cleanup(self):
         """Clean up strategy resources."""
-        print("🧹 Cleaning up Simple Candle Strategy")
         logger.info("🧹 Cleaning up Simple Candle Strategy")
         self.status = StrategyStatus.IDLE
     
@@ -872,17 +845,13 @@ class SimpleCandleStrategy(BaseStrategy):
         logger.info(f"⏰ Using timeframe: {self.timeframe}, ATR period: {self.atr_period}")
 
         # Ensure valid token before starting
-        print("🔐 Ensuring valid authentication token...")
         if not await self.trading_bot._ensure_valid_token():
-            print("❌ Failed to ensure valid token. Cannot start strategy.")
             logger.error("Failed to ensure valid token. Cannot start strategy.")
             self.status = StrategyStatus.IDLE
             return
 
-        print("✅ Authentication token validated")
         logger.info("✅ Authentication token validated")
 
-        print("⏰ Strategy running with NO time limit (test mode)")
         logger.info("⏰ Strategy running with NO time limit (test mode)")
 
         check_interval = 10  # Check every 10 seconds (faster for 1m candles)
@@ -898,8 +867,6 @@ class SimpleCandleStrategy(BaseStrategy):
                 if current_position_count != last_position_count or loop_count % 30 == 0:
                     logger.debug(f"🔄 Strategy running... ({current_position_count} positions)")
                     # Only print to terminal on position changes, not every loop
-                    if current_position_count != last_position_count:
-                        print(f"🔄 Strategy running... ({current_position_count} positions)")
                     last_position_count = current_position_count
                 
                 # Manage existing positions
@@ -910,7 +877,6 @@ class SimpleCandleStrategy(BaseStrategy):
                     cross_type = await self.check_ema_cross(symbol)
                     if cross_type:
                         logger.warning(f"🛑 EMA CROSS DETECTED ({cross_type}) for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
-                        print(f"🛑 EMA CROSS DETECTED ({cross_type}) for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
                         await self.flatten_all(symbol)
                         # Continue to next symbol after flattening
                         continue
@@ -920,7 +886,6 @@ class SimpleCandleStrategy(BaseStrategy):
                     distance_exceeded = await self.check_ema_distance(symbol, threshold=20.0)
                     if distance_exceeded:
                         logger.warning(f"🛑 EMA DISTANCE >= 20 points for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
-                        print(f"🛑 EMA DISTANCE >= 20 points for {symbol} - FLATTENING ALL POSITIONS AND ORDERS")
                         await self.flatten_all(symbol)
                         # Continue to next symbol after flattening
                         continue
@@ -930,14 +895,16 @@ class SimpleCandleStrategy(BaseStrategy):
                     # Skip if we're at max positions
                     if len(self.active_positions) >= self.config.max_positions:
                         if loop_count % 6 == 0:
-                            print(f"⏸️  Max positions reached ({len(self.active_positions)}/{self.config.max_positions}), skipping {symbol}")
+                            logger.debug(
+                                "Max positions reached (%s/%s), skipping %s",
+                                len(self.active_positions), self.config.max_positions, symbol,
+                            )
                         continue
                     
                     # Analyze for signals
                     signal = await self.analyze(symbol)
                     
                     if signal:
-                        print(f"📊 Signal detected: {signal['action']} {signal['symbol']} - {signal['reason']}")
                         logger.info(f"📊 Signal detected: {signal['action']} {signal['symbol']} - {signal['reason']}")
                         # Broadcast to GUI + Discord via StrategyManager helper (this strategy runs its own loop)
                         try:
@@ -962,17 +929,13 @@ class SimpleCandleStrategy(BaseStrategy):
                 await asyncio.sleep(check_interval)
                 
             except KeyboardInterrupt:
-                print("\n🛑 Strategy stopped by user")
                 logger.info("🛑 Strategy stopped by user")
                 break
             except Exception as e:
-                print(f"❌ Error in strategy loop: {e}")
                 logger.error(f"Error in strategy loop: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                print(traceback.format_exc())
                 await asyncio.sleep(check_interval)
         
-        print("✅ Simple Candle Strategy finished")
         logger.info("✅ Simple Candle Strategy finished")
         self.status = StrategyStatus.IDLE

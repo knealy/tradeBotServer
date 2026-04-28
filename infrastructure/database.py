@@ -11,7 +11,11 @@ Uses connection pooling for efficiency and supports Railway's PostgreSQL.
 """
 
 import os
+import atexit
 import logging
+import queue
+import threading
+import time
 try:
     import psycopg2
     from psycopg2 import pool, sql
@@ -22,12 +26,360 @@ except ImportError:
     sql = None
     RealDictCursor = None
     execute_values = None
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timezone
 from contextlib import contextmanager
-import json
+
+from core.json_fast import dumps_str
 
 logger = logging.getLogger(__name__)
+
+
+def _db_pool_bounds() -> tuple:
+    """Bounded ThreadedConnectionPool sizes (env overridable)."""
+    mn = max(1, int(os.getenv("DB_POOL_MINCONN", "1")))
+    mx = max(mn, int(os.getenv("DB_POOL_MAXCONN", "10")))
+    mx = min(mx, 32)
+    return mn, mx
+
+
+def _async_api_metrics_enabled() -> bool:
+    return os.getenv("DB_ASYNC_API_METRICS", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+ApiMetricRow = Tuple[str, str, float, Optional[int], bool, Optional[str]]
+
+
+class _ApiMetricsBatcher:
+    """
+    Background thread: queue api_metrics rows, flush with execute_values on size or interval.
+    Hot-path callers use DatabaseManager.save_api_metric without waiting on the DB.
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, db: "DatabaseManager") -> None:
+        self._db = db
+        qmax = max(1000, int(os.getenv("DB_API_METRICS_QUEUE_MAX", "10000")))
+        self._q: "queue.Queue[object]" = queue.Queue(maxsize=qmax)
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="db-api-metrics-batcher"
+        )
+        self._thread.start()
+
+    def stop(self, join_timeout: float = 5.0) -> None:
+        t = self._thread
+        if t is None:
+            return
+        self._stop.set()
+        try:
+            self._q.put_nowait(self._SENTINEL)
+        except queue.Full:
+            logger.debug("api_metrics queue full; sentinel skipped on stop")
+        if t.is_alive():
+            t.join(timeout=join_timeout)
+        self._thread = None
+
+    def enqueue(self, row: ApiMetricRow) -> None:
+        if self._stop.is_set():
+            return
+        try:
+            self._q.put_nowait(row)
+        except queue.Full:
+            logger.warning("api_metrics queue full; dropping one sample")
+
+    def _loop(self) -> None:
+        if not execute_values:
+            return
+        batch_max = max(1, int(os.getenv("DB_API_METRICS_BATCH", "500")))
+        flush_s = max(0.05, float(os.getenv("DB_API_METRICS_FLUSH_S", "1.0")))
+        batch: List[ApiMetricRow] = []
+        last_flush = time.monotonic()
+        while True:
+            timeout = 0.1
+            if batch and (time.monotonic() - last_flush) >= flush_s:
+                timeout = 0.0
+            try:
+                item = self._q.get(timeout=timeout)
+            except queue.Empty:
+                item = None
+            if item is self._SENTINEL:
+                if batch:
+                    self._flush(batch)
+                    batch.clear()
+                if self._stop.is_set():
+                    break
+                last_flush = time.monotonic()
+                continue
+            if isinstance(item, tuple):
+                batch.append(item)
+            now = time.monotonic()
+            if batch and (
+                len(batch) >= batch_max or (now - last_flush) >= flush_s
+            ):
+                self._flush(batch)
+                batch.clear()
+                last_flush = now
+        if batch:
+            self._flush(batch)
+
+    def _flush(self, rows: List[ApiMetricRow]) -> None:
+        if not rows or not self._db.pool or not execute_values:
+            return
+        try:
+            with self._db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO api_metrics
+                        (endpoint, method, duration_ms, status_code, success, error_message)
+                        VALUES %s
+                        """,
+                        rows,
+                        page_size=min(500, len(rows)),
+                    )
+        except Exception as exc:
+            logger.debug("api_metrics batch flush failed: %s", exc, exc_info=True)
+
+
+def _async_strategy_exec_enabled() -> bool:
+    return os.getenv("DB_ASYNC_STRATEGY_EXEC", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+# strategy_name, account_id, action, symbol, side, quantity, price, order_id, result, metadata
+StrategyExecRow = Tuple[
+    str,
+    Optional[str],
+    str,
+    Optional[str],
+    Optional[str],
+    Optional[int],
+    Optional[float],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]
+
+
+class _StrategyExecutionsBatcher:
+    """Background batch INSERT for strategy_executions (Phase 2.10)."""
+
+    _SENTINEL = object()
+
+    def __init__(self, db: "DatabaseManager") -> None:
+        self._db = db
+        qmax = max(500, int(os.getenv("DB_STRATEGY_EXEC_QUEUE_MAX", "5000")))
+        self._q: "queue.Queue[object]" = queue.Queue(maxsize=qmax)
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="db-strategy-exec-batcher"
+        )
+        self._thread.start()
+
+    def stop(self, join_timeout: float = 5.0) -> None:
+        t = self._thread
+        if t is None:
+            return
+        self._stop.set()
+        try:
+            self._q.put_nowait(self._SENTINEL)
+        except queue.Full:
+            logger.debug("strategy_executions queue full; sentinel skipped on stop")
+        if t.is_alive():
+            t.join(timeout=join_timeout)
+        self._thread = None
+
+    def enqueue(self, row: StrategyExecRow) -> None:
+        if self._stop.is_set():
+            return
+        try:
+            self._q.put_nowait(row)
+        except queue.Full:
+            logger.warning("strategy_executions queue full; dropping one row")
+
+    def _loop(self) -> None:
+        if not execute_values:
+            return
+        batch_max = max(1, int(os.getenv("DB_STRATEGY_EXEC_BATCH", "200")))
+        flush_s = max(0.05, float(os.getenv("DB_STRATEGY_EXEC_FLUSH_S", "1.0")))
+        batch: List[StrategyExecRow] = []
+        last_flush = time.monotonic()
+        while True:
+            timeout = 0.1
+            if batch and (time.monotonic() - last_flush) >= flush_s:
+                timeout = 0.0
+            try:
+                item = self._q.get(timeout=timeout)
+            except queue.Empty:
+                item = None
+            if item is self._SENTINEL:
+                if batch:
+                    self._flush(batch)
+                    batch.clear()
+                if self._stop.is_set():
+                    break
+                last_flush = time.monotonic()
+                continue
+            if isinstance(item, tuple):
+                batch.append(item)
+            now = time.monotonic()
+            if batch and (
+                len(batch) >= batch_max or (now - last_flush) >= flush_s
+            ):
+                self._flush(batch)
+                batch.clear()
+                last_flush = now
+        if batch:
+            self._flush(batch)
+
+    def _flush(self, rows: List[StrategyExecRow]) -> None:
+        if not rows or not self._db.pool or not execute_values:
+            return
+        try:
+            with self._db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO strategy_executions
+                        (strategy_name, account_id, action, symbol, side, quantity,
+                         price, order_id, result, metadata)
+                        VALUES %s
+                        """,
+                        rows,
+                        page_size=min(200, len(rows)),
+                    )
+        except Exception as exc:
+            logger.debug(
+                "strategy_executions batch flush failed: %s", exc, exc_info=True
+            )
+
+
+def _async_notifications_enabled() -> bool:
+    return os.getenv("DB_ASYNC_NOTIFICATIONS", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+# account_id, notification_type, message, level, meta (JSON string)
+NotificationRow = Tuple[str, str, str, str, Optional[str]]
+
+
+class _NotificationsBatcher:
+    """Background batch INSERT for notifications (Phase 2.10)."""
+
+    _SENTINEL = object()
+
+    def __init__(self, db: "DatabaseManager") -> None:
+        self._db = db
+        qmax = max(200, int(os.getenv("DB_NOTIFICATIONS_QUEUE_MAX", "3000")))
+        self._q: "queue.Queue[object]" = queue.Queue(maxsize=qmax)
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="db-notifications-batcher"
+        )
+        self._thread.start()
+
+    def stop(self, join_timeout: float = 5.0) -> None:
+        t = self._thread
+        if t is None:
+            return
+        self._stop.set()
+        try:
+            self._q.put_nowait(self._SENTINEL)
+        except queue.Full:
+            logger.debug("notifications queue full; sentinel skipped on stop")
+        if t.is_alive():
+            t.join(timeout=join_timeout)
+        self._thread = None
+
+    def enqueue(self, row: NotificationRow) -> None:
+        if self._stop.is_set():
+            return
+        try:
+            self._q.put_nowait(row)
+        except queue.Full:
+            logger.warning("notifications queue full; dropping one row")
+
+    def _loop(self) -> None:
+        if not execute_values:
+            return
+        batch_max = max(1, int(os.getenv("DB_NOTIFICATIONS_BATCH", "100")))
+        flush_s = max(0.05, float(os.getenv("DB_NOTIFICATIONS_FLUSH_S", "1.0")))
+        batch: List[NotificationRow] = []
+        last_flush = time.monotonic()
+        while True:
+            timeout = 0.1
+            if batch and (time.monotonic() - last_flush) >= flush_s:
+                timeout = 0.0
+            try:
+                item = self._q.get(timeout=timeout)
+            except queue.Empty:
+                item = None
+            if item is self._SENTINEL:
+                if batch:
+                    self._flush(batch)
+                    batch.clear()
+                if self._stop.is_set():
+                    break
+                last_flush = time.monotonic()
+                continue
+            if isinstance(item, tuple):
+                batch.append(item)
+            now = time.monotonic()
+            if batch and (
+                len(batch) >= batch_max or (now - last_flush) >= flush_s
+            ):
+                self._flush(batch)
+                batch.clear()
+                last_flush = now
+        if batch:
+            self._flush(batch)
+
+    def _flush(self, rows: List[NotificationRow]) -> None:
+        if not rows or not self._db.pool or not execute_values:
+            return
+        try:
+            with self._db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO notifications
+                        (account_id, notification_type, message, level, meta)
+                        VALUES %s
+                        """,
+                        rows,
+                        page_size=min(100, len(rows)),
+                    )
+        except Exception as exc:
+            logger.debug(
+                "notifications batch flush failed: %s", exc, exc_info=True
+            )
 
 
 class DatabaseManager:
@@ -43,12 +395,27 @@ class DatabaseManager:
     
     def __init__(self):
         """Initialize database manager with connection pool."""
+        self._api_metrics_batcher: Optional[_ApiMetricsBatcher] = None
+        self._strategy_exec_batcher: Optional[_StrategyExecutionsBatcher] = None
+        self._notifications_batcher: Optional[_NotificationsBatcher] = None
         if not psycopg2:
             logger.warning("⚠️  psycopg2 not available - database features will be disabled")
             self.pool = None
             return
         self.pool = None
         self._initialize_pool()
+        if self.pool and execute_values and _async_api_metrics_enabled():
+            self._api_metrics_batcher = _ApiMetricsBatcher(self)
+            self._api_metrics_batcher.start()
+            logger.info("📊 api_metrics async batch writer started")
+        if self.pool and execute_values and _async_strategy_exec_enabled():
+            self._strategy_exec_batcher = _StrategyExecutionsBatcher(self)
+            self._strategy_exec_batcher.start()
+            logger.info("📊 strategy_executions async batch writer started")
+        if self.pool and execute_values and _async_notifications_enabled():
+            self._notifications_batcher = _NotificationsBatcher(self)
+            self._notifications_batcher.start()
+            logger.info("📊 notifications async batch writer started")
         self._initialize_schema()
         logger.info("✅ Database manager initialized")
     
@@ -151,10 +518,10 @@ class DatabaseManager:
         try:
             params = self._get_connection_params()
             
-            # Create connection pool (min 2, max 10 connections)
+            _mn, _mx = _db_pool_bounds()
             self.pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=2,
-                maxconn=10,
+                minconn=_mn,
+                maxconn=_mx,
                 **params
             )
             
@@ -167,8 +534,8 @@ class DatabaseManager:
                 # Connection is dead, close it and don't return to pool
                 try:
                     test_conn.close()
-                except:
-                    pass
+                except Exception as close_exc:
+                    logger.debug("Closing dead test connection: %s", close_exc, exc_info=True)
                 raise Exception("Connection test failed - connection is dead")
             # Return connection to pool (don't close it)
             self.pool.putconn(test_conn)
@@ -201,9 +568,10 @@ class DatabaseManager:
             if os.getenv('POSTGRES_PASSWORD'):
                 local_params['password'] = os.getenv('POSTGRES_PASSWORD')
             
+            _mn, _mx = _db_pool_bounds()
             self.pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=2,
-                maxconn=10,
+                minconn=_mn,
+                maxconn=_mx,
                 **local_params
             )
             
@@ -216,8 +584,8 @@ class DatabaseManager:
                 # Connection is dead, close it and don't return to pool
                 try:
                     test_conn.close()
-                except:
-                    pass
+                except Exception as close_exc:
+                    logger.debug("Closing dead test connection: %s", close_exc, exc_info=True)
                 raise Exception("Connection test failed - connection is dead")
             # Return connection to pool (don't close it)
             self.pool.putconn(test_conn)
@@ -255,8 +623,8 @@ class DatabaseManager:
                 logger.warning("⚠️ Stale database connection detected, reconnecting...")
                 try:
                     conn.close()
-                except:
-                    pass
+                except Exception as close_exc:
+                    logger.debug("close stale conn: %s", close_exc, exc_info=True)
                 conn = self.pool.getconn()
             
             yield conn
@@ -265,18 +633,16 @@ class DatabaseManager:
             if conn:
                 try:
                     conn.rollback()
-                except:
-                    # Rollback might fail if connection is already closed
-                    pass
+                except Exception as rb_exc:
+                    logger.debug("rollback failed (conn may be closed): %s", rb_exc, exc_info=True)
             logger.error(f"Database error: {e}")
             raise
         finally:
-            if conn:
+            if conn and self.pool:
                 try:
                     self.pool.putconn(conn)
-                except:
-                    # Connection might be already closed, that's ok
-                    pass
+                except Exception as put_exc:
+                    logger.debug("putconn failed: %s", put_exc, exc_info=True)
     
     def _initialize_schema(self):
         """Create database schema if it doesn't exist."""
@@ -348,6 +714,8 @@ class DatabaseManager:
             ON strategy_performance(strategy_name, timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_symbol 
             ON strategy_performance(symbol, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_perf_name_symbol_time
+            ON strategy_performance(strategy_name, symbol, timestamp DESC);
         
         -- API performance metrics
         CREATE TABLE IF NOT EXISTS api_metrics (
@@ -406,6 +774,9 @@ class DatabaseManager:
             ON trade_history(strategy_name, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_trades_symbol 
             ON trade_history(symbol, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_trade_history_account_exit_time
+            ON trade_history(account_id, exit_time DESC)
+            WHERE exit_time IS NOT NULL;
         
         -- Cache metadata (track what's cached and when)
         CREATE TABLE IF NOT EXISTS cache_metadata (
@@ -547,7 +918,8 @@ class DatabaseManager:
                         if isinstance(timestamp, str):
                             try:
                                 timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                            except:
+                            except (ValueError, TypeError) as ts_exc:
+                                logger.debug("Skip bar with bad timestamp %r: %s", timestamp, ts_exc)
                                 continue
                         
                         # Extract additional metadata
@@ -566,7 +938,7 @@ class DatabaseManager:
                             bar.get('low'),
                             bar.get('close'),
                             bar.get('volume'),
-                            json.dumps(metadata) if metadata else None
+                            dumps_str(metadata) if metadata else None
                         ))
                     
                     if not values:
@@ -781,7 +1153,7 @@ class DatabaseManager:
                         state.get('total_trades_today', 0),
                         state.get('winning_trades_today', 0),
                         state.get('losing_trades_today', 0),
-                        json.dumps(metadata) if metadata else None
+                        dumps_str(metadata) if metadata else None
                     ))
                     
                     logger.debug(f"✅ Saved account state for {account_id}")
@@ -879,8 +1251,8 @@ class DatabaseManager:
                             strategy_name,
                             enabled,
                             symbols if symbols is not None else None,
-                            json.dumps(settings) if settings else None,
-                            json.dumps(metadata) if metadata else None,
+                            dumps_str(settings) if settings else None,
+                            dumps_str(metadata) if metadata else None,
                             last_started,
                             last_stopped,
                         ),
@@ -974,7 +1346,7 @@ class DatabaseManager:
                             process_type,
                             status,
                             account_id,
-                            json.dumps(metadata) if metadata else None
+                            dumps_str(metadata) if metadata else None
                         )
                     )
                     return True
@@ -1019,7 +1391,26 @@ class DatabaseManager:
         """Log a strategy execution event."""
         if not self.pool:
             return False
-        
+
+        rj = dumps_str(result) if result else None
+        mj = dumps_str(metadata) if metadata else None
+        if self._strategy_exec_batcher is not None:
+            self._strategy_exec_batcher.enqueue(
+                (
+                    strategy_name,
+                    account_id,
+                    action,
+                    symbol,
+                    side,
+                    quantity,
+                    price,
+                    order_id,
+                    rj,
+                    mj,
+                )
+            )
+            return True
+
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
@@ -1040,8 +1431,8 @@ class DatabaseManager:
                             quantity,
                             price,
                             order_id,
-                            json.dumps(result) if result else None,
-                            json.dumps(metadata) if metadata else None
+                            rj,
+                            mj,
                         )
                     )
                     return True
@@ -1066,7 +1457,7 @@ class DatabaseManager:
                             settings = EXCLUDED.settings,
                             updated_at = NOW()
                     """
-                    cur.execute(upsert_sql, (key, json.dumps(settings)))
+                    cur.execute(upsert_sql, (key, dumps_str(settings)))
                     logger.debug(f"💾 Saved dashboard settings for {key}")
                     return True
         except Exception as e:
@@ -1145,7 +1536,7 @@ class DatabaseManager:
                         metrics.get('avg_loss'),
                         metrics.get('best_trade'),
                         metrics.get('worst_trade'),
-                        json.dumps(metadata) if metadata else None
+                        dumps_str(metadata) if metadata else None
                     ))
                     
                     logger.debug(f"✅ Saved metrics for strategy {strategy_name}")
@@ -1174,6 +1565,11 @@ class DatabaseManager:
         Returns:
             bool: Success
         """
+        if self._api_metrics_batcher is not None:
+            self._api_metrics_batcher.enqueue(
+                (endpoint, method, duration_ms, status_code, success, error_message)
+            )
+            return True
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
@@ -1235,8 +1631,8 @@ class DatabaseManager:
                                     try:
                                         order_ts = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
                                         break
-                                    except:
-                                        pass
+                                    except (ValueError, TypeError) as ts_exc:
+                                        logger.debug("Bad order timestamp %r: %s", ts_val, ts_exc)
                                 elif isinstance(ts_val, datetime):
                                     order_ts = ts_val
                                     break
@@ -1246,7 +1642,7 @@ class DatabaseManager:
                         
                         values.append((
                             account_id,
-                            json.dumps(order),
+                            dumps_str(order),
                             order_ts
                         ))
                     
@@ -1324,34 +1720,70 @@ class DatabaseManager:
     
     # ==================== Utility Methods ====================
     
-    def cleanup_old_data(self, days: int = 30):
+    def cleanup_old_data(self, days: Optional[int] = None):
         """
         Clean up old data to prevent database bloat.
-        
+
+        Drops rows older than ``days`` from historical bars, API metrics,
+        notifications, and strategy execution logs. Retention defaults to
+        ``DB_TELEMETRY_RETENTION_DAYS`` (30).
+
         Args:
-            days: Keep data newer than this many days
+            days: Keep data newer than this many days (all listed tables).
         """
+        if days is None:
+            days = max(1, int(os.getenv("DB_TELEMETRY_RETENTION_DAYS", "30")))
+        if not self.pool:
+            logger.debug("cleanup_old_data skipped: no connection pool")
+            return
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Clean old historical bars (keep last 30 days)
-                    cur.execute("""
-                        DELETE FROM historical_bars 
-                        WHERE created_at < NOW() - INTERVAL '%s days'
-                    """, (days,))
-                    
+                    cur.execute(
+                        """
+                        DELETE FROM historical_bars
+                        WHERE created_at < NOW() - (%s * INTERVAL '1 day')
+                        """,
+                        (days,),
+                    )
                     bars_deleted = cur.rowcount
-                    
-                    # Clean old API metrics (keep last 7 days)
-                    cur.execute("""
-                        DELETE FROM api_metrics 
-                        WHERE timestamp < NOW() - INTERVAL '7 days'
-                    """)
-                    
+
+                    cur.execute(
+                        """
+                        DELETE FROM api_metrics
+                        WHERE timestamp < NOW() - (%s * INTERVAL '1 day')
+                        """,
+                        (days,),
+                    )
                     metrics_deleted = cur.rowcount
-                    
-                    logger.info(f"🧹 Cleanup: Deleted {bars_deleted} old bars, {metrics_deleted} old metrics")
-        
+
+                    cur.execute(
+                        """
+                        DELETE FROM notifications
+                        WHERE created_at < NOW() - (%s * INTERVAL '1 day')
+                        """,
+                        (days,),
+                    )
+                    notifications_deleted = cur.rowcount
+
+                    cur.execute(
+                        """
+                        DELETE FROM strategy_executions
+                        WHERE timestamp < NOW() - (%s * INTERVAL '1 day')
+                        """,
+                        (days,),
+                    )
+                    executions_deleted = cur.rowcount
+
+                    logger.info(
+                        "🧹 Cleanup: deleted bars=%s api_metrics=%s notifications=%s strategy_executions=%s (older than %s days)",
+                        bars_deleted,
+                        metrics_deleted,
+                        notifications_deleted,
+                        executions_deleted,
+                        days,
+                    )
+
         except Exception as e:
             logger.error(f"❌ Failed to cleanup old data: {e}")
     
@@ -1411,26 +1843,39 @@ class DatabaseManager:
             level: Notification level ('info', 'success', 'warning', 'error')
             meta: Optional metadata dictionary
         """
+        mj = dumps_str(meta) if meta else None
+        aid = str(account_id)
+        if self._notifications_batcher is not None:
+            self._notifications_batcher.enqueue(
+                (aid, notification_type, message, level, mj)
+            )
+            logger.debug(
+                "Notification queued: %s for account %s", notification_type, aid
+            )
+            return
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO notifications (account_id, notification_type, message, level, meta)
                         VALUES (%s, %s, %s, %s, %s)
-                    """, (
-                        str(account_id),
-                        notification_type,
-                        message,
-                        level,
-                        json.dumps(meta) if meta else None
-                    ))
-            logger.debug(f"✅ Notification recorded: {notification_type} for account {account_id}")
+                    """, (aid, notification_type, message, level, mj))
+            logger.debug(f"✅ Notification recorded: {notification_type} for account {aid}")
         except Exception as e:
             logger.error(f"❌ Failed to record notification: {e}")
             # Don't raise - notification recording failure shouldn't break the app
     
     def close(self):
         """Close all connections in the pool."""
+        if self._api_metrics_batcher is not None:
+            self._api_metrics_batcher.stop()
+            self._api_metrics_batcher = None
+        if self._strategy_exec_batcher is not None:
+            self._strategy_exec_batcher.stop()
+            self._strategy_exec_batcher = None
+        if self._notifications_batcher is not None:
+            self._notifications_batcher.stop()
+            self._notifications_batcher = None
         if self.pool:
             self.pool.closeall()
             logger.info("✅ Database connections closed")
@@ -1438,6 +1883,30 @@ class DatabaseManager:
 
 # Global database manager instance
 _db_manager: Optional[DatabaseManager] = None
+
+
+def _atexit_flush_db_batchers() -> None:
+    dm = _db_manager
+    if dm is None:
+        return
+    try:
+        if dm._api_metrics_batcher is not None:
+            dm._api_metrics_batcher.stop()
+    except Exception:
+        logger.debug("api_metrics batcher stop at exit failed", exc_info=True)
+    try:
+        if dm._strategy_exec_batcher is not None:
+            dm._strategy_exec_batcher.stop()
+    except Exception:
+        logger.debug("strategy_executions batcher stop at exit failed", exc_info=True)
+    try:
+        if dm._notifications_batcher is not None:
+            dm._notifications_batcher.stop()
+    except Exception:
+        logger.debug("notifications batcher stop at exit failed", exc_info=True)
+
+
+atexit.register(_atexit_flush_db_batchers)
 
 
 def get_database() -> DatabaseManager:

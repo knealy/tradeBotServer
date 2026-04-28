@@ -75,11 +75,7 @@
    - Performance metrics
    - Deployment checklist
 
-2. **`docs/COMPLETE_OPTIMIZATION_SUMMARY.md`**
-   - Comprehensive summary of all 3 phases
-   - Overall performance improvements
-   - Architecture comparison
-   - Industry benchmarks
+2. **`docs/CHANGELOG.md`** — rolling record (supersedes removed optimization summary docs)
 
 3. **`docs/OPTIMIZATION_QUICK_REFERENCE.md`**
    - Quick reference guide for using optimizations

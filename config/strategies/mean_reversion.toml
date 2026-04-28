@@ -1,0 +1,28 @@
+# Mean Reversion strategy configuration.
+# Strategy-specific keys (RSI/MA/ATR thresholds) live at the top level here
+# because the strategy reads them as simple keys (e.g. cfg.get_int("rsi_period")).
+# Shared on/off + symbol list + sizing live under [meta] and [risk].
+
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+
+# ---------------- strategy-specific knobs ----------------
+rsi_period = 14
+rsi_overbought = 70.0
+rsi_oversold = 30.0
+ma_period = 20
+
+# ATR settings (used for dynamic thresholds / stops)
+atr_period = 14
+atr_timeframe = "15m"
+
+# Deviation threshold (in ATR multiples) to trigger mean reversion entries
+atr_threshold = 1.0
+

@@ -864,7 +864,12 @@ class CLICommandParser:
         if subcommand == "list":
             # List all available strategies
             strategies = []
-            for name in strategy_manager.available_strategies.keys():
+            names = (
+                strategy_manager.catalog_strategy_names()
+                if hasattr(strategy_manager, "catalog_strategy_names")
+                else strategy_manager.registered_strategy_names()
+            )
+            for name in names:
                 status = "loaded" if name in strategy_manager.strategies else "available"
                 enabled = strategy_manager.strategies[name].config.enabled if name in strategy_manager.strategies else False
                 strategies.append({
@@ -1288,7 +1293,7 @@ class CLICommandParser:
             # Get strategy class
             strategy_class = None
             if hasattr(self.trading_bot, 'strategy_manager'):
-                strategy_class = self.trading_bot.strategy_manager.available_strategies.get(strategy_name)
+                strategy_class = self.trading_bot.strategy_manager.get_strategy_class(strategy_name)
             
             if not strategy_class:
                 # Fallback to direct import
@@ -1307,7 +1312,12 @@ class CLICommandParser:
                     strategy_class = getattr(module, class_name)
             
             if not strategy_class:
-                available = list(self.trading_bot.strategy_manager.available_strategies.keys()) if hasattr(self.trading_bot, 'strategy_manager') else []
+                sm = self.trading_bot.strategy_manager if hasattr(self.trading_bot, 'strategy_manager') else None
+                available = (
+                    sm.catalog_strategy_names()
+                    if sm and hasattr(sm, "catalog_strategy_names")
+                    else (sm.registered_strategy_names() if sm else [])
+                )
                 return {"error": f"Strategy '{strategy_name}' not found. Available: {', '.join(available) if available else 'none'}"}
             
             # Store original get_historical_data method
@@ -1795,9 +1805,13 @@ class CLICommandParser:
         if not hasattr(self.trading_bot, "strategy_manager"):
             return {"error": "Strategy manager not available"}
         strategy_manager = self.trading_bot.strategy_manager
-        strategy_class = strategy_manager.available_strategies.get(strategy_name)
+        strategy_class = strategy_manager.get_strategy_class(strategy_name)
         if not strategy_class:
-            available = list(strategy_manager.available_strategies.keys())
+            available = (
+                strategy_manager.catalog_strategy_names()
+                if hasattr(strategy_manager, "catalog_strategy_names")
+                else strategy_manager.registered_strategy_names()
+            )
             return {"error": f"Strategy '{strategy_name}' not found. Available: {', '.join(available)}"}
 
         # 1) Seed correct context via analyze_date (single source of truth for range + ATR zones)

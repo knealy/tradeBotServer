@@ -129,13 +129,13 @@ To record a new decision, copy the template below and append it:
 **Status**: Accepted
 **Date**: 2026-04-28
 
-**Context**: The trading bot's hot path — market data ingestion, signal evaluation, order dispatch — runs on asyncio. The default CPython event loop and the standard `json` module introduce measurable latency on high-frequency tick processing. The `requests` library is synchronous and blocks the event loop when called from async code.
+**Context**: The trading bot's hot path — market data ingestion, signal evaluation, order dispatch — runs on asyncio. The default CPython event loop and the standard `json` module introduce measurable latency on high-frequency tick processing. Synchronous HTTP clients (notably `requests`) block the event loop when used from async code.
 
-**Decision**: `uvloop` is installed as the asyncio event loop policy in `core/logging_setup.configure_logging()` (best-effort; silently skipped if not installed). `orjson` replaces `json` in serialization-critical paths. Synchronous `requests` calls in the runtime trading path are targeted for removal in Phase 2.1; the auth module (`core/auth.py`) retains `requests` until that phase lands, then migrates to `aiohttp`.
+**Decision**: `uvloop` is installed as the asyncio event loop policy in `core/logging_setup.configure_logging()` (best-effort; silently skipped if not installed). `orjson` replaces `json` in serialization-critical paths. Runtime async HTTP paths are migrated to `aiohttp` and must not block the loop.
 
 **Consequences**:
 - `uvloop` and `orjson` must be present in `requirements.txt` and the Dockerfile.
-- Until Phase 2.1: any new code in the async hot path must not call `requests` directly; use `aiohttp` or the existing async adapter methods.
+- Any new code in the async hot path must not call `requests` directly; use `aiohttp` or the existing async adapter methods.
 - If `uvloop` fails to import at startup (e.g., on Windows CI), the bot falls back to the default loop without error.
 
 ---

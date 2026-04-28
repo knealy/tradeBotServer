@@ -3,15 +3,19 @@ Environment variable loader for TopStepX Trading Bot
 This module loads environment variables from .env file if it exists
 """
 
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
 
 def load_env_file():
     """Load environment variables from .env file if it exists"""
     env_file = Path('.env')
     
     if env_file.exists():
-        print("📁 Loading environment variables from .env file...")
+        logger.info("Loading environment variables from .env file")
         with open(env_file, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -23,25 +27,24 @@ def load_env_file():
                     if '#' in value:
                         value = value.split('#')[0].strip()
                     os.environ[key] = value
-        print("✅ Environment variables loaded successfully")
+        logger.info("Environment variables loaded from .env")
     else:
         # Check if running on Railway (Railway sets RAILWAY_ENVIRONMENT)
         if os.getenv('RAILWAY_ENVIRONMENT'):
-            print("ℹ️  Using Railway environment variables (no .env file needed)")
-            # Debug: Print some key environment variables
-            print(f"🔍 POSITION_SIZE: {os.getenv('POSITION_SIZE')}")
-            print(f"🔍 IGNORE_NON_ENTRY_SIGNALS: {os.getenv('IGNORE_NON_ENTRY_SIGNALS')}")
-            print(f"🔍 TP1_FRACTION: {os.getenv('TP1_FRACTION')}")
+            logger.info("Using Railway environment variables (no .env file)")
+            logger.debug("POSITION_SIZE=%s IGNORE_NON_ENTRY_SIGNALS=%s TP1_FRACTION=%s",
+                         os.getenv('POSITION_SIZE'), os.getenv('IGNORE_NON_ENTRY_SIGNALS'),
+                         os.getenv('TP1_FRACTION'))
         else:
-            print("⚠️  No .env file found, using system environment variables")
+            logger.warning("No .env file found, using system environment variables")
 
     # Set safe defaults for new SDK feature toggles
     # Only set default if not already loaded from .env
     if 'USE_PROJECTX_SDK' not in os.environ:
         os.environ['USE_PROJECTX_SDK'] = '0'
-        print(f"ℹ️  USE_PROJECTX_SDK not found in .env, defaulting to '0'")
+        logger.debug("USE_PROJECTX_SDK not in .env, defaulting to 0")
     else:
-        print(f"✅ USE_PROJECTX_SDK={os.environ.get('USE_PROJECTX_SDK')} (from .env or environment)")
+        logger.debug("USE_PROJECTX_SDK=%s (from .env or environment)", os.environ.get('USE_PROJECTX_SDK'))
     
     # Set cache expiration defaults (in minutes)
     if 'CACHE_TTL_MARKET_HOURS' not in os.environ:
@@ -68,6 +71,7 @@ def load_env_file():
         os.environ['PREFETCH_SYMBOLS'] = 'MNQ,ES,NQ,MES'  # Common symbols to prefetch
     if 'PREFETCH_TIMEFRAMES' not in os.environ:
         os.environ['PREFETCH_TIMEFRAMES'] = '1m,5m'  # Common timeframes to prefetch
+
 
 # Load environment variables when this module is imported
 load_env_file()

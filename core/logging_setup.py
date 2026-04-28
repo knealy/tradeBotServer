@@ -6,7 +6,7 @@ logger.* calls. This guarantees:
 
   * one rotating file handler (10MB x 5 backups, default 50MB total)
   * one stdout handler (default WARNING level so the terminal stays quiet)
-  * uvloop installed for asyncio (best-effort; falls back silently)
+  * uvloop installed for asyncio on POSIX when the package is present (opt-out via env)
   * SignalRCoreClient and websocket logs muted to WARNING
 
 LOG_FILE env var picks the destination. LOG_LEVEL env var sets the file
@@ -86,15 +86,25 @@ def configure_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
+    log = logging.getLogger(__name__)
     if install_uvloop:
-        try:
-            import uvloop  # type: ignore
-            uvloop.install()
-        except Exception:
-            pass
+        use_uv = os.getenv("USE_UVLOOP", "1").lower() not in ("0", "false", "no")
+        disabled = os.getenv("DISABLE_UVLOOP", "").lower() in ("1", "true", "yes")
+        if not use_uv or disabled:
+            log.debug("uvloop skipped (USE_UVLOOP/DISABLE_UVLOOP)")
+        else:
+            try:
+                import uvloop  # type: ignore[import-untyped]
+
+                uvloop.install()
+                log.info("uvloop event loop policy installed")
+            except ImportError:
+                log.debug("uvloop not available (optional; install on Linux/macOS)")
+            except Exception as exc:
+                log.debug("uvloop.install skipped: %s", exc)
 
     _CONFIGURED = True
-    logging.getLogger(__name__).info(
+    log.info(
         "Logging configured: file=%s level=%s console=%s", log_path, file_level_name, console_level
     )
     return log_path

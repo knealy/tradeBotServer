@@ -16,7 +16,6 @@ Strategy Logic:
 - Move stop to breakeven after +15 pts profit
 """
 
-import os
 import logging
 import asyncio
 from datetime import datetime, date, time, timedelta, timezone
@@ -29,6 +28,7 @@ except ImportError:
     pytz = None  # Optional dependency
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from core.strategy_config import load_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,10 @@ class OvernightRangeStrategy(BaseStrategy):
         
         # Initialize base strategy
         super().__init__(trading_bot, config)
+
+        # Strategy-specific config (TOML-backed) for all non-secret knobs.
+        # This replaces direct environment-variable reads throughout this strategy.
+        self._cfg = load_strategy_config("overnight_range")
         
         # Overnight-specific state
         self.active_ranges: Dict[str, OvernightRange] = {}
@@ -121,42 +125,42 @@ class OvernightRangeStrategy(BaseStrategy):
         self._atr_cache: Dict[str, Dict[str, Tuple[ATRData, datetime]]] = {}
         self._atr_cache_ttl = timedelta(minutes=5)  # Cache ATR for 5 minutes
         
-        # Load strategy-specific configuration from environment
-        self.overnight_start = os.getenv('OVERNIGHT_START_TIME', '18:00')  # 6pm EST
-        self.overnight_end = os.getenv('OVERNIGHT_END_TIME', '09:30')  # 8am EST
-        self.market_open_time = os.getenv('MARKET_OPEN_TIME', '09:30')  # 8am EST
+        # Load strategy-specific configuration (TOML > env > defaults)
+        self.overnight_start = self._cfg.get_str("timing.overnight_start", "18:00")  # 6pm ET
+        self.overnight_end = self._cfg.get_str("timing.overnight_end", "09:30")  # 9:30am ET
+        self.market_open_time = self._cfg.get_str("timing.market_open", "09:30")
         # MOR.pine uses 30m bar open at session open for daily zones; set to "1m" to use 1m (legacy)
-        self.zone_open_source = (os.getenv('OVERNIGHT_ZONE_OPEN_SOURCE', '30m') or '30m').lower()
+        self.zone_open_source = (self._cfg.get_str("timing.zone_open_source", "30m") or "30m").lower()
         # Zone anchor time: for MOR.pine compat with futures, use 08:30 (MOR: openHour-1 for isFutures)
-        self.zone_anchor_time = os.getenv('ZONE_ANCHOR_TIME', self.market_open_time)
+        self.zone_anchor_time = self._cfg.get_str("timing.zone_anchor", self.market_open_time)
         if pytz:
-            self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+            self.timezone = pytz.timezone(self._cfg.get_str("timing.session_timezone", "US/Eastern"))
         else:
             # Fallback to UTC if pytz not available
             self.timezone = timezone.utc
             logger.warning("pytz not available, using UTC timezone. Install pytz for timezone support.")
         
         # ATR configuration
-        self.atr_period = int(os.getenv('ATR_PERIOD', '14'))  # 14 bars default
-        self.atr_timeframe = os.getenv('ATR_TIMEFRAME', '15m')  # 15-minute bars (used for breakout stops/targets)
+        self.atr_period = int(self._cfg.get_int("signal.atr_period", 14))  # 14 bars default
+        self.atr_timeframe = self._cfg.get_str("signal.atr_timeframe", "15m")  # used for breakout stops/targets
         
         # Risk management
-        self.stop_atr_multiplier = float(os.getenv('STOP_ATR_MULTIPLIER', '1.25'))  # 1.0-1.5 ATR
-        self.tp_atr_multiplier = float(os.getenv('TP_ATR_MULTIPLIER', '2.0'))  # Daily ATR zone
+        self.stop_atr_multiplier = float(self._cfg.get_float("signal.stop_atr_multiplier", 1.25))  # 1.0-1.5 ATR
+        self.tp_atr_multiplier = float(self._cfg.get_float("signal.tp_atr_multiplier", 2.0))  # Daily ATR zone
         
         # Breakeven management (optional)
-        self.breakeven_enabled = os.getenv('BREAKEVEN_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
-        self.breakeven_profit_points = float(os.getenv('BREAKEVEN_PROFIT_POINTS', '15.0'))  # +15 pts
+        self.breakeven_enabled = self._cfg.get_bool("position_management.breakeven_enabled", True)
+        self.breakeven_profit_points = float(self._cfg.get_float("position_management.breakeven_profit_points", 15.0))  # +15 pts
         
         # Order placement
-        self.range_break_offset = float(os.getenv('RANGE_BREAK_OFFSET', '0.25'))  # Offset from range extremes
-        self.default_quantity = int(os.getenv('STRATEGY_QUANTITY', '1'))  # Position size
-        self.max_quantity_per_instrument = int(os.getenv('MAX_QUANTITY_PER_INSTRUMENT', '10'))  # Max contracts per symbol
-        self.breakout_monitor_enabled = os.getenv('BREAKOUT_MONITOR_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
-        self.breakout_proximity_percent = float(os.getenv('BREAKOUT_PROXIMITY_PERCENT', '10.0'))
-        self.breakout_min_proximity_points = float(os.getenv('BREAKOUT_MIN_PROXIMITY_POINTS', '5.0'))
-        self.breakout_monitor_interval = float(os.getenv('BREAKOUT_MONITOR_INTERVAL_SECONDS', '15'))
-        self.breakout_order_tolerance_points = float(os.getenv('BREAKOUT_ORDER_TOLERANCE_POINTS', '1.0'))
+        self.range_break_offset = float(self._cfg.get_float("position_management.range_break_offset", 0.25))
+        self.default_quantity = int(self._cfg.get_int("risk.position_size", 1))
+        self.max_quantity_per_instrument = int(self._cfg.get_int("risk.max_quantity_per_instrument", 10))
+        self.breakout_monitor_enabled = self._cfg.get_bool("breakout_monitor.enabled", True)
+        self.breakout_proximity_percent = float(self._cfg.get_float("breakout_monitor.proximity_pct", 10.0))
+        self.breakout_min_proximity_points = float(self._cfg.get_float("breakout_monitor.min_proximity_points", 5.0))
+        self.breakout_monitor_interval = float(self._cfg.get_float("breakout_monitor.interval_seconds", 15.0))
+        self.breakout_order_tolerance_points = float(self._cfg.get_float("breakout_monitor.order_tolerance_points", 1.0))
         self.breakout_levels: Dict[str, Dict[str, RangeBreakOrder]] = {}
         self.breakout_active_orders: Dict[str, Dict[str, str]] = {}
         self._breakout_monitor_task: Optional[asyncio.Task] = None
@@ -164,19 +168,19 @@ class OvernightRangeStrategy(BaseStrategy):
         # (accessed via self.risk_manager from BaseStrategy)
         
         # Market condition filters (OPTIONAL - defaulted to OFF)
-        self.filter_range_size_enabled = os.getenv('OVERNIGHT_FILTER_RANGE_SIZE', 'false').lower() == 'true'
-        self.filter_range_min = float(os.getenv('OVERNIGHT_RANGE_MIN_POINTS', '50.0'))
-        self.filter_range_max = float(os.getenv('OVERNIGHT_RANGE_MAX_POINTS', '500.0'))
+        self.filter_range_size_enabled = self._cfg.get_bool("filters.range_size", False)
+        self.filter_range_min = float(self._cfg.get_float("filters.range_min_pts", 50.0))
+        self.filter_range_max = float(self._cfg.get_float("filters.range_max_pts", 500.0))
         
-        self.filter_gap_enabled = os.getenv('OVERNIGHT_FILTER_GAP', 'false').lower() == 'true'
-        self.filter_gap_max = float(os.getenv('OVERNIGHT_GAP_MAX_POINTS', '200.0'))
+        self.filter_gap_enabled = self._cfg.get_bool("filters.gap", False)
+        self.filter_gap_max = float(self._cfg.get_float("filters.gap_max_pts", 200.0))
         
-        self.filter_volatility_enabled = os.getenv('OVERNIGHT_FILTER_VOLATILITY', 'false').lower() == 'true'
-        self.filter_atr_min = float(os.getenv('OVERNIGHT_ATR_MIN', '20.0'))
-        self.filter_atr_max = float(os.getenv('OVERNIGHT_ATR_MAX', '200.0'))
+        self.filter_volatility_enabled = self._cfg.get_bool("filters.volatility", False)
+        self.filter_atr_min = float(self._cfg.get_float("filters.atr_min", 20.0))
+        self.filter_atr_max = float(self._cfg.get_float("filters.atr_max", 200.0))
         
-        self.filter_dll_proximity_enabled = os.getenv('OVERNIGHT_FILTER_DLL_PROXIMITY', 'false').lower() == 'true'
-        self.filter_dll_threshold = float(os.getenv('OVERNIGHT_DLL_THRESHOLD_PERCENT', '0.75'))  # 75%
+        self.filter_dll_proximity_enabled = self._cfg.get_bool("filters.dll_proximity", False)
+        self.filter_dll_threshold = float(self._cfg.get_float("filters.dll_threshold_pct", 0.75))  # 75%
         
         # Strategy state
         self.is_tracking = False
@@ -437,7 +441,7 @@ class OvernightRangeStrategy(BaseStrategy):
         elif getattr(self.config, 'symbols', None):
             candidates = self.config.symbols
         else:
-            candidates = os.getenv('STRATEGY_SYMBOLS', 'MNQ,MES').split(',')
+            candidates = self._cfg.symbols() or ["MNQ", "MES"]
 
         return [sym.strip().upper() for sym in candidates if sym and sym.strip()]
     
@@ -878,7 +882,7 @@ class OvernightRangeStrategy(BaseStrategy):
             timeframe = timeframe or self.atr_timeframe
             
             # Fetch fresh bars (no cache)
-            atr_history_bars = int(os.getenv("ATR_HISTORY_BARS", "200"))
+            atr_history_bars = int(self._cfg.get_int("signal.atr_history_bars", 200))
             intraday_limit = max(period + 1, atr_history_bars)
             
             bars = await self.trading_bot.get_historical_data(
@@ -1045,7 +1049,7 @@ class OvernightRangeStrategy(BaseStrategy):
 
             # Fetch a deeper history window for Wilder smoothing to better match TradingView/PineScript.
             # With only period+1 bars, Wilder ATR degenerates into just an SMA and will differ from ta.atr().
-            atr_history_bars = int(os.getenv("ATR_HISTORY_BARS", "200"))
+            atr_history_bars = int(self._cfg.get_int("signal.atr_history_bars", 200))
             intraday_limit = max(period + 1, atr_history_bars)
 
             bars = await self.trading_bot.get_historical_data(
@@ -1122,9 +1126,9 @@ class OvernightRangeStrategy(BaseStrategy):
             # (1h avoids the adapter overwriting end_time for 5m when end is in the past, e.g. analyze_date).
             # DAILY_BAR_ROLL_TIME="18:00" (default) to match MOR; fall back to exchange 1d if disabled/insufficient.
             daily_atr = current_atr  # Default fallback
-            session_aligned = os.getenv("DAILY_ATR_SESSION_ALIGNED", "true").lower() in ("true", "1", "yes", "on")
+            session_aligned = self._cfg.get_bool("signal.daily_atr_session_aligned", True)
             daily_atr_from_session = False
-            roll_str = os.getenv("DAILY_BAR_ROLL_TIME", "18:00")  # 18:00 ET to match MOR; do not use overnight_start
+            roll_str = self._cfg.get_str("signal.daily_bar_roll_time", "18:00")  # 18:00 ET to match MOR; do not use overnight_start
 
             # Prefer as-of time from analyze_date/backtest when set; otherwise latest bar or now.
             # analyze_date sets _current_bar_timestamp to 1min after overnight_end on the target date
@@ -1377,7 +1381,7 @@ class OvernightRangeStrategy(BaseStrategy):
                         # configurable via env var and defaults to excluding the current day for MGC only.
                         exclude_symbols = {
                             s.strip().upper()
-                            for s in os.getenv("DAILY_ATR_EXCLUDE_CURRENT_DAY_SYMBOLS", "MGC").split(",")
+                            for s in self._cfg.get_list("signal.daily_atr_exclude_current_day_symbols", ["MGC"])
                             if s.strip()
                         }
                         exclude_current_day = symbol.upper() in exclude_symbols
@@ -1435,7 +1439,7 @@ class OvernightRangeStrategy(BaseStrategy):
             # - Anchor time: defaults to 07:00 ET for MGC unless ZONE_ANCHOR_TIME is explicitly set.
             # - Contract selection: resolve the source contract from the continuous stitched daily bar.
             zone_anchor_time = self.zone_anchor_time
-            if symbol.upper() == "MGC" and os.getenv("ZONE_ANCHOR_TIME") is None:
+            if symbol.upper() == "MGC" and not self._cfg.env_present("ZONE_ANCHOR_TIME"):
                 zone_anchor_time = "07:00"
 
             open_hour, open_min = map(int, zone_anchor_time.split(':'))
@@ -1576,8 +1580,8 @@ class OvernightRangeStrategy(BaseStrategy):
             open_price_for_zones = market_open_price
             
             day_dist = daily_atr * 0.5
-            zone_near_mult = float(os.getenv("ATR_ZONE_NEAR_MULT", "0.5"))
-            zone_far_mult = float(os.getenv("ATR_ZONE_FAR_MULT", "0.618"))
+            zone_near_mult = float(self._cfg.get_float("signal.atr_zone_near_mult", 0.5))
+            zone_far_mult = float(self._cfg.get_float("signal.atr_zone_far_mult", 0.618))
             if zone_far_mult < zone_near_mult:
                 # Safety: enforce ordering
                 zone_near_mult, zone_far_mult = zone_far_mult, zone_near_mult
@@ -1924,7 +1928,7 @@ class OvernightRangeStrategy(BaseStrategy):
             # For MGC parity, anchor at 07:00 ET (unless explicitly overridden) and use the
             # correct contract month for that date (continuous daily source contract).
             zone_anchor_time = self.zone_anchor_time
-            if symbol.upper() == "MGC" and os.getenv("ZONE_ANCHOR_TIME") is None:
+            if symbol.upper() == "MGC" and not self._cfg.env_present("ZONE_ANCHOR_TIME"):
                 zone_anchor_time = "07:00"
 
             open_hour, open_min = map(int, zone_anchor_time.split(':'))
@@ -2016,8 +2020,8 @@ class OvernightRangeStrategy(BaseStrategy):
             
             # Calculate zones using same formula as current day
             day_dist = atr_data.daily_atr * 0.5
-            zone_near_mult = float(os.getenv("ATR_ZONE_NEAR_MULT", "0.5"))
-            zone_far_mult = float(os.getenv("ATR_ZONE_FAR_MULT", "0.618"))
+            zone_near_mult = float(self._cfg.get_float("signal.atr_zone_near_mult", 0.5))
+            zone_far_mult = float(self._cfg.get_float("signal.atr_zone_far_mult", 0.618))
             
             prev_upper_lower = prev_open_price + day_dist * zone_near_mult
             prev_upper_upper = prev_open_price + day_dist * zone_far_mult
@@ -2059,7 +2063,7 @@ class OvernightRangeStrategy(BaseStrategy):
             
             # Calculate ATR - use cached for daily/zones, but recalc current if placing orders
             # Check if we're being called from place_range_break_orders (use dynamic ATR)
-            use_dynamic_atr = os.getenv("USE_DYNAMIC_ATR_FOR_ORDERS", "true").lower() in ("true", "1", "yes", "on")
+            use_dynamic_atr = self._cfg.get_bool("position_management.use_dynamic_atr_for_orders", True)
             
             atr_data = await self.calculate_atr(symbol)
             if not atr_data:
@@ -3097,15 +3101,45 @@ class OvernightRangeStrategy(BaseStrategy):
                     if profit_points >= self.breakeven_profit_points:
                         logger.info(f"🎯 Position {symbol} reached +{profit_points:.2f} pts profit - moving stop to breakeven!")
                         
-                        # Move stop to breakeven (entry price)
-                        # This would require modifying the stop order
-                        # Implementation depends on broker API capabilities
-                        
-                        # Mark as triggered - will be cleaned up on next iteration (AUTO-STOP)
+                        # Move stop toward breakeven (entry price) via position-linked stop
                         monitor_data['breakeven_triggered'] = True
-                        
-                        # TODO: Implement actual stop modification via API
-                        # await self.trading_bot.modify_order(stop_order_id, new_stop_price=entry_price)
+                        acct = getattr(self.trading_bot, "selected_account", None)
+                        account_id = acct.get("id") if isinstance(acct, dict) else None
+                        position_id = (
+                            position.get("id")
+                            or position.get("positionId")
+                            or position.get("position_id")
+                        )
+                        if account_id and position_id:
+                            try:
+                                res = await self.trading_bot.modify_stop_loss(
+                                    str(position_id),
+                                    float(entry_price),
+                                    account_id=str(account_id),
+                                )
+                                if isinstance(res, dict) and res.get("error"):
+                                    logger.debug(
+                                        "Breakeven stop modify failed for %s: %s",
+                                        symbol,
+                                        res.get("error"),
+                                    )
+                                else:
+                                    logger.info(
+                                        "Breakeven: broker stop adjusted toward entry for %s",
+                                        symbol,
+                                    )
+                            except Exception as exc:
+                                logger.debug(
+                                    "Breakeven modify_stop_loss error for %s: %s",
+                                    symbol,
+                                    exc,
+                                    exc_info=True,
+                                )
+                        else:
+                            logger.debug(
+                                "Breakeven for %s: missing account_id or position_id; broker stop unchanged",
+                                symbol,
+                            )
                         
                         logger.info(f"✅ Breakeven triggered for {symbol} - AUTO-STOPPING monitoring")
                 
@@ -3135,7 +3169,7 @@ class OvernightRangeStrategy(BaseStrategy):
                     # Check if we're at or past market open time
                     if now >= market_open_today:
                         if not ran_today:
-                            grace_minutes = float(os.getenv('MARKET_OPEN_GRACE_MINUTES', '5'))
+                            grace_minutes = float(self._cfg.get_float("timing.market_open_grace_minutes", 5.0))
                             grace_deadline = market_open_today + timedelta(minutes=grace_minutes)
                             if now <= grace_deadline:
                                 time_since_open = (now - market_open_today).total_seconds()
@@ -3188,66 +3222,64 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     def _reload_config_from_env(self):
-        """Reload configuration from environment variables (allows runtime updates)."""
-        # Reload .env file to pick up any changes
+        """Reload configuration (TOML hot-reload + best-effort .env reload)."""
+        # Reload .env to pick up legacy env overrides (best-effort).
         try:
             from dotenv import load_dotenv
-            load_dotenv(override=True)  # override=True forces reload of existing vars
-        except ImportError:
-            # dotenv not available, use existing env vars
+            load_dotenv(override=True)
+        except Exception:
             pass
-        
-        def _get_env_value(names, default):
-            """Return first non-empty environment variable value from provided names."""
-            if isinstance(names, str):
-                names_iter = [names]
-            else:
-                names_iter = names
-            for name in names_iter:
-                value = os.getenv(name)
-                if value and str(value).strip():
-                    return str(value).strip()
-            return default
-        
-        self.overnight_start = _get_env_value(
-            ['OVERNIGHT_START_TIME', 'OVERNIGHT_RANGE_START_TIME', 'OVERNIGHT_SESSION_START'],
-            '18:00'
-        )
-        self.overnight_end = _get_env_value(
-            ['OVERNIGHT_END_TIME', 'OVERNIGHT_RANGE_END_TIME', 'OVERNIGHT_SESSION_END'],
-            '09:30'
-        )
-        self.market_open_time = _get_env_value(
-            ['MARKET_OPEN_TIME', 'OVERNIGHT_MARKET_OPEN_TIME', 'OVERNIGHT_RANGE_MARKET_OPEN_TIME'],
-            '09:30'
-        )
-        self.zone_open_source = (os.getenv('OVERNIGHT_ZONE_OPEN_SOURCE', '30m') or '30m').lower()
-        self.zone_anchor_time = os.getenv('ZONE_ANCHOR_TIME', self.market_open_time)
+
+        # Hot-reload TOML if it changed.
+        self._cfg.maybe_reload()
+
+        # Re-apply config values (same mapping as __init__)
+        self.overnight_start = self._cfg.get_str("timing.overnight_start", self.overnight_start)
+        self.overnight_end = self._cfg.get_str("timing.overnight_end", self.overnight_end)
+        self.market_open_time = self._cfg.get_str("timing.market_open", self.market_open_time)
+        self.zone_open_source = (self._cfg.get_str("timing.zone_open_source", self.zone_open_source) or "30m").lower()
+        self.zone_anchor_time = self._cfg.get_str("timing.zone_anchor", self.zone_anchor_time)
+
         if pytz:
-            self.timezone = pytz.timezone(os.getenv('STRATEGY_TIMEZONE', 'US/Eastern'))
+            self.timezone = pytz.timezone(self._cfg.get_str("timing.session_timezone", "US/Eastern"))
         else:
-            # Fallback to UTC if pytz not available
             self.timezone = timezone.utc
-            logger.warning("pytz not available, using UTC timezone. Install pytz for timezone support.")
-        self.atr_period = int(os.getenv('ATR_PERIOD', '14'))
-        self.atr_timeframe = os.getenv('ATR_TIMEFRAME', '5m')
-        self.stop_atr_multiplier = float(os.getenv('STOP_ATR_MULTIPLIER', '1.25'))
-        self.tp_atr_multiplier = float(os.getenv('TP_ATR_MULTIPLIER', '2.0'))
-        self.breakeven_enabled = os.getenv('BREAKEVEN_ENABLED', 'true').lower() in ('true', '1', 'yes', 'on')
-        self.breakeven_profit_points = float(os.getenv('BREAKEVEN_PROFIT_POINTS', '15.0'))
-        self.range_break_offset = float(os.getenv('RANGE_BREAK_OFFSET', '0.25'))
-        monitor_enabled_default = 'true' if self.breakout_monitor_enabled else 'false'
-        self.breakout_monitor_enabled = os.getenv('BREAKOUT_MONITOR_ENABLED', monitor_enabled_default).lower() in ('true', '1', 'yes', 'on')
-        self.breakout_proximity_percent = float(os.getenv('BREAKOUT_PROXIMITY_PERCENT', str(self.breakout_proximity_percent)))
-        self.breakout_min_proximity_points = float(os.getenv('BREAKOUT_MIN_PROXIMITY_POINTS', str(self.breakout_min_proximity_points)))
-        self.breakout_monitor_interval = float(os.getenv('BREAKOUT_MONITOR_INTERVAL_SECONDS', str(self.breakout_monitor_interval)))
-        self.breakout_order_tolerance_points = float(os.getenv('BREAKOUT_ORDER_TOLERANCE_POINTS', str(self.breakout_order_tolerance_points)))
-        
+
+        self.atr_period = int(self._cfg.get_int("signal.atr_period", self.atr_period))
+        self.atr_timeframe = self._cfg.get_str("signal.atr_timeframe", self.atr_timeframe)
+        self.stop_atr_multiplier = float(self._cfg.get_float("signal.stop_atr_multiplier", self.stop_atr_multiplier))
+        self.tp_atr_multiplier = float(self._cfg.get_float("signal.tp_atr_multiplier", self.tp_atr_multiplier))
+
+        self.breakeven_enabled = self._cfg.get_bool("position_management.breakeven_enabled", self.breakeven_enabled)
+        self.breakeven_profit_points = float(
+            self._cfg.get_float("position_management.breakeven_profit_points", self.breakeven_profit_points)
+        )
+        self.range_break_offset = float(self._cfg.get_float("position_management.range_break_offset", self.range_break_offset))
+
+        self.breakout_monitor_enabled = self._cfg.get_bool("breakout_monitor.enabled", self.breakout_monitor_enabled)
+        self.breakout_proximity_percent = float(self._cfg.get_float("breakout_monitor.proximity_pct", self.breakout_proximity_percent))
+        self.breakout_min_proximity_points = float(
+            self._cfg.get_float("breakout_monitor.min_proximity_points", self.breakout_min_proximity_points)
+        )
+        self.breakout_monitor_interval = float(
+            self._cfg.get_float("breakout_monitor.interval_seconds", self.breakout_monitor_interval)
+        )
+        self.breakout_order_tolerance_points = float(
+            self._cfg.get_float("breakout_monitor.order_tolerance_points", self.breakout_order_tolerance_points)
+        )
+
         # Keep StrategyConfig in sync so persistence/UI reflect these values
         if hasattr(self, 'config'):
             self.config.trading_start_time = self.overnight_start
             self.config.trading_end_time = self.overnight_end
-        logger.info(f"🔄 Reloaded config from environment: Overnight={self.overnight_start}-{self.overnight_end}, Market Open={self.market_open_time}, Zone Anchor={self.zone_anchor_time}")
+
+        logger.info(
+            "Reloaded config: Overnight=%s-%s MarketOpen=%s ZoneAnchor=%s",
+            self.overnight_start,
+            self.overnight_end,
+            self.market_open_time,
+            self.zone_anchor_time,
+        )
     
     async def start(self, symbols: List[str] = None):
         """

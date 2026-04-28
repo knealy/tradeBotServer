@@ -1,0 +1,10 @@
+# Optional: pip install pre-commit && pre-commit install
+# Runs docs/kit link checks before each commit.
+repos:
+  - repo: local
+    hooks:
+      - id: verify-handoff
+        name: verify handoff kit (links + MAP freshness)
+        entry: scripts/verify_handoff.sh
+        language: system
+        pass_filenames: false

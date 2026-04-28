@@ -7,11 +7,12 @@ An autonomous futures-trading bot targeting the TopStepX (ProjectX) platform via
 ## Read order
 
 1. [docs/HANDOFF.md](docs/HANDOFF.md) — mental model, lifecycle, process layout, operating notes
-2. [docs/MAP.md](docs/MAP.md) — annotated directory tree, every non-trivial module explained
-3. [docs/PLAYBOOK.md](docs/PLAYBOOK.md) — runbooks: start/stop, deploy, account switch, log drain
-4. [docs/GOTCHAS.md](docs/GOTCHAS.md) — footguns, subtle bugs, known env-var quirks
-5. [docs/DECISIONS.md](docs/DECISIONS.md) — why things are the way they are (ADRs)
-6. [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — code style, naming, async patterns, test approach
+2. [docs/README.md](docs/README.md) — canonical topic index (architecture, deploy, DB, env, strategies, …)
+3. [docs/MAP.md](docs/MAP.md) — annotated directory tree, every non-trivial module explained
+4. [docs/PLAYBOOK.md](docs/PLAYBOOK.md) — runbooks: start/stop, deploy, account switch, log drain
+5. [docs/GOTCHAS.md](docs/GOTCHAS.md) — footguns, subtle bugs, known env-var quirks
+6. [docs/DECISIONS.md](docs/DECISIONS.md) — why things are the way they are (ADRs)
+7. [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — code style, naming, async patterns, test approach
 
 ## Production entrypoint
 
@@ -58,7 +59,8 @@ scripts/run_overnight.sh <account_num>
 
 - [ ] Update [`docs/CHANGELOG.md`](docs/CHANGELOG.md) under `[Unreleased]`.
 - [ ] If conventions or entrypoints change, update [`docs/HANDOFF.md`](docs/HANDOFF.md) and this file.
-- [ ] Run `scripts/verify_handoff.sh` (import checks, lint, quick smoke test).
+- [ ] Run `make verify` or `scripts/verify_handoff.sh` (kit links + MAP freshness).
+- [ ] Run `make test` or `pytest` (curated default suite).
 - [ ] If directory layout changes, regenerate [`docs/MAP.md`](docs/MAP.md) via `scripts/gen_map.sh`.
 - [ ] Never commit `.env`, `.env.bak`, `.env.backup.*`, `.env.clean`, or any file with plaintext secrets.
 - [ ] New strategy → add `config/strategies/<name>.toml` and register in `strategies/strategy_manager.py`.

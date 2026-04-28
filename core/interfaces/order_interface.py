@@ -27,7 +27,7 @@ class OrderType(Enum):
     STOP_LIMIT = "STOP_LIMIT"
 
 
-@dataclass
+@dataclass(slots=True)
 class OrderResponse:
     """Response from order placement."""
     success: bool
@@ -37,7 +37,7 @@ class OrderResponse:
     raw_response: Optional[Dict[str, Any]] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class ModifyOrderResponse:
     """Response from order modification."""
     success: bool
@@ -47,7 +47,7 @@ class ModifyOrderResponse:
     raw_response: Optional[Dict[str, Any]] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class CancelResponse:
     """Response from order cancellation."""
     success: bool
