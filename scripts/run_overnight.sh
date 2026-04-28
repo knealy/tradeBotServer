@@ -14,6 +14,10 @@ fi
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
 LOG_DIR="${PROJECT_ROOT}/logs"
+if [ -e "$LOG_DIR" ] && [ ! -d "$LOG_DIR" ]; then
+    TS="$(date +%Y%m%d_%H%M%S)"
+    mv "$LOG_DIR" "${LOG_DIR}.file_backup_${TS}"
+fi
 mkdir -p "$LOG_DIR"
 
 # Generate unique log file name with account number and timestamp (with microseconds)

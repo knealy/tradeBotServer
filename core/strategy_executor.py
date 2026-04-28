@@ -33,7 +33,14 @@ if not os.path.isabs(log_file):
 # Ensure log directory exists
 log_path = Path(log_file)
 if log_path.parent != Path('.'):
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_dir = log_path.parent
+    # If something (accidentally) created a file at the log directory path,
+    # move it aside so we can create the directory and continue.
+    if log_dir.exists() and log_dir.is_file():
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_path = log_dir.with_name(f"{log_dir.name}.file_backup_{ts}")
+        log_dir.rename(backup_path)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
 # Set up basic logging first (trading_bot.py will override with force=True, but will use same LOG_FILE)
 logging.basicConfig(
