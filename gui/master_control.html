@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta id="tb-config" data-server-port="{{SERVER_PORT}}" data-symbol="{{SYMBOL}}" data-timeframe="{{TIMEFRAME}}">
     <title>Master Trading Control - Unified Dashboard</title>
     <style>
         /* CSS Variables for Professional Matte Theme */
@@ -175,7 +176,8 @@
             height: 600px;
             order: 1;
             resize: both;
-            overflow: auto;
+            /* hidden: inner scroll (overflow:auto) hid the time-scale row below the fold */
+            overflow: hidden;
         }
         
         /* Account panel - fixed width */
@@ -298,6 +300,21 @@
             height: 8px;
             cursor: nwse-resize;
         }
+        /* Chart panel: keep resize strips inside the padded margin so they do not cover the canvas */
+        .chart-panel .resize-handle.right {
+            right: 10px;
+            top: 40px;
+            bottom: 26px;
+        }
+        .chart-panel .resize-handle.bottom {
+            bottom: 10px;
+            left: 12px;
+            right: 12px;
+        }
+        .chart-panel .resize-handle.corner {
+            right: 10px;
+            bottom: 10px;
+        }
         .panel h2 {
             font-size: 11px;
             margin-bottom: 6px;
@@ -363,20 +380,74 @@
             flex: 1;
             display: flex;
             flex-direction: column;
-            overflow: visible; /* Allow time scale to be visible */
+            min-height: 0;
+            overflow: hidden; /* must be hidden so flex padding-bottom is enforced */
             max-height: none;
+            /* Wider inset than default .panel-content (8px): time scale + price rail stay inside border, clear resize strips */
+            padding: 10px 16px 22px 16px;
         }
+        /*
+         * Simplified sizing:
+         *  - #chart-container is the ONLY parent of #chart-mount, with explicit padding for visual inset.
+         *  - #chart-mount is sized in JS via mount.style.width/height each frame so LWC always gets a
+         *    valid, non-zero box and the time-axis row is allocated at creation.
+         */
         #chart-container {
-            flex: 1;
-            min-height: 350px;
+            flex: 1 1 auto;
+            min-height: 0;
+            position: relative;   /* positioning context for #chart-legend */
+            width: 100%;
+            margin-top: 6px;
+            padding: 6px 8px 22px 8px;   /* visual inset away from panel border + resize handle */
+            box-sizing: border-box;
             background: #0a0a0a;
             border-radius: 4px;
-            margin-top: 8px;
-            position: relative;
-            overflow: visible; /* Allow time scale to be visible */
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        #chart-mount {
+            flex: 1 1 auto;
+            min-height: 0;
+            min-width: 0;
             width: 100%;
-            /* Reserve space for time scale at bottom - typically 30-40px */
-            padding-bottom: 40px;
+        }
+        /*
+         * LWC injects .tv-lightweight-charts (not in repo). Edit colors/fonts in initChart() createChart({…}).
+         */
+        #chart-mount .tv-lightweight-charts {
+            border: 1px solid #334155;
+            border-radius: 3px;
+            box-sizing: border-box;
+        }
+        /*
+         * CRITICAL: neutralize the global table/td/tr rules below (line ~601) for the LWC widget.
+         * The global `td { padding: 5px 6px !important; border-bottom: 1px solid #222 }` was over-
+         * riding LWC's inline `style="padding:0"` (stylesheet !important > inline non-important),
+         * which broke canvas positioning and hid the time-axis row labels.
+         */
+        #chart-mount .tv-lightweight-charts,
+        #chart-mount .tv-lightweight-charts table,
+        #chart-mount .tv-lightweight-charts tr,
+        #chart-mount .tv-lightweight-charts td,
+        #chart-mount .tv-lightweight-charts th {
+            padding: 0 !important;
+            margin: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            font-size: inherit !important;
+            font-weight: inherit !important;
+            color: inherit !important;
+            text-transform: none !important;
+            line-height: normal !important;
+        }
+        #chart-mount .tv-lightweight-charts tr:hover {
+            background: transparent !important;
+        }
+        #chart-mount .tv-lightweight-charts table {
+            width: auto !important;
+            margin-top: 0 !important;
+            border-collapse: separate !important;
         }
         
         /* Chart Controls */
@@ -868,7 +939,10 @@
                 <button class="btn-danger" onclick="quickFlatten()" style="background: var(--negative-color); font-weight: bold;" title="Quick Flatten (F key)">FLATTEN</button>
                 </div>
                 
-            <!-- Chart Container -->
+            <!--
+              Master chart: edit gui/master_control.html (CSS in <style>, logic in <script> initChart).
+              LWC injects .tv-lightweight-charts under #chart-mount — find it in DevTools, not as a static file.
+            -->
                 <div id="chart-container">
                     <div id="chart-legend" class="chart-legend">
                         <div id="legend-symbol" style="font-weight: bold; color: var(--accent-color);">---</div>
@@ -878,6 +952,7 @@
                         <div>C: <span id="legend-close" class="legend-value">---</span></div>
                         <div>V: <span id="legend-volume" class="legend-value">---</span></div>
                     </div>
+                    <div id="chart-mount"></div>
                 </div>
             </div> <!-- End panel-content -->
         </div>
@@ -1157,11 +1232,14 @@
     
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <script>
-        const SERVER_PORT = {{SERVER_PORT}};
-        const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
-        const WS_URL = `ws://127.0.0.1:${SERVER_PORT}/ws`;
-        const SYMBOL = '{{SYMBOL}}';
-        const TIMEFRAME = '{{TIMEFRAME}}';
+(function () {
+        'use strict';
+        const cfg = document.getElementById('tb-config');
+        const SERVER_PORT = parseInt(cfg && cfg.dataset.serverPort, 10) || 0;
+        const SYMBOL = (cfg && cfg.dataset.symbol) || 'MNQ';
+        const TIMEFRAME = (cfg && cfg.dataset.timeframe) || '5m';
+        const BASE_URL = 'http://127.0.0.1:' + SERVER_PORT;
+        const WS_URL = 'ws://127.0.0.1:' + SERVER_PORT + '/ws';
         
         let chart = null;
         let candlestickSeries = null;
@@ -3282,43 +3360,106 @@ Speed Trading Shortcuts:
             updateIntervals.strategies = setInterval(updateStrategies, 30000);
         }
         
-        // Initialize chart
+        // Initialize chart — options below map to Lightweight Charts API (not raw HTML for .tv-lightweight-charts).
         function initChart() {
-            const container = document.getElementById('chart-container');
-            if (!container || typeof LightweightCharts === 'undefined') return;
+            const mount = document.getElementById('chart-mount');
+            if (!mount || typeof LightweightCharts === 'undefined') return;
             
-            // Store container reference for drag/drop
-            chartContainerElement = container;
-            
-            // Time scale typically needs ~30-40px at bottom
-            // We reserve this space with padding-bottom, so use full container height
-            const TIME_AXIS_HEIGHT = 40;
+            chartContainerElement = mount;
 
-                chart = LightweightCharts.createChart(container, {
-                    autoSize: false,
-                    width: container.clientWidth,
-                    height: Math.max(100, container.clientHeight - TIME_AXIS_HEIGHT),
+                /*
+                 * Sizing: read the chart-container content box, subtract its padding, and use that as
+                 * the mount size. This guarantees a non-zero, definite size at createChart time so
+                 * LWC always allocates the time-axis row.
+                 */
+                const container = mount.parentElement;
+                const measure = () => {
+                    if (!container) return { w: 800, h: 500 };
+                    const cs = getComputedStyle(container);
+                    const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+                    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+                    const w = Math.max(container.clientWidth - padX, 300);
+                    const h = Math.max(container.clientHeight - padY, 240);
+                    return { w, h };
+                };
+                const initial = measure();
+                mount.style.width = initial.w + 'px';
+                mount.style.height = initial.h + 'px';
+
+                chart = LightweightCharts.createChart(mount, {
+                    width: initial.w,
+                    height: initial.h,
                     layout: {
                         background: { color: '#0a0a0a' },
-                        textColor: '#d1d5db',
+                        textColor: '#f1f5f9',
+                        fontSize: 13,
                     },
                     grid: {
-                        vertLines: { color: '#1a1a1a' },
-                        horzLines: { color: '#1a1a1a' },
+                        vertLines: { color: '#1e293b' },
+                        horzLines: { color: '#1e293b' },
                     },
-                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                        vertLine: { labelVisible: true, color: '#94a3b8' },
+                        horzLine: { labelVisible: true, color: '#94a3b8' },
+                    },
+                    localization: {
+                        locale: navigator.language || 'en-US',
+                        // LWC v4 uses UTC by default for axis ticks; force local display (EST/EDT on this machine).
+                        timeFormatter: (timestamp) => {
+                            const d = new Date(timestamp * 1000);
+                            return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                        },
+                    },
                     rightPriceScale: {
-                        borderColor: '#1a1a1a',
+                        borderColor: '#64748b',
                         autoScale: true,
                         visible: true,
                     },
                     timeScale: {
-                        borderColor: '#1a1a1a',
+                        borderColor: '#64748b',
+                        borderVisible: true,
                         timeVisible: true,
                         secondsVisible: false,
                         visible: true,
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            // `time` is epoch seconds for our data (number). Convert to local time for labels.
+                            const ts = (typeof time === 'number') ? time : (time?.timestamp ?? null);
+                            if (typeof ts === 'number') {
+                                const d = new Date(ts * 1000);
+                                return d.toLocaleTimeString(locale || undefined, { hour: '2-digit', minute: '2-digit' });
+                            }
+                            // Fallback for business-day object ({year, month, day})
+                            if (time && typeof time === 'object' && 'year' in time && 'month' in time && 'day' in time) {
+                                const d = new Date(time.year, time.month - 1, time.day);
+                                return d.toLocaleDateString(locale || undefined, { month: '2-digit', day: '2-digit' });
+                            }
+                            return '';
+                        },
                     },
                 });
+
+                /*
+                 * Force-size the mount (style.width/height) AND chart on every container resize so
+                 * LWC always lays out the time-axis row at a non-zero height. Debounced via rAF to
+                 * avoid thrash during continuous resize.
+                 */
+                let _resizeRaf = 0;
+                const syncSize = () => {
+                    if (_resizeRaf) cancelAnimationFrame(_resizeRaf);
+                    _resizeRaf = requestAnimationFrame(() => {
+                        _resizeRaf = 0;
+                        if (!chart || !container) return;
+                        const { w, h } = measure();
+                        mount.style.width = w + 'px';
+                        mount.style.height = h + 'px';
+                        chart.resize(w, h, true);
+                    });
+                };
+                requestAnimationFrame(syncSize);
+                if (typeof ResizeObserver !== 'undefined') {
+                    new ResizeObserver(syncSize).observe(container);
+                }
                 
             candlestickSeries = chart.addCandlestickSeries({
                     upColor: '#4caf50',
@@ -3382,30 +3523,6 @@ Speed Trading Shortcuts:
             // Add drag/drop support for bracket order price lines
             setupOrderLineDragDrop();
             
-             // Add ResizeObserver to handle container resizing (for both horizontal and vertical)
-             // Reserve space for time scale at bottom (40px padding-bottom)
-             const TIME_AXIS_HEIGHT = 40;
-             const resizeObserver = new ResizeObserver(entries => {
-                 for (let entry of entries) {
-                     if (chart && entry.target === container) {
-                         // Use full container width, but reserve space for time axis
-                         chart.resize(entry.contentRect.width, Math.max(100, entry.contentRect.height - TIME_AXIS_HEIGHT));
-                     }
-                 }
-             });
-             resizeObserver.observe(container);
-             
-             // Also observe the chart panel for resize
-             const chartPanel = document.getElementById('chart-panel');
-             if (chartPanel) {
-                 const panelResizeObserver = new ResizeObserver(() => {
-                     if (chart && container) {
-                         chart.resize(container.clientWidth, Math.max(100, container.clientHeight - TIME_AXIS_HEIGHT));
-                     }
-                 });
-                 panelResizeObserver.observe(chartPanel);
-             }
-            
             // OHLCV Legend update on crosshair move
             chart.subscribeCrosshairMove(param => {
                 const legendSymbol = document.getElementById('legend-symbol');
@@ -3419,8 +3536,8 @@ Speed Trading Shortcuts:
                 
                 legendSymbol.textContent = currentChartSymbol;
                 
-                if (param.point === undefined || !param.time || param.point.x < 0 || param.point.x > container.clientWidth || param.point.y < 0 || param.point.y > container.clientHeight) {
-                    // Could reset to last bar here if desired
+                // Do not bound Y: crosshair can be over the time-scale row (y may exceed pane height)
+                if (param.point === undefined || !param.time || param.point.x < 0 || param.point.x > mount.clientWidth) {
                     return;
                 }
                 
@@ -4601,19 +4718,6 @@ Speed Trading Shortcuts:
                     if (resizeHandle === 'bottom' || resizeHandle === 'corner') {
                         panel.style.height = Math.max(200, startHeight + deltaY) + 'px';
                     }
-                    
-                    // Resize chart if this is the chart panel
-                    if (panel.id === 'chart-panel' && chart) {
-                        const container = document.getElementById('chart-container');
-                        if (container) {
-                            setTimeout(() => {
-                                chart.applyOptions({
-                                    width: container.clientWidth,
-                                    height: container.clientHeight
-                                });
-                            }, 10);
-                        }
-                    }
                 };
                 
                 const stopResize = () => {
@@ -5218,6 +5322,7 @@ Speed Trading Shortcuts:
             loadCustomization();
             initWidgetOrderList();
         });
+})();
     </script>
 </body>
 </html>

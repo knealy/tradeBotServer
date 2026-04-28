@@ -490,6 +490,21 @@ app.router.add_options('/api/chart/my_endpoint', handle_options)
 - Check `trading_bot.log` for errors
 - Ensure symbol has data available
 
+### Issue: Time axis (x-axis) missing / only flashes on resize
+
+**Symptom**:
+- The bottom time-scale labels (dates/times) never appear, or appear for a split second while resizing then disappear.
+- Price candles and right price scale render normally.
+
+**Cause**:
+- `gui/master_control.html` defines *global* CSS rules for `table`/`td` (not scoped to a specific widget). In particular:
+  - `td { padding: 5px 6px !important; border-bottom: ... }`
+- Lightweight Charts renders its chart UI as a `<table>` with `<tr>`/`<td>`. The global `td` rule (because it uses `!important`) overrides LWC’s own inline `style="padding:0"` and breaks the chart’s internal geometry, effectively hiding the time-scale row.
+
+**Fix**:
+- Add a scoped CSS reset for `#chart-mount .tv-lightweight-charts` that neutralizes the global `table/td/tr` rules (padding/margins/borders/hover background) so LWC can control its own layout.
+- This project now includes that reset in `gui/master_control.html` near the `#chart-mount .tv-lightweight-charts` section.
+
 ### Issue: Data not updating
 
 **Possible causes**:

@@ -104,3 +104,10 @@ tests/
 # pyenv
 .python-version
 .account_state.json
+
+# Local env/secrets
+.env*
+# Generated charts/logs
+charts/
+logs/
+.gui_websocket_port
