@@ -1,0 +1,16 @@
+---
+description: General Python style for this trading bot codebase.
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python style
+
+- Use `logger = logging.getLogger(__name__)`. Never call `logging.basicConfig` outside `core/logging_setup.py`.
+- No `print(...)` in module code; CLI-facing entrypoints only.
+- No bare `except:`. No `except Exception: pass`. Log with `logger.exception(...)` and handle or re-raise.
+- Lazy-import heavy libraries (`pandas`, `numpy`, `scipy`, `matplotlib`, `seaborn`, `polars`) inside the functions that need them.
+- Prefer `dataclasses` with `__slots__` for hot-path objects. Avoid raw `dict` churn in tight loops.
+- Relative timing in hot loops: `time.monotonic()`. Wall-clock at I/O boundaries: `datetime.now(timezone.utc)`.
+- JSON: prefer `orjson` on hot serialization paths; stdlib `json` is fine for tooling and low-frequency I/O.
+- Type hints are encouraged but not mandatory; `from __future__ import annotations` is welcome when it helps.

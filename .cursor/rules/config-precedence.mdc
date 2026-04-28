@@ -1,0 +1,15 @@
+---
+description: Configuration precedence rules.
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Configuration precedence
+
+Resolution order (highest to lowest): CLI override → environment variable → `config/strategies/<name>.toml` → strategy class default.
+
+- Non-strategy infra (DB URL, log level, host ports): environment-only is fine.
+- Strategy parameters: prefer `config/strategies/*.toml` and `StrategyConfig`.
+- Every new TOML key: document in `config/strategies/_schema.toml`.
+- When editing `strategies/`, migrate legacy `os.getenv(...)` to `cfg.get(...)` (or equivalent on `StrategyConfig`).
+- The loader may honor unprefixed env fallbacks (e.g. `STOP_ATR_MULTIPLIER`) for backward compatibility; do not assume prefix-only behavior without reading `core/strategy_config.py`.

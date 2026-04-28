@@ -1,0 +1,83 @@
+# =====================================================================
+# Strategy config schema — copy this file when adding a new strategy and
+# rename it to <strategy_name>.toml. Comments document the precedence and
+# the env-var fallback for every key.
+#
+# Precedence (resolved by core.strategy_config.StrategyConfig):
+#     CLI override  >  environment variable  >  this TOML  >  class default
+#
+# The env-var name for a dotted TOML key is:
+#     <STRATEGY_NAME_UPPER>_<DOTTED_KEY_UPPER_WITH_UNDERSCORES>
+# e.g.  risk.position_size  ->  OVERNIGHT_RANGE_RISK_POSITION_SIZE
+# Most legacy env vars (OVERNIGHT_START_TIME, ATR_PERIOD, etc.) keep
+# working as-is via the unprefixed last-segment fallback in the loader.
+# =====================================================================
+
+[meta]
+enabled = true                       # master on/off; obeyed by strategy_executor
+symbols = ["MNQ", "MES", "MGC"]      # default symbol set; CLI --symbols overrides
+
+[timing]
+overnight_start = "18:00"            # legacy env: OVERNIGHT_START_TIME
+overnight_end   = "18:15"            # legacy env: OVERNIGHT_END_TIME
+market_open     = "18:15"            # legacy env: MARKET_OPEN_TIME
+zone_anchor     = "18:15"            # legacy env: ZONE_ANCHOR_TIME
+session_timezone = "US/Eastern"      # legacy env: STRATEGY_TIMEZONE
+
+[risk]
+position_size       = 1              # default contracts per fill
+max_positions       = 2              # cap on open positions per symbol
+max_daily_trades    = 4
+risk_per_trade_pct  = 0.5
+respect_dll         = true
+respect_mll         = true
+max_dll_usage_pct   = 0.75
+
+[signal]
+atr_period           = 14            # legacy env: ATR_PERIOD
+atr_timeframe        = "15m"         # legacy env: ATR_TIMEFRAME
+stop_atr_multiplier  = 1.25          # legacy env: STOP_ATR_MULTIPLIER
+tp_atr_multiplier    = 1.5           # legacy env: TP_ATR_MULTIPLIER
+use_range_pct_sltp   = false         # legacy env: USE_RANGE_PCT_SLTP
+stop_range_pct       = 50.0          # legacy env: STOP_RANGE_PCT
+tp_range_pct         = 100.0         # legacy env: TP_RANGE_PCT
+
+[position_management]
+breakeven_enabled         = true     # legacy env: BREAKEVEN_ENABLED
+breakeven_profit_points   = 15.0     # legacy env: BREAKEVEN_PROFIT_POINTS
+range_break_offset        = 0.25     # legacy env: RANGE_BREAK_OFFSET
+use_dynamic_atr_for_orders = true    # legacy env: USE_DYNAMIC_ATR_FOR_ORDERS
+
+[breakout_monitor]
+enabled                  = true      # legacy env: BREAKOUT_MONITOR_ENABLED
+proximity_pct            = 10.0      # legacy env: BREAKOUT_PROXIMITY_PERCENT
+min_proximity_points     = 5.0       # legacy env: BREAKOUT_MIN_PROXIMITY_POINTS
+interval_seconds         = 15.0      # legacy env: BREAKOUT_MONITOR_INTERVAL_SECONDS
+
+[filters]
+range_size       = false             # legacy env: OVERNIGHT_FILTER_RANGE_SIZE
+gap              = false             # legacy env: OVERNIGHT_FILTER_GAP
+volatility       = false             # legacy env: OVERNIGHT_FILTER_VOLATILITY
+dll_proximity    = false             # legacy env: OVERNIGHT_FILTER_DLL_PROXIMITY
+range_min_pts    = 50.0              # legacy env: OVERNIGHT_RANGE_MIN_POINTS
+range_max_pts    = 500.0             # legacy env: OVERNIGHT_RANGE_MAX_POINTS
+gap_max_pts      = 200.0             # legacy env: OVERNIGHT_GAP_MAX_POINTS
+atr_min          = 20.0              # legacy env: OVERNIGHT_ATR_MIN
+atr_max          = 200.0             # legacy env: OVERNIGHT_ATR_MAX
+dll_threshold_pct = 0.75             # legacy env: OVERNIGHT_DLL_THRESHOLD_PERCENT
+
+# =====================================================================
+# Per-symbol overrides — anything in [symbols.<SYM>] beats the global value
+# above for that symbol only. Use for symbol-specific position sizing,
+# different ATR bands, etc. Looked up via cfg.symbol_override().
+# =====================================================================
+
+[symbols.MNQ]
+# Example: trade larger size on MNQ
+# position_size = 3
+
+[symbols.MES]
+# position_size = 3
+
+[symbols.MGC]
+# position_size = 2

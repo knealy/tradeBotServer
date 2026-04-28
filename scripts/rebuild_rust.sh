@@ -3,7 +3,7 @@
 
 set -e  # Exit on error
 
-cd /Users/knealy/tradeBotServer
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "🔧 Rebuilding Rust module with bracket order fix..."
 echo ""

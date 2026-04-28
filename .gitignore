@@ -96,7 +96,6 @@ orders.json
 .coverage
 htmlcov/
 .pytest_cache/
-tests/
 
 # Jupyter Notebooks
 .ipynb_checkpoints
@@ -105,9 +104,19 @@ tests/
 .python-version
 .account_state.json
 
-# Local env/secrets
-.env*
+# Local env/secrets (.env.example is the committed template)
+.env
+.env.local
+.env.bak
+.env.backup
+.env.backup.*
+.env.clean
+.env.production
+.env.staging
 # Generated charts/logs
 charts/
 logs/
 .gui_websocket_port
+
+# Rust build artifacts (do NOT commit; previously had ~1700 files tracked)
+rust/target/

@@ -10,7 +10,8 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 
 from core.interfaces import OrderInterface, OrderResponse
-from events import EventBus, OrderEvent, EventType
+from core.event_bus import EventBus
+from core.events import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -123,15 +124,17 @@ class OrderExecutor:
             
             # Publish event if event bus available
             if self.events and isinstance(response, OrderResponse) and response.success:
-                event = OrderEvent(
-                    event_type=EventType.ORDER_PLACED,
-                    order_id=response.order_id,
-                    symbol=symbol,
-                    side=side,
-                    quantity=quantity,
-                    price=limit_price,
-                    account_id=target_account,
-                    source="OrderExecutor"
+                event = Event(
+                    type=EventType.ORDER_PLACED,
+                    source="OrderExecutor",
+                    data={
+                        "order_id": response.order_id,
+                        "symbol": symbol,
+                        "side": side,
+                        "quantity": quantity,
+                        "price": limit_price,
+                        "account_id": target_account,
+                    },
                 )
                 await self.events.publish(event)
             

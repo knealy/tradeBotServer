@@ -2,7 +2,7 @@
 # Restart all strategies in background with fixed code
 # This will start them as background processes with proper logging
 
-cd /Users/knealy/tradeBotServer
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "🚀 Starting all strategies with FIXED code..."
 echo ""

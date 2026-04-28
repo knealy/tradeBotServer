@@ -1,0 +1,14 @@
+---
+description: Async I/O rules — no sync HTTP or sleep inside async functions.
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Async I/O
+
+- Inside `async def`: use `aiohttp`, not `requests`. Use `await asyncio.sleep(...)`, not `time.sleep`.
+- Blocking CPU or synchronous third-party calls: offload with `asyncio.to_thread(...)`.
+- Share one `aiohttp.ClientSession` per process. Prefer `TCPConnector(limit=64, keepalive_timeout=30, enable_cleanup_closed=True)` and `ClientTimeout(total=15, connect=3)`.
+- On shutdown: `await session.close()` or use `async with` so `ClientSession` is closed cleanly.
+- Prefer `asyncio.Event` over busy loops like `while not connected: time.sleep(0.05)`.
+- SignalR / hubs: use `core/websocket_manager.py` and `core/user_hub_manager.py`; do not add parallel raw hub clients without a strong reason.

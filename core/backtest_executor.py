@@ -996,11 +996,9 @@ async def main():
 
 
 if __name__ == '__main__':
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
+    from core.logging_setup import configure_logging
+    configure_logging()
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

@@ -483,11 +483,8 @@ async def main():
     import load_env
     load_env.load_env_file()
     
-    # Initialize logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    from core.logging_setup import configure_logging
+    configure_logging()
     
     # Initialize trading bot
     api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSETPX_API_KEY')

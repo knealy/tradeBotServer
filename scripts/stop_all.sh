@@ -20,7 +20,6 @@ fi
 echo "🔍 Searching for running bot processes..."
 pkill -f "trading_bot.py" && echo "✅ Stopped trading_bot.py" || echo "ℹ️  No trading_bot.py process found"
 pkill -f "strategy_executor.py" && echo "✅ Stopped strategy_executor.py" || echo "ℹ️  No strategy_executor.py process found"
-pkill -f "order_monitor.py" && echo "✅ Stopped order_monitor.py" || echo "ℹ️  No order_monitor.py process found"
 
 echo ""
 echo "✅ All processes stopped"

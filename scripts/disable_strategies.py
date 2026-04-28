@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from infrastructure.database import get_database
 from datetime import datetime, timezone
 
-logging.basicConfig(level=logging.INFO)
+from core.logging_setup import configure_logging
+configure_logging()
 logger = logging.getLogger(__name__)
 
 

@@ -230,9 +230,8 @@ python3 test_native_methods.py
 projectXbot/
 ├── trading_bot.py              # Main trading bot
 ├── servers/                    # Server modules
-│   ├── webhook_server.py       # TradingView webhook server
-│   ├── start_webhook.py        # Webhook server startup script
-│   ├── async_webhook_server.py # Async webhook server
+│   ├── async_webhook_server.py # Canonical TradingView webhook server (use this)
+│   ├── start_async_webhook.py  # Entry point for the async webhook server
 │   ├── dashboard.py           # Dashboard API
 │   └── websocket_server.py     # WebSocket server
 ├── core/                       # Core modules

@@ -90,50 +90,9 @@ except Exception as import_err:
 # Load environment variables from .env file
 import load_env
 
-# Configure logging
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-# Get log file from environment (default to trading_bot.log)
-log_file = os.getenv('LOG_FILE', 'trading_bot.log')
-# Convert to absolute path if relative (ensures consistent path resolution)
-if not os.path.isabs(log_file):
-    project_root = Path(__file__).parent
-    log_file = str(project_root / log_file)
-# Ensure log directory exists
-log_path = Path(log_file)
-if log_path.parent != Path('.'):
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-# Ensure log file handler is properly configured with rotation
-from logging.handlers import RotatingFileHandler
-file_handler = RotatingFileHandler(
-    log_file, 
-    mode='a', 
-    encoding='utf-8',
-    maxBytes=10*1024*1024,  # 10MB per file
-    backupCount=5  # Keep 5 backup files (50MB total)
-)
-# File handler gets all logs (INFO and above by default, DEBUG if verbose)
-file_handler.setLevel(getattr(logging, log_level, logging.INFO))
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-
-# Console handler only shows warnings and errors to reduce terminal verbosity
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.WARNING)  # Only WARNING, ERROR, CRITICAL in terminal
-console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-
-logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[file_handler, console_handler],
-    force=True  # Override any existing configuration
-)
+from core.logging_setup import configure_logging
+configure_logging()
 logger = logging.getLogger(__name__)
-# Only log to file, not console (this is INFO level)
-logger.info(f"Logging initialized - file: {log_file} (INFO+), console: stdout (WARNING+)")
-
-# SignalR errors are now properly handled with token refresh - no suppression needed
-# Keep log levels reasonable to avoid spam but show important errors
-logging.getLogger("SignalRCoreClient").setLevel(logging.INFO)  # Show info and above
-logging.getLogger("websocket").setLevel(logging.WARNING)  # Only warnings and errors for websocket library
 
 # Bot identifier for order tagging - will be made unique per order
 BOT_ORDER_TAG_PREFIX = "TradingBot-v1.0"

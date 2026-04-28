@@ -24,14 +24,8 @@ from pathlib import Path
 # Add project root to path (parent of servers/)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+from core.logging_setup import configure_logging
+configure_logging()
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,61 @@
+# Overnight Range Breakout strategy configuration.
+# See _schema.toml for documentation of every field.
+# Edit values here without restarting unrelated strategies; the executor
+# polls mtime and reloads on next loop tick when --reload is enabled.
+
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+[timing]
+overnight_start  = "18:00"
+overnight_end    = "09:30"
+market_open      = "09:30"
+zone_anchor      = "09:30"
+session_timezone = "US/Eastern"
+
+[risk]
+position_size      = 1
+max_positions      = 2
+max_daily_trades   = 4
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+atr_period          = 14
+atr_timeframe       = "15m"
+stop_atr_multiplier = 1.25
+tp_atr_multiplier   = 2.0
+use_range_pct_sltp  = false
+stop_range_pct      = 50.0
+tp_range_pct        = 100.0
+
+[position_management]
+breakeven_enabled          = true
+breakeven_profit_points    = 15.0
+range_break_offset         = 0.25
+use_dynamic_atr_for_orders = true
+
+[breakout_monitor]
+enabled              = true
+proximity_pct        = 10.0
+min_proximity_points = 5.0
+interval_seconds     = 15.0
+
+[filters]
+range_size        = false
+gap               = false
+volatility        = false
+dll_proximity     = false
+range_min_pts     = 50.0
+range_max_pts     = 500.0
+gap_max_pts       = 200.0
+atr_min           = 20.0
+atr_max           = 200.0
+dll_threshold_pct = 0.75
+
+[symbols.MNQ]
+[symbols.MES]
+[symbols.MGC]

@@ -1,0 +1,16 @@
+---
+description: Strategy module rules — no env reads, must use StrategyConfig.
+globs: "strategies/**/*.py"
+alwaysApply: false
+---
+
+# Strategy modules
+
+- Every strategy subclasses `BaseStrategy` from `strategies/strategy_base.py`.
+- Read parameters only via `core.strategy_config.StrategyConfig`. Never call `os.getenv` in strategy code.
+- Per-symbol overrides: `cfg.symbol_override(symbol, "<key>")`.
+- Publish signals through `core.event_bus.EventBus.publish(Event(type=EventType.SIGNAL_GENERATED, data={...}, source="<strategy>"))`.
+- Call `cfg.maybe_reload()` once per iteration (or loop tick) so TOML hot-reload applies.
+- New parameters: add to `config/strategies/<name>.toml` and to `config/strategies/_schema.toml`.
+- No direct DB access; use helpers in `infrastructure/database.py`.
+- No direct broker API calls; use `core/order_execution.OrderExecutor` or `strategies/strategy_manager.py` hooks.

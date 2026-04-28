@@ -20,9 +20,6 @@ if command -v tmux &> /dev/null; then
         # Split window for strategy executor
         tmux split-window -h -t trading:main "python core/strategy_executor.py --all"
         
-        # Split window for order monitor (to be created)
-        # tmux split-window -v -t trading:main "python core/order_monitor.py"
-        
         # Attach to session
         tmux attach -t trading
     fi

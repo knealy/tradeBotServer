@@ -1,0 +1,14 @@
+---
+description: Use core/event_bus only — events/ package was deleted.
+globs: "core/**/*.py,strategies/**/*.py,brokers/**/*.py,servers/**/*.py,gui/**/*.py"
+alwaysApply: false
+---
+
+# Event bus
+
+- Import `from core.event_bus import EventBus` and `from core.events import Event, EventType`.
+- The `events/` package is removed; `from events ...` is invalid and must be replaced.
+- Construct events as `Event(type=EventType.X, data={...}, source="<component>")`. Do not use a legacy `event_type=` keyword.
+- Subscribers receive an `Event`. Use `event.type`, `event.data`, `event.source`, and `event.timestamp`.
+- Signals: `EventType.SIGNAL_GENERATED`. Orders: `ORDER_PLACED`, `FILLED`, `CANCELLED`, `REJECTED`, `UPDATED` (and related existing types).
+- Adding `EventType` values requires updating all consumers and a regression test.

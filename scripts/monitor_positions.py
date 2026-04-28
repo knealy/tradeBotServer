@@ -19,11 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from trading_bot import TopStepXTradingBot
 import logging
 
-# Configure logging (only show errors in terminal, details in log file)
-logging.basicConfig(
-    level=logging.WARNING,
-    format='%(message)s'
-)
+from core.logging_setup import configure_logging
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
