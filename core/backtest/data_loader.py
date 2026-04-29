@@ -4,8 +4,8 @@ Historical Data Loader for Backtesting
 Loads and processes historical OHLCV data from multiple sources.
 """
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -36,7 +36,7 @@ class HistoricalDataLoader:
             broker_adapter: Optional TopStepX adapter for API data
         """
         self.broker_adapter = broker_adapter
-        self._data_cache: Dict[str, pd.DataFrame] = {}
+        self._data_cache: Dict[str, Any] = {}
     
     async def load_from_api(
         self,
@@ -61,7 +61,9 @@ class HistoricalDataLoader:
         """
         if not self.broker_adapter:
             raise ValueError("Broker adapter required for API data loading")
-        
+
+        import pandas as pd
+
         logger.info(f"Loading {symbol} {timeframe} data from API ({start_date} to {end_date})")
         
         # Fetch bars from broker
@@ -119,6 +121,8 @@ class HistoricalDataLoader:
         Returns:
             DataFrame with OHLCV data
         """
+        import pandas as pd
+
         logger.info(f"Loading {symbol} data from CSV: {filepath}")
         
         # Read CSV
@@ -195,6 +199,8 @@ class HistoricalDataLoader:
         Returns:
             DataFrame with OHLCV data
         """
+        import pandas as pd
+
         logger.info(f"Loading {symbol} data from JSON: {filepath}")
         
         with open(filepath, 'r') as f:
@@ -354,6 +360,9 @@ class HistoricalDataLoader:
         Returns:
             DataFrame with indicators added
         """
+        import numpy as np
+        import pandas as pd
+
         df = data.copy()
         
         if indicators is None:
@@ -411,6 +420,9 @@ class HistoricalDataLoader:
         Returns:
             DataFrame with synthetic OHLCV data
         """
+        import numpy as np
+        import pandas as pd
+
         logger.info(f"Generating {days} days of sample data for {symbol} ({timeframe})")
         
         # Parse timeframe to minutes

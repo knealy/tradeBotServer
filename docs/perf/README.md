@@ -1,7 +1,7 @@
 # Performance baselines (`docs/perf/`)
 
 Use this folder for **before/after** profiling artifacts (SVG/HTML) when tuning the asyncio hot path, startup, or DB.
-Short operator checklist: [BASELINE.md](BASELINE.md).
+Short operator checklist: [BASELINE.md](BASELINE.md). Live trading / Rust vs I/O: [OPERATIONS_TUNING.md](OPERATIONS_TUNING.md).
 
 ## uvloop
 

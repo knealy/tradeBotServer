@@ -5,11 +5,12 @@ This module allows backtesting using the same strategy code that runs live,
 ensuring identical logic between backtest and production.
 """
 
+from __future__ import annotations
+
 import logging
 import asyncio
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timezone
-import pandas as pd
 
 from .engine import BacktestEngine
 from .models import BacktestResult, OrderSide, OrderType, OrderStatus
@@ -89,6 +90,8 @@ class StrategyReplayEngine:
         Returns:
             BacktestResult with performance metrics
         """
+        import pandas as pd
+
         # Handle DataFrame input (from sample data)
         if isinstance(bars, pd.DataFrame):
             # Convert DataFrame to list of dicts
@@ -286,6 +289,8 @@ class StrategyReplayEngine:
     
     def _bars_to_dataframe(self, bars: List[Dict]) -> pd.DataFrame:
         """Convert bar dicts to pandas DataFrame."""
+        import pandas as pd
+
         data = []
         for bar in bars:
             # Handle different timestamp formats

@@ -4,8 +4,8 @@ Backtesting Engine
 Event-driven backtesting engine for trading strategies.
 """
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Callable
 import logging
@@ -446,6 +446,9 @@ class BacktestEngine:
         end_date: datetime
     ) -> BacktestResult:
         """Build backtest result from trade history."""
+        import numpy as np
+        import pandas as pd
+
         # Calculate statistics
         total_trades = len(self.trades)
         winning_trades = sum(1 for t in self.trades if t.pnl > 0)
@@ -550,6 +553,8 @@ class BacktestEngine:
     
     def _calculate_sharpe_ratio(self, returns: pd.Series, risk_free_rate: float = 0.0) -> float:
         """Calculate Sharpe ratio."""
+        import numpy as np
+
         if len(returns) < 2:
             return 0.0
         
@@ -561,6 +566,8 @@ class BacktestEngine:
     
     def _calculate_sortino_ratio(self, returns: pd.Series, risk_free_rate: float = 0.0) -> float:
         """Calculate Sortino ratio (only penalizes downside volatility)."""
+        import numpy as np
+
         if len(returns) < 2:
             return 0.0
         

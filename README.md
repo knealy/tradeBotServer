@@ -1,30 +1,41 @@
 # TopStepX trading bot
 
-Personal / operator-focused futures bot for **TopStepX (ProjectX)** accounts: REST + SignalR, Postgres caching, modular strategies, optional Railway-hosted dashboard.
+Personal / operator-focused futures stack for **TopStepX (ProjectX)** accounts: REST + SignalR, Postgres, modular strategies, optional Railway dashboard.
 
-**Canonical operator docs:** [AGENTS.md](AGENTS.md) → [docs/HANDOFF.md](docs/HANDOFF.md) → [docs/MAP.md](docs/MAP.md) → [docs/PLAYBOOK.md](docs/PLAYBOOK.md). Full topic index: [docs/README.md](docs/README.md).
+## Read this first
 
-## Current status
+| Order | Doc |
+|--------|-----|
+| 1 | [AGENTS.md](AGENTS.md) — golden rules, entrypoints, what not to do |
+| 2 | [docs/HANDOFF.md](docs/HANDOFF.md) — lifecycle and mental model |
+| 3 | [docs/MAP.md](docs/MAP.md) — annotated module map |
+| 4 | [docs/PLAYBOOK.md](docs/PLAYBOOK.md) — start/stop, deploy, triage |
 
-| Area | Status |
-|------|--------|
-| `trading_bot.py` CLI, `core/strategy_executor.py` | Active |
-| `brokers/topstepx_adapter.py`, SignalR market + user hubs | Active |
-| Postgres (`infrastructure/database.py`), async batch writers for hot-path telemetry | Active |
-| Dashboard / webhook (`servers/start_async_webhook.py` → `async_webhook_server.py`) | Active |
-| Strategy configs | `config/strategies/*.toml` + [core/strategy_config.py](core/strategy_config.py) |
-| Browser dashboard | Pre-built SPA under `static/dashboard/` (served by aiohttp); no Node stage in Docker |
-| Rust hot path (`TOPSTEPX_USE_RUST`) | Partial (few call sites); optional |
-| Legacy marketing metrics in old README tables | Removed — treat performance as **environment-specific** |
+Full topic index: [docs/README.md](docs/README.md).
 
-## How it runs
+## Requirements
+
+- **Python** 3.11+ (Dockerfile targets 3.12)
+- **PostgreSQL** — `DATABASE_URL` (Railway or local)
+- **TopStepX API key + username** — see [.env.example](.env.example)
+
+## Quick start
+
+1. `cp .env.example .env` and set `PROJECT_X_API_KEY`, `PROJECT_X_USERNAME`, `DATABASE_URL`.
+2. **Strategy behavior** — edit `config/strategies/<name>.toml`, not long `OVERNIGHT_*` / `TREND_*` blocks in `.env`.
+3. **Shrink an existing `.env`** — `python scripts/slim_env.py` keeps only infra keys allowed by that script; anything removed must live in TOML or be added back manually if you truly need it as env.
+4. Run strategies: `python core/strategy_executor.py --strategy=<id> --account_id=...` (wrappers: [scripts/run_overnight.sh](scripts/run_overnight.sh), [scripts/start_all.sh](scripts/start_all.sh)).
+5. Interactive CLI: `python trading_bot.py`.
+6. Dashboard / webhook (e.g. Railway): `python servers/start_async_webhook.py` — see [Procfile](Procfile), [railway.json](railway.json).
+
+## How processes fit together
 
 ```mermaid
 flowchart LR
   subgraph local [Local / VPS]
     ex[core/strategy_executor.py]
     bot[TopStepXTradingBot]
-    ad[topstepx_adapter]
+    ad[brokers/topstepx_adapter]
     ex --> bot --> ad
   end
   subgraph cloud [Optional Railway]
@@ -36,53 +47,58 @@ flowchart LR
   bot --> DB[(Postgres)]
 ```
 
-- **Strategies:** `python core/strategy_executor.py --strategy=<name> --account_id=...` (see [scripts/run_overnight.sh](scripts/run_overnight.sh), [scripts/start_all.sh](scripts/start_all.sh)).
-- **Interactive CLI:** `python trading_bot.py` (after `cp .env.example .env` and filling credentials).
-- **Dashboard + webhook:** `python servers/start_async_webhook.py` (see [Procfile](Procfile) / [railway.json](railway.json)).
+## Current status
+
+| Area | Status |
+|------|--------|
+| `trading_bot.py`, `core/strategy_executor.py` | Active |
+| `brokers/topstepx_adapter.py`, market + user hubs | Active |
+| Postgres + async batch writers | Active |
+| Dashboard (`servers/start_async_webhook.py`) | Active |
+| Strategy config | `config/strategies/*.toml` + [core/strategy_config.py](core/strategy_config.py) |
+| Browser UI | Pre-built SPA in `static/dashboard/` (no Node stage in Docker) |
+| Rust hot path (`TOPSTEPX_USE_RUST`) | Optional / partial — profile first; see [docs/perf/OPERATIONS_TUNING.md](docs/perf/OPERATIONS_TUNING.md) |
 
 ## Configuration
 
-- **Secrets + infra:** `.env` (never commit; use [.env.example](.env.example)).
-- **Strategy knobs:** `config/strategies/<strategy>.toml`, not scattered `os.getenv` in strategy code.
-
-Credential resolution order: `PROJECT_X_*` → `TOPSTEPX_*` → legacy typo `TOPSETPX_*`.
+- **Secrets + infra:** `.env` (never commit). Template: [.env.example](.env.example). Details: [docs/ENV_VARS.md](docs/ENV_VARS.md).
+- **Per-strategy knobs:** `config/strategies/<strategy>.toml` — do not add new `os.getenv` in `strategies/*` ([AGENTS.md](AGENTS.md)).
+- Credential aliases: `PROJECT_X_*` → `TOPSTEPX_*` → legacy typo `TOPSETPX_*`.
 
 ## Docker
 
-The [Dockerfile](Dockerfile) is Python-only: installs dependencies, copies the repo, runs `python3 servers/start_async_webhook.py`. The SPA is **pre-built** in `static/dashboard/`; [scripts/build.sh](scripts/build.sh) documents that there is no separate frontend build step.
+[Dockerfile](Dockerfile) installs Python deps and runs `python3 servers/start_async_webhook.py`. The dashboard is **pre-built** under `static/dashboard/` ([scripts/build.sh](scripts/build.sh)).
 
 ```bash
 docker build -t tradebot-local .
 docker run --env-file .env -p 8080:8080 tradebot-local
 ```
 
-## Tests
-
-Curated quick tests (repo root, venv recommended):
+## Tests & hygiene
 
 ```bash
 pytest
+bash scripts/verify_handoff.sh   # doc links + MAP drift
+bash scripts/gen_map.sh         # refresh docs/MAP.md after layout changes
 ```
 
-Full legacy tree (many tests may be stale):
+### Profiling the live hot path (strategy executor)
+
+1. Start the executor, then capture its PID (e.g. `pgrep -f "strategy_executor.py"`).
+2. Record ~60s CPU flame graph (requires [py-spy](https://github.com/benfred/py-spy) on the host):
 
 ```bash
-pytest --override-ini="testpaths=tests"
+bash scripts/profile_strategy_executor.sh <PID> 60
 ```
 
-## Strategies (overview)
+Output is written under `docs/perf/` (gitignored SVGs are fine to compare locally). Interpretation and Rust-vs-I/O guidance: [docs/perf/OPERATIONS_TUNING.md](docs/perf/OPERATIONS_TUNING.md).
 
-Built-ins include overnight range, mean reversion, trend following, and others — see [strategies/strategy_manager.py](strategies/strategy_manager.py) and `config/strategies/`. Reference Pine scripts live under [strategies/pine/](strategies/pine/) (not imported by Python).
+**Verify locally:** with RTH or paper traffic so quotes fire, run the script above, then open the new `.svg` in a browser (flame width = time in stack). User Hub heavy work uses [core/hub_deferred_queue.py](core/hub_deferred_queue.py); the **market** hub still calls `register_quote_callback` targets **synchronously** inside `WebSocketManager.on_quote` (e.g. `trading_bot._on_websocket_quote` → bar aggregator) so tick-to-bar latency stays predictable—that path was intentionally not moved to the deferred queue.
 
-## Operating notes
+## Security
 
-- Logs: [core/logging_setup.py](core/logging_setup.py) — file + console; see `LOG_FILE`, `LOG_LEVEL`.
-- Risk: global limits in [core/risk_management.py](core/risk_management.py) and per-strategy TOML.
-- Perf / uvloop / benches: [docs/perf/README.md](docs/perf/README.md), [docs/CHANGELOG.md](docs/CHANGELOG.md).
-
-## Prospectus
-
-Ongoing work: shrink `trading_bot.py`, deepen tests, optional Rust completion or removal, dashboard real-time transport, doc consolidation under `docs/`.
+- Never commit `.env` or tokens. If `.env` was ever shared or committed, **rotate** API keys, DB passwords, JWT, and Discord credentials.
+- `scripts/slim_env.py` does not print values; it only rewrites the file.
 
 ## Disclaimer
 

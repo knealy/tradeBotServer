@@ -17,7 +17,6 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
-import pandas as pd
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -78,6 +77,8 @@ class BacktestExecutor:
         Returns:
             Dict with backtest results
         """
+        import pandas as pd
+
         print(f"\n{'='*80}")
         print(f"BACKTESTING: {strategy_name.upper()}")
         print(f"{'='*80}")

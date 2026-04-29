@@ -4,13 +4,12 @@ Monte Carlo Simulator
 Runs Monte Carlo simulations on trade sequences to analyze strategy robustness.
 """
 
-import numpy as np
-import pandas as pd
+from __future__ import annotations
+
 from typing import List, Dict, Optional, Any
 import logging
 import random
 from .models import BacktestTrade
-from .metrics import PerformanceMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,11 @@ class MonteCarloSimulator:
         if not trades:
             logger.warning("No trades provided for Monte Carlo simulation")
             return {}
-        
+
+        import numpy as np
+        import pandas as pd
+        from .metrics import PerformanceMetrics
+
         logger.info(f"🎲 Running {num_simulations} Monte Carlo simulations...")
         logger.info(f"   Base trades: {len(trades)}")
         logger.info(f"   Initial capital: ${self.initial_capital:,.2f}")
@@ -185,6 +188,8 @@ class MonteCarloSimulator:
         
         if sample_size is None:
             sample_size = len(trades)
+
+        import numpy as np
         
         trade_pnls = [t.pnl for t in trades]
         bootstrapped_returns = []
@@ -214,6 +219,8 @@ class MonteCarloSimulator:
         """
         if not trades:
             return {}
+
+        import numpy as np
         
         # Sort trades by P&L
         sorted_trades = sorted(trades, key=lambda t: t.pnl)
@@ -241,6 +248,8 @@ class MonteCarloSimulator:
         Returns:
             Formatted report string
         """
+        import numpy as np
+
         report = f"""
 {'='*80}
 MONTE CARLO SIMULATION RESULTS

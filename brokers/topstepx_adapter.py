@@ -14,7 +14,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, timedelta, timezone, date, time
+from datetime import datetime, timedelta, timezone, date
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -231,7 +231,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         except Exception as exc:
             logger.debug("Parquet historical cache write failed: %s", exc)
     
-    def _make_request(
+    async def _make_request(
         self,
         method: str,
         endpoint: str,
@@ -261,7 +261,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         request_headers = {**(headers or {}), **auth_headers}
         
         # Use auth manager's request method
-        return self.auth._make_request(method, endpoint, data, request_headers, timeout)
+        return await self.auth._make_request(method, endpoint, data, request_headers, timeout)
     
     # ==================== Order Interface Implementation ====================
     
@@ -527,7 +527,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             "Authorization": f"Bearer {self.auth.get_token()}"
         }
         
-        response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+        response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
         
         # Handle 500 errors with automatic token refresh and retry
         if "error" in response and "500" in str(response.get("error", "")):
@@ -544,7 +544,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 
                 logger.info("🔄 Retrying order placement with refreshed token...")
                 # Retry the request
-                response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+                response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
                 logger.info(f"   Retry response: {'success' if 'error' not in response else 'failed'}")
         
         # Check for explicit errors
@@ -1011,7 +1011,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             else:  # Limit order or other types
                 modify_data["limitPrice"] = price
 
-        response = self._make_request("POST", "/api/Order/modify", data=modify_data, headers=headers)
+        response = await self._make_request("POST", "/api/Order/modify", data=modify_data, headers=headers)
 
         if "error" in response:
             logger.error(f"Failed to modify order: {response['error']}")
@@ -1165,7 +1165,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             "accountId": int(account_id)
         }
         
-        response = self._make_request("POST", "/api/Order/cancel", data=cancel_data, headers=headers)
+        response = await self._make_request("POST", "/api/Order/cancel", data=cancel_data, headers=headers)
         
         if "error" in response:
             logger.error(f"Failed to cancel order: {response['error']}")
@@ -1216,7 +1216,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.error("Account ID is required")
                 return []
             
-            logger.info(f"Fetching open orders for account {account_id}")
+            logger.debug("Fetching open orders for account %s", account_id)
             
             headers = {
                 "accept": "text/plain",
@@ -1239,7 +1239,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 }
             }
             
-            response = self._make_request("POST", "/api/Order/search", data=search_data, headers=headers)
+            response = await self._make_request("POST", "/api/Order/search", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch orders: {response['error']}")
@@ -1257,7 +1257,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     break
             
             if not orders:
-                logger.info(f"No open orders found for account {account_id}")
+                logger.debug("No open orders found for account %s", account_id)
                 return []
             # IMPORTANT: do NOT filter by status==1.
             # TopStepX "Open" search can include related bracket child orders that are "SuspENDED"
@@ -1368,7 +1368,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 }
             }
             
-            response = self._make_request("POST", "/api/Order/search", data=search_data, headers=headers)
+            response = await self._make_request("POST", "/api/Order/search", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch order history: {response['error']}")
@@ -1403,7 +1403,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     "limit": limit
                 }
                 
-                fill_response = self._make_request("POST", "/api/Fill/search", data=fill_search_data, headers=headers)
+                fill_response = await self._make_request("POST", "/api/Fill/search", data=fill_search_data, headers=headers)
                 
                 # Handle 404 errors gracefully - endpoint may not exist
                 if fill_response and fill_response.get("status_code") == 404:
@@ -1514,7 +1514,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Remove None values (endTimestamp is optional)
             search_data = {k: v for k, v in search_data.items() if v is not None}
             
-            response = self._make_request("POST", "/api/Trade/search", data=search_data, headers=headers)
+            response = await self._make_request("POST", "/api/Trade/search", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch trades: {response['error']}")
@@ -1677,7 +1677,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "accountId": int(account_id)
             }
             
-            response = self._make_request("POST", "/api/Position/searchOpen", data=search_data, headers=headers)
+            response = await self._make_request("POST", "/api/Position/searchOpen", data=search_data, headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch positions: {response['error']}")
@@ -1689,7 +1689,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             positions_data = response.get("positions", [])
             if not positions_data:
-                logger.info(f"No open positions found for account {account_id}")
+                logger.debug("No open positions found for account %s", account_id)
                 return []
             
             # Convert to Position objects
@@ -1755,6 +1755,22 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
     ) -> List[Position]:
         """Alias for get_positions for backward compatibility."""
         return await self.get_positions(account_id=account_id, **kwargs)
+
+    async def get_positions_and_open_orders_parallel(
+        self,
+        account_id: str,
+    ) -> Tuple[List[Position], List[Dict[str, Any]]]:
+        """
+        Fetch open positions and open-related orders concurrently.
+
+        TopStepX exposes separate REST endpoints; this overlaps the two waits with
+        ``asyncio.gather`` so callers needing both pay ~one RTT instead of two sequential.
+        """
+        positions, orders = await asyncio.gather(
+            self.get_positions(account_id=account_id),
+            self.get_open_orders(account_id=account_id),
+        )
+        return positions, orders
     
     async def get_position_details(
         self,
@@ -1788,7 +1804,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "Authorization": f"Bearer {self.auth.get_token()}"
             }
             
-            response = self._make_request("GET", f"/api/Position/{position_id}", headers=headers)
+            response = await self._make_request("GET", f"/api/Position/{position_id}", headers=headers)
             
             if "error" in response:
                 logger.error(f"Failed to fetch position details: {response['error']}")
@@ -1890,7 +1906,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if quantity:
                 close_data["quantity"] = quantity
             
-            response = self._make_request("POST", "/api/Position/closeContract", data=close_data, headers=headers)
+            response = await self._make_request("POST", "/api/Position/closeContract", data=close_data, headers=headers)
             
             # Log the full response for debugging
             logger.info(f"Position close API response: {response}")
@@ -3142,7 +3158,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             except Exception as e:
                 logger.debug(f"🔍 History API request (json serialization failed): {bars_request}")
 
-            response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+            response = await self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
             
             # Debug: log response structure
             logger.debug(f"🔍 History API response type: {type(response)}")
@@ -3255,7 +3271,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                             }
 
                             logger.info(f"🔄 Retrying with adjusted time range: startTime={start_str}, endTime={end_str}")
-                            response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+                            response = await self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
                             
                             # Re-parse the response
                             if isinstance(response, dict) and 'bars' in response:
@@ -4107,7 +4123,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "unitNumber": 1,
                 "limit": 5
             }
-            response = self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
+            response = await self._make_request("POST", "/api/History/retrieveBars", data=bars_request, headers=headers)
 
             if "error" not in response and response.get("success"):
                 bars = response.get("bars", [])
@@ -4272,7 +4288,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             response = None
             for endpoint in endpoints_to_try:
                 try:
-                    resp = self._make_request("GET", endpoint, headers=headers)
+                    resp = await self._make_request("GET", endpoint, headers=headers)
                     if resp and "error" not in resp and resp != {"success": True, "message": "Operation completed successfully"}:
                         response = resp
                         break
@@ -4283,7 +4299,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if not response:
                 for endpoint in ["/api/MarketData/depth", "/api/MarketData/orderbook", "/api/MarketData/level2"]:
                     try:
-                        resp = self._make_request("POST", endpoint, data={"contractId": contract_id}, headers=headers)
+                        resp = await self._make_request("POST", endpoint, data={"contractId": contract_id}, headers=headers)
                         if resp and "error" not in resp:
                             response = resp
                             break
@@ -4463,7 +4479,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "Authorization": f"Bearer {self.auth.get_token()}"
             }
             
-            response = self._make_request(
+            response = await self._make_request(
                 "POST",
                 "/api/Contract/available",
                 data={"live": False},
@@ -4741,7 +4757,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "Authorization": f"Bearer {self.auth.get_token()}"
             }
             
-            response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
             # Handle 500 errors with automatic token refresh and retry
             if "error" in response and ("500" in str(response.get("error", "")) or response.get("status_code") == 500):
@@ -4758,7 +4774,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     await asyncio.sleep(0.75)
                     logger.info("🔄 Retrying order placement with refreshed token...")
                     print("🔄 Retrying order placement with refreshed token...")
-                    response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+                    response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
                     
                     # Check if retry succeeded
                     if "error" in response and "500" in str(response.get("error", "")):
@@ -5060,7 +5076,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "Authorization": f"Bearer {self.auth.get_token()}"
             }
             
-            response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
             if "error" in response:
                 error_msg = response.get("error", "")
@@ -5430,7 +5446,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 "Authorization": f"Bearer {self.auth.get_token()}"
             }
             
-            response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+            response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
             
             # If we got 500 errors and retries are exhausted, try refreshing token and retrying once
             if "error" in response and response.get("retry_exhausted") and response.get("status_code") == 500:
@@ -5441,7 +5457,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     # Update headers with new token
                     headers["Authorization"] = f"Bearer {self.auth.get_token()}"
                     # Retry once more
-                    response = self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
+                    response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
                     if "error" in response:
                         logger.error(f"Failed to create bracket order after token refresh: {response['error']}")
                         return OrderResponse(success=False, error=response['error'], raw_response=response)

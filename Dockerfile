@@ -7,6 +7,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Faster asyncio on Linux when uvloop is installed (requirements.txt); honored in core/logging_setup.py
+ENV USE_UVLOOP=1
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

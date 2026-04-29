@@ -125,9 +125,10 @@ class StateCache:
             self.metrics['orders_misses'] += 1
             logger.debug("❌ Orders cache MISS for account %s - fetching from API", account_id)
         
-        # Fetch from API (outside lock to avoid blocking)
-        async with self._async_locks[f"orders_{account_id}"]:
-            # Re-check cache inside lock in case another task fetched it
+        # Fetch from API (outside lock to avoid blocking).
+        # Use a per-account snapshot lock so orders + positions refresh together via one parallel REST pair.
+        async with self._async_locks[f"snapshot_{account_id}"]:
+            # Re-check cache inside lock in case another task filled it
             with self._lock:
                 if not force_refresh:
                     cache_entry = self._orders_cache.get(account_id)
@@ -141,25 +142,45 @@ class StateCache:
                     if self._timer:
                         self._timer.end("get_orders")
                     return None
-                
+
                 if self._timer:
                     self._timer.start("fetch_orders_api")
-                orders = await self.trading_bot.get_open_orders(account_id=account_id)
+                orders: Optional[List] = None
+                positions: Optional[List] = None
+                bot = self.trading_bot
+                if hasattr(bot, "get_positions_and_orders_batch"):
+                    batch = await bot.get_positions_and_orders_batch(account_id=account_id)
+                    if batch.get("error"):
+                        logger.debug("Snapshot batch error for %s: %s", account_id, batch.get("error"))
+                        orders = []
+                        positions = []
+                    else:
+                        orders = batch.get("orders") or []
+                        positions = batch.get("positions") or []
+                else:
+                    orders = await bot.get_open_orders(account_id=account_id)
                 if self._timer:
                     self._timer.end("fetch_orders_api")
-                
-                # Update cache
+
+                ts = datetime.now(timezone.utc)
                 with self._lock:
                     self._orders_cache[account_id] = CacheEntry(
-                        data=orders,
-                        timestamp=datetime.now(timezone.utc),
-                        ttl_seconds=self.orders_ttl
+                        data=orders or [],
+                        timestamp=ts,
+                        ttl_seconds=self.orders_ttl,
                     )
                     self._orders_invalidated[account_id] = False
-                
+                    if positions is not None:
+                        self._positions_cache[account_id] = CacheEntry(
+                            data=positions,
+                            timestamp=ts,
+                            ttl_seconds=self.positions_ttl,
+                        )
+                        self._positions_invalidated[account_id] = False
+
                 if self._timer:
                     self._timer.end("get_orders")
-                return orders
+                return orders or []
             except Exception as e:
                 logger.warning(f"⚠️  Failed to fetch orders for cache: {e}")
                 # Return stale cache if available
@@ -216,9 +237,8 @@ class StateCache:
             self.metrics['positions_misses'] += 1
             logger.debug("❌ Positions cache MISS for account %s - fetching from API", account_id)
         
-        # Fetch from API (outside lock)
-        async with self._async_locks[f"positions_{account_id}"]:
-            # Re-check cache inside lock in case another task fetched it
+        # Same snapshot lock as orders so one parallel REST pair refreshes both caches.
+        async with self._async_locks[f"snapshot_{account_id}"]:
             with self._lock:
                 if not force_refresh:
                     cache_entry = self._positions_cache.get(account_id)
@@ -232,25 +252,45 @@ class StateCache:
                     if self._timer:
                         self._timer.end("get_positions")
                     return None
-                
+
                 if self._timer:
                     self._timer.start("fetch_positions_api")
-                positions = await self.trading_bot.get_open_positions(account_id=account_id)
+                orders: Optional[List] = None
+                positions: Optional[List] = None
+                bot = self.trading_bot
+                if hasattr(bot, "get_positions_and_orders_batch"):
+                    batch = await bot.get_positions_and_orders_batch(account_id=account_id)
+                    if batch.get("error"):
+                        logger.debug("Snapshot batch error for %s: %s", account_id, batch.get("error"))
+                        orders = []
+                        positions = []
+                    else:
+                        orders = batch.get("orders") or []
+                        positions = batch.get("positions") or []
+                else:
+                    positions = await bot.get_open_positions(account_id=account_id)
                 if self._timer:
                     self._timer.end("fetch_positions_api")
-                
-                # Update cache
+
+                ts = datetime.now(timezone.utc)
                 with self._lock:
                     self._positions_cache[account_id] = CacheEntry(
-                        data=positions,
-                        timestamp=datetime.now(timezone.utc),
-                        ttl_seconds=self.positions_ttl
+                        data=positions or [],
+                        timestamp=ts,
+                        ttl_seconds=self.positions_ttl,
                     )
                     self._positions_invalidated[account_id] = False
-                
+                    if orders is not None:
+                        self._orders_cache[account_id] = CacheEntry(
+                            data=orders,
+                            timestamp=ts,
+                            ttl_seconds=self.orders_ttl,
+                        )
+                        self._orders_invalidated[account_id] = False
+
                 if self._timer:
                     self._timer.end("get_positions")
-                return positions
+                return positions or []
             except Exception as e:
                 logger.warning(f"⚠️  Failed to fetch positions for cache: {e}")
                 # Return stale cache if available

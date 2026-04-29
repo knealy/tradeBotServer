@@ -1,4 +1,4 @@
-<!-- Last verified by: cursor-agent against commit f39f234b5bc7ad9805ae1a4eabff2b9cae97ccd4 on 2026-04-28 -->
+<!-- Last verified by: cursor-agent against commit 67d5df9d48a5bb74228addd02673f1520b961aba on 2026-04-28 -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 
@@ -207,6 +207,7 @@ Migrations: there is no migration framework. Schema changes must be backward-com
 
 - Entry point: `python core/backtest_executor.py`
 - Uses `core/backtest/` sub-package (distinct from the deleted `core/backtesting_engine.py`).
+- **`import core.backtest` is lightweight:** [core/backtest/__init__.py](../core/backtest/__init__.py) uses PEP 562 lazy exports so pandas/numpy are not loaded until you reference `HistoricalDataLoader`, `BacktestEngine`, `PerformanceMetrics`, or `MonteCarloSimulator`. [core/backtest/data_loader.py](../core/backtest/data_loader.py) and [core/backtest/engine.py](../core/backtest/engine.py) import pandas/numpy inside methods, not at module import time.
 - Fetches historical bars from `infrastructure/database.py` cache (falls back to API fetch if cache misses).
 - Strategies must implement `evaluate(bar)` in a pure-function style to be backtest-compatible.
 - Batch backtest across parameter grid: `scripts/batch_backtest.sh` → `scripts/batch_backtest.py`.

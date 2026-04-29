@@ -6,7 +6,55 @@ changes runtime behavior or conventions adds an entry here AND updates
 
 ## [Unreleased]
 
+### Added
+- **Backtest import hygiene** — [core/backtest/metrics.py](../core/backtest/metrics.py),
+  [monte_carlo.py](../core/backtest/monte_carlo.py), and
+  [strategy_replay.py](../core/backtest/strategy_replay.py) defer `numpy`/`pandas` (and
+  `PerformanceMetrics` in Monte Carlo) until methods run; `from __future__ import annotations`
+  on those modules.
+- **Tests** — [tests/test_backtest_import_chain.py](../tests/test_backtest_import_chain.py)
+  (subprocess import smoke + Monte Carlo metrics lazy load),
+  [tests/test_hub_bracket_smoke.py](../tests/test_hub_bracket_smoke.py) (`UserHubHandlers`,
+  `create_bracket_order_improved`), [tests/test_strategy_toml_audit.py](../tests/test_strategy_toml_audit.py)
+  (TOML parse / schema parity).
+- **`STRATEGY_CONFIG_RELOAD`** — added to [scripts/slim_env.py](../scripts/slim_env.py) allowlist;
+  [docs/ENV_VARS.md](ENV_VARS.md) documents slim-env vs TOML.
+
+### Fixed
+- **`TopStepXAdapter` HTTP passthrough** — [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)
+  `_make_request` is now `async` and `await`s [AuthManager._make_request](../core/auth.py) (aiohttp),
+  with all call sites awaited; restores contracts cache, positions, orders, and history. Removed
+  `from datetime import …, time` which shadowed the `time` module and broke `time.time()` /
+  `time.perf_counter()` in the same file.
+- **Interactive `master` / `gui`** — [core/trading_interactive_ui.py](../core/trading_interactive_ui.py)
+  passes `bot` into `CLICommandParser` instead of undefined `self`.
+
 ### Changed
+- **SignalR User Hub hygiene** — [core/hub_deferred_queue.py](../core/hub_deferred_queue.py) bounded worker
+  queue; [core/user_hub_handlers.py](../core/user_hub_handlers.py) defers heavy account/order/position tails,
+  fixes `getattr`/tracker checks, awaits `get_open_positions` / `get_market_quote` / `broadcast_update` correctly.
+  [trading_bot.py](../trading_bot.py) constructs the queue after hub registration and starts it after auth.
+  [README.md](../README.md) + [scripts/profile_strategy_executor.sh](../scripts/profile_strategy_executor.sh) for py-spy;
+  `HUB_DEFERRED_QUEUE_MAX` in [.env.example](../.env.example) and [scripts/slim_env.py](../scripts/slim_env.py).
+- **Faster account snapshot I/O** — [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)
+  adds `get_positions_and_open_orders_parallel` (overlapping REST waits). [trading_bot.py](../trading_bot.py)
+  `get_positions_and_orders_batch` uses it; `_adapter_positions_to_ui_dicts` deduplicates position serialization.
+  [core/state_cache.py](../core/state_cache.py) refreshes orders + positions under a shared `snapshot_{account_id}`
+  lock via the batch helper so a miss on either side fills both caches in one parallel pair.
+- **Hot-path logging** — demoted repetitive adapter `INFO` lines for empty orders/positions and order fetch to
+  `DEBUG`; [trading_bot.py](../trading_bot.py) open-positions count log to `DEBUG`.
+- **Docker / uvloop** — [Dockerfile](../Dockerfile) sets `ENV USE_UVLOOP=1` for Linux images (still overridable).
+- **Operations perf doc** — [docs/perf/OPERATIONS_TUNING.md](perf/OPERATIONS_TUNING.md) (profile-first, Rust vs I/O).
+- **`core.backtest` lazy imports** — [core/backtest/__init__.py](../core/backtest/__init__.py) uses `__getattr__`
+  so `import core.backtest` does not load pandas/numpy; [core/backtest/data_loader.py](../core/backtest/data_loader.py)
+  and [core/backtest/engine.py](../core/backtest/engine.py) import those libraries inside methods only.
+- **`trading_bot.py` &lt;5K target (met)** — User Hub callbacks moved to
+  [core/user_hub_handlers.py](../core/user_hub_handlers.py); bracket / monitor flows to
+  [core/bracket_orders.py](../core/bracket_orders.py) with thin async wrappers on the bot (~4.8k lines).
+  [scripts/slim_env.py](../scripts/slim_env.py) rewrites `.env` to an allowlisted infra set (strategy vars
+  belong in TOML). [core/backtest_executor.py](../core/backtest_executor.py) imports **pandas** only inside
+  `run_backtest`. Refreshed [README.md](../README.md); replaced stale [docs/START-HERE.md](START-HERE.md) /
+  [docs/DOCUMENTATION_CONSOLIDATION_SUMMARY.md](DOCUMENTATION_CONSOLIDATION_SUMMARY.md) (no `docs/archive/`).
 - **`trading_bot.py` slimming / startup** — Removed unused multi-tier historical cache + bar reaggregation
   block (~700 lines; canonical history lives in [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)).
   Quote/depth subscription is [WebSocketManager](../core/websocket_manager.py)-only (no legacy `_market_hub`
@@ -15,8 +63,7 @@ changes runtime behavior or conventions adds an entry here AND updates
   `import trading_bot` no longer imports strategy modules. [strategies/trend_scalping_strategy.py](../strategies/trend_scalping_strategy.py)
   loads NumPy/Pandas only inside `calculate_ema`. [load_env.py](../load_env.py) drops defaults for removed
   cache/WebSocket-pool env keys. [.env.example](../.env.example) trimmed to secrets + common infra (see
-  [docs/ENV_VARS.md](ENV_VARS.md)). **Remaining:** `trading_bot.py` is still ~6.2k lines; further splits
-  (e.g. user-hub handlers, bracket flows) needed for a &lt;5k target.
+  [docs/ENV_VARS.md](ENV_VARS.md)).
 - **Plan closure (remaining todos)** — [core/websocket_manager.py](../core/websocket_manager.py)
   waits for SignalR `on_open` via `asyncio.Event` (+ thread-safe `set`/`clear`) instead of a 50ms
   spin loop; fallback poll only if no running loop. [core/account_tracker.py](../core/account_tracker.py)
@@ -26,9 +73,8 @@ changes runtime behavior or conventions adds an entry here AND updates
   `modify_stop_loss` when trailing / breakeven logic tightens stops (needs broker position id).
   Removed stale root-level post-mortem markdown under `docs/` (FIXES/FINAL/MGC/ATR/BROWSER/API_FORMAT
   clusters); fixed links in [PHASE3_CHANGES_SUMMARY.md](PHASE3_CHANGES_SUMMARY.md) and
-  [OPTIMIZATION_QUICK_REFERENCE.md](OPTIMIZATION_QUICK_REFERENCE.md). [docs/perf/BASELINE.md](perf/BASELINE.md)
-  documents operator-run py-spy / importtime capture. **Still deferred in plan:** `trading_bot.py`
-  further decomposition to &lt;5k lines (`phase2-trading-bot-split`).
+  [docs/perf/README.md](perf/README.md). [docs/perf/BASELINE.md](perf/BASELINE.md)
+  documents operator-run py-spy / importtime capture.
 - **Plan / tooling sync** — [Makefile](../Makefile) adds `make test`, `make verify`, `make map`,
   `make bench`; [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) runs
   [scripts/verify_handoff.sh](../scripts/verify_handoff.sh) (optional: `pip install pre-commit &&

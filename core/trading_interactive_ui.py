@@ -165,7 +165,7 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                 # Open unified master dashboard (chart server + master page) from interactive CLI
                 try:
                     from core.cli_command_parser import CLICommandParser
-                    parser = CLICommandParser(self)
+                    parser = CLICommandParser(bot)
                     resp = await parser.execute_command(command)
                     if resp.get("success"):
                         result = resp.get("result") or {}
@@ -2730,7 +2730,7 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                 # Fallback: try the modular command parser so newer commands work in interactive mode
                 try:
                     from core.cli_command_parser import CLICommandParser
-                    parser = CLICommandParser(self)
+                    parser = CLICommandParser(bot)
                     resp = await parser.execute_command(command)
                     if resp.get("success"):
                         result = resp.get("result")

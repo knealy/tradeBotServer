@@ -4,8 +4,8 @@ Performance Metrics Calculator
 Comprehensive metrics for evaluating trading strategy performance.
 """
 
-import numpy as np
-import pandas as pd
+from __future__ import annotations
+
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import logging
@@ -42,6 +42,8 @@ class PerformanceMetrics:
         Returns:
             Sharpe ratio
         """
+        import numpy as np
+
         if len(returns) < 2 or returns.std() == 0:
             return 0.0
         
@@ -68,6 +70,8 @@ class PerformanceMetrics:
         Returns:
             Sortino ratio
         """
+        import numpy as np
+
         if len(returns) < 2:
             return 0.0
         
@@ -279,6 +283,9 @@ class PerformanceMetrics:
         if not trades:
             return {}
         
+        import numpy as np
+        import pandas as pd
+
         returns = [t.pnl for t in trades]
         
         return {
@@ -323,6 +330,8 @@ class PerformanceMetrics:
         Returns:
             DataFrame with monthly returns
         """
+        import pandas as pd
+
         if not equity_curve:
             return pd.DataFrame()
         

@@ -34,7 +34,7 @@ todos:
     status: completed
   - id: phase2-trading-bot-split
     content: Shrink trading_bot.py from 10.5K lines to <5K by relocating quote/depth caches, websocket pool, and SignalR bootstrap into existing core/ modules
-    status: in_progress
+    status: completed
   - id: phase2-rust-decision
     content: "Decide on Rust hotpath: freeze and document (default TOPSTEPX_USE_RUST=0, no longer maintain build scripts) or commit to finishing it with benchmark gates"
     status: completed
