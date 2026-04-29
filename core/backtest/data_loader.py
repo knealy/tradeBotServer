@@ -442,7 +442,9 @@ class HistoricalDataLoader:
         # Generate timestamps
         end = datetime.now()
         start = end - timedelta(days=days)
-        timestamps = pd.date_range(start=start, periods=num_bars, freq=f"{int(minutes)}T")
+        # pandas >=2.2 removed alias "T" for minutes; Timedelta is unambiguous
+        bar_td = pd.Timedelta(minutes=float(minutes)) if minutes >= 1.0 / 60 else pd.Timedelta(seconds=60)
+        timestamps = pd.date_range(start=start, periods=num_bars, freq=bar_td)
         
         # Generate price data (random walk with trend and volatility)
         base_price = 25000.0  # Starting price for MNQ

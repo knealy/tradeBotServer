@@ -2321,6 +2321,7 @@ Speed Trading Shortcuts:
             
             switch (type) {
                 case 'account':
+                case 'account_update':
                     if (data && !data.error) {
                         updateAccountDisplay(data);
                         // Reload performance metrics when account state changes (especially P&L)
@@ -2332,6 +2333,13 @@ Speed Trading Shortcuts:
                         }
                     }
                     break;
+                case 'position_update':
+                    if (Array.isArray(data)) {
+                        updatePositionsDisplay(data);
+                    } else if (data && Array.isArray(data.positions)) {
+                        updatePositionsDisplay(data.positions);
+                    }
+                    break;
                 case 'positions':
                     if (data && data.positions) {
                         updatePositionsDisplay(data.positions);
@@ -2339,6 +2347,13 @@ Speed Trading Shortcuts:
                         if (data.positions.length > 0) {
                             playAlert('info');
                         }
+                    }
+                    break;
+                case 'order_update':
+                    if (data && data.orders) {
+                        updateOrdersDisplay(data);
+                    } else if (Array.isArray(data)) {
+                        updateOrdersDisplay({ orders: data });
                     }
                     break;
                 case 'orders':
@@ -2403,6 +2418,13 @@ Speed Trading Shortcuts:
                         }
                     }
                     break;
+                case 'metrics_update':
+                    // Railway payload is server/task_queue shaped; refresh widget from HTTP API
+                    if (data) {
+                        performanceData = data;
+                        loadPerformanceMetrics();
+                    }
+                    break;
                 case 'performance_metrics':
                     if (data) {
                         console.log('📈 Received performance metrics:', data);
@@ -2410,18 +2432,21 @@ Speed Trading Shortcuts:
                         updatePerformanceWidget(data);
                     }
                     break;
+                case 'risk_update':
                 case 'risk_metrics':
                     if (data) {
-                        console.log('⚠️ Received risk metrics:', data);
+                        if (type === 'risk_metrics') {
+                            console.log('⚠️ Received risk metrics:', data);
+                        }
                         riskMetricsData = data;
                         updateRiskMetricsWidget(data);
-                        
-                        // Alert if approaching limits
-                        if (data.dll_percentage >= 80 || data.mll_percentage >= 80) {
+                        const dll = data.dll_percentage ?? 0;
+                        const mll = data.mll_percentage ?? 0;
+                        if (dll >= 80 || mll >= 80) {
                             playAlert('warning');
                             flashAlert('warning');
-                            if (data.dll_percentage >= 90 || data.mll_percentage >= 90) {
-                                showDesktopNotification('Risk Alert', `Approaching limit: ${data.dll_percentage >= 90 ? 'DLL' : 'MLL'} at ${Math.max(data.dll_percentage, data.mll_percentage).toFixed(1)}%`, 'warning');
+                            if (dll >= 90 || mll >= 90) {
+                                showDesktopNotification('Risk Alert', `Approaching limit: ${dll >= 90 ? 'DLL' : 'MLL'} at ${Math.max(dll, mll).toFixed(1)}%`, 'warning');
                             }
                         }
                     }

@@ -13,6 +13,37 @@ Personal / operator-focused futures stack for **TopStepX (ProjectX)** accounts: 
 
 Full topic index: [docs/README.md](docs/README.md).
 
+## Backtesting — where the data comes from
+
+Examples that use **`--sample`** never touch disk: they call `HistoricalDataLoader.get_sample_data()` in [`core/backtest/data_loader.py`](core/backtest/data_loader.py), which **generates a synthetic random-walk** OHLCV series in memory (useful for plumbing / CI, **not** real price action).
+
+| Source | How | Real market data? |
+|--------|-----|-------------------|
+| **Synthetic** | `--sample` on `core/backtest_executor.py`, research runner defaults, `MODE=sample` in scripts below | No |
+| **TopStepX API** | Omit `--sample` and `--csv`; executor authenticates and pulls history via the broker adapter (needs `.env` credentials). Or: `python scripts/export_history.py …` | Yes |
+| **CSV file** | `bash scripts/fetch_history_csv.sh …` then `MODE=csv CSV=…/file.csv bash scripts/backtest_symbol.sh` | Yes, if you exported from the API (or compatible format) |
+
+Streamlined scripts (repo root):
+
+```bash
+# Quick single run (synthetic)
+SYMBOL=MNQ TIMEFRAME=5m DAYS=60 STRATEGY=ma_crossover bash scripts/backtest_symbol.sh
+
+# List + single run + research grid / OOS / MC (synthetic by default)
+SYMBOL=MNQ TIMEFRAME=5m DAYS=45 bash scripts/backtest_thorough_symbol.sh
+
+# Export real bars, then backtest from file
+bash scripts/fetch_history_csv.sh --symbol MNQ --timeframe 5m --days 90 --output historical_data/MNQ_5m.csv
+MODE=csv CSV=historical_data/MNQ_5m.csv STRATEGY=ma_crossover bash scripts/backtest_symbol.sh
+
+# Live API history directly (no CSV)
+MODE=api SYMBOL=MNQ DAYS=30 STRATEGY=ma_crossover bash scripts/backtest_symbol.sh
+```
+
+Exported `*.csv` files are **gitignored** (see [.gitignore](.gitignore)); keep them locally or point `CSV=` at a path outside the repo.
+
+More flags, JSON output, and replay: [docs/BACKTESTING.md](docs/BACKTESTING.md), workflow tree: [docs/STRATEGY_DEVELOPMENT.md](docs/STRATEGY_DEVELOPMENT.md).
+
 ## Requirements
 
 - **Python** 3.11+ (Dockerfile targets 3.12)
@@ -55,7 +86,7 @@ flowchart LR
 | `brokers/topstepx_adapter.py`, market + user hubs | Active |
 | Postgres + async batch writers | Active |
 | Dashboard (`servers/start_async_webhook.py`) | Active |
-| Strategy config | `config/strategies/*.toml` + [core/strategy_config.py](core/strategy_config.py) |
+| Strategy config | `config/strategies/*.toml` + [core/strategy_config.py](core/strategy_config.py); optional RTH companion: `simple_rth` |
 | Browser UI | Pre-built SPA in `static/dashboard/` (no Node stage in Docker) |
 | Rust hot path (`TOPSTEPX_USE_RUST`) | Optional / partial — profile first; see [docs/perf/OPERATIONS_TUNING.md](docs/perf/OPERATIONS_TUNING.md) |
 
@@ -64,6 +95,8 @@ flowchart LR
 - **Secrets + infra:** `.env` (never commit). Template: [.env.example](.env.example). Details: [docs/ENV_VARS.md](docs/ENV_VARS.md).
 - **Per-strategy knobs:** `config/strategies/<strategy>.toml` — do not add new `os.getenv` in `strategies/*` ([AGENTS.md](AGENTS.md)).
 - Credential aliases: `PROJECT_X_*` → `TOPSTEPX_*` → legacy typo `TOPSETPX_*`.
+- **Emergency remote CLI** (Railway / automation): set `REMOTE_COMMAND_SECRET`, then `POST /api/remote_command` with header `X-Remote-Command-Secret` and JSON `{"command":"flatten"}` (same strings as [core/cli_command_parser.py](core/cli_command_parser.py)).
+- **DB migrations (Alembic):** revisions under `migrations/`; baseline is a no-op because `DatabaseManager` still applies schema at startup — use Alembic for additive `ALTER`s (`alembic upgrade head` with `DATABASE_URL` set).
 
 ## Docker
 

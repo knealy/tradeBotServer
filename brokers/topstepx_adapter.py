@@ -32,7 +32,7 @@ from core.interfaces import (
     Depth,
     DepthLevel,
 )
-from core.json_fast import dumps_str
+from core.json_fast import dumps_bytes, dumps_str
 from core.auth import AuthManager
 from core.rate_limiter import RateLimiter
 from core.market_data import ContractManager
@@ -97,6 +97,8 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         self._historical_cache: Dict[Tuple[str, str, int, Optional[str], Optional[str]], Tuple[List[Bar], float]] = {}
         self._cache_lock = asyncio.Lock()
         self._cache_ttl_seconds = 5  # Cache for 5 seconds to prevent duplicate requests
+        # Single-flight refresh for contract list (many coroutines can miss cache together)
+        self._contract_fetch_async_lock = asyncio.Lock()
 
         # Track pending requests to prevent duplicate concurrent requests
         self._pending_requests: Dict = {}
@@ -137,9 +139,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         logger.debug("TopStepX adapter initialized")
 
     def _historical_parquet_path(self, cache_key: tuple) -> Path:
-        digest = hashlib.sha256(
-            json.dumps(cache_key, default=str, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        digest = hashlib.sha256(dumps_bytes(cache_key, default=str)).hexdigest()
         return self._parquet_cache_dir / f"{digest}.parquet"
 
     def _parquet_file_expired(self, path: Path) -> bool:
@@ -1333,7 +1333,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.error("Account ID is required")
                 return []
             
-            logger.info(f"Fetching order history for account {account_id}")
+            logger.debug("Fetching order history for account %s", account_id)
             
             headers = {
                 "accept": "text/plain",
@@ -1386,7 +1386,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     break
             
             if not orders:
-                logger.info(f"No historical orders found for account {account_id}")
+                logger.debug("No historical orders found for account %s", account_id)
                 return []
             
             # Filter to only filled/executed orders for history (status == 2)
@@ -1440,7 +1440,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if len(filled_orders) > limit:
                 filled_orders = filled_orders[:limit]
             
-            logger.info(f"Found {len(filled_orders)} historical filled orders")
+            logger.debug("Found %d historical filled orders", len(filled_orders))
             return filled_orders
             
         except Exception as e:
@@ -1476,7 +1476,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.error("Account ID is required for Trade/search")
                 return []
             
-            logger.info(f"Fetching trades from Trade/search API for account {account_id}")
+            logger.debug("Fetching trades from Trade/search API for account %s", account_id)
             
             headers = {
                 "accept": "text/plain",
@@ -1529,10 +1529,12 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             trades = response.get("trades", [])
             
             if not trades:
-                logger.info(f"No trades found for account {account_id} in the specified time range")
+                logger.debug(
+                    "No trades found for account %s in the specified time range", account_id
+                )
                 return []
-            
-            logger.info(f"✅ Found {len(trades)} trades from Trade/search API")
+
+            logger.debug("Found %d trades from Trade/search API", len(trades))
             
             # Normalize trade data to match our expected format
             normalized_trades = []
@@ -1796,7 +1798,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 logger.error("Account ID is required")
                 return None
             
-            logger.info(f"Fetching position details for position {position_id}")
+            logger.debug("Fetching position details for position %s", position_id)
             
             headers = {
                 "accept": "text/plain",
@@ -4202,7 +4204,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 continue
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info(f"⚡ Rust get_market_quote execution: {elapsed_ms:.2f}ms")
+        logger.debug("Rust get_market_quote execution: %.2fms", elapsed_ms)
         
         if not rust_result:
             if last_error:
@@ -4390,7 +4392,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         rust_result = await self._query_executor.get_market_depth(contract_id=contract_id)
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info(f"⚡ Rust get_market_depth execution: {elapsed_ms:.2f}ms")
+        logger.debug("Rust get_market_depth execution: %.2fms", elapsed_ms)
         
         if not rust_result:
             return Depth(symbol=symbol.upper(), bids=[], asks=[])
@@ -4458,50 +4460,61 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             # Python fallback (with caching)
             await self.auth.ensure_valid_token()
-            
-            cache_ttl_minutes = kwargs.get('cache_ttl_minutes', 60)
-            
-            # Check cache first if enabled
+
+            cache_ttl_minutes = kwargs.get("cache_ttl_minutes", 60)
+
             if use_cache:
                 cache = self.contract_manager.get_contract_cache()
                 if cache:
-                    from datetime import datetime, timedelta
-                    cache_age = datetime.now() - cache['timestamp']
+                    cache_age = datetime.now() - cache["timestamp"]
                     if cache_age < timedelta(minutes=cache_ttl_minutes):
-                        logger.debug(f"Using cached contract list ({len(cache['contracts'])} contracts)")
-                        return cache['contracts'].copy()
-            
-            logger.info("Fetching available contracts...")
-            
-            headers = {
-                "accept": "application/json",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.auth.get_token()}"
-            }
-            
-            response = await self._make_request(
-                "POST",
-                "/api/Contract/available",
-                data={"live": False},
-                headers=headers
-            )
-            
-            if isinstance(response, dict) and response.get("error"):
-                logger.error(f"API error: {response['error']}")
-                return []
-            
-            contracts = response if isinstance(response, list) else response.get("contracts", [])
-            
-            if not contracts:
-                logger.warning("No contracts returned from API")
-                return []
-            
-            # Update contract cache
-            self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
-            
-            logger.info(f"✅ Retrieved {len(contracts)} available contracts")
-            return contracts
-            
+                        logger.debug(
+                            "Using cached contract list (%d contracts)", len(cache["contracts"])
+                        )
+                        return cache["contracts"].copy()
+
+            async with self._contract_fetch_async_lock:
+                if use_cache:
+                    cache = self.contract_manager.get_contract_cache()
+                    if cache:
+                        cache_age = datetime.now() - cache["timestamp"]
+                        if cache_age < timedelta(minutes=cache_ttl_minutes):
+                            logger.debug(
+                                "Using cached contract list after refresh wait (%d contracts)",
+                                len(cache["contracts"]),
+                            )
+                            return cache["contracts"].copy()
+
+                logger.debug("Fetching available contracts from API...")
+
+                headers = {
+                    "accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.auth.get_token()}",
+                }
+
+                response = await self._make_request(
+                    "POST",
+                    "/api/Contract/available",
+                    data={"live": False},
+                    headers=headers,
+                )
+
+                if isinstance(response, dict) and response.get("error"):
+                    logger.error("API error: %s", response["error"])
+                    return []
+
+                contracts = response if isinstance(response, list) else response.get("contracts", [])
+
+                if not contracts:
+                    logger.warning("No contracts returned from API")
+                    return []
+
+                self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
+
+                logger.debug("Retrieved %d available contracts", len(contracts))
+                return contracts
+
         except Exception as e:
             logger.error(f"Failed to fetch available contracts: {str(e)}")
             return []

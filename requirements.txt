@@ -33,6 +33,8 @@ orjson>=3.9.0  # Fast JSON serialize/parse (see core/json_fast.py)
 
 # Database (PostgreSQL for persistent caching)
 psycopg2-binary>=2.9.0  # PostgreSQL adapter for Python
+sqlalchemy>=2.0.0       # Alembic driver / optional ORM-style helpers
+alembic>=1.13.0         # Versioned schema migrations (baseline under migrations/)
 
 # DataFrame engine for fast Parquet caching
 polars>=0.20.27

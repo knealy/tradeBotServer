@@ -8,10 +8,10 @@ enabled = true
 symbols = ["MNQ", "MES", "MGC"]
 
 [timing]
-overnight_start  = "19:00"
-overnight_end    = "20:00"
-market_open      = "20:00"
-zone_anchor      = "20:00"
+overnight_start  = "18:00"
+overnight_end    = "9:29"
+market_open      = "9:29"
+zone_anchor      = "9:29"
 session_timezone = "US/Eastern"
 
 [risk]

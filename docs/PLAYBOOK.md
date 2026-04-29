@@ -465,6 +465,8 @@ git push origin main
 railway logs --tail
 ```
 
+**Post-deploy smoke (uvloop):** The [Dockerfile](../Dockerfile) sets `USE_UVLOOP=1`. Do **not** set `USE_UVLOOP=0` or `DISABLE_UVLOOP=1` on the Railway service unless you are debugging loop-specific behavior ([core/logging_setup.py](../core/logging_setup.py) skips install when those are set). After a deploy, confirm startup logs include once per process: `uvloop event loop policy installed` (INFO). If you see `uvloop skipped` or `uvloop not available`, check Railway variables and that `uvloop` is installed in the image (`requirements.txt`).
+
 ### Local Docker test
 
 ```bash

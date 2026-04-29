@@ -1,4 +1,4 @@
-<!-- Last verified by: cursor-agent against commit 67d5df9d48a5bb74228addd02673f1520b961aba on 2026-04-28 -->
+<!-- Last verified by: cursor-agent on 2026-04-29 (remote_command, Alembic baseline, simple_rth, WS + logging fixes) -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 
@@ -211,6 +211,8 @@ Migrations: there is no migration framework. Schema changes must be backward-com
 - Fetches historical bars from `infrastructure/database.py` cache (falls back to API fetch if cache misses).
 - Strategies must implement `evaluate(bar)` in a pure-function style to be backtest-compatible.
 - Batch backtest across parameter grid: `scripts/batch_backtest.sh` → `scripts/batch_backtest.py`.
+- Research orchestration (grid + mandatory OOS + MC gate + optional DB metadata): `python -m core.research.runner` and [docs/BACKTEST_RESEARCH.md](BACKTEST_RESEARCH.md).
+- Strategy workflow (decision tree): [docs/STRATEGY_DEVELOPMENT.md](STRATEGY_DEVELOPMENT.md).
 - Results are written to Postgres `strategy_performance` table and optionally to CSV via `scripts/export_history.py`.
 - Do not run backtests against a live account connection; use `ENABLE_SIGNALR=false` in `.env` or pass `--offline`.
 

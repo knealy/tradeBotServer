@@ -414,13 +414,15 @@ class TrendFollowingStrategy(BaseStrategy):
                 str(position_id), float(new_stop), account_id=str(account_id)
             )
             if isinstance(res, dict) and res.get("error"):
-                logger.debug(
+                logger.warning(
                     "Broker trailing stop not updated for %s: %s",
                     symbol,
                     res.get("error"),
                 )
         except Exception as exc:
-            logger.debug("modify_stop_loss failed for %s: %s", symbol, exc, exc_info=True)
+            logger.warning(
+                "modify_stop_loss failed for %s: %s", symbol, exc, exc_info=True
+            )
     
     async def manage_positions(self):
         """

@@ -1,0 +1,17 @@
+# Simple RTH momentum — same engine as simple_momentum; own TOML for hours/symbols.
+# Enable meta.enabled when running parallel to overnight_range.
+
+start_time = "09:30"
+end_time = "16:00"
+no_trade_start = ""
+no_trade_end = ""
+
+[meta]
+enabled = false
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 15
+risk_per_trade_pct = 0.5

@@ -842,21 +842,21 @@ async def adjust_bracket_orders(bot, position_id: str, new_quantity: int,
             return {"error": "No session token available. Please authenticate first."}
         
         logger.info(f"Adjusting bracket orders for position {position_id} to quantity {new_quantity}")
-        
-        # Get current open orders to find linked ones
-        open_orders = await bot.get_open_orders(target_account)
-        
+
+        snap = await bot.get_positions_and_orders_batch(target_account)
+        open_orders = snap.get("orders") or []
+        positions = snap.get("positions") or []
+
         if not open_orders:
             logger.warning("No open orders found")
             return {"error": "No open orders found"}
-        
+
         # Find orders that are linked to this position
         # Look for bracket orders using customTag and contract matching
         linked_orders = []
         position_contract = None
-        
-        # Get the contract ID for the position
-        positions = await bot.get_open_positions(target_account)
+
+        # Resolve contract ID for the position from the same snapshot
         for pos in positions:
             if str(pos.get('id', '')) == str(position_id):
                 position_contract = pos.get('contractId')

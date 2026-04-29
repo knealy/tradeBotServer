@@ -7,6 +7,32 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Alembic baseline** — [alembic.ini](../alembic.ini), [migrations/env.py](../migrations/env.py),
+  [migrations/versions/001_baseline_noop.py](../migrations/versions/001_baseline_noop.py); `sqlalchemy` + `alembic` in
+  [requirements.txt](../requirements.txt). Runtime DDL still from `DatabaseManager`; use revisions for additive changes.
+- **Remote emergency CLI** — `POST /api/remote_command` on [servers/async_webhook_server.py](../servers/async_webhook_server.py)
+  when `REMOTE_COMMAND_SECRET` is set (header `X-Remote-Command-Secret`, JSON `{"command":"…"}`); documented in
+  [README.md](../README.md), [.env.example](../.env.example), [scripts/slim_env.py](../scripts/slim_env.py).
+- **`simple_rth` strategy** — [strategies/simple_rth_strategy.py](../strategies/simple_rth_strategy.py),
+  [config/strategies/simple_rth.toml](../config/strategies/simple_rth.toml), registered in
+  [strategies/strategy_manager.py](../strategies/strategy_manager.py) (disabled by default; RTH-hours momentum via same engine as simple_momentum).
+- **Backtest shell helpers** — [scripts/backtest_symbol.sh](../scripts/backtest_symbol.sh),
+  [scripts/backtest_thorough_symbol.sh](../scripts/backtest_thorough_symbol.sh),
+  [scripts/fetch_history_csv.sh](../scripts/fetch_history_csv.sh); [historical_data/.gitkeep](../historical_data/.gitkeep);
+  [README.md](../README.md) explains synthetic vs API vs CSV data sources.
+- **Strategy development decision tree** — [docs/STRATEGY_DEVELOPMENT.md](STRATEGY_DEVELOPMENT.md) (mermaid flow +
+  links to backtest / research / perf docs).
+- **Backtest executor CLI polish** — [core/backtest_executor.py](../core/backtest_executor.py): `--list-strategies`,
+  `--format=json` (machine-readable summary + optional MC, no decorative stdout), epilog examples; expanded
+  [docs/BACKTESTING.md](BACKTESTING.md).
+- **Research runner (grid + OOS + MC)** — [`core/research/runner.py`](../core/research/runner.py),
+  [`docs/BACKTEST_RESEARCH.md`](BACKTEST_RESEARCH.md), [`scripts/research_screen.sh`](../scripts/research_screen.sh),
+  [`tests/test_research_runner.py`](../tests/test_research_runner.py). Optional walk-forward folds and slippage
+  sensitivity table; promoted runs persist extra fields into `strategy_performance.metadata` via
+  `save_strategy_metrics`.
+- **Contract refresh single-flight** — [`asyncio.Lock`](../trading_bot.py) on
+  `TopStepXTradingBot.get_available_contracts` and [`TopStepXAdapter.get_available_contracts`](../brokers/topstepx_adapter.py)
+  with double-check after wait to collapse concurrent cache misses.
 - **Backtest import hygiene** — [core/backtest/metrics.py](../core/backtest/metrics.py),
   [monte_carlo.py](../core/backtest/monte_carlo.py), and
   [strategy_replay.py](../core/backtest/strategy_replay.py) defer `numpy`/`pandas` (and
@@ -21,6 +47,13 @@ changes runtime behavior or conventions adds an entry here AND updates
   [docs/ENV_VARS.md](ENV_VARS.md) documents slim-env vs TOML.
 
 ### Fixed
+- **Silent exception sites** — [trading_bot.py](../trading_bot.py) and [gui/chart_html.py](../gui/chart_html.py) log
+  suppressed failures at DEBUG with stack traces; removed duplicate `CancelledError` handlers in the chart WebSocket
+  broadcast loop.
+- **Historical fetch Parquet cache key** — [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)
+  imports `dumps_bytes` from [core/json_fast.py](../core/json_fast.py) for `_historical_parquet_path`; the missing
+  name raised `NameError` on every `get_historical_data` call when Parquet cache was enabled, so strategies saw
+  zero bars (e.g. overnight range could not compute levels at market open).
 - **`TopStepXAdapter` HTTP passthrough** — [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)
   `_make_request` is now `async` and `await`s [AuthManager._make_request](../core/auth.py) (aiohttp),
   with all call sites awaited; restores contracts cache, positions, orders, and history. Removed
@@ -30,6 +63,12 @@ changes runtime behavior or conventions adds an entry here AND updates
   passes `bot` into `CLICommandParser` instead of undefined `self`.
 
 ### Changed
+- **Dashboard WebSocket parity** — [gui/master_control.html](../gui/master_control.html) handles Railway/async webhook
+  message types (`account_update`, `position_update`, `order_update`, `risk_update`, `metrics_update`) in addition to
+  the local chart server types.
+- **Live stop-adjust visibility** — broker `modify_stop_loss` failures for trailing stops and overnight breakeven log at
+  **WARNING** instead of DEBUG ([strategies/trend_following_strategy.py](../strategies/trend_following_strategy.py),
+  [strategies/overnight_range_strategy.py](../strategies/overnight_range_strategy.py)).
 - **SignalR User Hub hygiene** — [core/hub_deferred_queue.py](../core/hub_deferred_queue.py) bounded worker
   queue; [core/user_hub_handlers.py](../core/user_hub_handlers.py) defers heavy account/order/position tails,
   fixes `getattr`/tracker checks, awaits `get_open_positions` / `get_market_quote` / `broadcast_update` correctly.
@@ -41,8 +80,20 @@ changes runtime behavior or conventions adds an entry here AND updates
   `get_positions_and_orders_batch` uses it; `_adapter_positions_to_ui_dicts` deduplicates position serialization.
   [core/state_cache.py](../core/state_cache.py) refreshes orders + positions under a shared `snapshot_{account_id}`
   lock via the batch helper so a miss on either side fills both caches in one parallel pair.
+- **More batch position+order snapshots** — [servers/websocket_server.py](../servers/websocket_server.py) welcome +
+  periodic broadcast, [servers/async_webhook_server.py](../servers/async_webhook_server.py) test handler,
+  [strategies/overnight_range_strategy.py](../strategies/overnight_range_strategy.py) breakout pre-check, and
+  [core/bracket_orders.py](../core/bracket_orders.py) `adjust_bracket_orders` use
+  `get_positions_and_orders_batch`; [trading_bot.py](../trading_bot.py) cached account-info path uses the same.
 - **Hot-path logging** — demoted repetitive adapter `INFO` lines for empty orders/positions and order fetch to
-  `DEBUG`; [trading_bot.py](../trading_bot.py) open-positions count log to `DEBUG`.
+  `DEBUG`; [trading_bot.py](../trading_bot.py) open-positions count log to `DEBUG`. Order/trade history fetch,
+  Rust quote/depth timing, and contract list refresh logs in [brokers/topstepx_adapter.py](../brokers/topstepx_adapter.py)
+  moved to `DEBUG` where appropriate; Parquet cache digest uses [core/json_fast.py](../core/json_fast.py) `dumps_bytes`.
+- **Sample data pandas freq** — [core/backtest/data_loader.py](../core/backtest/data_loader.py) uses `Timedelta`
+  instead of deprecated minute offset `"T"` for `pd.date_range` (pandas 2.2+).
+- **Function-strategy sample/CSV data shape** — [core/backtest_executor.py](../core/backtest_executor.py) keeps a
+  **DataFrame** (with indicators) for `ma_crossover` / `rsi_mean_reversion` / `ema_trend`; list-of-dicts conversion
+  applies only to replay/class strategies so `BacktestEngine.run` is not given a Python list by mistake.
 - **Docker / uvloop** — [Dockerfile](../Dockerfile) sets `ENV USE_UVLOOP=1` for Linux images (still overridable).
 - **Operations perf doc** — [docs/perf/OPERATIONS_TUNING.md](perf/OPERATIONS_TUNING.md) (profile-first, Rust vs I/O).
 - **`core.backtest` lazy imports** — [core/backtest/__init__.py](../core/backtest/__init__.py) uses `__getattr__`

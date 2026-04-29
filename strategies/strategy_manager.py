@@ -53,6 +53,11 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "TrendScalpingStrategy",
         "Trend scalping",
     ),
+    "simple_rth": (
+        "strategies.simple_rth_strategy",
+        "SimpleRthStrategy",
+        "RTH-hours simple momentum",
+    ),
 }
 
 

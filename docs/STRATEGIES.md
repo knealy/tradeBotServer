@@ -13,6 +13,8 @@
 3. Register in `strategy_manager.py`.
 4. Log the change in [CHANGELOG.md](CHANGELOG.md).
 
+Workflow and when to use replay vs research vs live: [STRATEGY_DEVELOPMENT.md](STRATEGY_DEVELOPMENT.md).
+
 ## Pine scripts
 
 Reference only (not imported by Python): [strategies/pine/](../strategies/pine/).

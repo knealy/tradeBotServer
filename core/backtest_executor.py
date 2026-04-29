@@ -7,6 +7,8 @@ Usage:
     python core/backtest_executor.py --strategy=overnight_range --symbol=MNQ --timeframe=5m --days=30
     python core/backtest_executor.py --strategy=trend_scalping --symbol=MNQ --start=2024-01-01 --end=2024-12-31
     python core/backtest_executor.py --strategy=mean_reversion --symbol=MES --days=90 --monte-carlo=1000
+    python core/backtest_executor.py --list-strategies
+    python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --sample --days=14 --format=json
 """
 
 import sys
@@ -26,8 +28,80 @@ from core.backtest.models import OrderSide, OrderType
 from core.backtest.strategy_replay import StrategyReplayEngine
 from brokers.topstepx_adapter import TopStepXAdapter
 from core.auth import AuthManager
+from core.json_fast import dumps_str
 
 logger = logging.getLogger(__name__)
+
+# Must match ``_get_strategy_function`` function-based names (sample/CSV path keeps DataFrame for these).
+_FUNCTION_BACKTEST_STRATEGIES = frozenset(
+    {"ma_crossover", "rsi_mean_reversion", "ema_trend"}
+)
+
+# CLI: ``--format json`` suppresses decorative stdout via ``set_backtest_cli_human_output(False)``.
+_cli_human_output = True
+CLI_OUTPUT_FORMAT = "human"
+
+
+def set_backtest_cli_human_output(enabled: bool) -> None:
+    """When False, skip decorative ``print`` lines (machine-readable JSON mode)."""
+    global _cli_human_output
+    _cli_human_output = enabled
+
+
+def _cli_print(*args, **kwargs) -> None:
+    if _cli_human_output:
+        print(*args, **kwargs)
+
+
+def _strip_mc_bulk(mc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not mc:
+        return None
+    return {k: v for k, v in mc.items() if k != "simulation_results"}
+
+
+def _serialize_backtest_bundle(
+    bundle: Optional[Dict[str, Any]],
+    *,
+    ok: bool,
+    error: Optional[str] = None,
+    monte_carlo: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not ok:
+        return {"ok": False, "error": error or "unknown"}
+    assert bundle is not None
+    r = bundle.get("result")
+    summary = r.to_dict() if r is not None and hasattr(r, "to_dict") else {}
+    out: Dict[str, Any] = {
+        "ok": True,
+        "cache_key": bundle.get("cache_key"),
+        "result": summary,
+    }
+    mc = _strip_mc_bulk(monte_carlo)
+    if mc is not None:
+        out["monte_carlo"] = mc
+    return out
+
+
+def print_registered_strategies() -> None:
+    """Stdout listing for ``--list-strategies`` (always prints; ignores JSON quiet mode)."""
+    function_strategies = ["ma_crossover", "rsi_mean_reversion", "ema_trend"]
+    class_strategies = [
+        "simple_candle",
+        "overnight_range",
+        "mean_reversion",
+        "trend_following",
+        "trend_scalping",
+        "simple_momentum",
+    ]
+    print("Function-based (DataFrame + BacktestEngine):")
+    for s in function_strategies:
+        print(f"  - {s}")
+    print("\nClass-based / replay (use --replay):")
+    for s in class_strategies:
+        print(f"  - {s}")
+    print(
+        "\nResearch grid (sample in-sample + OOS + MC): python -m core.research.runner --help"
+    )
 
 
 class BacktestExecutor:
@@ -79,61 +153,72 @@ class BacktestExecutor:
         """
         import pandas as pd
 
-        print(f"\n{'='*80}")
-        print(f"BACKTESTING: {strategy_name.upper()}")
-        print(f"{'='*80}")
-        print(f"Symbol: {symbol}")
-        print(f"Timeframe: {timeframe}")
-        print(f"Initial Capital: ${initial_capital:,.2f}")
+        _cli_print(f"\n{'='*80}")
+        _cli_print(f"BACKTESTING: {strategy_name.upper()}")
+        _cli_print(f"{'='*80}")
+        _cli_print(f"Symbol: {symbol}")
+        _cli_print(f"Timeframe: {timeframe}")
+        _cli_print(f"Initial Capital: ${initial_capital:,.2f}")
         
         # Load historical data
         if csv_file:
             # Load from CSV file (from history command export)
-            print(f"\n📊 Loading data from CSV: {csv_file}")
+            _cli_print(f"\n📊 Loading data from CSV: {csv_file}")
             data = self.loader.load_from_csv(
                 filepath=csv_file,
                 symbol=symbol
             )
             if isinstance(data, pd.DataFrame):
-                print(f"✅ Loaded {len(data)} bars from CSV")
-                # Convert DataFrame to list of dicts for replay mode
-                data_dicts = []
-                for idx, row in data.iterrows():
-                    data_dicts.append({
-                        'timestamp': idx if isinstance(idx, datetime) else pd.to_datetime(idx),
-                        'open': float(row.get('open', row.get('Open', 0))),
-                        'high': float(row.get('high', row.get('High', 0))),
-                        'low': float(row.get('low', row.get('Low', 0))),
-                        'close': float(row.get('close', row.get('Close', 0))),
-                        'volume': int(row.get('volume', row.get('Volume', 0)))
-                    })
-                data = data_dicts
+                _cli_print(f"✅ Loaded {len(data)} bars from CSV")
+                if strategy_name not in _FUNCTION_BACKTEST_STRATEGIES:
+                    data_dicts = []
+                    for idx, row in data.iterrows():
+                        data_dicts.append(
+                            {
+                                "timestamp": idx
+                                if isinstance(idx, datetime)
+                                else pd.to_datetime(idx),
+                                "open": float(row.get("open", row.get("Open", 0))),
+                                "high": float(row.get("high", row.get("High", 0))),
+                                "low": float(row.get("low", row.get("Low", 0))),
+                                "close": float(row.get("close", row.get("Close", 0))),
+                                "volume": int(row.get("volume", row.get("Volume", 0))),
+                            }
+                        )
+                    data = data_dicts
             else:
-                print(f"✅ Loaded {len(data)} bars from CSV")
+                _cli_print(f"✅ Loaded {len(data)} bars from CSV")
         elif use_sample_data or not self.loader.broker_adapter:
-            print(f"\n📊 Generating sample data...")
+            _cli_print(f"\n📊 Generating sample data...")
             data_df = self.loader.get_sample_data(
                 symbol=symbol,
                 days=days or 30,
                 timeframe=timeframe
             )
-            print(f"✅ Generated {len(data_df)} bars of sample data")
-            # Convert DataFrame to list of dicts for replay mode
-            data = []
-            for idx, row in data_df.iterrows():
-                data.append({
-                    'timestamp': idx if isinstance(idx, datetime) else pd.to_datetime(idx),
-                    'open': float(row.get('open', row.get('Open', 0))),
-                    'high': float(row.get('high', row.get('High', 0))),
-                    'low': float(row.get('low', row.get('Low', 0))),
-                    'close': float(row.get('close', row.get('Close', 0))),
-                    'volume': int(row.get('volume', row.get('Volume', 0)))
-                })
+            _cli_print(f"✅ Generated {len(data_df)} bars of sample data")
+            if strategy_name in _FUNCTION_BACKTEST_STRATEGIES:
+                data = data_df
+            else:
+                # Class / replay strategies expect list[dict] bars
+                data = []
+                for idx, row in data_df.iterrows():
+                    data.append(
+                        {
+                            "timestamp": idx
+                            if isinstance(idx, datetime)
+                            else pd.to_datetime(idx),
+                            "open": float(row.get("open", row.get("Open", 0))),
+                            "high": float(row.get("high", row.get("High", 0))),
+                            "low": float(row.get("low", row.get("Low", 0))),
+                            "close": float(row.get("close", row.get("Close", 0))),
+                            "volume": int(row.get("volume", row.get("Volume", 0))),
+                        }
+                    )
         else:
             # Use broker adapter to fetch real historical data
             if not self.loader.broker_adapter:
-                print("❌ No broker adapter available - cannot load real historical data")
-                print("   Use --sample for sample data or provide --csv file")
+                _cli_print("❌ No broker adapter available - cannot load real historical data")
+                _cli_print("   Use --sample for sample data or provide --csv file")
                 return None
             
             # Calculate date range
@@ -142,13 +227,13 @@ class BacktestExecutor:
                 start_date = end_date - timedelta(days=days)
             
             if not start_date or not end_date:
-                print("❌ Start and end dates are required for API data loading")
-                print("   Use --start and --end or --days")
+                _cli_print("❌ Start and end dates are required for API data loading")
+                _cli_print("   Use --start and --end or --days")
                 return None
             
-            print(f"\n📊 Loading historical data from TopStepX API...")
-            print(f"   Period: {start_date.date()} to {end_date.date()}")
-            print(f"   Symbol: {symbol}, Timeframe: {timeframe}")
+            _cli_print(f"\n📊 Loading historical data from TopStepX API...")
+            _cli_print(f"   Period: {start_date.date()} to {end_date.date()}")
+            _cli_print(f"   Symbol: {symbol}, Timeframe: {timeframe}")
             
             # Use broker adapter's get_historical_data (returns List[Bar])
             bars = await self.loader.broker_adapter.get_historical_data(
@@ -160,10 +245,10 @@ class BacktestExecutor:
             )
             
             if not bars:
-                print("❌ No data returned from API")
+                _cli_print("❌ No data returned from API")
                 return None
             
-            print(f"✅ Loaded {len(bars)} bars from API")
+            _cli_print(f"✅ Loaded {len(bars)} bars from API")
             
             # Convert Bar objects to list of dicts for replay mode
             data = []
@@ -180,18 +265,18 @@ class BacktestExecutor:
         # Validate data (skip for replay mode if data is list of dicts)
         if isinstance(data, pd.DataFrame):
             if not self.loader.validate_data(data):
-                print("❌ Data validation failed!")
+                _cli_print("❌ Data validation failed!")
                 return None
             # Add indicators if needed (only for DataFrame)
             data = self.loader.add_indicators(data, indicators=['ema_89', 'ema_233', 'atr_14', 'rsi_14', 'sma_20'])
         elif isinstance(data, list):
             # For replay mode with list of dicts, basic validation
             if not data or len(data) < 2:
-                print("❌ Insufficient data for backtest!")
+                _cli_print("❌ Insufficient data for backtest!")
                 return None
-            print(f"✅ Data validated: {len(data)} bars")
+            _cli_print(f"✅ Data validated: {len(data)} bars")
         else:
-            print(f"❌ Invalid data type: {type(data)}")
+            _cli_print(f"❌ Invalid data type: {type(data)}")
             return None
         
         # Check if this is a replay mode strategy (class-based)
@@ -209,7 +294,7 @@ class BacktestExecutor:
             )
         
         # Run traditional function-based backtest
-        print(f"\n🔬 Running backtest...")
+        _cli_print(f"\n🔬 Running backtest...")
         engine = BacktestEngine(
             initial_capital=initial_capital,
             commission_per_contract=2.50,
@@ -226,7 +311,7 @@ class BacktestExecutor:
         )
         
         # Print results
-        print("\n" + PerformanceMetrics.generate_report(result))
+        _cli_print("\n" + PerformanceMetrics.generate_report(result))
         
         # Cache results
         cache_key = f"{strategy_name}_{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -259,16 +344,16 @@ class BacktestExecutor:
         if isinstance(result_or_cache_key, str):
             result = self.results_cache.get(result_or_cache_key)
             if not result:
-                print(f"❌ No cached result found for key: {result_or_cache_key}")
+                _cli_print(f"❌ No cached result found for key: {result_or_cache_key}")
                 return None
         else:
             result = result_or_cache_key
         
         if not result.trades:
-            print("❌ No trades to analyze!")
+            _cli_print("❌ No trades to analyze!")
             return None
         
-        print(f"\n🎲 Running {num_simulations} Monte Carlo simulations...")
+        _cli_print(f"\n🎲 Running {num_simulations} Monte Carlo simulations...")
         
         mc = MonteCarloSimulator(initial_capital=initial_capital)
         mc_results = mc.run_simulations(
@@ -276,7 +361,7 @@ class BacktestExecutor:
             num_simulations=num_simulations
         )
         
-        print("\n" + mc.generate_report(mc_results))
+        _cli_print("\n" + mc.generate_report(mc_results))
         
         return mc_results
     
@@ -303,12 +388,12 @@ class BacktestExecutor:
         Returns:
             Dict with optimization results
         """
-        print(f"\n{'='*80}")
-        print(f"PARAMETER OPTIMIZATION: {strategy_name.upper()}")
-        print(f"{'='*80}")
-        print(f"Symbol: {symbol}")
-        print(f"Optimizing: {metric}")
-        print(f"Parameters: {param_ranges}")
+        _cli_print(f"\n{'='*80}")
+        _cli_print(f"PARAMETER OPTIMIZATION: {strategy_name.upper()}")
+        _cli_print(f"{'='*80}")
+        _cli_print(f"Symbol: {symbol}")
+        _cli_print(f"Optimizing: {metric}")
+        _cli_print(f"Parameters: {param_ranges}")
         
         best_params = None
         best_score = float('-inf')
@@ -320,11 +405,11 @@ class BacktestExecutor:
         param_values = list(param_ranges.values())
         combinations = list(itertools.product(*param_values))
         
-        print(f"\n🔬 Testing {len(combinations)} parameter combinations...")
+        _cli_print(f"\n🔬 Testing {len(combinations)} parameter combinations...")
         
         for i, values in enumerate(combinations, 1):
             params = dict(zip(param_names, values))
-            print(f"\n[{i}/{len(combinations)}] Testing: {params}")
+            _cli_print(f"\n[{i}/{len(combinations)}] Testing: {params}")
             
             # Run backtest
             backtest_result = await self.run_backtest(
@@ -355,14 +440,14 @@ class BacktestExecutor:
             if score > best_score:
                 best_score = score
                 best_params = params
-                print(f"   🎯 NEW BEST: {metric}={score:.2f}")
+                _cli_print(f"   🎯 NEW BEST: {metric}={score:.2f}")
         
         # Summary
-        print(f"\n{'='*80}")
-        print(f"OPTIMIZATION COMPLETE")
-        print(f"{'='*80}")
-        print(f"Best {metric}: {best_score:.2f}")
-        print(f"Best parameters: {best_params}")
+        _cli_print(f"\n{'='*80}")
+        _cli_print(f"OPTIMIZATION COMPLETE")
+        _cli_print(f"{'='*80}")
+        _cli_print(f"Best {metric}: {best_score:.2f}")
+        _cli_print(f"Best parameters: {best_params}")
         
         return {
             'best_params': best_params,
@@ -384,14 +469,14 @@ class BacktestExecutor:
         
         # Validate strategy name
         if strategy_name not in all_strategies:
-            print(f"\n❌ ERROR: Unknown strategy '{strategy_name}'")
-            print(f"\n📋 Available function-based strategies:")
+            _cli_print(f"\n❌ ERROR: Unknown strategy '{strategy_name}'")
+            _cli_print(f"\n📋 Available function-based strategies:")
             for s in function_strategies:
-                print(f"   - {s}")
-            print(f"\n📋 Available class-based strategies (use --replay flag):")
+                _cli_print(f"   - {s}")
+            _cli_print(f"\n📋 Available class-based strategies (use --replay flag):")
             for s in class_strategies:
-                print(f"   - {s}")
-            print(f"\nExample: python core/backtest_executor.py --strategy=simple_candle --symbol=MNQ --start=2025-12-01 --end=2025-12-07 --replay")
+                _cli_print(f"   - {s}")
+            _cli_print(f"\nExample: python core/backtest_executor.py --strategy=simple_candle --symbol=MNQ --start=2025-12-01 --end=2025-12-07 --replay")
             raise ValueError(f"Unknown strategy: {strategy_name}. Available: {', '.join(all_strategies)}")
         
         # Return None for class-based strategies (handled separately in replay mode)
@@ -532,8 +617,8 @@ class BacktestExecutor:
         Returns:
             Dict with backtest results
         """
-        print(f"\n🔄 Running strategy replay mode: {strategy_name}")
-        print(f"   This uses the actual strategy class code (same as live trading)")
+        _cli_print(f"\n🔄 Running strategy replay mode: {strategy_name}")
+        _cli_print(f"   This uses the actual strategy class code (same as live trading)")
         
         # Import strategy class
         strategy_class = self._get_strategy_class(strategy_name)
@@ -581,7 +666,7 @@ class BacktestExecutor:
         )
         
         # Print results
-        print("\n" + PerformanceMetrics.generate_report(result))
+        _cli_print("\n" + PerformanceMetrics.generate_report(result))
         
         # Cache results
         cache_key = f"{strategy_name}_{symbol}_replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -845,13 +930,46 @@ class BacktestExecutor:
 
 async def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description='Backtest trading strategies')
-    
-    # Required arguments
-    parser.add_argument('--strategy', type=str, required=True,
-                       help='Strategy to backtest (ma_crossover, rsi_mean_reversion, ema_trend)')
-    parser.add_argument('--symbol', type=str, required=True,
-                       help='Trading symbol (MNQ, MES, etc.)')
+    global CLI_OUTPUT_FORMAT
+
+    parser = argparse.ArgumentParser(
+        description="Backtest trading strategies",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python core/backtest_executor.py --list-strategies
+  python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --sample --days=14
+  python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --sample --days=14 --format=json
+  python core/backtest_executor.py --strategy=overnight_range --symbol=MNQ --replay --start=2025-01-01 --end=2025-01-14 --sample
+Research (grid + OOS + MC gate): python -m core.research.runner --help
+        """.strip(),
+    )
+
+    parser.add_argument(
+        "--list-strategies",
+        action="store_true",
+        help="Print function-based and replay-capable strategy names, then exit",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("human", "json"),
+        default="human",
+        help="human: banners and tables to stdout; json: one JSON object at end (no decorative prints)",
+    )
+
+    # Required unless --list-strategies
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default=None,
+        help="Strategy to backtest (see --list-strategies)",
+    )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default=None,
+        help="Trading symbol (MNQ, MES, etc.)",
+    )
     
     # Data arguments
     parser.add_argument('--timeframe', type=str, default='1m',
@@ -900,7 +1018,17 @@ async def main():
                        help='Long EMA period')
     
     args = parser.parse_args()
-    
+
+    if args.list_strategies:
+        print_registered_strategies()
+        return
+
+    if not args.strategy or not args.symbol:
+        parser.error("--strategy and --symbol are required (unless using --list-strategies)")
+
+    CLI_OUTPUT_FORMAT = args.format
+    set_backtest_cli_human_output(args.format == "human")
+
     # Parse dates
     start_date = datetime.strptime(args.start, '%Y-%m-%d') if args.start else None
     end_date = datetime.strptime(args.end, '%Y-%m-%d') if args.end else None
@@ -914,25 +1042,25 @@ async def main():
             from brokers.topstepx_adapter import TopStepXAdapter
             from core.rate_limiter import RateLimiter
             
-            print("\n🔐 Initializing broker adapter for real historical data...")
+            _cli_print("\n🔐 Initializing broker adapter for real historical data...")
             auth_manager = AuthManager()
             rate_limiter = RateLimiter(max_calls=60, period=60)
             
             # Authenticate
             auth_success = await auth_manager.authenticate()
             if not auth_success:
-                print("⚠️  Authentication failed. Falling back to sample data.")
-                print("   Tip: Use --sample flag to skip authentication, or --csv to use CSV file")
+                _cli_print("⚠️  Authentication failed. Falling back to sample data.")
+                _cli_print("   Tip: Use --sample flag to skip authentication, or --csv to use CSV file")
                 args.sample = True  # Auto-fallback to sample data
             else:
                 broker_adapter = TopStepXAdapter(
                     auth_manager=auth_manager,
                     rate_limiter=rate_limiter
                 )
-                print("✅ Broker adapter initialized")
+                _cli_print("✅ Broker adapter initialized")
         except Exception as e:
-            print(f"⚠️  Could not initialize broker adapter: {e}")
-            print("   Falling back to sample data. Use --sample or --csv for alternatives")
+            _cli_print(f"⚠️  Could not initialize broker adapter: {e}")
+            _cli_print("   Falling back to sample data. Use --sample or --csv for alternatives")
             args.sample = True  # Auto-fallback to sample data
     
     executor = BacktestExecutor(broker_adapter=broker_adapter)
@@ -971,6 +1099,8 @@ async def main():
             timeframe=args.timeframe,
             days=args.days or 30
         )
+        if args.format == "json":
+            print(dumps_str({"ok": True, "optimization": result}))
     else:
         # Run single backtest
         result = await executor.run_backtest(
@@ -986,25 +1116,42 @@ async def main():
             slippage_ticks=args.slippage_ticks,
             **strategy_params
         )
-        
-        # Monte Carlo if requested
+
+        mc_out: Optional[Dict[str, Any]] = None
         if args.monte_carlo and result:
-            await executor.run_monte_carlo(
-                result['result'],
+            mc_out = await executor.run_monte_carlo(
+                result["result"],
                 num_simulations=args.monte_carlo,
-                initial_capital=args.capital
+                initial_capital=args.capital,
             )
 
+        if args.format == "json":
+            if result:
+                print(
+                    dumps_str(
+                        _serialize_backtest_bundle(
+                            result, ok=True, monte_carlo=mc_out
+                        )
+                    )
+                )
+            else:
+                print(dumps_str({"ok": False, "error": "run_backtest returned no result"}))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     from core.logging_setup import configure_logging
+
     configure_logging()
 
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\n👋 Backtest interrupted by user")
+        print("\n\nBacktest interrupted by user", file=sys.stderr)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        if globals().get("CLI_OUTPUT_FORMAT") == "json":
+            print(dumps_str({"ok": False, "error": str(e)}))
+        else:
+            _cli_print(f"\n❌ Error: {e}")
+            import traceback
+
+            traceback.print_exc()

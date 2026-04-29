@@ -19,6 +19,7 @@ STRATEGIES_DIR = Path(__file__).resolve().parent.parent / "config" / "strategies
         "mean_reversion.toml",
         "trend_scalping.toml",
         "simple_momentum.toml",
+        "simple_rth.toml",
     ],
 )
 def test_strategy_toml_parses_and_has_meta_symbols(toml_name: str):

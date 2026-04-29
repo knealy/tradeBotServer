@@ -40,6 +40,7 @@ ALLOWED = frozenset(
         "HEALTH_CHECK_INTERVAL",
         "WEBHOOK_TIMEOUT",
         "MAX_WEBHOOK_SIZE",
+        "REMOTE_COMMAND_SECRET",
         "INITIAL_BALANCE",
         "DAILY_LOSS_LIMIT",
         "MAXIMUM_LOSS_LIMIT",

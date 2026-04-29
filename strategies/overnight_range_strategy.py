@@ -2659,12 +2659,14 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.debug(f"⏳ Skipping {side} order for {symbol} - cooldown active ({remaining:.1f}s remaining)")
             return None
         
-        # OPTIMIZATION: Fetch orders and positions ONCE at the start, reuse throughout
-        open_orders = await self.trading_bot.get_open_orders()
-        orders_list = open_orders if isinstance(open_orders, list) else []
-        
-        positions = await self.trading_bot.get_open_positions()
-        positions_list = positions if isinstance(positions, list) else []
+        # OPTIMIZATION: Single parallel snapshot for orders + positions, reuse throughout
+        snap = await self.trading_bot.get_positions_and_orders_batch()
+        orders_list = snap.get("orders") or []
+        if not isinstance(orders_list, list):
+            orders_list = []
+        positions_list = snap.get("positions") or []
+        if not isinstance(positions_list, list):
+            positions_list = []
         
         # Calculate exposure using cached data (NO additional API calls)
         position_qty = await self.get_current_position_quantity(symbol, positions=positions_list)
@@ -3118,7 +3120,7 @@ class OvernightRangeStrategy(BaseStrategy):
                                     account_id=str(account_id),
                                 )
                                 if isinstance(res, dict) and res.get("error"):
-                                    logger.debug(
+                                    logger.warning(
                                         "Breakeven stop modify failed for %s: %s",
                                         symbol,
                                         res.get("error"),
@@ -3129,7 +3131,7 @@ class OvernightRangeStrategy(BaseStrategy):
                                         symbol,
                                     )
                             except Exception as exc:
-                                logger.debug(
+                                logger.warning(
                                     "Breakeven modify_stop_loss error for %s: %s",
                                     symbol,
                                     exc,

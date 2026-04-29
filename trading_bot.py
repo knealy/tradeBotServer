@@ -143,6 +143,8 @@ class TopStepXTradingBot:
         # Contract list cache: { 'contracts': List[Dict], 'timestamp': datetime, 'ttl_minutes': int }
         self._contract_cache: Optional[Dict] = None
         self._contract_cache_lock: Lock = Lock()
+        # Serialize concurrent contract API refreshes (hot path: many callers miss cache together)
+        self._contract_refresh_async_lock = asyncio.Lock()
         self._market_hub_connected = False
         self._subscribed_symbols = set()
         self._market_hub_open_event = asyncio.Event()
@@ -1041,7 +1043,11 @@ class TopStepXTradingBot:
                 try:
                     current_balance = await self.get_account_balance(target_account)
                 except Exception:
-                    pass
+                    logger.debug(
+                        "get_account_balance fallback path failed for %s",
+                        target_account,
+                        exc_info=True,
+                    )
                 
                 account_info = {
                     "id": self.selected_account.get('id'),
@@ -1055,12 +1061,16 @@ class TopStepXTradingBot:
                 
                 # Add compliance/risk info if we can get it from account state
                 try:
-                    positions = await self.get_open_positions(target_account)
-                    orders = await self.get_open_orders(target_account)
-                    account_info["positions_count"] = len(positions) if positions else 0
-                    account_info["orders_count"] = len(orders) if orders else 0
+                    snap = await self.get_positions_and_orders_batch(target_account)
+                    positions = snap.get("positions") or []
+                    orders = snap.get("orders") or []
+                    account_info["positions_count"] = len(positions)
+                    account_info["orders_count"] = len(orders)
                 except Exception:
-                    pass
+                    logger.debug(
+                        "get_positions_and_orders_batch in cached account_info failed",
+                        exc_info=True,
+                    )
                 
                 return account_info
             return {"error": "Could not fetch account info - no account selected"}
@@ -1823,150 +1833,171 @@ class TopStepXTradingBot:
                         else:
                             logger.debug(f"Contract cache expired (age: {cache_age.total_seconds()/60:.1f} min, max: {cache_ttl_minutes} min)")
             
-            logger.info("Fetching available contracts...")
-            
-            # Use AuthManager for authentication
-            if not await self.auth_manager.ensure_valid_token():
-                logger.error("No session token available. Please authenticate first.")
-                return []
-            
-            headers = {
-                "accept": "application/json",
-                "Content-Type": "application/json",
-                **self.auth_manager.get_auth_headers()
-            }
-            
-            # Use correct endpoint per API documentation:
-            # https://gateway.docs.projectx.com/docs/api-reference/market-data/available-contracts/
-            # POST /api/Contract/available with { "live": false }
-            
-            # Use broker adapter for contract fetching if available
-            if hasattr(self, 'broker_adapter'):
-                try:
-                    contracts = await self.broker_adapter.get_available_contracts(use_cache=use_cache, cache_ttl_minutes=cache_ttl_minutes)
-                    # Sync to local cache
-                    if contracts:
+            async with self._contract_refresh_async_lock:
+                # Another coroutine may have filled the cache while we waited
+                if use_cache:
+                    with self._contract_cache_lock:
+                        if self._contract_cache is not None:
+                            cache_age = datetime.now() - self._contract_cache["timestamp"]
+                            if cache_age < timedelta(minutes=cache_ttl_minutes):
+                                logger.debug(
+                                    "Using cached contract list after refresh wait (%d contracts)",
+                                    len(self._contract_cache["contracts"]),
+                                )
+                                return self._contract_cache["contracts"].copy()
+
+                logger.debug("Fetching available contracts from API...")
+
+                # Use AuthManager for authentication
+                if not await self.auth_manager.ensure_valid_token():
+                    logger.error("No session token available. Please authenticate first.")
+                    return []
+
+                headers = {
+                    "accept": "application/json",
+                    "Content-Type": "application/json",
+                    **self.auth_manager.get_auth_headers(),
+                }
+
+                # Use broker adapter for contract fetching if available
+                if hasattr(self, "broker_adapter"):
+                    try:
+                        contracts = await self.broker_adapter.get_available_contracts(
+                            use_cache=use_cache, cache_ttl_minutes=cache_ttl_minutes
+                        )
+                        if contracts:
+                            with self._contract_cache_lock:
+                                self._contract_cache = {
+                                    "contracts": contracts.copy(),
+                                    "timestamp": datetime.now(),
+                                    "ttl_minutes": cache_ttl_minutes,
+                                }
+                            if hasattr(self, "contract_manager"):
+                                self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
+                        logger.debug("Found %d available contracts via adapter", len(contracts or []))
+                        return contracts or []
+                    except Exception as adapter_err:
+                        logger.warning(
+                            "Adapter contract fetch failed, falling back to direct API: %s", adapter_err
+                        )
+
+                # Fallback to direct API call
+                response = await self._make_http_request(
+                    "POST",
+                    "/api/Contract/available",
+                    data={"live": False},  # Use False for simulation/paper trading contracts
+                    headers=headers,
+                )
+
+                # Check if API returned an error
+                if "error" in response or not response:
+                    logger.warning("Contract API returned error or empty response")
+                    # Return cached data if available
+                    if use_cache:
                         with self._contract_cache_lock:
-                            self._contract_cache = {
-                                'contracts': contracts.copy(),
-                                'timestamp': datetime.now(),
-                                'ttl_minutes': cache_ttl_minutes
-                            }
-                        if hasattr(self, 'contract_manager'):
-                            self.contract_manager.set_contract_cache(contracts, cache_ttl_minutes)
-                    logger.info(f"Found {len(contracts)} available contracts via adapter")
-                    return contracts
-                except Exception as adapter_err:
-                    logger.warning(f"Adapter contract fetch failed, falling back to direct API: {adapter_err}")
-            
-            # Fallback to direct API call
-            response = await self._make_http_request(
-                "POST",
-                "/api/Contract/available",
-                data={"live": False},  # Use False for simulation/paper trading contracts
-                headers=headers
-            )
-            
-            # Check if API returned an error
-            if "error" in response or not response:
-                logger.warning(f"Contract API returned error or empty response")
-                # Return cached data if available
-                if use_cache:
-                    with self._contract_cache_lock:
-                        if self._contract_cache is not None:
-                            logger.warning(f"API error, returning stale cached contracts ({len(self._contract_cache['contracts'])} contracts)")
-                            return self._contract_cache['contracts'].copy()
-                
-                # Fallback to hardcoded common contracts
-                logger.warning("Using fallback hardcoded contract list")
-                fallback_contracts = [
-                    {"symbol": "MNQ", "name": "Micro E-mini Nasdaq-100", "contractId": "CON.F.US.MNQ"},
-                    {"symbol": "MES", "name": "Micro E-mini S&P 500", "contractId": "CON.F.US.MES"},
-                    {"symbol": "MYM", "name": "Micro E-mini Dow", "contractId": "CON.F.US.MYM"},
-                    {"symbol": "M2K", "name": "Micro E-mini Russell 2000", "contractId": "CON.F.US.M2K"},
-                    {"symbol": "ES", "name": "E-mini S&P 500", "contractId": "CON.F.US.ES"},
-                    {"symbol": "NQ", "name": "E-mini Nasdaq-100", "contractId": "CON.F.US.NQ"},
-                    {"symbol": "YM", "name": "E-mini Dow", "contractId": "CON.F.US.YM"},
-                    {"symbol": "RTY", "name": "E-mini Russell 2000", "contractId": "CON.F.US.RTY"},
-                    {"symbol": "CL", "name": "Crude Oil", "contractId": "CON.F.US.CL"},
-                    {"symbol": "GC", "name": "Gold", "contractId": "CON.F.US.GC"},
-                    {"symbol": "SI", "name": "Silver", "contractId": "CON.F.US.SI"},
-                    {"symbol": "6E", "name": "Euro FX", "contractId": "CON.F.US.6E"},
-                ]
-                return fallback_contracts
-            
-            # Check API success field (per API docs, response includes success boolean)
-            if isinstance(response, dict) and response.get('success') == False:
-                error_code = response.get('errorCode', 'Unknown')
-                error_msg = response.get('errorMessage', 'No error message')
-                logger.error(f"API returned error: Code {error_code}, Message: {error_msg}")
-                # Try cached data first
-                if use_cache:
-                    with self._contract_cache_lock:
-                        if self._contract_cache is not None:
-                            logger.warning(f"Using stale cached contracts due to API error")
-                            return self._contract_cache['contracts'].copy()
-                return []
-            
-            # Parse contracts from response
-            # Contract/search endpoint may return different formats
-            if isinstance(response, list):
-                contracts = response
-            elif isinstance(response, dict):
-                # Try common response keys
-                if "contracts" in response:
-                    contracts = response["contracts"]
-                elif "data" in response:
-                    contracts = response["data"]
-                elif "result" in response:
-                    contracts = response["result"]
-                elif "items" in response:
-                    contracts = response["items"]
-                elif response.get("success") and "data" in response:
-                    contracts = response["data"]
+                            if self._contract_cache is not None:
+                                logger.warning(
+                                    "API error, returning stale cached contracts (%d contracts)",
+                                    len(self._contract_cache["contracts"]),
+                                )
+                                return self._contract_cache["contracts"].copy()
+
+                    # Fallback to hardcoded common contracts
+                    logger.warning("Using fallback hardcoded contract list")
+                    fallback_contracts = [
+                        {"symbol": "MNQ", "name": "Micro E-mini Nasdaq-100", "contractId": "CON.F.US.MNQ"},
+                        {"symbol": "MES", "name": "Micro E-mini S&P 500", "contractId": "CON.F.US.MES"},
+                        {"symbol": "MYM", "name": "Micro E-mini Dow", "contractId": "CON.F.US.MYM"},
+                        {"symbol": "M2K", "name": "Micro E-mini Russell 2000", "contractId": "CON.F.US.M2K"},
+                        {"symbol": "ES", "name": "E-mini S&P 500", "contractId": "CON.F.US.ES"},
+                        {"symbol": "NQ", "name": "E-mini Nasdaq-100", "contractId": "CON.F.US.NQ"},
+                        {"symbol": "YM", "name": "E-mini Dow", "contractId": "CON.F.US.YM"},
+                        {"symbol": "RTY", "name": "E-mini Russell 2000", "contractId": "CON.F.US.RTY"},
+                        {"symbol": "CL", "name": "Crude Oil", "contractId": "CON.F.US.CL"},
+                        {"symbol": "GC", "name": "Gold", "contractId": "CON.F.US.GC"},
+                        {"symbol": "SI", "name": "Silver", "contractId": "CON.F.US.SI"},
+                        {"symbol": "6E", "name": "Euro FX", "contractId": "CON.F.US.6E"},
+                    ]
+                    return fallback_contracts
+
+                # Check API success field (per API docs, response includes success boolean)
+                if isinstance(response, dict) and response.get("success") is False:
+                    error_code = response.get("errorCode", "Unknown")
+                    error_msg = response.get("errorMessage", "No error message")
+                    logger.error("API returned error: Code %s, Message: %s", error_code, error_msg)
+                    # Try cached data first
+                    if use_cache:
+                        with self._contract_cache_lock:
+                            if self._contract_cache is not None:
+                                logger.warning("Using stale cached contracts due to API error")
+                                return self._contract_cache["contracts"].copy()
+                    return []
+
+                # Parse contracts from response
+                if isinstance(response, list):
+                    contracts = response
+                elif isinstance(response, dict):
+                    if "contracts" in response:
+                        contracts = response["contracts"]
+                    elif "data" in response:
+                        contracts = response["data"]
+                    elif "result" in response:
+                        contracts = response["result"]
+                    elif "items" in response:
+                        contracts = response["items"]
+                    elif response.get("success") and "data" in response:
+                        contracts = response["data"]
+                    else:
+                        logger.warning(
+                            "Unexpected contracts response format (dict): %s", list(response.keys())
+                        )
+                        contracts = []
                 else:
-                    # If response is a dict but doesn't have expected keys, log warning
-                    logger.warning(f"Unexpected contracts response format (dict): {list(response.keys())}")
+                    logger.warning("Unexpected contracts response type: %s", type(response))
                     contracts = []
-            else:
-                logger.warning(f"Unexpected contracts response type: {type(response)}")
-                contracts = []
-            
-            # Log sample contract structure for debugging
-            if contracts and len(contracts) > 0:
-                sample = contracts[0]
-                logger.debug(f"Sample contract structure: {list(sample.keys()) if isinstance(sample, dict) else type(sample)}")
-                if isinstance(sample, dict):
-                    logger.debug(f"Sample contract fields: symbol={sample.get('symbol')}, contractId={sample.get('contractId')}, name={sample.get('name')}")
-            
-            # Cache the contracts
-            if use_cache:
-                with self._contract_cache_lock:
-                    self._contract_cache = {
-                        'contracts': contracts.copy(),
-                        'timestamp': datetime.now(),
-                        'ttl_minutes': cache_ttl_minutes
-                    }
-                    logger.info(f"✅ Cached {len(contracts)} contracts for {cache_ttl_minutes} minutes")
-                    # Log a few sample symbols for verification
-                    sample_symbols = []
-                    for contract in contracts[:10]:
-                        if isinstance(contract, dict):
-                            sym = contract.get('symbol') or contract.get('Symbol') or contract.get('ticker')
-                            if not sym and contract.get('contractId'):
-                                cid = str(contract.get('contractId'))
-                                if '.' in cid:
-                                    parts = cid.split('.')
-                                    if len(parts) >= 4:
-                                        sym = parts[-2]
-                            if sym:
-                                sample_symbols.append(str(sym).upper())
-                    if sample_symbols:
-                        logger.debug(f"Sample symbols in cache: {sorted(set(sample_symbols))}")
-            
-            logger.info(f"Found {len(contracts)} available contracts")
-            return contracts
-            
+
+                if contracts and len(contracts) > 0:
+                    sample = contracts[0]
+                    logger.debug(
+                        "Sample contract structure: %s",
+                        list(sample.keys()) if isinstance(sample, dict) else type(sample),
+                    )
+                    if isinstance(sample, dict):
+                        logger.debug(
+                            "Sample contract fields: symbol=%s, contractId=%s, name=%s",
+                            sample.get("symbol"),
+                            sample.get("contractId"),
+                            sample.get("name"),
+                        )
+
+                if use_cache:
+                    with self._contract_cache_lock:
+                        self._contract_cache = {
+                            "contracts": contracts.copy(),
+                            "timestamp": datetime.now(),
+                            "ttl_minutes": cache_ttl_minutes,
+                        }
+                        logger.debug(
+                            "Cached %d contracts for %d minutes", len(contracts), cache_ttl_minutes
+                        )
+                        sample_symbols = []
+                        for contract in contracts[:10]:
+                            if isinstance(contract, dict):
+                                sym = contract.get("symbol") or contract.get("Symbol") or contract.get("ticker")
+                                if not sym and contract.get("contractId"):
+                                    cid = str(contract.get("contractId"))
+                                    if "." in cid:
+                                        parts = cid.split(".")
+                                        if len(parts) >= 4:
+                                            sym = parts[-2]
+                                if sym:
+                                    sample_symbols.append(str(sym).upper())
+                        if sample_symbols:
+                            logger.debug("Sample symbols in cache: %s", sorted(set(sample_symbols)))
+
+                logger.debug("Found %d available contracts", len(contracts))
+                return contracts
+
         except Exception as e:
             logger.error(f"Failed to fetch contracts: {str(e)}")
             # Return cached data if available, even if expired, on error
@@ -3153,7 +3184,7 @@ class TopStepXTradingBot:
                 try:
                     self._last_bracket_error = error_msg
                 except Exception:
-                    pass
+                    logger.debug("Could not set _last_bracket_error", exc_info=True)
 
                 logger.error(f"Stop bracket order failed: {error_msg}")
 
@@ -4503,7 +4534,10 @@ class TopStepXTradingBot:
                 try:
                     await sdk_adapter.shutdown_historical_client_cache()
                 except Exception:
-                    pass
+                    logger.debug(
+                        "shutdown_historical_client_cache in finally failed",
+                        exc_info=True,
+                    )
     
     async def run_non_interactive(
         self,

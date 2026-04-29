@@ -1461,7 +1461,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                 import json
                                 try:
                                     metadata = json.loads(metadata)
-                                except:
+                                except (json.JSONDecodeError, TypeError, ValueError):
+                                    logger.debug(
+                                        "Invalid process metadata JSON for %s",
+                                        process.get("process_id"),
+                                        exc_info=True,
+                                    )
                                     metadata = {}
                             strategies_in_process = metadata.get('strategies', [])
                             logger.debug(f"Process {process.get('process_id')} has strategies: {strategies_in_process}")
@@ -3117,7 +3122,10 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 """Get point value for symbol."""
                 try:
                     return trading_bot._get_point_value(symbol)
-                except:
+                except Exception:
+                    logger.debug(
+                        "_get_point_value failed for %s; using defaults", symbol, exc_info=True
+                    )
                     # Default point values for common symbols
                     defaults = {'MNQ': 2.0, 'MES': 5.0, 'MYM': 1.0, 'M2K': 5.0, 'MGC': 10.0, 'GC': 10.0}
                     return defaults.get(symbol.upper(), 1.0)
@@ -4185,13 +4193,6 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             except Exception as e:
                 logger.error(f"Error in WebSocket broadcast loop: {e}")
                 await asyncio.sleep(5)
-            except asyncio.CancelledError:
-                logger.info("📡 WebSocket broadcast loop cancelled")
-                log_task.cancel()
-                break
-            except Exception as e:
-                logger.error(f"Error in WebSocket broadcast loop: {e}")
-                await asyncio.sleep(0.1)
     
     # Register WebSocket route (only if not already registered)
     # Check if route already exists to avoid duplicate registration
@@ -4327,7 +4328,8 @@ def generate_chart_html(
             try:
                 ts = dt.fromisoformat(bar['timestamp'].replace('Z', '+00:00'))
                 timestamp_sec = int(ts.timestamp())
-            except:
+            except (ValueError, TypeError, OSError):
+                logger.debug("Skipping bar with unparseable timestamp", exc_info=True)
                 continue
         elif isinstance(bar.get('timestamp'), (int, float)):
             # If in milliseconds, convert to seconds
@@ -6202,12 +6204,14 @@ async def open_chart_html_async(
         try:
             start_dt = datetime.fromisoformat(backtest_start.replace('Z', '+00:00'))
             end_dt = datetime.fromisoformat(backtest_end.replace('Z', '+00:00'))
-        except:
+        except (ValueError, TypeError):
             try:
                 start_dt = datetime.strptime(backtest_start, '%Y-%m-%d')
                 end_dt = datetime.strptime(backtest_end, '%Y-%m-%d')
-            except:
-                raise ValueError(f"Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
+            except (ValueError, TypeError):
+                raise ValueError(
+                    "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS"
+                ) from None
         
         bars = await trading_bot.get_historical_data(
             symbol=symbol,

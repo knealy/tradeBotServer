@@ -33,11 +33,26 @@ Always **fail closed to Python** when Rust raises (adapter already falls back on
 - **uvloop:** Installed from `configure_logging()` when the package is present (Linux/macOS Docker). Image sets `USE_UVLOOP=1` by default; disable with `USE_UVLOOP=0` or `DISABLE_UVLOOP=1` if you debug loop-specific issues.
 - **User Hub deferred queue:** `core/hub_deferred_queue.HubDeferredWorkQueue` (bounded, one worker) sequences heavy work from `core/user_hub_handlers` (PnL, EventBus, GUI `broadcast_update`) after sync callbacks invalidate caches. Capacity: `HUB_DEFERRED_QUEUE_MAX` (default 128). Capture stacks with `scripts/profile_strategy_executor.sh` (see repo [README.md](../../README.md)).
 
+### Market hub (quotes) vs User Hub (account)
+
+```mermaid
+flowchart TB
+  MH[Market hub callback thread] -->|synchronous| Q[trading_bot._on_websocket_quote]
+  Q --> EB1[event_bus publish / bar path]
+  UH[User hub handlers] --> INV[Invalidate StateCache + light work]
+  INV --> HDQ[HubDeferredWorkQueue worker]
+  HDQ --> HEAVY[PnL, Discord, GUI broadcast, DB batch hints]
+```
+
+**Policy:** Quote and bar ingress stay on the SignalR market thread (sync into `_on_websocket_quote`) to avoid an extra queue hop before aggregation/strategy work. **Do not** move the full quote path onto `HubDeferredWorkQueue` by default; that trades latency for isolation. If py-spy shows wide Python stacks on quotes, prefer micro-batching or publish throttling before full deferral. Account-side hub traffic uses the deferred queue so REST-heavy tails do not block hub ACK latency.
+
 ## 4. Event loop hygiene (checklist)
 
 - No `requests` / blocking DNS / `time.sleep` inside `async def` (see [AGENTS.md](../../AGENTS.md)).
 - SignalR handlers: invalidate caches and schedule work; do not run long synchronous work inline.
 - Prefer **bounded** queues if you offload CPU work; unbounded `create_task` fan-out can hide backpressure.
+
+**Repo audit (rg `core/`, `brokers/`, `strategies/`):** no `requests.*` in async modules; `time.sleep` appears only in `core/rate_limiter.RateLimiter.acquire` (sync API) which async callers should use via `acquire_async()` (`asyncio.to_thread`) so the event loop is not blocked.
 
 ## 5. When to revisit Rust
 

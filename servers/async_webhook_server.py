@@ -6,6 +6,7 @@ Integrates with priority task queue for optimal resource utilization.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -245,8 +246,65 @@ class AsyncWebhookServer:
         
         # Order modification endpoint
         self.app.router.add_post('/api/orders/{order_id}/modify', self.handle_modify_order)
+
+        # Authenticated remote CLI (emergency flatten / strategy_stop from phone or automation)
+        self.app.router.add_post('/api/remote_command', self.handle_remote_command)
         
         logger.debug("Routes configured: /health, /status, /metrics, /webhook, /api/*")
+
+    async def handle_remote_command(self, request: web.Request) -> web.Response:
+        """
+        Run a CLICommandParser command with shared-secret auth (no session cookie).
+
+        Set REMOTE_COMMAND_SECRET in the environment. Send header:
+        X-Remote-Command-Secret: <secret> and JSON body {\"command\": \"flatten\"}.
+        """
+        expected = (os.getenv("REMOTE_COMMAND_SECRET") or "").strip()
+        if not expected:
+            return web.json_response(
+                {"success": False, "error": "REMOTE_COMMAND_SECRET is not configured"},
+                status=503,
+            )
+        provided = (
+            request.headers.get("X-Remote-Command-Secret")
+            or request.headers.get("X-Remote-Command-Token")
+            or ""
+        ).strip()
+        if not provided or not hmac.compare_digest(provided, expected):
+            logger.warning("remote_command: rejected (missing or invalid secret)")
+            return web.json_response(
+                {"success": False, "error": "Unauthorized"},
+                status=401,
+            )
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response(
+                {"success": False, "error": "Invalid JSON body"},
+                status=400,
+            )
+        command = (data.get("command") or "").strip()
+        if not command:
+            return web.json_response(
+                {"success": False, "error": "No command provided"},
+                status=400,
+            )
+        logger.warning("remote_command: executing %r", command[:200])
+        from core.cli_command_parser import CLICommandParser
+
+        parser = CLICommandParser(self.trading_bot)
+        resp = await parser.execute_command(command)
+        if resp.get("success"):
+            result = resp.get("result")
+            return web.json_response({"success": True, "result": result})
+        return web.json_response(
+            {
+                "success": False,
+                "error": resp.get("error", "Command failed"),
+                "available_commands": resp.get("available_commands"),
+            },
+            status=400,
+        )
     
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
         """
@@ -1422,9 +1480,9 @@ class AsyncWebhookServer:
                 "result": short_result
             })
             
-            # Get current positions and orders to verify
-            positions = await self.trading_bot.get_open_positions(account_id=account_id)
-            orders = await self.trading_bot.get_open_orders(account_id=account_id)
+            snap = await self.trading_bot.get_positions_and_orders_batch(account_id=account_id)
+            positions = snap.get("positions") or []
+            orders = snap.get("orders") or []
             
             results["verification"] = {
                 "positions_count": len(positions),

@@ -140,31 +140,36 @@ class WebSocketServer:
                     "timestamp": time.time()
                 }))
             
-            # Send current positions
+            # Positions + orders: one adapter-level parallel snapshot (fewer round-trips)
             try:
-                positions = await self.trading_bot.get_open_positions(
-                    account_id=self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                aid = (
+                    self.trading_bot.selected_account.get("id")
+                    if self.trading_bot.selected_account
+                    else None
                 )
-                await websocket.send(json.dumps({
-                    "type": "position_update",
-                    "data": positions,
-                    "timestamp": time.time()
-                }))
-            except Exception as e:
-                logger.warning(f"Failed to get positions for welcome data: {e}")
-            
-            # Send current orders
-            try:
-                orders = await self.trading_bot.get_open_orders(
-                    account_id=self.trading_bot.selected_account.get('id') if self.trading_bot.selected_account else None
+                snap = await self.trading_bot.get_positions_and_orders_batch(account_id=aid)
+                positions = snap.get("positions") or []
+                orders = snap.get("orders") or []
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "position_update",
+                            "data": positions,
+                            "timestamp": time.time(),
+                        }
+                    )
                 )
-                await websocket.send(json.dumps({
-                    "type": "order_update", 
-                    "data": orders,
-                    "timestamp": time.time()
-                }))
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "order_update",
+                            "data": orders,
+                            "timestamp": time.time(),
+                        }
+                    )
+                )
             except Exception as e:
-                logger.warning(f"Failed to get orders for welcome data: {e}")
+                logger.warning("Failed to get positions/orders for welcome data: %s", e)
                 
         except Exception as e:
             logger.error(f"Error sending welcome data: {e}")
@@ -254,27 +259,26 @@ class WebSocketServer:
                         except Exception as e:
                             logger.warning(f"Failed to get account balance for broadcast: {e}")
                     
-                    # Send positions update
                     try:
-                        positions = await self.trading_bot.get_open_positions()
-                        await self.broadcast({
-                            "type": "position_update",
-                            "data": positions,
-                            "timestamp": time.time()
-                        })
+                        snap = await self.trading_bot.get_positions_and_orders_batch()
+                        positions = snap.get("positions") or []
+                        orders = snap.get("orders") or []
+                        await self.broadcast(
+                            {
+                                "type": "position_update",
+                                "data": positions,
+                                "timestamp": time.time(),
+                            }
+                        )
+                        await self.broadcast(
+                            {
+                                "type": "order_update",
+                                "data": orders,
+                                "timestamp": time.time(),
+                            }
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to get positions for broadcast: {e}")
-                    
-                    # Send orders update
-                    try:
-                        orders = await self.trading_bot.get_open_orders()
-                        await self.broadcast({
-                            "type": "order_update",
-                            "data": orders,
-                            "timestamp": time.time()
-                        })
-                    except Exception as e:
-                        logger.warning(f"Failed to get orders for broadcast: {e}")
+                        logger.warning("Failed to get positions/orders for broadcast: %s", e)
                     
                     # Send performance stats
                     try:

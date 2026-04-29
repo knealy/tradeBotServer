@@ -15,6 +15,7 @@ This page lists the **canonical** topics. Deeper notes live under [reference/](r
 | [DATABASE.md](DATABASE.md) | Postgres tables, batch writers, retention |
 | [ENV_VARS.md](ENV_VARS.md) | Environment variables and `.env` |
 | [STRATEGIES.md](STRATEGIES.md) | Strategy configs, registration, Pine notes |
+| [STRATEGY_DEVELOPMENT.md](STRATEGY_DEVELOPMENT.md) | Decision tree: sample vs API, replay, research runner, ship path |
 | [BACKTESTING.md](BACKTESTING.md) | Offline / backtest entrypoints |
 | [DASHBOARD.md](DASHBOARD.md) | Webhook server, static dashboard, GUI |
 | [RUST.md](RUST.md) | Optional Rust hot path |

@@ -86,7 +86,7 @@ async def export_history(
             timeframe=timeframe,
             start_time=start_dt,
             end_time=end_dt,
-            limit=10000  # Max bars
+            limit=20000,  # Broker date-range cap (see TopStepXAdapter)
         )
         
         if not bars:
