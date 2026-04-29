@@ -7,12 +7,14 @@ Orchestration lives in [`core/research/runner.py`](../core/research/runner.py) o
 - **Parameter grid:** CLI `--grid key=min:max:step,...` (comma-separated). Integer strategy params are coerced after evaluation.
 - **Mandatory OOS:** Sample bars are split by index: first `(1 - oos_fraction)` in-sample, remainder out-of-sample. Fails if OOS has fewer than `--min-oos-bars`.
 - **Monte Carlo gate:** After each combo, MC runs on **OOS** trades only. Promotion defaults: `probability_of_profit >= 0.45` and `mean_max_drawdown <= 35%` (tunable).
-- **Persistence:** When the gate passes and `--no-db` is not set, one row is written via [`save_strategy_metrics`](../infrastructure/database.py) with strategy name `{strategy}_research`. Extra fields (`git_sha`, `toml_hash`, `run_tag`, `is_oos`, `grid_id`, `mc_summary`, `walk_forward_folds`, `slippage_sensitivity`) are stored in the `metadata` JSONB column (keys stripped from scalar columns).
+- **Persistence:** When the gate passes and `--no-db` is not set, one row is written via [`save_strategy_metrics`](../infrastructure/database.py) with strategy name `{strategy}_research`. Extra fields (`git_sha`, `toml_hash`, `run_tag`, `is_oos`, `grid_id`, `mc_summary`, `walk_forward_folds`, `slippage_sensitivity_is`, `slippage_sensitivity_oos`) are stored in the `metadata` JSONB column (keys stripped from scalar columns).
 
 ## v2 additions
 
 - **Walk-forward:** `--walk-forward N` runs `N` contiguous folds over the same sample window (train/test Sharpe per fold; first grid combo’s params).
-- **Slippage sensitivity:** `--slippage-sensitivity 0.25,0.5,1.0` runs extra in-sample backtests at those tick values for the **first** grid combination only; results appear under `slippage_sensitivity` in the JSON output.
+- **Slippage sensitivity:** `--slippage-sensitivity 0.25,0.5,1.0` runs extra in-sample backtests at those tick values for the **first** grid combination only; results appear as `slippage_sensitivity_is` and `slippage_sensitivity_oos` in the JSON output (plus per-row `oos_slippage_break_even_ticks` where computed).
+- **Walk-forward:** `walk_forward_by_combo` holds rolling IS→OOS fold summaries per grid row when `--walk-forward` > 1.
+- **Monte Carlo:** `--mc-mode shuffle|bootstrap` — `bootstrap` resamples trade P&Ls with replacement (parametric bootstrap).
 - **Screening script:** [`scripts/research_screen.sh`](../scripts/research_screen.sh) — short `--screen-days` stage; set `FULL_DAYS` / `GRID` / `MC` env vars as needed.
 
 ## Commands

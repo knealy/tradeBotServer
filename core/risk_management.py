@@ -321,6 +321,68 @@ class StrategyRiskManager:
     def order_cooldown_seconds(self) -> float:
         """Get default order cooldown in seconds (for backward compatibility)."""
         return self._default_cooldown
+
+    # Micro equity index products: highly correlated; cap same-direction stacking across the cluster.
+    _CORREL_INDEX_MICROS = frozenset({"MNQ", "MES", "MYM", "M2K"})
+
+    @staticmethod
+    def _base_symbol(sym: str) -> str:
+        s = (sym or "").upper().strip()
+        if "." in s:
+            s = s.split(".")[-1]
+        base = []
+        for ch in s:
+            if ch.isalpha():
+                base.append(ch)
+            elif base:
+                break
+        return "".join(base) if base else s
+
+    async def _check_correlated_same_direction_limit(
+        self, symbol: str, side: str, quantity: int
+    ) -> Tuple[bool, str]:
+        flag = os.getenv("CORRELATED_EXPOSURE_GUARD", "true").strip().lower()
+        if flag in ("0", "false", "no", "off"):
+            return True, ""
+        base = self._base_symbol(symbol)
+        if base not in self._CORREL_INDEX_MICROS:
+            return True, ""
+        try:
+            max_same = int(os.getenv("CORRELATED_MAX_SAME_DIRECTION_CONTRACTS", "2") or "2")
+        except ValueError:
+            max_same = 2
+        if max_same <= 0:
+            return True, ""
+        target_sign = 1 if side.upper() == "BUY" else -1
+        same_dir = int(quantity)
+        try:
+            positions = await self.trading_bot.get_open_positions()
+        except Exception as exc:
+            logger.warning("Correlated exposure check: could not load positions: %s", exc)
+            return True, ""
+        for p in positions or []:
+            if not isinstance(p, dict):
+                continue
+            psym = self._base_symbol(str(p.get("symbol") or ""))
+            if psym not in self._CORREL_INDEX_MICROS:
+                continue
+            try:
+                qty = abs(int(p.get("quantity") or p.get("size") or 0))
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue
+            raw = p.get("side")
+            psign = 1 if raw in (0, "0", "LONG", "long", "BUY", "buy") else -1
+            if psign == target_sign:
+                same_dir += qty
+        if same_dir > max_same:
+            return (
+                False,
+                f"Correlated same-direction exposure {same_dir} contracts in {sorted(self._CORREL_INDEX_MICROS)} "
+                f"> limit {max_same} (order {base} {side} qty {quantity})",
+            )
+        return True, ""
     
     async def check_order_allowed(
         self, 
@@ -395,11 +457,11 @@ class StrategyRiskManager:
         # Use customTag to identify entry orders: contains "stop_bracket" but NOT "-SL" or "-TP"
         entry_orders_count = 0
         entry_orders_qty = 0
-        logger.info(f"🔍 RISK CHECK: Examining {len(existing_orders)} orders to count entry orders for {symbol}")
+        logger.debug(f"🔍 RISK CHECK: Examining {len(existing_orders)} orders to count entry orders for {symbol}")
         for order in existing_orders:
             if not isinstance(order, dict):
                 continue
-            
+
             # Extract symbol from order - try multiple fields
             order_symbol = order.get('symbol', '').upper()
             if not order_symbol:
@@ -413,32 +475,32 @@ class StrategyRiskManager:
                 contract_id = order.get('contractId')
                 if contract_id and hasattr(self.trading_bot, '_get_symbol_from_contract_id'):
                     order_symbol = self.trading_bot._get_symbol_from_contract_id(contract_id)
-            
+
             if not order_symbol or order_symbol != symbol:
                 continue
-            
+
             # Check if this is an entry order by looking at customTag
             custom_tag = order.get('customTag') or order.get('custom_tag') or ''
             is_stop_bracket = 'stop_bracket' in str(custom_tag) or 'stop-bracket' in str(custom_tag)
             is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag)
-            
+
             raw_side = order.get("side", -1)
             order_side = "BUY" if raw_side in (0, "0", "buy", "BUY") else "SELL"
-            
-            logger.info(f"🔍 RISK CHECK: Order ID={order.get('id')}, symbol='{order_symbol}', side={order_side}, "
+
+            logger.debug(f"🔍 RISK CHECK: Order ID={order.get('id')}, symbol='{order_symbol}', side={order_side}, "
                        f"tag='{custom_tag[:40] if custom_tag else 'none'}', is_entry={is_stop_bracket and not is_bracket_sl_tp}")
-            
+
             # Only count ENTRY orders (has stop_bracket tag but NOT -SL/-TP)
             if is_stop_bracket and not is_bracket_sl_tp:
                 entry_orders_count += 1
                 qty = order.get('quantity') or order.get('size') or 0
                 if qty:
                     entry_orders_qty += abs(int(qty))
-                logger.info(f"✅ RISK CHECK: COUNTED entry order for {symbol}: ID={order.get('id')}, side={order_side}, "
+                logger.debug(f"✅ RISK CHECK: COUNTED entry order for {symbol}: ID={order.get('id')}, side={order_side}, "
                            f"qty={qty}, total_count={entry_orders_count}, total_qty={entry_orders_qty}")
-        
+
         # 5. Check pending order limit (max number of pending entry orders)
-        logger.info(f"🔍 RISK CHECK: PENDING CHECK: Found {entry_orders_count} entry order(s) for {symbol} (limit: {max_pending})")
+        logger.debug(f"🔍 RISK CHECK: PENDING CHECK: Found {entry_orders_count} entry order(s) for {symbol} (limit: {max_pending})")
         if entry_orders_count >= max_pending:
             # Record this attempt
             self._recent_attempts[symbol][side] = now
@@ -492,6 +554,13 @@ class StrategyRiskManager:
             logger.error(traceback.format_exc())
             # FAIL CLOSED: Block order if we can't verify exposure (safer than allowing)
             return False, f"Cannot verify exposure limits: {e}"
+
+        ok_c, reason_c = await self._check_correlated_same_direction_limit(symbol, side, quantity)
+        if not ok_c:
+            self._recent_attempts[symbol][side] = now
+            self._last_order_attempt[cooldown_key] = now
+            logger.warning("🛡️  Risk check BLOCKED (correlated cluster): %s", reason_c)
+            return False, reason_c
         
         return True, "Order allowed"
     

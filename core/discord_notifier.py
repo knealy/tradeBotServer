@@ -305,3 +305,48 @@ class DiscordNotifier:
         except Exception as e:
             logger.error(f"Failed to send Discord signal notification: {e}")
             return False
+
+    async def send_inactivity_alert(
+        self,
+        account_name: str,
+        strategy: str,
+        zero_trade_sessions: int,
+        extra: Optional[Dict] = None,
+    ) -> bool:
+        """Alert when a strategy has had N consecutive sessions with zero completed trades."""
+        if not self.enabled:
+            return False
+        if not self._rate_limit_check():
+            return False
+        try:
+            embed = {
+                "title": "⚠️ Strategy inactivity (session streak)",
+                "color": 15105570,
+                "fields": [
+                    {"name": "Account", "value": account_name, "inline": True},
+                    {"name": "Strategy", "value": strategy, "inline": True},
+                    {
+                        "name": "Zero-trade sessions (streak)",
+                        "value": str(zero_trade_sessions),
+                        "inline": True,
+                    },
+                    {
+                        "name": "Note",
+                        "value": "No completed trades since this many session boundaries — check filters, regime, or data.",
+                        "inline": False,
+                    },
+                ],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            if extra:
+                for k, v in extra.items():
+                    embed["fields"].append(
+                        {"name": str(k).replace("_", " ").title(), "value": str(v), "inline": True}
+                    )
+            ok = await self._post({"embeds": [embed]})
+            if ok:
+                logger.info("Discord inactivity alert sent for %s %s", strategy, account_name)
+            return ok
+        except Exception as e:
+            logger.error("Failed to send Discord inactivity alert: %s", e)
+            return False

@@ -92,6 +92,7 @@ def print_registered_strategies() -> None:
         "trend_following",
         "trend_scalping",
         "simple_momentum",
+        "simple_rth",
     ]
     print("Function-based (DataFrame + BacktestEngine):")
     for s in function_strategies:
@@ -601,6 +602,8 @@ class BacktestExecutor:
         bars: List[Dict],
         initial_capital: float = 50000.0,
         slippage_ticks: float = 0.5,
+        *,
+        quiet: bool = False,
         **strategy_params
     ) -> Dict[str, Any]:
         """
@@ -617,8 +620,9 @@ class BacktestExecutor:
         Returns:
             Dict with backtest results
         """
-        _cli_print(f"\n🔄 Running strategy replay mode: {strategy_name}")
-        _cli_print(f"   This uses the actual strategy class code (same as live trading)")
+        if not quiet:
+            _cli_print(f"\n🔄 Running strategy replay mode: {strategy_name}")
+            _cli_print(f"   This uses the actual strategy class code (same as live trading)")
         
         # Import strategy class
         strategy_class = self._get_strategy_class(strategy_name)
@@ -666,7 +670,8 @@ class BacktestExecutor:
         )
         
         # Print results
-        _cli_print("\n" + PerformanceMetrics.generate_report(result))
+        if not quiet:
+            _cli_print("\n" + PerformanceMetrics.generate_report(result))
         
         # Cache results
         cache_key = f"{strategy_name}_{symbol}_replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -699,6 +704,9 @@ class BacktestExecutor:
             elif strategy_name == 'simple_momentum':
                 from strategies.simple_momentum_strategy import SimpleMomentumStrategy
                 return SimpleMomentumStrategy
+            elif strategy_name == 'simple_rth':
+                from strategies.simple_rth_strategy import SimpleRthStrategy
+                return SimpleRthStrategy
             else:
                 return None
         except ImportError as e:

@@ -7,6 +7,11 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Research / risk / ops** — [`core/backtest/monte_carlo.py`](../core/backtest/monte_carlo.py) `simulation_mode=bootstrap`;
+  correlated same-direction cap across MNQ/MES/MYM/M2K in [`StrategyRiskManager`](../core/risk_management.py) (`CORRELATED_EXPOSURE_GUARD`, `CORRELATED_MAX_SAME_DIRECTION_CONTRACTS`);
+  [`core/market_calendar.py`](../core/market_calendar.py) NYSE full-closure guard for [`overnight_range_strategy`](../strategies/overnight_range_strategy.py);
+  Discord inactivity streak via [`alerts.discord_after_zero_trade_sessions`](../config/strategies/overnight_range.toml) + [`SessionTradeTracker`](../core/session_trade_tracker.py) / [`DiscordNotifier.send_inactivity_alert`](../core/discord_notifier.py);
+  [`OrderExecutor.close_position_partial`](../core/order_execution.py); `[trend_filter]` in [`config/strategies/simple_candle.toml`](../config/strategies/simple_candle.toml).
 - **Alembic baseline** — [alembic.ini](../alembic.ini), [migrations/env.py](../migrations/env.py),
   [migrations/versions/001_baseline_noop.py](../migrations/versions/001_baseline_noop.py); `sqlalchemy` + `alembic` in
   [requirements.txt](../requirements.txt). Runtime DDL still from `DatabaseManager`; use revisions for additive changes.

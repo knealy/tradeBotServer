@@ -10,3 +10,10 @@ max_positions = 2
 max_daily_trades = 10
 risk_per_trade_pct = 0.5
 
+[trend_filter]
+enabled = true
+ema_fast_period = 8
+ema_slow_period = 21
+min_trend_score = 30
+lookback_bars = 10
+

@@ -157,3 +157,54 @@ class OrderExecutor:
             logger.error(f"Failed to place order: {e}")
             return {"error": str(e)}
 
+    async def close_position_partial(
+        self,
+        position_id: str,
+        quantity: int,
+        account_id: Optional[str] = None,
+        strategy_name: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Close part of an open position (scale-out). ``quantity`` is contracts to close.
+
+        Delegates to the broker ``close_position`` with an explicit quantity; behavior
+        depends on adapter support.
+        """
+        target_account = account_id or (
+            self.selected_account.get("id") if self.selected_account else None
+        )
+        if not target_account:
+            return {"success": False, "error": "No account selected"}
+        try:
+            q = int(quantity)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "quantity must be a positive integer"}
+        if q <= 0:
+            return {"success": False, "error": "quantity must be a positive integer"}
+        if strategy_name:
+            kwargs.setdefault("strategy_name", strategy_name)
+        try:
+            resp = await self.broker.close_position(
+                position_id,
+                quantity=q,
+                account_id=str(target_account),
+                **kwargs,
+            )
+            if hasattr(resp, "success"):
+                out: Dict[str, Any] = {
+                    "success": bool(resp.success),
+                    "position_id": getattr(resp, "position_id", None) or position_id,
+                }
+                if getattr(resp, "message", None):
+                    out["message"] = resp.message
+                if getattr(resp, "error", None):
+                    out["error"] = resp.error
+                if getattr(resp, "raw_response", None):
+                    out["raw_response"] = resp.raw_response
+                return out
+            return {"success": False, "error": "unexpected_close_response", "raw": resp}
+        except Exception as e:
+            logger.error("Failed partial close for %s: %s", position_id, e)
+            return {"success": False, "error": str(e)}
+

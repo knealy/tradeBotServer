@@ -19,7 +19,8 @@ Examples that use **`--sample`** never touch disk: they call `HistoricalDataLoad
 
 | Source | How | Real market data? |
 |--------|-----|-------------------|
-| **Synthetic** | `--sample` on `core/backtest_executor.py`, research runner defaults, `MODE=sample` in scripts below | No |
+| **Synthetic** | `--sample` on `core/backtest_executor.py`, research runner synthetic stubs (`ma_crossover`, …), `MODE=sample` in scripts below | No |
+| **Research replay** | `python -m core.research.runner --strategy overnight_range` (and other live strategy ids) uses the same strategy classes as live via replay — not the synthetic stubs | Yes if data source is API/CSV |
 | **TopStepX API** | Omit `--sample` and `--csv`; executor authenticates and pulls history via the broker adapter (needs `.env` credentials). Or: `python scripts/export_history.py …` | Yes |
 | **CSV file** | `bash scripts/fetch_history_csv.sh …` then `MODE=csv CSV=…/file.csv bash scripts/backtest_symbol.sh` | Yes, if you exported from the API (or compatible format) |
 

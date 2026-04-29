@@ -1,7 +1,8 @@
 """
 Thin research runner: parameter grid, mandatory OOS split, Monte Carlo gate, optional DB row.
 
-Uses existing BacktestEngine + HistoricalDataLoader; does not replace core/backtest_executor.py.
+Uses existing BacktestEngine + HistoricalDataLoader; class strategies use
+``BacktestExecutor._run_strategy_replay`` (same path as ``--replay`` CLI).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,8 +27,22 @@ from core.backtest.models import BacktestResult
 
 logger = logging.getLogger(__name__)
 
-# Function-based strategies only for dataframe + engine path (class strategies use replay elsewhere)
 _GRID_STRATEGIES = frozenset({"ma_crossover", "rsi_mean_reversion", "ema_trend"})
+
+# Live strategy classes — grid-searched via StrategyReplayEngine + mock bot (see backtest_executor).
+_REPLAY_STRATEGIES = frozenset(
+    {
+        "simple_candle",
+        "overnight_range",
+        "mean_reversion",
+        "trend_following",
+        "trend_scalping",
+        "simple_momentum",
+        "simple_rth",
+    }
+)
+
+_ALL_RESEARCH_STRATEGIES = frozenset(_GRID_STRATEGIES | _REPLAY_STRATEGIES)
 
 MAX_GRID_COMBOS_DEFAULT = 50
 MIN_OOS_BARS_DEFAULT = 50
@@ -47,12 +63,13 @@ class ResearchRunConfig:
     mc_simulations: int = 200
     mc_min_profit_prob: float = 0.45
     mc_max_mean_dd_pct: float = 35.0
+    """Monte Carlo path: ``shuffle`` (permute trade order) or ``bootstrap`` (iid resample P&Ls)."""
+    mc_simulation_mode: str = "shuffle"
     git_sha: Optional[str] = None
     toml_path: Optional[Path] = None
     run_tag: str = "research"
     persist_db: bool = True
     mc_seed: Optional[int] = 42
-    # v2
     walk_forward_folds: int = 0
     slippage_sensitivity_ticks: Optional[List[float]] = None
     screen_days: int = 0
@@ -136,6 +153,23 @@ def _coerce_param_dict_for_strategy(strategy: str, params: Dict[str, Any]) -> Di
     return params
 
 
+def _df_to_bar_dicts(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        ts = idx if isinstance(idx, datetime) else pd.to_datetime(idx).to_pydatetime()
+        out.append(
+            {
+                "timestamp": ts,
+                "open": float(row.get("open", row.get("Open", 0))),
+                "high": float(row.get("high", row.get("High", 0))),
+                "low": float(row.get("low", row.get("Low", 0))),
+                "close": float(row.get("close", row.get("Close", 0))),
+                "volume": int(row.get("volume", row.get("Volume", 0))),
+            }
+        )
+    return out
+
+
 async def _run_engine_on_df(
     executor,
     df: pd.DataFrame,
@@ -169,6 +203,73 @@ async def _run_engine_on_df(
     )
 
 
+async def _run_research_backtest(
+    executor,
+    df: pd.DataFrame,
+    cfg: ResearchRunConfig,
+    strategy_params: Dict[str, Any],
+    slippage_ticks: float,
+) -> BacktestResult:
+    """Function-based engine or class replay, depending on ``cfg.strategy``."""
+    if cfg.strategy in _GRID_STRATEGIES:
+        return await _run_engine_on_df(
+            executor,
+            df,
+            cfg.strategy,
+            cfg.symbol,
+            strategy_params,
+            slippage_ticks,
+            cfg.initial_capital,
+        )
+    if cfg.strategy in _REPLAY_STRATEGIES:
+        bars = _df_to_bar_dicts(df)
+        bundle = await executor._run_strategy_replay(
+            strategy_name=cfg.strategy,
+            symbol=cfg.symbol,
+            bars=bars,
+            initial_capital=cfg.initial_capital,
+            slippage_ticks=slippage_ticks,
+            quiet=True,
+            **strategy_params,
+        )
+        if not bundle or not bundle.get("result"):
+            raise ValueError(f"Replay failed for strategy {cfg.strategy!r}")
+        return bundle["result"]
+    raise ValueError(
+        f"Unknown strategy {cfg.strategy!r}; use one of {sorted(_ALL_RESEARCH_STRATEGIES)}"
+    )
+
+
+async def _oos_slippage_break_even_ticks(
+    executor,
+    test_df: pd.DataFrame,
+    cfg: ResearchRunConfig,
+    params: Dict[str, Any],
+    ticks: List[float],
+) -> Optional[float]:
+    """
+    Rough slippage (ticks) at which OOS total return crosses from >=0 to <0, using sorted ``ticks``.
+    """
+    if len(ticks) < 2:
+        return None
+    ordered = sorted(float(t) for t in ticks)
+    prev_t, prev_r = ordered[0], None
+    for t in ordered:
+        r = await _run_research_backtest(executor, test_df, cfg, params, t)
+        ret = float(r.total_return_pct)
+        if prev_r is not None and prev_r >= 0.0 > ret:
+            denom = prev_r - ret
+            if abs(denom) < 1e-12:
+                return float(t)
+            frac = prev_r / denom
+            frac = max(0.0, min(1.0, frac))
+            return round(prev_t + frac * (t - prev_t), 4)
+        prev_t, prev_r = t, ret
+    if prev_r is not None and prev_r < 0:
+        return float(ordered[0])
+    return None
+
+
 def _mc_gate(mc: Dict[str, Any], min_prob: float, max_mean_dd: float) -> Tuple[bool, str]:
     if not mc:
         return False, "no_monte_carlo"
@@ -182,8 +283,10 @@ def _mc_gate(mc: Dict[str, Any], min_prob: float, max_mean_dd: float) -> Tuple[b
 
 
 async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
-    if cfg.strategy not in _GRID_STRATEGIES:
-        raise ValueError(f"research runner supports {sorted(_GRID_STRATEGIES)}; got {cfg.strategy!r}")
+    if cfg.strategy not in _ALL_RESEARCH_STRATEGIES:
+        raise ValueError(
+            f"research runner supports {sorted(_ALL_RESEARCH_STRATEGIES)}; got {cfg.strategy!r}"
+        )
 
     git_sha = cfg.git_sha or _git_sha()
     toml_hash = _toml_hash(cfg.toml_path)
@@ -204,7 +307,6 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
     if not isinstance(raw, pd.DataFrame) or len(raw) < cfg.min_oos_bars + 20:
         raise ValueError("Insufficient sample bars for IS+OOS; increase --days")
 
-    # Optional second-stage full window (same path; operator compares screen vs full artifacts)
     if cfg.screen_days and cfg.full_days and cfg.full_days != cfg.screen_days:
         logger.info(
             "Screen stage uses %d days; re-run with --screen-days 0 --days %d for full window",
@@ -230,28 +332,20 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
 
     results: List[Dict[str, Any]] = []
     sens_global: List[Dict[str, Any]] = []
+    sens_oos_global: List[Dict[str, Any]] = []
 
     ticks_sens: List[float] = list(cfg.slippage_sensitivity_ticks or [])
+    mc_mode = (cfg.mc_simulation_mode or "shuffle").strip().lower()
+    if mc_mode not in ("shuffle", "bootstrap"):
+        mc_mode = "shuffle"
 
     for gi, combo in enumerate(combos):
         params = _coerce_param_dict_for_strategy(cfg.strategy, dict(zip(names, combo)))
-        is_res = await _run_engine_on_df(
-            executor,
-            train_df,
-            cfg.strategy,
-            cfg.symbol,
-            params,
-            cfg.slippage_ticks,
-            cfg.initial_capital,
+        is_res = await _run_research_backtest(
+            executor, train_df, cfg, params, cfg.slippage_ticks
         )
-        oos_res = await _run_engine_on_df(
-            executor,
-            test_df,
-            cfg.strategy,
-            cfg.symbol,
-            params,
-            cfg.slippage_ticks,
-            cfg.initial_capital,
+        oos_res = await _run_research_backtest(
+            executor, test_df, cfg, params, cfg.slippage_ticks
         )
 
         mc: Dict[str, Any] = {}
@@ -261,8 +355,15 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
                 oos_res.trades,
                 num_simulations=cfg.mc_simulations,
                 seed=cfg.mc_seed,
+                simulation_mode=mc_mode,
             )
         passed, reason = _mc_gate(mc, cfg.mc_min_profit_prob, cfg.mc_max_mean_dd_pct)
+
+        oos_be_ticks: Optional[float] = None
+        if len(ticks_sens) >= 2:
+            oos_be_ticks = await _oos_slippage_break_even_ticks(
+                executor, test_df, cfg, params, ticks_sens
+            )
 
         row = {
             "grid_id": gi,
@@ -272,35 +373,45 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
             "oos_sharpe": round(oos_res.sharpe_ratio, 4),
             "oos_trades": oos_res.total_trades,
             "oos_return_pct": round(oos_res.total_return_pct, 4),
+            "oos_slippage_break_even_ticks": oos_be_ticks,
             "mc_pass": passed,
             "mc_reason": reason,
             "mc_profit_prob": mc.get("probability_of_profit"),
             "mc_mean_max_dd_pct": mc.get("mean_max_drawdown"),
+            "mc_mode": mc_mode,
         }
         results.append(row)
 
         if gi == 0 and ticks_sens:
             sens_rows: List[Dict[str, Any]] = []
+            sens_oos_rows: List[Dict[str, Any]] = []
             for tick in ticks_sens:
-                r = await _run_engine_on_df(
-                    executor,
-                    train_df,
-                    cfg.strategy,
-                    cfg.symbol,
-                    params,
-                    tick,
-                    cfg.initial_capital,
+                r_is = await _run_research_backtest(
+                    executor, train_df, cfg, params, tick
                 )
                 sens_rows.append(
                     {
                         "slippage_ticks": tick,
-                        "total_trades": r.total_trades,
-                        "total_return_pct": round(r.total_return_pct, 4),
-                        "sharpe_ratio": round(r.sharpe_ratio, 4),
-                        "max_drawdown_pct": round(r.max_drawdown_pct, 4),
+                        "total_trades": r_is.total_trades,
+                        "total_return_pct": round(r_is.total_return_pct, 4),
+                        "sharpe_ratio": round(r_is.sharpe_ratio, 4),
+                        "max_drawdown_pct": round(r_is.max_drawdown_pct, 4),
+                    }
+                )
+                r_oos = await _run_research_backtest(
+                    executor, test_df, cfg, params, tick
+                )
+                sens_oos_rows.append(
+                    {
+                        "slippage_ticks": tick,
+                        "total_trades": r_oos.total_trades,
+                        "total_return_pct": round(r_oos.total_return_pct, 4),
+                        "sharpe_ratio": round(r_oos.sharpe_ratio, 4),
+                        "max_drawdown_pct": round(r_oos.max_drawdown_pct, 4),
                     }
                 )
             sens_global = sens_rows
+            sens_oos_global = sens_oos_rows
 
         if cfg.persist_db and passed:
             try:
@@ -318,9 +429,12 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
                         "probability_of_profit": mc.get("probability_of_profit"),
                         "mean_max_drawdown": mc.get("mean_max_drawdown"),
                         "num_simulations": mc.get("num_simulations"),
+                        "simulation_mode": mc_mode,
                     },
                     "walk_forward_folds": cfg.walk_forward_folds,
-                    "slippage_sensitivity": sens_global if gi == 0 else [],
+                    "slippage_sensitivity_is": sens_global if gi == 0 else [],
+                    "slippage_sensitivity_oos": sens_oos_global if gi == 0 else [],
+                    "oos_slippage_break_even_ticks": oos_be_ticks,
                 }
                 metrics = {
                     "symbol": cfg.symbol,
@@ -342,49 +456,42 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
             except Exception as exc:
                 logger.warning("DB persist skipped: %s", exc)
 
-    wf_rows: List[Dict[str, Any]] = []
+    wf_by_combo: List[Dict[str, Any]] = []
     if cfg.walk_forward_folds and cfg.walk_forward_folds > 1:
         n = len(raw)
         folds = int(cfg.walk_forward_folds)
-        base_params = _coerce_param_dict_for_strategy(cfg.strategy, dict(zip(names, combos[0])) if combos else {})
-        for k in range(folds):
-            a = int(n * k / folds)
-            b = int(n * (k + 1) / folds)
-            c = int(n * min(k + 2, folds) / folds)
-            if b <= a or c <= b:
-                continue
-            tr = raw.iloc[a:b].copy()
-            te = raw.iloc[b:c].copy()
-            if len(te) < 10:
-                continue
-            tr_r = await _run_engine_on_df(
-                executor,
-                tr,
-                cfg.strategy,
-                cfg.symbol,
-                base_params,
-                cfg.slippage_ticks,
-                cfg.initial_capital,
+        for gi, combo in enumerate(combos):
+            combo_params = _coerce_param_dict_for_strategy(
+                cfg.strategy, dict(zip(names, combo))
             )
-            te_r = await _run_engine_on_df(
-                executor,
-                te,
-                cfg.strategy,
-                cfg.symbol,
-                base_params,
-                cfg.slippage_ticks,
-                cfg.initial_capital,
-            )
-            wf_rows.append(
-                {
-                    "fold": k,
-                    "train_bars": len(tr),
-                    "test_bars": len(te),
-                    "train_sharpe": round(tr_r.sharpe_ratio, 4),
-                    "test_sharpe": round(te_r.sharpe_ratio, 4),
-                    "test_trades": te_r.total_trades,
-                }
-            )
+            wf_rows: List[Dict[str, Any]] = []
+            for k in range(folds):
+                a = int(n * k / folds)
+                b = int(n * (k + 1) / folds)
+                c = int(n * min(k + 2, folds) / folds)
+                if b <= a or c <= b:
+                    continue
+                tr = raw.iloc[a:b].copy()
+                te = raw.iloc[b:c].copy()
+                if len(te) < 10:
+                    continue
+                tr_r = await _run_research_backtest(
+                    executor, tr, cfg, combo_params, cfg.slippage_ticks
+                )
+                te_r = await _run_research_backtest(
+                    executor, te, cfg, combo_params, cfg.slippage_ticks
+                )
+                wf_rows.append(
+                    {
+                        "fold": k,
+                        "train_bars": len(tr),
+                        "test_bars": len(te),
+                        "train_sharpe": round(tr_r.sharpe_ratio, 4),
+                        "test_sharpe": round(te_r.sharpe_ratio, 4),
+                        "test_trades": te_r.total_trades,
+                    }
+                )
+            wf_by_combo.append({"grid_id": gi, "params": combo_params, "folds": wf_rows})
 
     return {
         "strategy": cfg.strategy,
@@ -392,14 +499,19 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
         "git_sha": git_sha,
         "toml_hash": toml_hash,
         "grid_results": results,
-        "slippage_sensitivity": sens_global,
-        "walk_forward": wf_rows,
+        "slippage_sensitivity_is": sens_global,
+        "slippage_sensitivity_oos": sens_oos_global,
+        "walk_forward_by_combo": wf_by_combo,
     }
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Research grid + OOS + MC gate (sample data by default)")
-    p.add_argument("--strategy", default="ma_crossover", choices=sorted(_GRID_STRATEGIES))
+    p.add_argument(
+        "--strategy",
+        default="ma_crossover",
+        choices=sorted(_ALL_RESEARCH_STRATEGIES),
+    )
     p.add_argument("--symbol", default="MNQ")
     p.add_argument("--timeframe", default="5m")
     p.add_argument("--days", type=int, default=14)
@@ -410,6 +522,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--mc", type=int, default=200)
     p.add_argument("--mc-min-profit-prob", type=float, default=0.45)
     p.add_argument("--mc-max-mean-dd", type=float, default=35.0)
+    p.add_argument(
+        "--mc-mode",
+        type=str,
+        default="shuffle",
+        choices=("shuffle", "bootstrap"),
+        help="Monte Carlo: shuffle trade order vs bootstrap resample P&Ls with replacement",
+    )
     p.add_argument("--git-sha", type=str, default="")
     p.add_argument("--toml", type=str, default="", help="Strategy TOML path for metadata hash")
     p.add_argument("--run-tag", type=str, default="research")
@@ -419,7 +538,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--slippage-sensitivity",
         type=str,
         default="",
-        help="Comma-separated ticks e.g. 0.25,0.5,1.0 (enables table for first grid combo)",
+        help="Comma-separated ticks e.g. 0.25,0.5,1.0 (IS+OOS tables for first grid combo)",
     )
     p.add_argument("--screen-days", type=int, default=0, help="If >0, use this many days for screening stage")
     p.add_argument("--full-days", type=int, default=0, help="Hint for full window when screening (logging only)")
@@ -448,6 +567,7 @@ async def _async_main() -> None:
         mc_simulations=args.mc,
         mc_min_profit_prob=args.mc_min_profit_prob,
         mc_max_mean_dd_pct=args.mc_max_mean_dd,
+        mc_simulation_mode=args.mc_mode,
         git_sha=args.git_sha or None,
         toml_path=Path(args.toml) if args.toml else None,
         run_tag=args.run_tag,

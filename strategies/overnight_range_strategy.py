@@ -445,10 +445,62 @@ class OvernightRangeStrategy(BaseStrategy):
 
         return [sym.strip().upper() for sym in candidates if sym and sym.strip()]
     
+    async def _cancel_previous_session_orders(self, symbols: List[str]) -> None:
+        """Cancel pending entry orders from the previous session for the given symbols.
+
+        Only cancels orders where no open position exists for that symbol — protective
+        SL/TP legs on a live trade are left untouched.
+        """
+        try:
+            open_orders = await self.trading_bot.get_open_orders()
+            if not open_orders or not isinstance(open_orders, list):
+                return
+
+            positions = await self.trading_bot.get_positions()
+            position_symbols: set = set()
+            if isinstance(positions, list):
+                for pos in positions:
+                    qty = pos.get('quantity') or pos.get('size') or 0
+                    if abs(qty) > 0:
+                        sym = (pos.get('symbol') or pos.get('contractName', '')).upper()
+                        for s in symbols:
+                            if sym.startswith(s):
+                                position_symbols.add(s)
+
+            cancelled = 0
+            for order in open_orders:
+                if not isinstance(order, dict):
+                    continue
+                order_symbol = (order.get('symbol') or order.get('contractName', '')).upper()
+                base_symbol = next((s for s in symbols if order_symbol.startswith(s)), None)
+                if not base_symbol:
+                    continue
+                if base_symbol in position_symbols:
+                    continue  # live position — leave protective orders alone
+                tag = str(order.get('customTag') or order.get('custom_tag') or '')
+                if 'overnight_range' not in tag:
+                    continue
+                order_id = str(order.get('id'))
+                logger.info(f"🗑️  Cancelling previous-session order {order_id} for {base_symbol} (tag={tag[:40]})")
+                try:
+                    await self.trading_bot.cancel_order(order_id)
+                    cancelled += 1
+                except Exception as exc:
+                    logger.warning(f"Could not cancel order {order_id}: {exc}")
+
+            if cancelled:
+                logger.info(f"✅ Cancelled {cancelled} previous-session order(s)")
+            # Reset tracked state so monitor starts fresh for the new session
+            for sym in symbols:
+                self.breakout_active_orders.pop(sym, None)
+
+        except Exception as exc:
+            logger.error(f"Error cancelling previous-session orders: {exc}")
+
     async def _execute_market_open_sequence(self, symbols: Optional[List[str]] = None) -> None:
         """
         Execute the range break strategy for the configured symbols.
-        
+
         In CONTINUOUS mode: Only recalculates ranges and breakout levels.
         The monitor_breakout_levels() task handles actual order placement when price approaches.
         """
@@ -458,6 +510,41 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.warning("⚠️  No symbols configured for overnight range strategy - skipping execution")
             return
 
+        d_et = datetime.now(self.timezone).date()
+        try:
+            from core.market_calendar import equity_futures_session_note
+
+            cal = equity_futures_session_note(d_et)
+        except Exception as exc:
+            logger.debug("Calendar check skipped: %s", exc, exc_info=True)
+            cal = {"trade_recommended": True, "reason": ""}
+        if not cal.get("trade_recommended", True):
+            logger.warning(
+                "Skipping market-open sequence for %s: %s",
+                d_et,
+                cal.get("reason", "calendar"),
+            )
+            return
+
+        threshold = int(self._cfg.get_int("alerts.discord_after_zero_trade_sessions", 0))
+        if threshold > 0 and hasattr(self.trading_bot, "session_trade_tracker"):
+            acct = getattr(self.trading_bot, "selected_account", None)
+            aid = acct.get("id") if isinstance(acct, dict) else (str(acct) if acct else None)
+            dn = getattr(self.trading_bot, "discord_notifier", None)
+            if aid and dn is not None and hasattr(dn, "send_inactivity_alert"):
+                streak = self.trading_bot.session_trade_tracker.zero_trade_session_streak(str(aid))
+                if streak >= threshold:
+                    account_name = acct.get("name", "Unknown") if isinstance(acct, dict) else "Unknown"
+                    asyncio.create_task(
+                        dn.send_inactivity_alert(
+                            account_name=account_name,
+                            strategy="overnight_range",
+                            zero_trade_sessions=streak,
+                            extra={"session_date_et": str(d_et)},
+                        )
+                    )
+
+        await self._cancel_previous_session_orders(trade_symbols)
         logger.info(f"🔔 Recalculating overnight ranges and breakout levels for: {', '.join(trade_symbols)}")
 
         for symbol in trade_symbols:
@@ -2757,7 +2844,18 @@ class OvernightRangeStrategy(BaseStrategy):
                                      existing_orders: List[Dict], tick_size: float) -> None:
         """Ensure there is an active breakout stop order near the target level."""
         symbol = symbol.upper()
-        
+
+        # Fast path: if we already tracked a live order for this symbol+side, confirm it's
+        # still on the exchange and skip placement entirely (avoids risk-check spam).
+        tracked_id = self.breakout_active_orders.get(symbol, {}).get(side)
+        if tracked_id:
+            existing_ids = {str(o.get("id")) for o in existing_orders if isinstance(o, dict)}
+            if tracked_id in existing_ids:
+                logger.debug(f"Already have live {side} order {tracked_id} for {symbol} - skipping")
+                return
+            # Tracked order is gone (filled or cancelled) — clear it and fall through
+            self.breakout_active_orders[symbol].pop(side, None)
+
         # Use centralized risk manager for all risk checks
         allowed, reason = await self.risk_manager.check_order_allowed(
             symbol=symbol,

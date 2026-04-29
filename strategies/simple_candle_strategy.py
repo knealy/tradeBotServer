@@ -63,26 +63,35 @@ class SimpleCandleStrategy(BaseStrategy):
         self.stop_multiplier = 1.5      # Stop loss at 1.5 * ATR
         self.atr_period = 14            # ATR period (14 bars)
         
-        # EMA settings for cross detection
-        self.ema_fast_period = 8   # Fast EMA period
-        self.ema_slow_period = 21  # Slow EMA period
+        # EMA settings for cross detection (TOML [trend_filter] overrides)
+        self.ema_fast_period = int(self._cfg.get_int("trend_filter.ema_fast_period", 8))
+        self.ema_slow_period = int(self._cfg.get_int("trend_filter.ema_slow_period", 21))
+        self.trend_min_score = int(self._cfg.get_int("trend_filter.min_trend_score", 30))
+        self.trend_lookback_bars = int(self._cfg.get_int("trend_filter.lookback_bars", 10))
         
         # Track previous EMA values per symbol to detect crosses
         self.prev_emas: Dict[str, Dict[str, float]] = {}  # {symbol: {"fast": float, "slow": float}}
         
         # Trend detection (optional filter - VERY conservative to start)
-        self.use_trend_filter = self._cfg.get_bool("USE_TREND_FILTER", True)
+        self.use_trend_filter = self._cfg.get_bool(
+            "trend_filter.enabled",
+            self._cfg.get_bool("USE_TREND_FILTER", True),
+        )
         if self.use_trend_filter:
-            # VERY conservative: min_score=40 (out of 100)
-            # This will only block the most choppy markets
             self.trend_detector = TrendDetector(
                 ema_fast_period=self.ema_fast_period,
                 ema_slow_period=self.ema_slow_period,
                 atr_period=self.atr_period,
-                min_trend_score=30,  # VERY conservative - only block extreme chop
-                lookback_bars=10
+                min_trend_score=self.trend_min_score,
+                lookback_bars=self.trend_lookback_bars,
             )
-            logger.info(f"✅ Trend filter ENABLED (min_score=40 - very conservative)")
+            logger.info(
+                "✅ Trend filter ENABLED (min_score=%s, fast=%s, slow=%s, lookback=%s)",
+                self.trend_min_score,
+                self.ema_fast_period,
+                self.ema_slow_period,
+                self.trend_lookback_bars,
+            )
         else:
             self.trend_detector = None
             logger.info(f"⚠️  Trend filter DISABLED")

@@ -1,4 +1,4 @@
-<!-- Last verified by: cursor-agent on 2026-04-29 (remote_command, Alembic baseline, simple_rth, WS + logging fixes) -->
+<!-- Last verified by: cursor-agent on 2026-04-29 (research MC bootstrap, correlated exposure guard, market calendar + Discord inactivity, partial close API, trend_filter TOML) -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 

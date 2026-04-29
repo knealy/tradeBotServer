@@ -67,6 +67,7 @@ t = BacktestTrade(
     exit_reason="signal",
 )
 mc.run_simulations([t], num_simulations=3, seed=42)
+mc.run_simulations([t], num_simulations=3, seed=7, simulation_mode="bootstrap")
 assert "pandas" in sys.modules or "numpy" in sys.modules
 """
     proc = subprocess.run(

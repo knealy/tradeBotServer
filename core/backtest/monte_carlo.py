@@ -39,17 +39,21 @@ class MonteCarloSimulator:
         self,
         trades: List[BacktestTrade],
         num_simulations: int = 1000,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        *,
+        simulation_mode: str = "shuffle",
     ) -> Dict[str, Any]:
         """
         Run Monte Carlo simulations on trade sequence.
         
-        Randomizes trade order to see distribution of outcomes.
+        ``shuffle``: permute trade order (legacy). ``bootstrap``: iid resample trade P&Ls
+        with replacement (parametric bootstrap on the empirical P&L distribution).
         
         Args:
             trades: List of historical trades
             num_simulations: Number of simulations to run
             seed: Random seed for reproducibility
+            simulation_mode: ``shuffle`` or ``bootstrap``
             
         Returns:
             Dict with simulation results
@@ -79,9 +83,15 @@ class MonteCarloSimulator:
         max_drawdowns = []
         sharpe_ratios = []
         
+        mode = (simulation_mode or "shuffle").strip().lower()
+        if mode not in ("shuffle", "bootstrap"):
+            mode = "shuffle"
+
         for sim in range(num_simulations):
-            # Randomize trade order
-            randomized_pnls = random.sample(trade_pnls, len(trade_pnls))
+            if mode == "bootstrap":
+                randomized_pnls = [random.choice(trade_pnls) for _ in range(len(trade_pnls))]
+            else:
+                randomized_pnls = random.sample(trade_pnls, len(trade_pnls))
             
             # Simulate equity curve
             capital = self.initial_capital

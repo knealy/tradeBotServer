@@ -153,6 +153,8 @@ class SessionTradeTracker:
         
         # Track current trading session per account
         self.current_sessions: Dict[str, SessionState] = {}
+        # Consecutive sessions that ended with zero completed trades (per account)
+        self._zero_trade_session_streak: Dict[str, int] = {}
         
         logger.info("SessionTradeTracker initialized")
     
@@ -406,8 +408,23 @@ class SessionTradeTracker:
                 losing_trades=0
             )
             self.current_sessions[account_id] = self.account_data[account_id]['current_session']
+
+            if old_session.total_trades == 0:
+                self._zero_trade_session_streak[account_id] = (
+                    int(self._zero_trade_session_streak.get(account_id, 0)) + 1
+                )
+            else:
+                self._zero_trade_session_streak[account_id] = 0
             
             logger.info(f"🔄 Session reset for account {account_id}: {old_session.session_id} -> {new_session_id}")
+    
+    def reset_zero_trade_session_streak(self, account_id: str) -> None:
+        """Clear the no-trade-session streak (e.g. after a confirmed fill)."""
+        self._zero_trade_session_streak[str(account_id)] = 0
+
+    def zero_trade_session_streak(self, account_id: str) -> int:
+        """How many consecutive sessions ended with zero completed trades for this account."""
+        return int(self._zero_trade_session_streak.get(str(account_id), 0))
     
     def _persist_trades(self, account_id: str, trades: List[Trade]) -> None:
         """Persist trades to database."""

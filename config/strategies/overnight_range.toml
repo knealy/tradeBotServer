@@ -44,6 +44,10 @@ proximity_pct        = 10.0
 min_proximity_points = 5.0
 interval_seconds     = 15.0
 
+[alerts]
+# Discord when this many consecutive sessions end with zero completed trades (0 = off).
+discord_after_zero_trade_sessions = 0
+
 [filters]
 range_size        = false
 gap               = false
