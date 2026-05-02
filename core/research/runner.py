@@ -74,6 +74,10 @@ class ResearchRunConfig:
     slippage_sensitivity_ticks: Optional[List[float]] = None
     screen_days: int = 0
     full_days: int = 0
+    """Load bars from CSV instead of synthetic sample (same columns as export_history)."""
+    csv_path: Optional[str] = None
+    csv_start: Optional[str] = None
+    csv_end: Optional[str] = None
 
 
 def parse_param_grid(spec: str) -> Dict[str, List[float]]:
@@ -299,13 +303,32 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
     days_full = cfg.full_days or cfg.days
     effective_days = days_screen if days_screen > 0 else days_full
 
-    raw = executor.loader.get_sample_data(
-        symbol=cfg.symbol,
-        days=effective_days,
-        timeframe=cfg.timeframe,
-    )
+    if cfg.csv_path:
+        raw = executor.loader.load_from_csv(cfg.csv_path, cfg.symbol)
+        if not isinstance(raw, pd.DataFrame) or raw.empty:
+            raise ValueError(f"CSV load failed or empty: {cfg.csv_path!r}")
+        if cfg.csv_start:
+            raw = raw[raw.index >= pd.Timestamp(cfg.csv_start)]
+        if cfg.csv_end:
+            raw = raw[raw.index < pd.Timestamp(cfg.csv_end) + pd.Timedelta(days=1)]
+        if cfg.strategy in _REPLAY_STRATEGIES and len(raw) > 50_000:
+            logger.warning(
+                "CSV has %d bars with replay strategy %s — expect long runtime; "
+                "narrow with --csv-start / --csv-end",
+                len(raw),
+                cfg.strategy,
+            )
+    else:
+        raw = executor.loader.get_sample_data(
+            symbol=cfg.symbol,
+            days=effective_days,
+            timeframe=cfg.timeframe,
+        )
     if not isinstance(raw, pd.DataFrame) or len(raw) < cfg.min_oos_bars + 20:
-        raise ValueError("Insufficient sample bars for IS+OOS; increase --days")
+        raise ValueError(
+            "Insufficient bars for IS+OOS; increase --days, widen --csv-start/--csv-end, "
+            "or lower --min-oos-bars"
+        )
 
     if cfg.screen_days and cfg.full_days and cfg.full_days != cfg.screen_days:
         logger.info(
@@ -542,6 +565,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--screen-days", type=int, default=0, help="If >0, use this many days for screening stage")
     p.add_argument("--full-days", type=int, default=0, help="Hint for full window when screening (logging only)")
+    p.add_argument(
+        "--csv",
+        type=str,
+        default="",
+        help="OHLCV CSV path (uses HistoricalDataLoader); omit for synthetic sample",
+    )
+    p.add_argument(
+        "--csv-start",
+        type=str,
+        default="",
+        help="Inclusive YYYY-MM-DD lower bound on CSV index (UTC-naive timestamps)",
+    )
+    p.add_argument(
+        "--csv-end",
+        type=str,
+        default="",
+        help="Inclusive YYYY-MM-DD upper bound on CSV index",
+    )
     return p
 
 
@@ -576,6 +617,9 @@ async def _async_main() -> None:
         slippage_sensitivity_ticks=sens,
         screen_days=max(0, int(args.screen_days)),
         full_days=max(0, int(args.full_days)),
+        csv_path=args.csv.strip() or None,
+        csv_start=args.csv_start.strip() or None,
+        csv_end=args.csv_end.strip() or None,
     )
     out = await run_research(cfg)
     logger.info("Research complete: %s", {k: out[k] for k in ("strategy", "symbol", "git_sha")})

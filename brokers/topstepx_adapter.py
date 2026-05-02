@@ -1809,7 +1809,13 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             response = await self._make_request("GET", f"/api/Position/{position_id}", headers=headers)
             
             if "error" in response:
-                logger.error(f"Failed to fetch position details: {response['error']}")
+                if response.get("status_code") == 404:
+                    logger.debug(
+                        "Position %s not found (404) — likely closed or stale id",
+                        position_id,
+                    )
+                else:
+                    logger.error("Failed to fetch position details: %s", response["error"])
                 return None
             
             # Convert to Position object
@@ -4622,19 +4628,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     import traceback
                     logger.debug(f"Rust error traceback: {traceback.format_exc()}")
             
-            # Python fallback
-            logger.info("🔄 Using Python fallback for stop bracket order")
-            print("🔄 Using Python fallback for stop bracket order")
+            # Python fallback (use logger only so messages get configured timestamps)
+            logger.info("Using Python fallback for stop bracket order")
+            t_py0 = time.perf_counter()
+            wall_start_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            logger.info("Stop bracket Python path wall_start_utc=%s", wall_start_utc)
             
             # Ensure valid token before placing order
-            print("🔐 Ensuring valid token before placing order...")
+            logger.info("Ensuring valid token before placing stop bracket order")
             token_valid = await self.auth.ensure_valid_token()
             if not token_valid:
                 error_msg = "Failed to ensure valid token before placing order"
                 logger.error(f"❌ {error_msg}")
-                print(f"❌ {error_msg}")
                 return OrderResponse(success=False, error=error_msg)
-            print("✅ Token validated")
+            logger.info("Token validated for stop bracket order")
             
             if not account_id:
                 return OrderResponse(success=False, error="Account ID is required")
@@ -4716,7 +4723,7 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 if take_profit_ticks > 0:
                     take_profit_ticks = -take_profit_ticks
             
-            logger.debug(f"Stop Loss: {stop_loss_ticks} ticks, Take Profit: {take_profit_ticks} ticks")
+            logger.debug("Stop Loss: %s ticks, Take Profit: %s ticks", stop_loss_ticks, take_profit_ticks)
             
             # Validate tick values (TopStepX has limits)
             if abs(stop_loss_ticks) > 1000:
@@ -4757,11 +4764,23 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             # Debug: Log order parameters
             logger.debug(f"Stop bracket order data: {dumps_str(order_data)}")
-            print(f"📋 Order parameters:")
-            print(f"   Symbol: {symbol}, Side: {side}, Qty: {quantity}")
-            print(f"   Entry (Stop): ${entry_price:.2f}")
-            print(f"   Stop Loss: {stop_loss_ticks} ticks (${stop_loss_price:.2f})")
-            print(f"   Take Profit: {take_profit_ticks} ticks (${take_profit_price:.2f})")
+            sl_signed, tp_signed = stop_loss_ticks, take_profit_ticks
+            logger.info(
+                "Stop bracket order parameters: %s %s qty=%s entry(stop)=%.2f tick_size=%.4f | "
+                "SL API ticks=%s (abs=%s, price %.2f) | TP API ticks=%s (abs=%s, price %.2f); "
+                "signed ticks are TopStepX convention (SELL TP is negative when TP is below entry)",
+                symbol,
+                side,
+                quantity,
+                entry_price,
+                tick_size,
+                sl_signed,
+                abs(sl_signed),
+                stop_loss_price,
+                tp_signed,
+                abs(tp_signed),
+                take_profit_price,
+            )
             
             # Make API call
             headers = {
@@ -4774,53 +4793,61 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             # Handle 500 errors with automatic token refresh and retry
             if "error" in response and ("500" in str(response.get("error", "")) or response.get("status_code") == 500):
-                logger.warning("⚠️  Received 500 error on order placement. Attempting token refresh and retry...")
-                print("⚠️  Received 500 error. This might indicate:")
-                print("   1. TopStepX server is temporarily unavailable")
-                print("   2. Token may have expired (force refreshing token...)")
-                print("   3. Account settings issue (check 'Auto OCO Brackets' for bracket orders)")
+                logger.warning(
+                    "Received 500 on stop bracket place; retrying after token refresh "
+                    "(server load, expired token, or account Auto OCO Brackets setting)"
+                )
                 
                 # Force token refresh even if it appears valid (server might have invalidated it)
                 token_refreshed = await self.auth.ensure_valid_token(force_refresh=True)
                 if token_refreshed:
                     headers["Authorization"] = f"Bearer {self.auth.get_token()}"
                     await asyncio.sleep(0.75)
-                    logger.info("🔄 Retrying order placement with refreshed token...")
-                    print("🔄 Retrying order placement with refreshed token...")
+                    logger.info("Retrying stop bracket placement with refreshed token")
                     response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
                     
                     # Check if retry succeeded
                     if "error" in response and "500" in str(response.get("error", "")):
-                        logger.error("❌ Retry also failed with 500 error. This likely indicates:")
-                        logger.error("   1. Server issue - TopStepX API may be temporarily down")
-                        logger.error("   2. Account settings - 'Auto OCO Brackets' may not be enabled")
-                        logger.error("   3. Invalid order parameters - check prices and tick sizes")
-                        print("❌ Retry also failed with 500 error")
-                        print("   This likely indicates a server issue or account settings problem")
-                        print("   Please check:")
-                        print("   - TopStepX account settings: 'Auto OCO Brackets' must be enabled")
-                        print(f"   - Order parameters: Entry=${entry_price:.2f}, SL=${stop_loss_price:.2f}, TP=${take_profit_price:.2f}")
+                        logger.error(
+                            "Retry also failed with 500 (server, Auto OCO Brackets, or invalid params). "
+                            "Entry=%.2f SL=%.2f TP=%.2f",
+                            entry_price,
+                            stop_loss_price,
+                            take_profit_price,
+                        )
                 else:
-                    logger.error("❌ Failed to refresh token, cannot retry")
-                    print("❌ Failed to refresh token, cannot retry")
+                    logger.error("Failed to refresh token, cannot retry stop bracket")
             
             if "error" in response:
                 error_msg = response.get("error", "")
-                logger.error(f"Failed to create stop bracket order: {error_msg}")
-                print(f"❌ Python fallback: Stop bracket order failed: {error_msg}")
+                logger.error(
+                    "Failed to create stop bracket order: %s round_trip_ms=%.1f wall_start_utc=%s",
+                    error_msg,
+                    (time.perf_counter() - t_py0) * 1000,
+                    wall_start_utc,
+                )
                 return OrderResponse(success=False, error=error_msg, raw_response=response)
             
             # Check success field
             if response.get("success") == False:
                 error_code = response.get("errorCode", "Unknown")
                 error_message = response.get("errorMessage", "No error message")
-                logger.error(f"Bracket order failed: Error Code {error_code}, Message: {error_message}")
-                print(f"❌ Python fallback: Bracket order failed: {error_message} (Code: {error_code})")
+                logger.error(
+                    "Bracket order failed: Code %s Message: %s round_trip_ms=%.1f wall_start_utc=%s",
+                    error_code,
+                    error_message,
+                    (time.perf_counter() - t_py0) * 1000,
+                    wall_start_utc,
+                )
                 return OrderResponse(success=False, error=f"Bracket order failed: {error_message} (Code: {error_code})", raw_response=response)
             
             order_id = response.get("orderId") or response.get("id")
             if not order_id:
-                logger.error("API returned success but NO order ID (see DEBUG for full response).")
+                logger.error(
+                    "API returned success but NO order ID round_trip_ms=%.1f wall_start_utc=%s",
+                    (time.perf_counter() - t_py0) * 1000,
+                    wall_start_utc,
+                )
                 logger.debug(f"Full response: {dumps_str(response)}")
                 return OrderResponse(success=False, error="Order rejected: No order ID returned", raw_response=response)
             
@@ -4854,8 +4881,12 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 except Exception as notif_err:
                     logger.debug(f"Could not send Discord notification for strategy order: {notif_err}")
             
-            logger.info(f"✅ OCO bracket order placed successfully with ID: {order_id}")
-            print(f"✅ Python fallback: OCO bracket order placed successfully with ID: {order_id}")
+            logger.info(
+                "OCO bracket order placed successfully (Python path) order_id=%s round_trip_ms=%.1f wall_start_utc=%s",
+                order_id,
+                (time.perf_counter() - t_py0) * 1000,
+                wall_start_utc,
+            )
 
             # Attach execution-path metadata for callers (GUI/strategy logging)
             raw = response

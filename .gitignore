@@ -16,6 +16,10 @@
 .env.local
 .env.production
 .env.staging
+*.env.*
+# Paths like docs/archive/old.env are not matched by *.env.*
+docs/archive/old.env
+docs/archive/old.env.*
 
 # API credentials
 credentials.json
@@ -26,6 +30,7 @@ secrets.txt
 *.log
 logs/
 trading_bot.log
+trading_bot.log.*
 
 # Python cache
 __pycache__/
@@ -118,5 +123,12 @@ charts/
 logs/
 .gui_websocket_port
 
+# Local Master GUI page theme overrides (optional; see docs/PAGE_THEME_OPTIONS.md)
+config/page_theme.json
+
 # Rust build artifacts (do NOT commit; previously had ~1700 files tracked)
 rust/target/
+
+# Alpha discovery — machine-readable outputs (markdown reports are committed; JSON and sensitivity grids are not)
+docs/alpha/*.json
+docs/alpha/sensitivity/

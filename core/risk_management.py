@@ -15,6 +15,44 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 
+def _order_counts_as_working_entry_for_risk(order: Dict[str, Any]) -> bool:
+    """
+    Return False for terminal / inactive orders so they are not counted toward
+    max_pending.
+
+    **SUSPENDED** is treated as **working**: TopStepX often reports active stop-bracket
+    entry legs as SUSPENDED until the stop is elected / working states propagate.
+    Do not exclude it here or ``max_pending`` will allow extra entries on top of live brackets.
+    """
+    st = order.get("status")
+    if isinstance(st, int):
+        if st in (2, 3, 4):
+            return False
+        if st not in (0, 1):
+            return False
+    else:
+        u = str(st).strip().upper() if st is not None else ""
+        if u in (
+            "FILLED",
+            "CANCELLED",
+            "CANCELED",
+            "REJECTED",
+            "EXPIRED",
+            "DONE",
+            "COMPLETE",
+            "REPLACED",
+        ):
+            return False
+    try:
+        fv = float(order.get("fillVolume") or order.get("fill_volume") or 0)
+        qty = float(order.get("quantity") or order.get("size") or 0)
+        if qty > 0 and fv >= qty:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
+
+
 class RiskManager:
     """
     Manages risk-related calculations and validations.
@@ -479,6 +517,9 @@ class StrategyRiskManager:
             if not order_symbol or order_symbol != symbol:
                 continue
 
+            if not _order_counts_as_working_entry_for_risk(order):
+                continue
+
             # Check if this is an entry order by looking at customTag
             custom_tag = order.get('customTag') or order.get('custom_tag') or ''
             is_stop_bracket = 'stop_bracket' in str(custom_tag) or 'stop-bracket' in str(custom_tag)
@@ -673,6 +714,9 @@ class StrategyRiskManager:
                 
                 if not order_symbol or order_symbol != symbol_upper:
                     continue
+
+                if not _order_counts_as_working_entry_for_risk(order):
+                    continue
                 
                 order_type = order.get('type') or order.get('raw_type')
                 if order_type not in (4, "4", "Stop", "stop"):
@@ -683,13 +727,15 @@ class StrategyRiskManager:
                     continue
                 
                 custom_tag = order.get('customTag') or order.get('custom_tag') or ''
+                is_stop_bracket = 'stop_bracket' in str(custom_tag) or 'stop-bracket' in str(custom_tag)
                 is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag)
                 
-                # Count entry stop orders (not bracket SL/TP)
-                if not is_bracket_sl_tp:
-                    qty = order.get('quantity') or order.get('size') or 0
-                    if qty:
-                        total_quantity += abs(int(qty))
+                # Count stop-bracket entry legs only (align with check_order_allowed)
+                if not (is_stop_bracket and not is_bracket_sl_tp):
+                    continue
+                qty = order.get('quantity') or order.get('size') or 0
+                if qty:
+                    total_quantity += abs(int(qty))
             
             return total_quantity
         except Exception as e:

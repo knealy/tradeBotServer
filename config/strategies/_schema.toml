@@ -23,6 +23,7 @@ overnight_end   = "18:15"            # legacy env: OVERNIGHT_END_TIME
 market_open     = "18:15"            # legacy env: MARKET_OPEN_TIME
 zone_anchor     = "18:15"            # legacy env: ZONE_ANCHOR_TIME
 session_timezone = "US/Eastern"      # legacy env: STRATEGY_TIMEZONE
+replay_order_window_minutes = 8    # CSV strategy replay: minutes after market_open (ET) in which analyze() may run
 
 [risk]
 position_size       = 1              # default contracts per fill
@@ -65,6 +66,7 @@ gap_max_pts      = 200.0             # legacy env: OVERNIGHT_GAP_MAX_POINTS
 atr_min          = 20.0              # legacy env: OVERNIGHT_ATR_MIN
 atr_max          = 200.0             # legacy env: OVERNIGHT_ATR_MAX
 dll_threshold_pct = 0.75             # legacy env: OVERNIGHT_DLL_THRESHOLD_PERCENT
+skip_weekdays    = []                # e.g. [0, 4] = skip Mon/Fri (Python weekday); live + replay
 
 # =====================================================================
 # Per-symbol overrides — anything in [symbols.<SYM>] beats the global value

@@ -4,20 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta id="tb-config" data-server-port="{{SERVER_PORT}}" data-symbol="{{SYMBOL}}" data-timeframe="{{TIMEFRAME}}">
-    <title>Master Trading Control - Unified Dashboard</title>
+    <title>Master — Chart</title>
     <style>
-        /* CSS Variables for Professional Matte Theme */
+        /* Warm beige / brown + dusty blue — crisp contrast (session Theme pop-up can override) */
         :root {
-            --bg-primary: #0f172a;    /* Deep slate */
-            --bg-secondary: #1e293b;  /* Lighter slate for panels */
-            --bg-tertiary: #334155;   /* Accent areas */
-            --text-primary: #f1f5f9;  /* Muted white */
-            --text-secondary: #94a3b8;/* Slate gray */
-            --border-color: #334155;  /* Subtle borders */
-            --accent-color: #6366f1;  /* Muted Indigo for active elements */
-            --positive-color: #10b981;/* Professional green */
-            --negative-color: #ef4444;/* Professional red */
-            --warning-color: #f59e0b; /* Amber */
+            --bg-primary: #1c1814;
+            --bg-secondary: #2a241d;
+            --bg-tertiary: #3d352c;
+            --text-primary: #faf6f0;
+            --text-secondary: #c9b8a4;
+            --border-color: #6f5e4f;
+            --accent-color: #6a9fb8;
+            --positive-color: #7aab7f;
+            --negative-color: #c4877a;
+            --warning-color: #d4a84b;
+            --chart-canvas-bg: #000000;
             --font-size-base: 12px;
         }
         
@@ -30,20 +31,35 @@
             font-size: var(--font-size-base);
         }
         
-        /* Header */
-        .header {
+        /* Single top bar: account strip … panel toggles … actions … WS / uptime */
+        .top-command-bar {
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
             padding: 4px 8px;
             display: flex;
-            justify-content: space-between;
+            flex-wrap: wrap;
             align-items: center;
+            gap: 10px 14px;
             position: sticky;
             top: 0;
             z-index: 100;
-            min-height: 32px;
+            min-height: 34px;
         }
-        .header h1 { font-size: 10px; font-weight: 500; }
+        .top-command-bar .account-strip {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px 14px;
+        }
+        .top-command-bar .top-command-bar__tail {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px 12px;
+            flex: 1 1 auto;
+            min-width: 200px;
+        }
         .connection-status { font-size: 8px; color: var(--positive-color); }
         .customize-btn {
             background: var(--accent-color);
@@ -86,8 +102,8 @@
             transition: all 0.2s;
         }
         .widget-btn:hover {
-            background: rgba(59, 130, 246, 0.8);
-            border-color: #3b82f6;
+            background: rgba(255, 255, 255, 0.08);
+            border-color: var(--accent-color);
         }
         
         /* Draggable Widgets */
@@ -96,39 +112,10 @@
             cursor: grabbing;
         }
         .panel.drag-over {
-            border-color: #3b82f6;
-            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+            border-color: var(--accent-color);
+            box-shadow: 0 0 14px rgba(255, 255, 255, 0.06);
         }
         
-        /* Pop-out Window Styles */
-        .popout-window {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: #1a1a1a;
-            border: 2px solid #3b82f6;
-            border-radius: 8px;
-            padding: 20px;
-            z-index: 10000;
-            min-width: 400px;
-            max-width: 90vw;
-            max-height: 90vh;
-            overflow: auto;
-        }
-        
-        /* Account Status Bar */
-        .account-bar {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            padding: 4px 8px;
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-            align-items: center;
-            min-height: 28px;
-            font-size: 9px;
-        }
         .status-item {
             display: flex;
             flex-direction: column;
@@ -151,6 +138,197 @@
             margin: 0 auto;
             align-content: flex-start;
             background: var(--bg-primary);
+        }
+        /* Per-panel visibility (header checkboxes) */
+        .panel.panel-user-hidden {
+            display: none !important;
+        }
+        /* Chart fullscreen (in-page) */
+        body.chart-fullscreen-active .top-command-bar {
+            display: none !important;
+        }
+        body.chart-fullscreen-active .dashboard {
+            padding: 0;
+            max-width: none;
+            min-height: 100vh;
+        }
+        #chart-panel.chart-fullscreen {
+            position: fixed !important;
+            inset: 0 !important;
+            z-index: 10050 !important;
+            width: 100vw !important;
+            max-width: none !important;
+            min-width: 0 !important;
+            height: 100vh !important;
+            min-height: 0 !important;
+            resize: none !important;
+            margin: 0 !important;
+        }
+        .header-metric {
+            font-size: 9px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .header-metric strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .widget-visibility-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 12px;
+            font-size: 9px;
+            color: var(--text-secondary);
+        }
+        .widget-visibility-toolbar label {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .chart-context-strip {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 12px;
+            margin-left: 6px;
+            font-size: 9px;
+            color: var(--text-secondary);
+        }
+        .chart-context-strip .strip-k {
+            color: var(--text-secondary);
+        }
+        .chart-context-strip .strip-v {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        #chart-lastprice-countdown {
+            font-variant-numeric: tabular-nums;
+            min-width: 6em;
+            text-align: center;
+            white-space: nowrap;
+        }
+        #theme-session-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            z-index: 16000;
+            cursor: pointer;
+        }
+        #theme-session-popout {
+            display: none;
+            position: fixed;
+            z-index: 16001;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: min(420px, 94vw);
+            max-height: min(86vh, 640px);
+            overflow: hidden;
+            flex-direction: column;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        }
+        #theme-session-popout .theme-session-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            font-weight: 600;
+            font-size: 12px;
+        }
+        #theme-session-popout .theme-session-body {
+            padding: 10px 12px 12px;
+            overflow: auto;
+            max-height: 52vh;
+            font-size: 11px;
+        }
+        .theme-color-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .theme-color-row label {
+            flex: 0 0 120px;
+            color: var(--text-secondary);
+            font-size: 10px;
+        }
+        .theme-color-row input[type="color"] {
+            width: 40px;
+            height: 28px;
+            padding: 0;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            cursor: pointer;
+            background: var(--bg-primary);
+        }
+        .theme-color-row input[type="text"] {
+            flex: 1;
+            min-width: 0;
+            font-family: ui-monospace, monospace;
+            font-size: 11px;
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+        .theme-session-presets {
+            margin-bottom: 14px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .theme-session-presets > p {
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            line-height: 1.35;
+        }
+        .theme-preset-wrap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 8px;
+            align-items: flex-start;
+        }
+        .theme-preset-btn {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 4px;
+            padding: 6px 8px;
+            min-width: 88px;
+            max-width: 120px;
+            cursor: pointer;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 9px;
+            text-align: left;
+        }
+        .theme-preset-btn:hover {
+            filter: brightness(1.06);
+            border-color: var(--accent-color);
+        }
+        .theme-preset-swatch-row {
+            display: flex;
+            gap: 2px;
+            height: 8px;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .theme-preset-swatch-row span {
+            flex: 1;
+            min-width: 0;
+            height: 100%;
         }
         
         /* Ensure panels don't overlap and are resizable */
@@ -400,7 +578,7 @@
             margin-top: 6px;
             padding: 6px 8px 22px 8px;   /* visual inset away from panel border + resize handle */
             box-sizing: border-box;
-            background: #0a0a0a;
+            background: var(--chart-canvas-bg, #000000);
             border-radius: 4px;
             overflow: hidden;
             display: flex;
@@ -416,7 +594,7 @@
          * LWC injects .tv-lightweight-charts (not in repo). Edit colors/fonts in initChart() createChart({…}).
          */
         #chart-mount .tv-lightweight-charts {
-            border: 1px solid #334155;
+            border: 1px solid #5c4f42;
             border-radius: 3px;
             box-sizing: border-box;
         }
@@ -478,27 +656,27 @@
             transition: all 0.2s;
         }
         .btn-primary {
-            background: #4a9eff;
-            color: #fff;
+            background: var(--accent-color);
+            color: #fafafa;
         }
-        .btn-primary:hover { background: #3a8eef; }
+        .btn-primary:hover { filter: brightness(1.12); }
         .btn-buy {
-            background: #26a69a;
-            color: #fff;
+            background: var(--positive-color);
+            color: #fafafa;
             font-weight: bold;
         }
-        .btn-buy:hover { background: #1f8a7f; }
+        .btn-buy:hover { filter: brightness(1.1); }
         .btn-sell {
-            background: #ef5350;
-            color: #fff;
+            background: var(--negative-color);
+            color: #fafafa;
             font-weight: bold;
         }
-        .btn-sell:hover { background: #d32f2f; }
+        .btn-sell:hover { filter: brightness(1.08); }
         .btn-danger {
-            background: #f44336;
-            color: #fff;
+            background: var(--negative-color);
+            color: #fafafa;
         }
-        .btn-danger:hover { background: #d32f2f; }
+        .btn-danger:hover { filter: brightness(1.08); }
         
         /* Main Activity Panel (Combined Positions & Orders) */
         .main-activity-panel { 
@@ -680,8 +858,8 @@
         .strategy-details {
             margin-top: 12px;
             padding: 12px;
-            background: #0a0a0a;
-            border: 1px solid #333;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
             border-radius: 4px;
             font-size: 11px;
             line-height: 1.6;
@@ -795,9 +973,9 @@
             z-index: 5;
             font-size: 11px;
             font-family: 'Courier New', monospace;
-            color: #d1d5db;
+            color: var(--text-primary);
             pointer-events: none;
-            background: rgba(15, 23, 42, 0.7);
+            background: rgba(34, 28, 24, 0.92);
             padding: 4px 8px;
             border-radius: 3px;
             display: flex;
@@ -822,60 +1000,98 @@
     </style>
 </head>
 <body>
-    <!-- Header -->
-    <div class="header">
-        <h1>Master Trading Control</h1>
-        <div style="display: flex; gap: 12px; align-items: center;">
+    <!-- Account … panels … actions … WS / uptime (single sticky row) -->
+    <div class="top-command-bar">
+        <div class="account-strip">
+            <div class="status-item">
+                <div class="status-label">Account</div>
+                <select id="account-select" onchange="switchAccount()" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 3px 6px; border-radius: 2px; font-size: 9px; font-weight: 500; cursor: pointer; width: 180px;">
+                    <option value="">Loading...</option>
+                </select>
+            </div>
+            <div class="status-item">
+                <div class="status-label">Balance</div>
+                <div class="status-value" id="balance">$--</div>
+            </div>
+            <div class="status-item">
+                <div class="status-label">Unrealized P&L</div>
+                <div class="status-value" id="unrealized-pnl">$--</div>
+            </div>
+            <div class="status-item">
+                <div class="status-label">Realized P&L</div>
+                <div class="status-value" id="realized-pnl">$--</div>
+            </div>
+            <div class="status-item">
+                <div class="status-label">Open Positions</div>
+                <div class="status-value" id="position-count">0</div>
+            </div>
+            <div class="status-item">
+                <div class="status-label">Open Orders</div>
+                <div class="status-value" id="order-count">0</div>
+            </div>
+        </div>
+        <div class="top-command-bar__tail">
+            <div class="widget-visibility-toolbar" id="widget-visibility-toolbar" title="Show or hide dashboard panels">
+                <span style="color: var(--text-secondary); margin-right: 4px;">Panels:</span>
+                <label><input type="checkbox" data-panel-toggle="chart-panel" checked onchange="onMasterPanelToggle()"> Chart</label>
+                <label><input type="checkbox" data-panel-toggle="activity-panel" onchange="onMasterPanelToggle()"> Activity</label>
+                <label><input type="checkbox" data-panel-toggle="strategy-hub-panel" onchange="onMasterPanelToggle()"> Strategies</label>
+                <label><input type="checkbox" data-panel-toggle="terminal-hub-panel" onchange="onMasterPanelToggle()"> Terminal</label>
+                <label><input type="checkbox" data-panel-toggle="performance-panel" onchange="onMasterPanelToggle()"> Performance</label>
+                <label><input type="checkbox" data-panel-toggle="trades-panel" onchange="onMasterPanelToggle()"> Trades</label>
+            </div>
             <button class="customize-btn" onclick="toggleKeyboardShortcuts()" title="Toggle Keyboard Shortcuts" id="shortcuts-toggle" style="background: var(--accent-color);">Shortcuts ON</button>
             <button class="customize-btn" onclick="toggleAlerts()" title="Toggle Audio Alerts" id="alerts-toggle" style="background: var(--bg-tertiary);">Alerts OFF</button>
             <button class="customize-btn" onclick="toggleDesktopNotifications()" title="Toggle Desktop Notifications" id="notifications-toggle" style="background: var(--bg-tertiary);">Notifications OFF</button>
             <button class="customize-btn" onclick="showShortcutsHelp()" title="Show Keyboard Shortcuts Help (?)">Help</button>
-            <div class="connection-status" id="connection-status">Connecting...</div>
-        </div>
-    </div>
-    
-    <!-- Account Status Bar -->
-    <div class="account-bar">
-        <div class="status-item">
-            <div class="status-label">Account</div>
-            <select id="account-select" onchange="switchAccount()" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 3px 6px; border-radius: 2px; font-size: 9px; font-weight: 500; cursor: pointer; width: 180px;">
-                <option value="">Loading...</option>
-            </select>
-    </div>
-
-    <!-- Non-blocking toast notifications (replaces alert/confirm popups) -->
-    <div id="toast-container" style="position: fixed; right: 12px; bottom: 12px; z-index: 20000; display: flex; flex-direction: column; gap: 8px; pointer-events: none;"></div>
-                    <div class="status-item">
-                        <div class="status-label">Balance</div>
-            <div class="status-value" id="balance">$--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Unrealized P&L</div>
-            <div class="status-value" id="unrealized-pnl">$--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Realized P&L</div>
-            <div class="status-value" id="realized-pnl">$--</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">Open Positions</div>
-            <div class="status-value" id="position-count">0</div>
-                    </div>
-        <div class="status-item">
-            <div class="status-label">Open Orders</div>
-            <div class="status-value" id="order-count">0</div>
+            <button class="customize-btn" onclick="openMasterThemePopout()" title="Session colors (color pickers + hex); this tab only" style="background: var(--bg-tertiary);">Theme</button>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+                <div class="connection-status" id="connection-status">Connecting...</div>
+                <span class="header-metric" id="header-uptime" title="Browser tab session uptime">Uptime <strong id="header-uptime-value">0:00:00</strong></span>
+                <span class="header-metric" id="header-ws-lag" title="Time since last WebSocket message">WS <strong id="header-ws-lag-value">—</strong></span>
             </div>
         </div>
-        
+    </div>
+
+    <!-- Non-blocking toast notifications (fixed) -->
+    <div id="toast-container" style="position: fixed; right: 12px; bottom: 12px; z-index: 20000; display: flex; flex-direction: column; gap: 8px; pointer-events: none;"></div>
+
+    <div id="theme-session-backdrop" onclick="window.closeMasterThemePopout && window.closeMasterThemePopout()" style="display:none;" aria-hidden="true"></div>
+    <div id="theme-session-popout" role="dialog" aria-modal="true" aria-labelledby="theme-session-title" style="display:none;">
+        <div class="theme-session-head">
+            <span id="theme-session-title">Session theme</span>
+            <button type="button" onclick="window.closeMasterThemePopout && window.closeMasterThemePopout()" style="background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 16px; line-height: 1;" title="Close">×</button>
+        </div>
+        <div class="theme-session-body">
+            <p style="color: var(--text-secondary); font-size: 10px; margin-bottom: 10px; line-height: 1.35;">Color pickers and hex apply immediately for <strong>this browser tab</strong> (sessionStorage). Server / file theme loads first; this overrides until you reset or close the tab.</p>
+            <div id="theme-session-presets" class="theme-session-presets"></div>
+            <p style="color: var(--text-secondary); font-size: 10px; margin-bottom: 8px;">Custom (per variable):</p>
+            <div id="theme-session-rows"></div>
+            <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+                <button type="button" class="customize-btn" onclick="window.resetMasterSessionTheme && window.resetMasterSessionTheme()" style="background: var(--bg-tertiary);">Reset &amp; reload</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Compact data popouts (Activity / Performance / Tradeslog) -->
+    <div id="master-popout-backdrop" onclick="window.closeMasterDataPopout && window.closeMasterDataPopout()" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:15000; cursor: pointer;" aria-hidden="true"></div>
+    <div id="master-popout" role="dialog" aria-modal="true" style="display:none; position:fixed; z-index:15001; top: 96px; right: 14px; width: min(420px, 94vw); max-height: min(520px, 72vh); overflow: hidden; flex-direction: column; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; box-shadow: 0 8px 32px rgba(0,0,0,0.45);">
+        <div style="display:flex; align-items:center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--border-color); background: var(--bg-tertiary);">
+            <span id="master-popout-title" style="font-weight: 600; font-size: 12px;">—</span>
+            <button type="button" onclick="window.closeMasterDataPopout && window.closeMasterDataPopout()" style="background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 16px; line-height: 1;" title="Close">×</button>
+        </div>
+        <div id="master-popout-body" style="padding: 10px; overflow: auto; flex: 1; font-size: 11px;"></div>
+    </div>
+
     <!-- Main Dashboard Grid -->
     <div class="dashboard">
         <!-- Chart Panel (Large, Left Side) -->
         <div class="panel chart-panel" id="chart-panel">
             <h2 onclick="togglePanel('chart-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
-                <span class="panel-header-text">Real-Time Chart & Trading</span>
+                <span class="panel-header-text">Chart</span>
                 <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('chart-panel')" title="Pop out">⤢</button>
+                    <button type="button" class="widget-btn" id="btn-chart-fullscreen" onclick="event.stopPropagation(); toggleChartFullscreen();" title="Fullscreen chart">⛶</button>
                 </div>
                 <span class="collapse-btn">−</span>
             </h2>
@@ -901,6 +1117,13 @@
                     </select>
                 <button class="btn-primary" onclick="refreshChart()">Refresh</button>
                 <button class="btn-primary" onclick="refreshAll()">Refresh All</button>
+                <div class="chart-context-strip" style="margin-left: 4px;">
+                    <span><span class="strip-k">Bal</span> <span class="strip-v" id="chart-strip-balance">—</span></span>
+                    <span><span class="strip-k">U.P/L</span> <span class="strip-v" id="chart-strip-unrealized">—</span></span>
+                    <span><span class="strip-k">Pos</span> <span class="strip-v" id="chart-strip-positions">—</span></span>
+                    <span><span class="strip-k">Ords</span> <span class="strip-v" id="chart-strip-orders">—</span></span>
+                    <span><span class="strip-k">Trades</span> <span class="strip-v" id="chart-strip-trades" title="From performance metrics (session-style rollup)">—</span></span>
+                </div>
                     <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
                     <span style="font-size: 10px; color: #888;">Rate:</span>
                     <select id="chart-refresh-rate" style="width: 70px;">
@@ -937,6 +1160,13 @@
                 <button class="btn-sell" onclick="placeOrder('SELL')" id="sell-btn">SELL</button>
                 <button class="btn-danger" onclick="cancelAllOrders()" style="background: var(--negative-color); opacity: 0.8;" title="Cancel All Orders">CANCEL</button>
                 <button class="btn-danger" onclick="quickFlatten()" style="background: var(--negative-color); font-weight: bold;" title="Quick Flatten (F key)">FLATTEN</button>
+                <div style="margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+                    <button type="button" class="btn-primary" style="font-size: 9px; padding: 2px 8px;" onclick="openMasterDataPopout('activity')" title="Positions & orders (this account)">Activity</button>
+                    <button type="button" class="btn-primary" style="font-size: 9px; padding: 2px 8px;" onclick="openMasterDataPopout('performance')" title="Performance metrics">Performance</button>
+                    <button type="button" class="btn-primary" style="font-size: 9px; padding: 2px 8px;" onclick="openMasterDataPopout('strategies')" title="Strategy status">Strategies</button>
+                    <button type="button" class="btn-primary" style="font-size: 9px; padding: 2px 8px;" onclick="openMasterDataPopout('terminal')" title="Terminal log snapshot">Terminal</button>
+                    <button type="button" class="btn-primary" style="font-size: 9px; padding: 2px 8px;" onclick="openMasterDataPopout('tradeslog')" title="Recent trades">Tradeslog</button>
+                </div>
                 </div>
                 
             <!--
@@ -944,8 +1174,11 @@
               LWC injects .tv-lightweight-charts under #chart-mount — find it in DevTools, not as a static file.
             -->
                 <div id="chart-container">
+                    <div id="chart-lastprice-countdown" title="Last bar close and time until this bar closes (aligned to last price on the scale)" style="display:none; position:absolute; right:72px; z-index:5; font-size:10px; font-variant-numeric:tabular-nums; color:var(--text-primary); pointer-events:none; background:rgba(34,28,24,0.94); padding:2px 8px; border-radius:3px; border:1px solid var(--border-color); transform: translateX(0);">—</div>
                     <div id="chart-legend" class="chart-legend">
                         <div id="legend-symbol" style="font-weight: bold; color: var(--accent-color);">---</div>
+                        <div id="legend-bar-date" style="font-size: 10px; color: var(--text-secondary); margin-bottom: 2px;"> </div>
+                        <div id="legend-now" style="font-size: 9px; color: var(--text-secondary); margin-bottom: 4px;"> </div>
                         <div>O: <span id="legend-open" class="legend-value">---</span></div>
                         <div>H: <span id="legend-high" class="legend-value">---</span></div>
                         <div>L: <span id="legend-low" class="legend-value">---</span></div>
@@ -962,9 +1195,6 @@
             <h2 onclick="togglePanel('activity-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
                 <span class="panel-header-text">Active Trading</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('activity-panel')" title="Pop out">⤢</button>
-                </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
@@ -1015,9 +1245,6 @@
             <h2 onclick="togglePanel('strategy-hub-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
                 <span class="panel-header-text">Strategy Management</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('strategy-hub-panel')" title="Pop out">⤢</button>
-                </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
@@ -1093,9 +1320,6 @@
             <h2 onclick="togglePanel('terminal-hub-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
                 <span class="panel-header-text">Terminal</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('terminal-hub-panel')" title="Pop out">⤢</button>
-                </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
@@ -1104,12 +1328,12 @@
                     <h3 style="font-size: 10px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color);">Command Input</h3>
                     <div style="display: flex; gap: 6px; margin-bottom: 8px;">
                     <input type="text" id="command-input" placeholder="Enter command (e.g., flatten, contracts, positions)" 
-                               style="flex: 1; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 8px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 10px;"
+                               style="flex: 1; background: #000000; border: 1px solid var(--border-color); color: #e2e8f0; padding: 6px 8px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 10px;"
                            onkeypress="if(event.key==='Enter') executeCommand()">
                         <button onclick="executeCommand()" style="background: var(--positive-color); border: none; color: #fff; padding: 6px 12px; border-radius: 3px; font-weight: 500; cursor: pointer; font-size: 10px;">Execute</button>
                 </div>
-                    <div id="command-output" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; font-family: 'Courier New', monospace; font-size: 9px; max-height: 150px; overflow-y: auto; color: var(--text-primary);">
-                        <div style="color: var(--text-secondary);">Ready to execute commands...</div>
+                    <div id="command-output" style="background: #000000; border: 1px solid var(--border-color); border-radius: 3px; padding: 8px; font-family: 'Courier New', monospace; font-size: 9px; max-height: 150px; overflow-y: auto; color: #cbd5e1;">
+                        <div style="color: #94a3b8;">Ready to execute commands...</div>
             </div>
         </div>
 
@@ -1144,9 +1368,6 @@
             <h2 onclick="togglePanel('performance-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
                 <span class="panel-header-text">Performance Metrics</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('performance-panel')" title="Pop out">⤢</button>
-                </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
@@ -1175,9 +1396,6 @@
             <h2 onclick="togglePanel('trades-panel')">
                 <span class="drag-handle" title="Drag to reorder" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">⠿</span>
                 <span class="panel-header-text">Trading Results</span>
-                <div class="widget-controls">
-                    <button class="widget-btn" onclick="event.stopPropagation(); popOutWidget('trades-panel')" title="Pop out">⤢</button>
-                </div>
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
@@ -1240,6 +1458,535 @@
         const TIMEFRAME = (cfg && cfg.dataset.timeframe) || '5m';
         const BASE_URL = 'http://127.0.0.1:' + SERVER_PORT;
         const WS_URL = 'ws://127.0.0.1:' + SERVER_PORT + '/ws';
+
+        /** Apply CSS variables from GET /api/chart/theme/page (template + optional config/page_theme.json). */
+        async function applyPageThemeFromServer() {
+            try {
+                const r = await fetch(`${BASE_URL}/api/chart/theme/page?_=${Date.now()}`);
+                if (!r.ok) return;
+                const j = await r.json();
+                const vars = j && j.vars ? j.vars : {};
+                const root = document.documentElement;
+                for (const [k, v] of Object.entries(vars)) {
+                    if (typeof k === 'string' && k.startsWith('--') && v != null && v !== '') {
+                        root.style.setProperty(k, String(v));
+                    }
+                }
+            } catch (e) {
+                console.debug('applyPageThemeFromServer', e);
+            }
+        }
+
+        const SESSION_THEME_STORAGE_KEY = 'master-session-theme-v1';
+        const MASTER_THEME_KEYS = [
+            { key: '--bg-primary', label: 'Background' },
+            { key: '--bg-secondary', label: 'Panels / bar' },
+            { key: '--bg-tertiary', label: 'Tertiary / inputs' },
+            { key: '--text-primary', label: 'Text primary' },
+            { key: '--text-secondary', label: 'Text muted' },
+            { key: '--border-color', label: 'Borders' },
+            { key: '--accent-color', label: 'Accent / primary btn' },
+            { key: '--positive-color', label: 'Positive / live' },
+            { key: '--negative-color', label: 'Negative / danger' },
+            { key: '--warning-color', label: 'Warning' },
+            { key: '--chart-canvas-bg', label: 'Chart canvas' },
+        ];
+
+        function normalizeThemeHex(s) {
+            let t = String(s == null ? '' : s).trim();
+            if (!t.startsWith('#')) t = '#' + t;
+            if (/^#[0-9a-fA-F]{6}$/.test(t)) return t.toLowerCase();
+            if (/^#[0-9a-fA-F]{3}$/.test(t)) {
+                return ('#' + t[1] + t[1] + t[2] + t[2] + t[3] + t[3]).toLowerCase();
+            }
+            return null;
+        }
+
+        function rgbCssToHex(val) {
+            const s = (val || '').trim();
+            if (!s) return null;
+            if (s.startsWith('#')) return normalizeThemeHex(s);
+            const m = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+            if (!m) return null;
+            return '#' + [1, 2, 3].map(i => (+m[i]).toString(16).padStart(2, '0')).join('');
+        }
+
+        function resolveChartCanvasBgHex() {
+            const raw = getComputedStyle(document.documentElement).getPropertyValue('--chart-canvas-bg').trim();
+            let h = normalizeThemeHex(raw);
+            if (!h && raw) h = rgbCssToHex(raw);
+            return h || '#000000';
+        }
+
+        /** Push `--chart-canvas-bg` into Lightweight Charts (and keep #chart-container in sync via CSS var). */
+        function applyChartCanvasFromCssVar() {
+            const bg = resolveChartCanvasBgHex();
+            if (chart) {
+                try {
+                    chart.applyOptions({ layout: { background: { color: bg } } });
+                } catch (e) { /* ignore */ }
+            }
+        }
+
+        /** Reference swatches from user palettes (earth tones, khaki/almond, apricot rose, modern neutral, boho, summer navy). */
+        const MASTER_THEME_PRESETS = [
+            {
+                id: 'earth-grid',
+                name: 'Earth grid',
+                swatches: ['#433827', '#795537', '#c19565', '#4f625a', '#8d4739'],
+                vars: {
+                    '--bg-primary': '#433827',
+                    '--bg-secondary': '#544331',
+                    '--bg-tertiary': '#795537',
+                    '--text-primary': '#ecd3bc',
+                    '--text-secondary': '#cfbbae',
+                    '--border-color': '#8b6d55',
+                    '--accent-color': '#c19565',
+                    '--positive-color': '#4f625a',
+                    '--negative-color': '#8d4739',
+                    '--warning-color': '#d67a41',
+                    '--chart-canvas-bg': '#3a322c',
+                },
+                chart: {
+                    layoutBg: '#3a322c',
+                    textColor: '#ede4d8',
+                    crosshair: '#978670',
+                    scaleBorder: '#8b6d55',
+                    candleUp: '#4f625a',
+                    candleDown: '#b87857',
+                    volume: '#6b6056',
+                },
+            },
+            {
+                id: 'khaki-almond',
+                name: 'Khaki · almond',
+                swatches: ['#424a54', '#baa390', '#e2d2c3', '#eeebe5', '#d9bfac'],
+                vars: {
+                    '--bg-primary': '#424a54',
+                    '--bg-secondary': '#505962',
+                    '--bg-tertiary': '#5e6a72',
+                    '--text-primary': '#eeebe5',
+                    '--text-secondary': '#d9bfac',
+                    '--border-color': '#baa390',
+                    '--accent-color': '#baa390',
+                    '--positive-color': '#849e97',
+                    '--negative-color': '#b87857',
+                    '--warning-color': '#c69764',
+                    '--chart-canvas-bg': '#363e47',
+                },
+                chart: {
+                    layoutBg: '#363e47',
+                    textColor: '#eeebe5',
+                    crosshair: '#baa390',
+                    scaleBorder: '#8a96a3',
+                    candleUp: '#849e97',
+                    candleDown: '#c17a5c',
+                    volume: '#6d7a86',
+                },
+            },
+            {
+                id: 'apricot-rose',
+                name: 'Apricot · rose',
+                swatches: ['#93575a', '#b57168', '#d78a76', '#e8b39a', '#f9dbbd'],
+                vars: {
+                    '--bg-primary': '#93575a',
+                    '--bg-secondary': '#a66668',
+                    '--bg-tertiary': '#b57168',
+                    '--text-primary': '#f9dbbd',
+                    '--text-secondary': '#e8b39a',
+                    '--border-color': '#d78a76',
+                    '--accent-color': '#e8b39a',
+                    '--positive-color': '#8a9b7e',
+                    '--negative-color': '#b57168',
+                    '--warning-color': '#d67a41',
+                    '--chart-canvas-bg': '#4a2f32',
+                },
+                chart: {
+                    layoutBg: '#4a2f32',
+                    textColor: '#f9dbbd',
+                    crosshair: '#e8b39a',
+                    scaleBorder: '#d78a76',
+                    candleUp: '#8a9b7e',
+                    candleDown: '#d78a76',
+                    volume: '#9a7d78',
+                },
+            },
+            {
+                id: 'modern-neutral',
+                name: 'Modern neutral',
+                swatches: ['#5f6062', '#849e97', '#afb8c1', '#dbbda1', '#decac1'],
+                vars: {
+                    '--bg-primary': '#5f6062',
+                    '--bg-secondary': '#6d6f72',
+                    '--bg-tertiary': '#7c7e82',
+                    '--text-primary': '#decac1',
+                    '--text-secondary': '#afb8c1',
+                    '--border-color': '#849e97',
+                    '--accent-color': '#849e97',
+                    '--positive-color': '#849e97',
+                    '--negative-color': '#8b5d58',
+                    '--warning-color': '#dbbda1',
+                    '--chart-canvas-bg': '#4a4b4d',
+                },
+                chart: {
+                    layoutBg: '#4a4b4d',
+                    textColor: '#decac1',
+                    crosshair: '#afb8c1',
+                    scaleBorder: '#849e97',
+                    candleUp: '#849e97',
+                    candleDown: '#8b5d58',
+                    volume: '#6f7a75',
+                },
+            },
+            {
+                id: 'neutral-boho',
+                name: 'Neutral boho',
+                swatches: ['#5c6f84', '#868978', '#b0896a', '#edb0a1', '#d7999b'],
+                vars: {
+                    '--bg-primary': '#5c6f84',
+                    '--bg-secondary': '#6a7a88',
+                    '--bg-tertiary': '#757d7a',
+                    '--text-primary': '#edb0a1',
+                    '--text-secondary': '#b0896a',
+                    '--border-color': '#868978',
+                    '--accent-color': '#5c6f84',
+                    '--positive-color': '#6d7568',
+                    '--negative-color': '#d7999b',
+                    '--warning-color': '#edb0a1',
+                    '--chart-canvas-bg': '#4a4338',
+                },
+                chart: {
+                    layoutBg: '#4a4338',
+                    textColor: '#edb0a1',
+                    crosshair: '#b0896a',
+                    scaleBorder: '#868978',
+                    candleUp: '#6f7568',
+                    candleDown: '#c98b8e',
+                    volume: '#5c6f84',
+                },
+            },
+            {
+                id: 'neutral-summer',
+                name: 'Neutral summer',
+                swatches: ['#000c56', '#36465f', '#ac9c9c', '#c0b4ab', '#e9e4db'],
+                vars: {
+                    '--bg-primary': '#000c56',
+                    '--bg-secondary': '#36465f',
+                    '--bg-tertiary': '#4a5566',
+                    '--text-primary': '#e9e4db',
+                    '--text-secondary': '#c0b4ab',
+                    '--border-color': '#ac9c9c',
+                    '--accent-color': '#6b7e96',
+                    '--positive-color': '#849e97',
+                    '--negative-color': '#ac9c9c',
+                    '--warning-color': '#c0b4ab',
+                    '--chart-canvas-bg': '#0f1438',
+                },
+                chart: {
+                    layoutBg: '#0f1438',
+                    textColor: '#e9e4db',
+                    crosshair: '#c0b4ab',
+                    scaleBorder: '#ac9c9c',
+                    candleUp: '#849e97',
+                    candleDown: '#b89390',
+                    volume: '#4d5a6e',
+                },
+            },
+            {
+                id: 'lavender-house',
+                name: 'Lavender house',
+                swatches: ['#444444', '#453943', '#d9aad3', '#eeebe5', '#000000'],
+                vars: {
+                    '--bg-primary': '#444444',
+                    '--bg-secondary': '#232323',
+                    '--bg-tertiary': '#453943',
+                    '--text-primary': '#eeebe5',
+                    '--text-secondary': '#d9aad3',
+                    '--border-color': '#aaaaaa',
+                    '--accent-color': '#232323',
+                    '--positive-color': '#919191',
+                    '--negative-color': '#929292',
+                    '--warning-color': '#aa7942',
+                    '--chart-canvas-bg': '#000000',
+                },
+                chart: {
+                    layoutBg: '#000000',
+                    textColor: '#eeebe5',
+                    crosshair: '#d9aad3',
+                    scaleBorder: '#aaaaaa',
+                    candleUp: '#a890c0',
+                    candleDown: '#b87a9a',
+                    volume: '#453943',
+                },
+            },
+        ];
+
+        function hexToRgbaString(hex, alpha) {
+            const h = normalizeThemeHex(hex);
+            if (!h || h.length < 7) return null;
+            const r = parseInt(h.slice(1, 3), 16);
+            const g = parseInt(h.slice(3, 5), 16);
+            const b = parseInt(h.slice(5, 7), 16);
+            if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
+            return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+        }
+
+        function sessionVolumeBarColorsFromCandles(upHex, downHex) {
+            return {
+                up: hexToRgbaString(upHex, 0.52) || 'rgba(125,168,130,0.52)',
+                down: hexToRgbaString(downHex, 0.52) || 'rgba(191,122,110,0.52)',
+            };
+        }
+
+        function applySessionChartPreset(c) {
+            if (!c || typeof c !== 'object') return;
+            const L = typeof LightweightCharts !== 'undefined' ? LightweightCharts : null;
+            if (chart && L) {
+                const layBg = c.layoutBg || resolveChartCanvasBgHex();
+                try {
+                    document.documentElement.style.setProperty('--chart-canvas-bg', layBg);
+                } catch (e) { /* ignore */ }
+                chart.applyOptions({
+                    layout: {
+                        background: { color: layBg },
+                        textColor: c.textColor || '#f2ebe3',
+                    },
+                    crosshair: {
+                        mode: L.CrosshairMode.Normal,
+                        vertLine: { labelVisible: true, color: c.crosshair || '#a89988' },
+                        horzLine: { labelVisible: true, color: c.crosshair || '#a89988' },
+                    },
+                    rightPriceScale: { borderColor: c.scaleBorder || '#8b7765' },
+                    timeScale: { borderColor: c.scaleBorder || '#8b7765' },
+                });
+            }
+            if (candlestickSeries && c.candleUp && c.candleDown) {
+                candlestickSeries.applyOptions({
+                    upColor: c.candleUp,
+                    downColor: c.candleDown,
+                    wickUpColor: c.candleUp,
+                    wickDownColor: c.candleDown,
+                });
+            }
+            if (volumeSeries && c.volume) {
+                volumeSeries.applyOptions({ color: c.volume });
+            }
+            const vc = sessionVolumeBarColorsFromCandles(c.candleUp, c.candleDown);
+            window.__chartVolumeUpRgba = vc.up;
+            window.__chartVolumeDownRgba = vc.down;
+        }
+
+        function tryApplySessionChartFromStorage() {
+            try {
+                const raw = sessionStorage.getItem(SESSION_THEME_STORAGE_KEY);
+                if (!raw || !chart || !candlestickSeries) return;
+                const data = JSON.parse(raw);
+                if (data.chart && typeof data.chart === 'object') {
+                    applySessionChartPreset(data.chart);
+                } else {
+                    window.__chartVolumeUpRgba = null;
+                    window.__chartVolumeDownRgba = null;
+                }
+            } catch (e) {
+                console.debug('tryApplySessionChartFromStorage', e);
+            }
+        }
+
+        function persistFullSessionTheme(flatVars, chartOverride) {
+            sessionStorage.setItem(
+                SESSION_THEME_STORAGE_KEY,
+                JSON.stringify({ vars: flatVars, chart: chartOverride || null }),
+            );
+        }
+
+        function applyMasterThemePreset(id) {
+            const pr = MASTER_THEME_PRESETS.find(x => x.id === id);
+            if (!pr) return;
+            const root = document.documentElement;
+            Object.entries(pr.vars).forEach(([k, v]) => {
+                if (k.startsWith('--')) root.style.setProperty(k, String(v));
+            });
+            if (pr.chart) {
+                applySessionChartPreset(pr.chart);
+            } else {
+                window.__chartVolumeUpRgba = null;
+                window.__chartVolumeDownRgba = null;
+            }
+            persistFullSessionTheme(pr.vars, pr.chart || null);
+            syncMasterThemeInputsFromDom();
+        }
+
+        function buildMasterThemePresetsStripIfNeeded() {
+            if (window.__masterThemePresetsBuilt) return;
+            const host = document.getElementById('theme-session-presets');
+            if (!host) return;
+            const intro = document.createElement('p');
+            intro.textContent = 'One-click presets (reference palettes — page CSS + chart):';
+            host.appendChild(intro);
+            const wrap = document.createElement('div');
+            wrap.className = 'theme-preset-wrap';
+            MASTER_THEME_PRESETS.forEach((pr) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'theme-preset-btn';
+                btn.title = 'Apply preset: ' + pr.name;
+                const row = document.createElement('div');
+                row.className = 'theme-preset-swatch-row';
+                pr.swatches.forEach((hx) => {
+                    const s = document.createElement('span');
+                    s.style.background = hx;
+                    row.appendChild(s);
+                });
+                const lbl = document.createElement('div');
+                lbl.style.marginTop = '4px';
+                lbl.style.fontWeight = '600';
+                lbl.style.lineHeight = '1.2';
+                lbl.textContent = pr.name;
+                btn.appendChild(row);
+                btn.appendChild(lbl);
+                btn.addEventListener('click', () => applyMasterThemePreset(pr.id));
+                wrap.appendChild(btn);
+            });
+            host.appendChild(wrap);
+            window.__masterThemePresetsBuilt = true;
+        }
+
+        function getSessionVolumeHistogramColors() {
+            return {
+                up: window.__chartVolumeUpRgba || 'rgba(125, 168, 130, 0.5)',
+                down: window.__chartVolumeDownRgba || 'rgba(191, 122, 110, 0.5)',
+            };
+        }
+
+        function applyMasterSessionThemeOverrides() {
+            try {
+                const raw = sessionStorage.getItem(SESSION_THEME_STORAGE_KEY);
+                if (!raw) return;
+                const data = JSON.parse(raw);
+                const vars = (data && data.vars) ? data.vars : data;
+                if (!vars || typeof vars !== 'object') return;
+                const root = document.documentElement;
+                for (const [k, v] of Object.entries(vars)) {
+                    if (typeof k === 'string' && k.startsWith('--') && v) {
+                        root.style.setProperty(k, String(v));
+                    }
+                }
+                applyChartCanvasFromCssVar();
+            } catch (e) {
+                console.debug('applyMasterSessionThemeOverrides', e);
+            }
+        }
+
+        function persistMasterSessionTheme() {
+            let existing = {};
+            try {
+                const raw = sessionStorage.getItem(SESSION_THEME_STORAGE_KEY);
+                if (raw) existing = JSON.parse(raw) || {};
+            } catch (e) { /* ignore */ }
+            const root = document.documentElement;
+            const vars = { ...(existing.vars || {}) };
+            MASTER_THEME_KEYS.forEach(({ key }) => {
+                let v = root.style.getPropertyValue(key).trim();
+                if (!v) {
+                    const c = getComputedStyle(root).getPropertyValue(key).trim();
+                    const h = rgbCssToHex(c);
+                    if (h) v = h;
+                } else {
+                    const h = rgbCssToHex(v);
+                    if (h) v = h;
+                }
+                if (v) vars[key] = v;
+            });
+            const chart = existing.chart != null ? existing.chart : null;
+            sessionStorage.setItem(SESSION_THEME_STORAGE_KEY, JSON.stringify({ vars, chart }));
+        }
+
+        function buildMasterThemeRowsIfNeeded() {
+            if (window.__masterThemeRowsBuilt) return;
+            const host = document.getElementById('theme-session-rows');
+            if (!host) return;
+            MASTER_THEME_KEYS.forEach(({ key, label }) => {
+                const slug = key.replace(/^--/, '').replace(/[^a-z0-9-]/gi, '-');
+                const inpId = 'tc-' + slug;
+                const row = document.createElement('div');
+                row.className = 'theme-color-row';
+                row.innerHTML =
+                    '<label for="' + inpId + '">' + label + '</label>' +
+                    '<input type="color" id="' + inpId + '" data-theme-key="' + key + '" aria-label="' + label + '">' +
+                    '<input type="text" maxlength="9" placeholder="#6f5e4f" data-theme-hex="' + key + '" aria-label="' + label + ' hex">';
+                host.appendChild(row);
+            });
+            host.querySelectorAll('input[type="color"]').forEach(inp => {
+                inp.addEventListener('input', () => {
+                    const key = inp.getAttribute('data-theme-key');
+                    const hex = normalizeThemeHex(inp.value);
+                    if (!key || !hex) return;
+                    document.documentElement.style.setProperty(key, hex);
+                    const hexInp = host.querySelector('input[data-theme-hex="' + key + '"]');
+                    if (hexInp) hexInp.value = hex;
+                    persistMasterSessionTheme();
+                    applyChartCanvasFromCssVar();
+                });
+            });
+            host.querySelectorAll('input[data-theme-hex]').forEach(hexInp => {
+                hexInp.addEventListener('change', () => {
+                    const key = hexInp.getAttribute('data-theme-hex');
+                    const h = normalizeThemeHex(hexInp.value);
+                    if (!key || !h) return;
+                    document.documentElement.style.setProperty(key, h);
+                    const cInp = host.querySelector('input[data-theme-key="' + key + '"]');
+                    if (cInp) cInp.value = h;
+                    hexInp.value = h;
+                    persistMasterSessionTheme();
+                    applyChartCanvasFromCssVar();
+                });
+            });
+            window.__masterThemeRowsBuilt = true;
+        }
+
+        function syncMasterThemeInputsFromDom() {
+            const root = document.documentElement;
+            const host = document.getElementById('theme-session-rows');
+            if (!host) return;
+            MASTER_THEME_KEYS.forEach(({ key }) => {
+                const raw = getComputedStyle(root).getPropertyValue(key).trim();
+                const fallback = key === '--chart-canvas-bg' ? '#000000' : '#6f5e4f';
+                const hex = rgbCssToHex(raw) || fallback;
+                const cInp = host.querySelector('input[data-theme-key="' + key + '"]');
+                const hexInp = host.querySelector('input[data-theme-hex="' + key + '"]');
+                if (cInp) cInp.value = hex;
+                if (hexInp) hexInp.value = hex;
+            });
+        }
+
+        function openMasterThemePopout() {
+            buildMasterThemePresetsStripIfNeeded();
+            buildMasterThemeRowsIfNeeded();
+            syncMasterThemeInputsFromDom();
+            const b = document.getElementById('theme-session-backdrop');
+            const p = document.getElementById('theme-session-popout');
+            if (b) b.style.display = 'block';
+            if (p) p.style.display = 'flex';
+        }
+
+        function closeMasterThemePopout() {
+            const b = document.getElementById('theme-session-backdrop');
+            const p = document.getElementById('theme-session-popout');
+            if (b) b.style.display = 'none';
+            if (p) p.style.display = 'none';
+        }
+
+        function resetMasterSessionTheme() {
+            try {
+                sessionStorage.removeItem(SESSION_THEME_STORAGE_KEY);
+            } catch (e) { /* ignore */ }
+            location.reload();
+        }
+
+        void applyPageThemeFromServer().then(() => {
+            applyMasterSessionThemeOverrides();
+            applyChartCanvasFromCssVar();
+        });
         
         let chart = null;
         let candlestickSeries = null;
@@ -1257,11 +2004,16 @@
         // Store position and order price lines (global scope for update functions)
         let positionLines = new Map();
         let orderLines = new Map();
+        let overnightRangeLines = []; // OR high/low price lines (overnight_range strategy)
+        let lastOvernightRangeFetch = 0;
         let orderLineDataMap = new Map(); // Map price lines to order data for drag/drop
         let isDraggingOrderLine = false;
         let draggedOrderLine = null;
         let draggedOrderData = null;
         let chartContainerElement = null; // Store reference to chart container DOM element
+        const __pageLoadMs = Date.now();
+        let __lastWsMessageAt = Date.now();
+        let ordersHardRefreshNext = false;
         
         // ========== KEYBOARD SHORTCUTS ==========
         let keyboardShortcutsEnabled = localStorage.getItem('keyboard-shortcuts-enabled') !== 'false';
@@ -1306,8 +2058,15 @@
                     showShortcutsHelp();
                     break;
                 case 'escape':
+                    {
+                        const chartPanel = document.getElementById('chart-panel');
+                        if (chartPanel && chartPanel.classList.contains('chart-fullscreen')) {
+                            toggleChartFullscreen();
+                            break;
+                        }
+                    }
                     // Close any modals
-                    const modals = document.querySelectorAll('.modal, .popout-window');
+                    const modals = document.querySelectorAll('.modal');
                     modals.forEach(m => m.remove());
                     break;
             }
@@ -1345,16 +2104,6 @@ Speed Trading Shortcuts:
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         let alertEnabled = localStorage.getItem('alerts-enabled') === 'true'; // Default to OFF
         let desktopNotificationsEnabled = localStorage.getItem('desktop-notifications-enabled') === 'true';
-        
-        // Request notification permission
-        if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission().then(permission => {
-                if (permission === 'granted') {
-                    desktopNotificationsEnabled = true;
-                    localStorage.setItem('desktop-notifications-enabled', 'true');
-                }
-            });
-        }
         
         function playAlert(type = 'info') {
             if (!alertEnabled) return;
@@ -1476,6 +2225,229 @@ Speed Trading Shortcuts:
                 btn.textContent = desktopNotificationsEnabled ? 'Notifications ON' : 'Notifications OFF';
                 btn.style.background = desktopNotificationsEnabled ? '#4caf50' : '#666';
             }
+        }
+        
+        const MASTER_PANEL_IDS = ['chart-panel', 'activity-panel', 'strategy-hub-panel', 'terminal-hub-panel', 'performance-panel', 'trades-panel'];
+
+        function saveMasterPanelVisibility() {
+            const state = {};
+            MASTER_PANEL_IDS.forEach(id => {
+                const cb = document.querySelector(`input[data-panel-toggle="${id}"]`);
+                state[id] = cb ? !!cb.checked : true;
+            });
+            try {
+                localStorage.setItem('master-panel-visibility', JSON.stringify(state));
+            } catch (e) { /* ignore */ }
+        }
+
+        function loadMasterPanelVisibility() {
+            let raw = null;
+            try {
+                raw = localStorage.getItem('master-panel-visibility');
+            } catch (e) { /* ignore */ }
+            if (!raw) {
+                MASTER_PANEL_IDS.forEach(id => {
+                    const cb = document.querySelector(`input[data-panel-toggle="${id}"]`);
+                    if (cb) cb.checked = id === 'chart-panel';
+                });
+                if (localStorage.getItem('master-dashboard-minimal') === '1') {
+                    localStorage.removeItem('master-dashboard-minimal');
+                }
+                saveMasterPanelVisibility();
+                applyMasterPanelVisibility();
+                return;
+            }
+            try {
+                const state = JSON.parse(raw);
+                MASTER_PANEL_IDS.forEach(id => {
+                    const cb = document.querySelector(`input[data-panel-toggle="${id}"]`);
+                    if (cb && Object.prototype.hasOwnProperty.call(state, id)) {
+                        cb.checked = !!state[id];
+                    }
+                });
+            } catch (e) { /* ignore */ }
+            applyMasterPanelVisibility();
+        }
+
+        function applyMasterPanelVisibility() {
+            MASTER_PANEL_IDS.forEach(id => {
+                const cb = document.querySelector(`input[data-panel-toggle="${id}"]`);
+                const panel = document.getElementById(id);
+                if (!panel) return;
+                const on = cb ? cb.checked : true;
+                panel.classList.toggle('panel-user-hidden', !on);
+            });
+            if (typeof chart !== 'undefined' && chart && chartContainerElement) {
+                requestAnimationFrame(() => {
+                    try {
+                        const container = chartContainerElement.parentElement;
+                        if (container) {
+                            const cs = getComputedStyle(container);
+                            const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+                            const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+                            const w = Math.max(container.clientWidth - padX, 300);
+                            const h = Math.max(container.clientHeight - padY, 240);
+                            chart.resize(w, h, true);
+                        }
+                    } catch (e) { console.debug('chart resize after panel visibility', e); }
+                });
+            }
+        }
+
+        function onMasterPanelToggle() {
+            saveMasterPanelVisibility();
+            applyMasterPanelVisibility();
+        }
+
+        function scrollToDashboardPanel(panelId) {
+            const panel = document.getElementById(panelId);
+            if (!panel) return;
+            const cb = document.querySelector(`input[data-panel-toggle="${panelId}"]`);
+            if (cb && !cb.checked) {
+                cb.checked = true;
+                onMasterPanelToggle();
+            }
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            panel.style.outline = '2px solid var(--accent-color)';
+            setTimeout(() => { panel.style.outline = ''; }, 1400);
+        }
+
+        function toggleChartFullscreen() {
+            const panel = document.getElementById('chart-panel');
+            const btn = document.getElementById('btn-chart-fullscreen');
+            if (!panel) return;
+            const on = panel.classList.toggle('chart-fullscreen');
+            document.body.classList.toggle('chart-fullscreen-active', on);
+            if (btn) btn.textContent = on ? '✕' : '⛶';
+            if (btn) btn.title = on ? 'Exit fullscreen' : 'Fullscreen chart';
+            requestAnimationFrame(() => {
+                try {
+                    if (!chart || !chartContainerElement) return;
+                    const container = chartContainerElement.parentElement;
+                    if (!container) return;
+                    const cs = getComputedStyle(container);
+                    const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+                    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+                    const w = Math.max(container.clientWidth - padX, 300);
+                    const h = Math.max(container.clientHeight - padY, 240);
+                    chart.resize(w, h, true);
+                } catch (e) { console.debug('chart fullscreen resize', e); }
+            });
+        }
+
+        function syncChartControlStrip() {
+            const bal = document.getElementById('balance');
+            const up = document.getElementById('unrealized-pnl');
+            const pc = document.getElementById('position-count');
+            const oc = document.getElementById('order-count');
+            const sb = document.getElementById('chart-strip-balance');
+            const su = document.getElementById('chart-strip-unrealized');
+            const sp = document.getElementById('chart-strip-positions');
+            const so = document.getElementById('chart-strip-orders');
+            if (sb && bal) sb.textContent = bal.textContent;
+            if (su && up) su.textContent = up.textContent;
+            if (sp && pc) sp.textContent = pc.textContent;
+            if (so && oc) so.textContent = oc.textContent;
+        }
+
+        function orderIsTerminalStatus(st) {
+            const s = String(st == null ? '' : st).trim().toUpperCase();
+            return ['FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'DONE', 'COMPLETE', 'REPLACED', 'SUSPENDED'].includes(s);
+        }
+
+        function orderIsWorking(order) {
+            if (!order) return false;
+            if (orderIsTerminalStatus(order.status)) return false;
+            return true;
+        }
+
+        function formatBarTimeForLegend(t) {
+            if (t == null) return '—';
+            const dtOpts = {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true,
+            };
+            if (typeof t === 'number') {
+                const d = new Date(t * 1000);
+                return d.toLocaleString(undefined, dtOpts);
+            }
+            if (typeof t === 'object' && 'year' in t && 'month' in t && 'day' in t) {
+                const d = new Date(t.year, t.month - 1, t.day);
+                return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+            }
+            return '—';
+        }
+
+        function timeframeToSeconds(tf) {
+            if (!tf) return 300;
+            const m = String(tf).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)([smhd])$/);
+            if (!m) return 300;
+            const n = parseFloat(m[1]);
+            const u = m[2];
+            if (u === 's') return Math.round(n);
+            if (u === 'm') return Math.round(n * 60);
+            if (u === 'h') return Math.round(n * 3600);
+            if (u === 'd') return Math.round(n * 86400);
+            return 300;
+        }
+
+        /** @returns {{ line: string, cd: string|null, px: string|null }} */
+        function getLastBarPriceAndCountdownText() {
+            const tf = document.getElementById('chart-timeframe-select')?.value || '5m';
+            const period = timeframeToSeconds(tf);
+            const openSec = window.__lastBarOpenSec;
+            let cd = null;
+            if (openSec && period) {
+                const nextClose = openSec + period;
+                const now = Date.now() / 1000;
+                let rem = Math.ceil(nextClose - now);
+                if (rem < 0) rem = 0;
+                const mm = Math.floor(rem / 60);
+                const ss = rem % 60;
+                cd = rem <= 0 ? '…' : `${mm}:${String(ss).padStart(2, '0')}`;
+            }
+            const last = window.__lastBarClose;
+            const px = last != null && !Number.isNaN(Number(last)) ? Number(last).toFixed(2) : null;
+            const parts = [];
+            if (px) parts.push(px);
+            if (cd) parts.push(cd);
+            const line = parts.length ? parts.join('  ·  ') : '—';
+            return { line, cd, px };
+        }
+
+        function updateBarCountdownChip() {
+            const { line, cd, px } = getLastBarPriceAndCountdownText();
+            const ovl = document.getElementById('chart-lastprice-countdown');
+            if (!ovl) return;
+            ovl.textContent = line;
+            const last = window.__lastBarClose;
+            const hasChart = !!(candlestickSeries && chart);
+            if (hasChart && last != null && typeof candlestickSeries.priceToCoordinate === 'function') {
+                const y = candlestickSeries.priceToCoordinate(last);
+                if (y != null && !Number.isNaN(y)) {
+                    ovl.style.display = 'block';
+                    ovl.style.top = `${Math.round(y - 11)}px`;
+                    return;
+                }
+            }
+            ovl.style.display = 'none';
+        }
+
+        function removeOrphanOrderPriceLines() {
+            if (!candlestickSeries) return;
+            orderLineDataMap.forEach((data, line) => {
+                try { candlestickSeries.removePriceLine(line); } catch (e) { /* ignore */ }
+            });
+            orderLineDataMap.clear();
+            orderLines.forEach((line) => {
+                try { candlestickSeries.removePriceLine(line); } catch (e) { /* ignore */ }
+            });
+            orderLines.clear();
         }
         
         function toggleDesktopNotifications() {
@@ -1772,6 +2744,8 @@ Speed Trading Shortcuts:
                         </div>
                 </div>
             `;
+            const stripTr = document.getElementById('chart-strip-trades');
+            if (stripTr && trades.total != null) stripTr.textContent = String(trades.total);
         }
         
         // ========== ENHANCED TRADES TABLE ==========
@@ -2268,6 +3242,7 @@ Speed Trading Shortcuts:
                 };
                 
                 websocket.onmessage = (event) => {
+                    __lastWsMessageAt = Date.now();
                     try {
                         const message = JSON.parse(event.data);
                         handleWebSocketMessage(message);
@@ -2317,6 +3292,7 @@ Speed Trading Shortcuts:
         }
         
         function handleWebSocketMessage(message) {
+            __lastWsMessageAt = Date.now();
             const { type, data } = message;
             
             switch (type) {
@@ -2460,6 +3436,9 @@ Speed Trading Shortcuts:
                         showToast(message, 'success');
                         showDesktopNotification('Order Filled', message, 'success');
                     }
+                    ordersHardRefreshNext = true;
+                    if (typeof updateOrders === 'function') updateOrders(true);
+                    if (typeof updatePositions === 'function') updatePositions();
                     break;
                 case 'stop_triggered':
                     if (data) {
@@ -2489,6 +3468,20 @@ Speed Trading Shortcuts:
                     break;
                 case 'pong':
                     // Keep-alive response
+                    break;
+                case 'heartbeat':
+                    break;
+                case 'order_updated':
+                case 'order_canceled':
+                case 'order_cancelled':
+                case 'order_rejected':
+                    ordersHardRefreshNext = true;
+                    if (typeof updateOrders === 'function') updateOrders(true);
+                    break;
+                case 'position_closed':
+                    if (typeof updatePositions === 'function') updatePositions();
+                    ordersHardRefreshNext = true;
+                    if (typeof updateOrders === 'function') updateOrders(true);
                     break;
                 default:
                     console.log('Unknown WebSocket message type:', type);
@@ -2847,6 +3840,7 @@ Speed Trading Shortcuts:
                     bracketWarningEl.style.display = 'none';
                 }
             }
+            syncChartControlStrip();
         }
         
         // Display update functions with simple change detection
@@ -2925,17 +3919,22 @@ Speed Trading Shortcuts:
             if (typeof updatePositionLines === 'function') {
                 updatePositionLines();
             }
+            syncChartControlStrip();
         }
         
         let lastOrdersJson = null;
         function updateOrdersDisplay(data) {
-            const currentJson = JSON.stringify(data);
+            const rawOrders = Array.isArray(data) ? data : (data.orders || []);
+            const rawGroups = data.groups || [];
+            const orders = rawOrders.filter(orderIsWorking);
+            const groups = rawGroups.map(g => ({
+                ...g,
+                children: (g.children || []).filter(orderIsWorking),
+            }));
+
+            const currentJson = JSON.stringify({ orders, groups });
             if (currentJson === lastOrdersJson) return;
             lastOrdersJson = currentJson;
-            
-            // Handle both old format (array) and new format (object with orders/groups)
-            const orders = Array.isArray(data) ? data : (data.orders || []);
-            const groups = data.groups || [];
             
             document.getElementById('order-count').textContent = orders.length;
             document.getElementById('ord-count').textContent = orders.length;
@@ -3109,6 +4108,7 @@ Speed Trading Shortcuts:
                 }).join('');
             }
         
+            syncChartControlStrip();
             // Update order lines on chart
             if (typeof updateOrderLines === 'function') {
                 updateOrderLines();
@@ -3196,7 +4196,7 @@ Speed Trading Shortcuts:
                 
                 // Fetch detailed info
                 try {
-                    const response = await fetch(`${BASE_URL}/api/chart/strategy/details/${name}`);
+                    const response = await fetch(`${BASE_URL}/api/chart/strategy/details/${name}?_=${Date.now()}${chartSelectedAccountQuerySuffix()}`);
                     const details = await response.json();
                     
                     if (details.error) {
@@ -3415,49 +4415,66 @@ Speed Trading Shortcuts:
                     width: initial.w,
                     height: initial.h,
                     layout: {
-                        background: { color: '#0a0a0a' },
-                        textColor: '#f1f5f9',
+                        background: { color: resolveChartCanvasBgHex() },
+                        textColor: '#f2ebe3',
                         fontSize: 13,
                     },
                     grid: {
-                        vertLines: { color: '#1e293b' },
-                        horzLines: { color: '#1e293b' },
+                        vertLines: { visible: false },
+                        horzLines: { visible: false },
                     },
                     crosshair: {
                         mode: LightweightCharts.CrosshairMode.Normal,
-                        vertLine: { labelVisible: true, color: '#94a3b8' },
-                        horzLine: { labelVisible: true, color: '#94a3b8' },
+                        vertLine: { labelVisible: true, color: '#a89988' },
+                        horzLine: { labelVisible: true, color: '#a89988' },
                     },
                     localization: {
                         locale: navigator.language || 'en-US',
-                        // LWC v4 uses UTC by default for axis ticks; force local display (EST/EDT on this machine).
                         timeFormatter: (timestamp) => {
                             const d = new Date(timestamp * 1000);
-                            return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                            return d.toLocaleString(undefined, {
+                                weekday: 'short',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                                hour12: true,
+                            });
                         },
                     },
                     rightPriceScale: {
-                        borderColor: '#64748b',
+                        borderColor: '#8b7765',
                         autoScale: true,
                         visible: true,
                     },
                     timeScale: {
-                        borderColor: '#64748b',
+                        borderColor: '#8b7765',
                         borderVisible: true,
                         timeVisible: true,
-                        secondsVisible: false,
+                        secondsVisible: true,
                         visible: true,
                         tickMarkFormatter: (time, tickMarkType, locale) => {
-                            // `time` is epoch seconds for our data (number). Convert to local time for labels.
+                            const T = LightweightCharts.TickMarkType;
                             const ts = (typeof time === 'number') ? time : (time?.timestamp ?? null);
                             if (typeof ts === 'number') {
                                 const d = new Date(ts * 1000);
-                                return d.toLocaleTimeString(locale || undefined, { hour: '2-digit', minute: '2-digit' });
+                                if (typeof tickMarkType === 'number' && (
+                                    tickMarkType === T.DayOfMonth || tickMarkType === T.Month || tickMarkType === T.Year
+                                )) {
+                                    return d.toLocaleDateString(locale || undefined, {
+                                        weekday: 'short', month: 'short', day: 'numeric'
+                                    });
+                                }
+                                return d.toLocaleTimeString(locale || undefined, {
+                                    hour: '2-digit', minute: '2-digit', hour12: true,
+                                });
                             }
-                            // Fallback for business-day object ({year, month, day})
                             if (time && typeof time === 'object' && 'year' in time && 'month' in time && 'day' in time) {
                                 const d = new Date(time.year, time.month - 1, time.day);
-                                return d.toLocaleDateString(locale || undefined, { month: '2-digit', day: '2-digit' });
+                                return d.toLocaleDateString(locale || undefined, {
+                                    weekday: 'short', month: 'short', day: 'numeric'
+                                });
                             }
                             return '';
                         },
@@ -3479,6 +4496,7 @@ Speed Trading Shortcuts:
                         mount.style.width = w + 'px';
                         mount.style.height = h + 'px';
                         chart.resize(w, h, true);
+                        if (typeof updateBarCountdownChip === 'function') updateBarCountdownChip();
                     });
                 };
                 requestAnimationFrame(syncSize);
@@ -3487,15 +4505,17 @@ Speed Trading Shortcuts:
                 }
                 
             candlestickSeries = chart.addCandlestickSeries({
-                    upColor: '#4caf50',
-                    downColor: '#f44336',
+                    upColor: '#7da882',
+                    downColor: '#bf7a6e',
                     borderVisible: false,
-                    wickUpColor: '#4caf50',
-                    wickDownColor: '#f44336',
+                    wickUpColor: '#7da882',
+                    wickDownColor: '#bf7a6e',
+                    /* Native last-price rail label is replaced by #chart-lastprice-countdown (price · bar countdown). */
+                    lastValueVisible: false,
                 });
 
             volumeSeries = chart.addHistogramSeries({
-                color: '#26a69a',
+                color: '#5a6d78',
                 priceFormat: {
                     type: 'volume',
                 },
@@ -3512,6 +4532,7 @@ Speed Trading Shortcuts:
                 // Clear existing lines when reinitializing
                 positionLines.clear();
                 orderLines.clear();
+                orderLineDataMap.clear();
                 
                 // Load initial data
             // Set default symbol and timeframe in dropdowns
@@ -3560,11 +4581,20 @@ Speed Trading Shortcuts:
                 if (!legendSymbol || !candlestickSeries) return;
                 
                 legendSymbol.textContent = currentChartSymbol;
+                const legendBarDate = document.getElementById('legend-bar-date');
+                const legendNow = document.getElementById('legend-now');
+                const nowStr = new Date().toLocaleString(undefined, {
+                    weekday: 'short', month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+                });
+                if (legendNow) legendNow.textContent = 'Now: ' + nowStr;
                 
                 // Do not bound Y: crosshair can be over the time-scale row (y may exceed pane height)
                 if (param.point === undefined || !param.time || param.point.x < 0 || param.point.x > mount.clientWidth) {
+                    if (legendBarDate) legendBarDate.textContent = '';
                     return;
                 }
+                if (legendBarDate) legendBarDate.textContent = formatBarTimeForLegend(param.time);
                 
                 const candleData = param.seriesData.get(candlestickSeries);
                 const volData = param.seriesData.get(volumeSeries);
@@ -3589,6 +4619,7 @@ Speed Trading Shortcuts:
                     legendVolume.textContent = '---';
                 }
             });
+            tryApplySessionChartFromStorage();
         }
         
         async function loadChartData() {
@@ -3608,10 +4639,11 @@ Speed Trading Shortcuts:
                         volume: bar.volume || 0,
                     }));
                     
+                    const vcol = getSessionVolumeHistogramColors();
                     const volumeData = data.bars.map(bar => ({
                         time: bar.time,
                         value: bar.volume || 0,
-                        color: bar.close >= bar.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
+                        color: bar.close >= bar.open ? vcol.up : vcol.down,
                     }));
                     
                     // Update current symbol and timeframe tracking
@@ -3624,6 +4656,8 @@ Speed Trading Shortcuts:
                     // Reset visible range to show recent bars (last ~50 bars)
                     if (bars.length > 0) {
                         const lastBar = bars[bars.length - 1];
+                        window.__lastBarOpenSec = typeof lastBar.time === 'number' ? lastBar.time : null;
+                        window.__lastBarClose = lastBar.close != null ? parseFloat(lastBar.close) : null;
                         const firstVisibleBar = Math.max(0, bars.length - 50);
                         const firstBar = bars[firstVisibleBar];
                         
@@ -3640,6 +4674,8 @@ Speed Trading Shortcuts:
                     // Update position and order lines after loading chart data
                     updatePositionLines();
                     updateOrderLines();
+                    lastOvernightRangeFetch = 0;
+                    updateOvernightRangePriceLines();
                     
                     console.log(`✅ Chart loaded ${bars.length} bars for ${symbol} ${timeframe}`);
                 }
@@ -3694,17 +4730,15 @@ Speed Trading Shortcuts:
             if (!chart || !candlestickSeries) return;
             
             try {
-                const orders = await fetch(`${BASE_URL}/api/chart/orders`).then(r => r.json()).then(d => d.orders || []);
+                const orders = await fetch(`${BASE_URL}/api/chart/orders?include_linked=0`).then(r => r.json()).then(d => d.orders || []);
                 
-                // Remove old order lines
-                orderLines.forEach((line, orderId) => {
-                    candlestickSeries.removePriceLine(line);
-                });
-                orderLines.clear();
+                removeOrphanOrderPriceLines();
                 
                 // Add new order lines
-                orders.forEach(order => {
+                orders.filter(orderIsWorking).forEach(order => {
                     if (!order.symbol || order.symbol !== currentChartSymbol) return; // Only show lines for current chart symbol
+                    const typeStr = String(order.type == null ? '' : order.type).toUpperCase();
+                    if (typeStr === 'MARKET' || typeStr === '2') return;
                     
                     const price = parseFloat(order.price || order.limitPrice || order.limit_price || 
                                             order.stopPrice || order.stop_price || 
@@ -3759,6 +4793,67 @@ Speed Trading Shortcuts:
             }
         }
         
+        /** Optional `account_id` for /api/chart/* when GUI account differs from bot default. */
+        function chartSelectedAccountQuerySuffix() {
+            const sel = document.getElementById('account-select');
+            if (!availableAccounts || !sel || sel.value === '') return '';
+            const idx = parseInt(sel.value, 10);
+            if (isNaN(idx) || !availableAccounts[idx] || !availableAccounts[idx].id) return '';
+            return `&account_id=${encodeURIComponent(String(availableAccounts[idx].id))}`;
+        }
+
+        function pickOvernightRangeForSymbol(ranges, sym) {
+            if (!ranges || !sym) return null;
+            const u = String(sym).toUpperCase().trim();
+            if (ranges[u]) return ranges[u];
+            for (const k of Object.keys(ranges)) {
+                const ku = String(k).toUpperCase();
+                if (ku === u || ku.endsWith('.' + u)) return ranges[k];
+            }
+            return null;
+        }
+
+        async function updateOvernightRangePriceLines() {
+            if (!chart || !candlestickSeries) return;
+            const sym = (document.getElementById('chart-symbol-select')?.value || SYMBOL || '').toUpperCase();
+            try {
+                const st = await fetch(`${BASE_URL}/api/chart/strategy/status`).then(r => r.json());
+                const active = Array.isArray(st.active) ? st.active : [];
+                const extOn = st.strategies && st.strategies.overnight_range && st.strategies.overnight_range.active === true;
+                if (!active.includes('overnight_range') && !extOn) {
+                    overnightRangeLines.forEach(line => {
+                        try { candlestickSeries.removePriceLine(line); } catch (e) { /* ignore */ }
+                    });
+                    overnightRangeLines = [];
+                    return;
+                }
+                const det = await fetch(`${BASE_URL}/api/chart/strategy/details/overnight_range?_=${Date.now()}${chartSelectedAccountQuerySuffix()}`).then(r => r.json());
+                const rg = pickOvernightRangeForSymbol(det && det.ranges, sym);
+                overnightRangeLines.forEach(line => {
+                    try { candlestickSeries.removePriceLine(line); } catch (e) { /* ignore */ }
+                });
+                overnightRangeLines = [];
+                if (!rg || det.error) return;
+                function addORLine(price, title) {
+                    const p = Number(price);
+                    if (!isFinite(p) || p <= 0) return;
+                    const line = candlestickSeries.createPriceLine({
+                        price: p,
+                        color: '#c084fc',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: title
+                    });
+                    overnightRangeLines.push(line);
+                }
+                if (rg.high != null) addORLine(rg.high, 'OR High');
+                if (rg.low != null) addORLine(rg.low, 'OR Low');
+            } catch (e) {
+                console.debug('updateOvernightRangePriceLines:', e);
+            }
+        }
+        
         async function updateChart() {
             // Prevent concurrent requests
             if (chartUpdateInProgress) {
@@ -3778,7 +4873,9 @@ Speed Trading Shortcuts:
                     return;
                 }
                 
-                const response = await fetch(`${BASE_URL}/api/chart/quote?symbol=${symbol}`);
+                const response = await fetch(
+                    `${BASE_URL}/api/chart/quote?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
+                );
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
@@ -3798,6 +4895,8 @@ Speed Trading Shortcuts:
                     
                     // Only update if we have a valid, newer timestamp
                     if (barTime && typeof barTime === 'number' && !isNaN(barTime)) {
+                        window.__lastBarOpenSec = barTime;
+                        if (bar.close != null) window.__lastBarClose = parseFloat(bar.close);
                         candlestickSeries.update({
                             time: barTime,
                             open: bar.open,
@@ -3808,10 +4907,11 @@ Speed Trading Shortcuts:
                         });
                         
                         if (volumeSeries) {
+                            const _vc = getSessionVolumeHistogramColors();
                             volumeSeries.update({
                                 time: barTime,
                                 value: bar.volume || 0,
-                                color: bar.close >= bar.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
+                                color: bar.close >= bar.open ? _vc.up : _vc.down,
                             });
                         }
                     }
@@ -3827,6 +4927,11 @@ Speed Trading Shortcuts:
                 }
                 if (typeof updatePositionLines === 'function') {
                     updatePositionLines();
+                }
+                const _nowOr = Date.now();
+                if (_nowOr - lastOvernightRangeFetch > 8000) {
+                    lastOvernightRangeFetch = _nowOr;
+                    updateOvernightRangePriceLines();
                 }
             } catch (error) {
                 chartErrorCount++;
@@ -4055,6 +5160,8 @@ Speed Trading Shortcuts:
                         realizedEl.textContent = `$${realized.toFixed(2)}`;
                         realizedEl.className = `status-value ${realized >= 0 ? 'positive' : 'negative'}`;
                     }
+                    __lastWsMessageAt = Date.now();
+                    syncChartControlStrip();
                 }
             } catch (error) {
                 console.error('Error updating account:', error);
@@ -4100,18 +5207,21 @@ Speed Trading Shortcuts:
                 console.error('Error updating positions:', error);
             } finally {
                 window.__positionsUpdateInProgress = false;
+                syncChartControlStrip();
             }
         }
         
         // Update orders
-        async function updateOrders() {
+        async function updateOrders(forceRefresh = false) {
             // Prevent overlapping refreshes (critical to avoid /api/Order/search storms)
             window.__ordersUpdateInProgress = window.__ordersUpdateInProgress || false;
             if (window.__ordersUpdateInProgress) return;
             window.__ordersUpdateInProgress = true;
             try {
-                // include_linked defaults to false (linked lookups can be very slow)
-                const response = await fetch(`${BASE_URL}/api/chart/orders?include_linked=0`);
+                const bust = forceRefresh || ordersHardRefreshNext;
+                if (ordersHardRefreshNext) ordersHardRefreshNext = false;
+                const q = bust ? 'include_linked=0&no_cache=1' : 'include_linked=0';
+                const response = await fetch(`${BASE_URL}/api/chart/orders?${q}`);
                 const data = await response.json();
                 if (data) {
                     // Use centralized updateOrdersDisplay function which handles bracket grouping
@@ -4242,8 +5352,8 @@ Speed Trading Shortcuts:
         // Order placement - OPTIMIZED FOR SPEED
         async function placeOrder(side) {
             // Immediate visual feedback
-            const buyBtn = document.querySelector('button[onclick*="placeOrder(\'BUY\')"]');
-            const sellBtn = document.querySelector('button[onclick*="placeOrder(\'SELL\')"]');
+            const buyBtn = document.getElementById('buy-btn');
+            const sellBtn = document.getElementById('sell-btn');
             if (buyBtn) buyBtn.disabled = true;
             if (sellBtn) sellBtn.disabled = true;
             
@@ -4414,7 +5524,8 @@ Speed Trading Shortcuts:
                         showToast(msg, result.warning ? 'warn' : 'success', 2000);
                         playAlert('success');
                         flashAlert('success');
-                        // WebSocket will update automatically
+                        ordersHardRefreshNext = true;
+                        setTimeout(() => { updateOrders(true); }, 200);
                     } else {
                         // Handle rate limiting specifically
                         if (result.rate_limited) {
@@ -4490,10 +5601,20 @@ Speed Trading Shortcuts:
             showToast(`Stopping strategy ${name}...`, 'info', 2000);
             
             try {
+                const sel = document.getElementById('account-select');
+                let accountId = null;
+                if (availableAccounts && sel && sel.value !== '') {
+                    const idx = parseInt(sel.value, 10);
+                    if (!isNaN(idx) && availableAccounts[idx] && availableAccounts[idx].id) {
+                        accountId = String(availableAccounts[idx].id);
+                    }
+                }
+                const payload = { strategy: name };
+                if (accountId) payload.account_id = accountId;
                 const response = await fetch(`${BASE_URL}/api/chart/strategy/stop`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ strategy: name })
+                    body: JSON.stringify(payload)
                 });
                 const data = await response.json();
                 if (data.success) {
@@ -4546,7 +5667,8 @@ Speed Trading Shortcuts:
                         showToast('✅ All positions flattened', 'success', 2000);
                         playAlert('success');
                         flashAlert('success');
-                        // WebSocket will update automatically
+                        ordersHardRefreshNext = true;
+                        setTimeout(() => { updateOrders(true); updatePositions(); }, 400);
                     } else {
                         showToast(`❌ ${data.error || 'Flatten failed'}`, 'error', 4000);
                         playAlert('error');
@@ -4581,7 +5703,8 @@ Speed Trading Shortcuts:
                         showToast('✅ All orders canceled', 'success', 2000);
                         playAlert('success');
                         flashAlert('success');
-                        // WebSocket will update automatically
+                        ordersHardRefreshNext = true;
+                        setTimeout(() => { updateOrders(true); }, 200);
                     } else {
                         showToast(`❌ ${data.error || 'Cancel failed'}`, 'error', 4000);
                         playAlert('error');
@@ -4776,6 +5899,23 @@ Speed Trading Shortcuts:
             
             // Initialize chart
             initChart();
+            loadMasterPanelVisibility();
+            setInterval(() => {
+                const el = document.getElementById('header-uptime-value');
+                if (el) {
+                    const s = Math.floor((Date.now() - __pageLoadMs) / 1000);
+                    const h = Math.floor(s / 3600);
+                    const m = Math.floor((s % 3600) / 60);
+                    const sec = s % 60;
+                    el.textContent = `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+                }
+                const lag = document.getElementById('header-ws-lag-value');
+                if (lag) {
+                    const age = Math.max(0, Math.floor((Date.now() - __lastWsMessageAt) / 1000));
+                    lag.textContent = age < 120 ? `${age}s ago` : `${Math.floor(age / 60)}m ago`;
+                }
+            }, 1000);
+            setInterval(updateBarCountdownChip, 500);
             
             // Load accounts and contracts
             loadAccounts();
@@ -4813,7 +5953,10 @@ Speed Trading Shortcuts:
         
             // Symbol change handler
             document.getElementById('chart-symbol-select')?.addEventListener('change', refreshChart);
-            document.getElementById('chart-timeframe-select')?.addEventListener('change', refreshChart);
+            document.getElementById('chart-timeframe-select')?.addEventListener('change', () => {
+                refreshChart();
+                updateBarCountdownChip();
+            });
             
             // Refresh rate change handler
             document.getElementById('chart-refresh-rate')?.addEventListener('change', (e) => {
@@ -5170,98 +6313,6 @@ Speed Trading Shortcuts:
             if (ordersPanel) ordersPanel.style.gridColumn = `span ${ordersWidth}`;
         }
         
-        function popOutWidget(panelId) {
-            const panel = document.getElementById(panelId);
-            if (!panel) return;
-            
-            // Create popout URL with widget ID and websocket connection info
-            const popoutUrl = `${BASE_URL}/popout?widget=${panelId}&port=${SERVER_PORT}&symbol=${encodeURIComponent(SYMBOL)}&timeframe=${encodeURIComponent(TIMEFRAME)}&ws_url=${encodeURIComponent(WS_URL)}`;
-            
-            // Open in new window
-            const popoutWindow = window.open(
-                popoutUrl,
-                `popout-${panelId}`,
-                'width=1200,height=800,resizable=yes,scrollbars=yes,toolbar=no,menubar=no'
-            );
-            
-            if (!popoutWindow) {
-                showToast('Please allow pop-ups for this site to use the pop-out feature', 'warn', 6000);
-                return;
-            }
-            
-            // Store reference for communication
-            if (!window.popoutWindows) window.popoutWindows = {};
-            window.popoutWindows[panelId] = popoutWindow;
-            
-            // Hide the panel from dashboard
-            panel.style.display = 'none';
-            panel.setAttribute('data-popped-out', 'true');
-            
-            // Add "Pop back in" button to the hidden panel (will be shown when popped back)
-            const popBackBtn = document.createElement('button');
-            popBackBtn.textContent = '↩ Pop Back In';
-            popBackBtn.className = 'widget-btn';
-            popBackBtn.style.cssText = 'position: absolute; top: 5px; right: 5px; z-index: 1000; background: var(--positive-color); color: #fff; border: none; padding: 3px 6px; border-radius: 2px; font-size: 9px; cursor: pointer;';
-            popBackBtn.onclick = () => popBackWidget(panelId);
-            panel.appendChild(popBackBtn);
-            
-            // Forward websocket messages to popout window
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                const originalOnMessage = websocket.onmessage;
-                websocket.onmessage = (event) => {
-                    // Call original handler for main window
-                    if (originalOnMessage) originalOnMessage(event);
-                    
-                    // Forward to popout window
-                    if (popoutWindow && !popoutWindow.closed) {
-                        try {
-                        popoutWindow.postMessage({
-                                type: 'websocket-message',
-                                data: JSON.parse(event.data)
-                            }, '*');
-                        } catch (e) {
-                            // If not JSON, send as text
-                            popoutWindow.postMessage({
-                                type: 'websocket-message',
-                                data: event.data
-                        }, '*');
-                    }
-                    }
-                };
-            }
-            
-            // Listen for popout window close to restore panel
-            const checkClosed = setInterval(() => {
-                if (popoutWindow.closed) {
-                    clearInterval(checkClosed);
-                    popBackWidget(panelId);
-                }
-            }, 500);
-        }
-        
-        function popBackWidget(panelId) {
-            const panel = document.getElementById(panelId);
-            if (!panel) return;
-            
-            // Show the panel again
-            panel.style.display = '';
-            panel.removeAttribute('data-popped-out');
-            
-            // Remove pop back button
-            const popBackBtn = panel.querySelector('button[onclick*="popBackWidget"]');
-            if (popBackBtn) popBackBtn.remove();
-            
-            // Close popout window if still open
-            if (window.popoutWindows && window.popoutWindows[panelId]) {
-                try {
-                    window.popoutWindows[panelId].close();
-                } catch (e) {
-                    // Window already closed
-                }
-                delete window.popoutWindows[panelId];
-            }
-        }
-        
         // Widget reordering with drag and drop
         let draggedElement = null;
         let widgetOrder = [];
@@ -5287,7 +6338,6 @@ Speed Trading Shortcuts:
                      style="display: flex; align-items: center; gap: 8px; padding: 8px; background: #151515; margin-bottom: 4px; border-radius: 4px; cursor: move;">
                     <span>⠿</span>
                     <span style="flex: 1;">${widget.name}</span>
-                    <button class="widget-btn" onclick="popOutWidget('${widget.id}')" title="Pop out">⤢</button>
                 </div>
             `).join('');
         }
@@ -5346,6 +6396,197 @@ Speed Trading Shortcuts:
         window.addEventListener('load', () => {
             loadCustomization();
             initWidgetOrderList();
+        });
+        
+        async function openMasterDataPopout(kind) {
+            const backdrop = document.getElementById('master-popout-backdrop');
+            const box = document.getElementById('master-popout');
+            const title = document.getElementById('master-popout-title');
+            const body = document.getElementById('master-popout-body');
+            if (!backdrop || !box || !body || !title) return;
+            const titles = {
+                activity: 'Activity',
+                performance: 'Performance',
+                tradeslog: 'Tradeslog',
+                strategies: 'Strategies',
+                terminal: 'Terminal',
+            };
+            title.textContent = titles[kind] || kind;
+            body.innerHTML = '<div style="color:#94a3b8;padding:10px;">Loading…</div>';
+            backdrop.style.display = 'block';
+            box.style.display = 'flex';
+            try {
+                if (kind === 'activity') {
+                    const [pj, oj] = await Promise.all([
+                        fetch(`${BASE_URL}/api/chart/positions`).then(r => r.json()),
+                        fetch(`${BASE_URL}/api/chart/orders?no_cache=1&include_linked=0`).then(r => r.json()),
+                    ]);
+                    const pos = (pj && pj.positions) ? pj.positions : [];
+                    const raw = (oj && oj.orders) ? oj.orders : [];
+                    const ord = raw.filter(orderIsWorking);
+                    let html = '<div style="margin-bottom:10px;"><strong style="color:#cbd5e1;">Positions</strong></div>';
+                    if (!pos.length) html += '<div style="color:#888;margin-bottom:14px;">No open positions</div>';
+                    else {
+                        html += '<table style="width:100%;border-collapse:collapse;margin-bottom:14px;font-size:10px;"><tr style="color:#94a3b8;text-align:left"><th>Sym</th><th>Side</th><th>Qty</th><th>Entry</th></tr>';
+                        html += pos.map(p => `<tr><td>${(p.symbol || '').toString()}</td><td>${p.side || ''}</td><td>${p.quantity ?? p.size ?? ''}</td><td>${(p.entryPrice || p.entry_price || p.averagePrice || '').toString()}</td></tr>`).join('');
+                        html += '</table>';
+                    }
+                    html += '<div style="margin-bottom:10px;"><strong style="color:#cbd5e1;">Working orders</strong></div>';
+                    if (!ord.length) html += '<div style="color:#888;">No working orders</div>';
+                    else {
+                        html += '<table style="width:100%;border-collapse:collapse;font-size:10px;"><tr style="color:#94a3b8;text-align:left"><th>Sym</th><th>Side</th><th>Type</th><th>Px</th><th>St</th></tr>';
+                        html += ord.map(o => {
+                            const px = o.price || o.limitPrice || o.stopPrice || o.stop_price || '';
+                            return `<tr><td>${o.symbol || ''}</td><td>${o.side || ''}</td><td>${o.type || ''}</td><td>${px}</td><td>${o.status || ''}</td></tr>`;
+                        }).join('');
+                        html += '</table>';
+                    }
+                    body.innerHTML = html;
+                    return;
+                }
+                if (kind === 'performance') {
+                    const response = await fetch(`${BASE_URL}/api/chart/performance/metrics`);
+                    const data = await response.json();
+                    if (data.error) {
+                        body.innerHTML = '<div style="color:#f87171;">' + String(data.error) + '</div>';
+                        return;
+                    }
+                    const current = data.current || {};
+                    const trades = data.trades || {};
+                    const perf = data.performance || {};
+                    const winRatePct = (trades.total > 0) ? (trades.win_rate * 100) : 0;
+                    body.innerHTML = `
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                            <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;padding:8px;"><div style="color:#94a3b8;font-size:9px;">Trades</div><div style="font-weight:600;">${trades.total || 0}</div></div>
+                            <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;padding:8px;"><div style="color:#94a3b8;font-size:9px;">Win rate</div><div style="font-weight:600;">${winRatePct.toFixed(1)}%</div></div>
+                            <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;padding:8px;"><div style="color:#94a3b8;font-size:9px;">Net P&amp;L</div><div style="font-weight:600;">$${(current.realized_pnl || 0).toFixed(2)}</div></div>
+                            <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;padding:8px;"><div style="color:#94a3b8;font-size:9px;">Return</div><div style="font-weight:600;">${(perf.return_pct || 0).toFixed(2)}%</div></div>
+                            <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;padding:8px;"><div style="color:#94a3b8;font-size:9px;">Max DD</div><div style="font-weight:600;">${(perf.max_drawdown || 0).toFixed(2)}%</div></div>
+                            <div style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;padding:8px;"><div style="color:#94a3b8;font-size:9px;">Avg trade</div><div style="font-weight:600;">$${(trades.avg_trade || 0).toFixed(2)}</div></div>
+                        </div>`;
+                    return;
+                }
+                if (kind === 'tradeslog') {
+                    const response = await fetch(`${BASE_URL}/api/chart/trades`);
+                    const data = await response.json();
+                    const trades = (data && data.trades) ? data.trades.slice(0, 50) : [];
+                    if (!trades.length) {
+                        body.innerHTML = '<div style="color:#888;">No trades</div>';
+                        return;
+                    }
+                    body.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:10px;"><tr style="color:#94a3b8;text-align:left"><th>#</th><th>Sym</th><th>Side</th><th>P&amp;L</th><th>Exit</th></tr>' +
+                        trades.map((t, i) => `<tr><td>${i + 1}</td><td>${t.symbol || ''}</td><td>${t.side || ''}</td><td>${(t.net_pnl != null ? Number(t.net_pnl).toFixed(2) : '')}</td><td>${String(t.exit_time || t.close_time || t.timestamp || '').slice(0, 22)}</td></tr>`).join('') + '</table>';
+                    return;
+                }
+                if (kind === 'strategies') {
+                    const response = await fetch(`${BASE_URL}/api/chart/strategy/status`);
+                    const data = await response.json();
+                    const err = data && data.error;
+                    if (err) {
+                        body.innerHTML = '<div style="color:#f87171;">' + String(err) + '</div>';
+                        return;
+                    }
+                    const st = (data && data.strategies) ? data.strategies : {};
+                    const names = Object.keys(st);
+                    if (!names.length) {
+                        body.innerHTML = '<div style="color:#888;">No strategy status</div>';
+                        return;
+                    }
+                    let html = '<table style="width:100%;border-collapse:collapse;font-size:10px;"><tr style="color:#94a3b8;text-align:left"><th>Name</th><th>Active</th><th>Sym</th><th>TF</th><th>Runtime</th></tr>';
+                    names.forEach((n) => {
+                        const s = st[n] || {};
+                        const syms = (s.symbols || []).join(', ');
+                        html += `<tr><td>${n}</td><td>${s.active ? 'yes' : 'no'}</td><td>${syms}</td><td>${s.timeframe || ''}</td><td>${s.runtime_str || s.start_time || ''}</td></tr>`;
+                    });
+                    html += '</table>';
+                    body.innerHTML = html;
+                    return;
+                }
+                if (kind === 'terminal') {
+                    const logBox = document.getElementById('logs-container');
+                    const snippet = logBox ? logBox.innerText : '';
+                    const pre = document.createElement('pre');
+                    pre.style.cssText = 'white-space:pre-wrap;font-size:9px;color:#bbf7d0;background:#000;padding:8px;max-height:70vh;overflow:auto;margin:0;font-family:ui-monospace,Courier New,monospace;';
+                    pre.textContent = (snippet && snippet.trim()) ? snippet.trim().slice(-12000) : '(No log lines yet — open the Terminal panel or wait for log stream.)';
+                    body.innerHTML = '';
+                    body.appendChild(pre);
+                    const row = document.createElement('div');
+                    row.style.cssText = 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;';
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'btn-primary';
+                    b.style.cssText = 'font-size:9px;padding:4px 10px;';
+                    b.textContent = 'Open Terminal panel';
+                    b.onclick = () => { closeMasterDataPopout(); scrollToDashboardPanel('terminal-hub-panel'); };
+                    row.appendChild(b);
+                    body.appendChild(row);
+                    return;
+                }
+            } catch (err) {
+                body.innerHTML = '<div style="color:#f87171;">' + (err && err.message ? err.message : String(err)) + '</div>';
+            }
+        }
+
+        function closeMasterDataPopout() {
+            const backdrop = document.getElementById('master-popout-backdrop');
+            const box = document.getElementById('master-popout');
+            if (backdrop) backdrop.style.display = 'none';
+            if (box) box.style.display = 'none';
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            const themePop = document.getElementById('theme-session-popout');
+            if (themePop && themePop.style.display === 'flex') {
+                closeMasterThemePopout();
+                return;
+            }
+            closeMasterDataPopout();
+        });
+
+        // Inline onclick= handlers run in global scope; this script is wrapped in an IIFE.
+        Object.assign(window, {
+            toggleKeyboardShortcuts,
+            toggleAlerts,
+            toggleDesktopNotifications,
+            onMasterPanelToggle,
+            loadMasterPanelVisibility,
+            toggleChartFullscreen,
+            scrollToDashboardPanel,
+            showShortcutsHelp,
+            togglePanel,
+            refreshChart,
+            refreshAll,
+            placeOrder,
+            cancelAllOrders,
+            quickFlatten,
+            clearSignalFeed,
+            startStrategy,
+            executeCommand,
+            clearLogs,
+            exportTradesCSV,
+            refreshTradesTable,
+            sortTradesTable,
+            closePosition,
+            cancelOrder,
+            stopStrategyByName,
+            toggleStrategyDetails,
+            handleDragStart,
+            handleDragOver,
+            handleDrop,
+            handleDragEnd,
+            updateOrderType,
+            updateBracket,
+            switchAccount,
+            applyLogFilters,
+            filterTradesTable,
+            openMasterDataPopout,
+            closeMasterDataPopout,
+            applyPageThemeFromServer,
+            openMasterThemePopout,
+            closeMasterThemePopout,
+            resetMasterSessionTheme,
+            applyMasterThemePreset,
         });
 })();
     </script>

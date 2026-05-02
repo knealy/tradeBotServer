@@ -253,12 +253,13 @@ class UserHubManager:
             hub.on('GatewayUserOrder', self._handle_order_update)
             hub.on('GatewayUserTrade', self._handle_trade_update)
             
-            # Handle reconnection (if method exists)
+            # Handle reconnection (if method exists). signalrcore may invoke with no args during
+            # transport ping/reconnect — accept *args so we never raise TypeError.
             try:
                 if hasattr(hub, 'on_reconnect'):
-                    hub.on_reconnect(lambda connection_id: self._on_reconnected(account_id))
+                    hub.on_reconnect(lambda *args, **kwargs: self._on_reconnected(account_id))
                 elif hasattr(hub, 'onreconnected'):
-                    hub.onreconnected(lambda connection_id: self._on_reconnected(account_id))
+                    hub.onreconnected(lambda *args, **kwargs: self._on_reconnected(account_id))
             except Exception as e:
                 logger.debug(f"Could not register reconnection handler: {e}")
             

@@ -1,4 +1,4 @@
-<!-- Last verified by: cursor-agent on 2026-04-29 (research MC bootstrap, correlated exposure guard, market calendar + Discord inactivity, partial close API, trend_filter TOML) -->
+<!-- Last verified by: cursor-agent on 2026-04-30 (master dashboard: OR via executor heartbeat metadata + strategy_states, details `account_id` query, order terminal incl. SUSPENDED) -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 
@@ -183,7 +183,7 @@ Do not add new env-var reads directly in strategy code — expose them through `
 | `order_history_cache` | Raw order records from the exchange, keyed by order ID |
 | `cache_metadata` | TTL and format metadata for the historical bar cache |
 | `strategy_states` | Serialized strategy state (position, mode, last signal) — survives restarts |
-| `process_states` | PID, uptime, and health status for each running executor process |
+| `process_states` | Executor PID/heartbeat; `metadata` includes `strategies` and, for `overnight_range`, live **`or_ranges`** so the Master chart (separate process) can draw session highs/lows without reading the executor’s in-memory `active_ranges` |
 | `strategy_executions` | Per-execution log: which strategy ran, on which account, for how long |
 | `dashboard_settings` | Persisted GUI preferences (visible symbols, chart range, etc.) |
 | `notifications` | Discord / alert queue for retries and deduplication |

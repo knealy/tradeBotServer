@@ -1,5 +1,7 @@
 # Performance baselines (`docs/perf/`)
 
+Strategy research (overnight_range filter sweeps, chunk vs single-run semantics, multi-symbol CSV export): [RESEARCH_PATHWAYS.md](../RESEARCH_PATHWAYS.md). Regenerate `overnight_range_*_chunks.json` after replay/strategy fixes so rollups stay comparable to current code.
+
 Use this folder for **before/after** profiling artifacts (SVG/HTML) when tuning the asyncio hot path, startup, or DB.
 Short operator checklist: [BASELINE.md](BASELINE.md). Live trading / Rust vs I/O: [OPERATIONS_TUNING.md](OPERATIONS_TUNING.md).
 

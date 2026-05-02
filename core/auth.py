@@ -212,8 +212,13 @@ class AuthManager:
                     if len(snippet) > 600:
                         snippet = snippet[:600] + "…"
                     error_msg = f"HTTP {status_code} | body: {snippet}" if snippet else f"HTTP {status_code}"
-                    if status_code == 404 and "/api/Fill/search" in endpoint:
-                        logger.debug(f"Endpoint not found (404): {endpoint} - expected, skipping")
+                    if status_code == 404 and (
+                        "/api/Fill/search" in endpoint or endpoint.startswith("/api/Position/")
+                    ):
+                        logger.debug(
+                            "Endpoint returned 404 (expected in some cases): %s",
+                            endpoint,
+                        )
                         return {"error": error_msg, "status_code": status_code, "response_text": body_text}
                     if quiet_client_errors:
                         logger.debug(error_msg)

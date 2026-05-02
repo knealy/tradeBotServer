@@ -18,6 +18,7 @@ Strategy Logic:
 
 import logging
 import asyncio
+import time as time_module
 from datetime import datetime, date, time, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -112,9 +113,11 @@ class OvernightRangeStrategy(BaseStrategy):
         self.active_orders: Dict[str, List[str]] = {}  # symbol -> [order_ids]
         self.breakeven_monitoring: Dict[str, Dict] = {}  # order_id -> monitoring data
         
-        # Cache overnight ranges per day to avoid recalculating on every bar
-        # Key: (symbol, date) -> OvernightRange
+        # Completed overnight window: key (symbol, end_date) where end_date is the session
+        # morning date (the calendar day of overnight_end, e.g. 9:29 AM).
         self._overnight_range_cache: Dict[Tuple[str, date], OvernightRange] = {}
+        # In-flight window (before cutoff): short TTL so the range widens as bars arrive
+        self._overnight_range_inflight: Dict[Tuple[str, date], Tuple[OvernightRange, float]] = {}
         
         # Tick size cache: {symbol: tick_size}
         self._tick_size_cache: Dict[str, float] = {}
@@ -181,6 +184,20 @@ class OvernightRangeStrategy(BaseStrategy):
         
         self.filter_dll_proximity_enabled = self._cfg.get_bool("filters.dll_proximity", False)
         self.filter_dll_threshold = float(self._cfg.get_float("filters.dll_threshold_pct", 0.75))  # 75%
+
+        raw_skip = self._cfg.get_list("filters.skip_weekdays", [])
+        self.filter_skip_weekdays: List[int] = []
+        for x in raw_skip or []:
+            try:
+                self.filter_skip_weekdays.append(int(x))
+            except (TypeError, ValueError):
+                continue
+
+        # CSV / strategy replay calls analyze every bar; gate to [market_open, +N minutes) ET.
+        self.replay_order_window_minutes = int(
+            self._cfg.get_int("timing.replay_order_window_minutes", 8) or 8
+        )
+        self._replay_sessions_signaled: set[Tuple[str, date]] = set()
         
         # Strategy state
         self.is_tracking = False
@@ -206,7 +223,96 @@ class OvernightRangeStrategy(BaseStrategy):
         logger.info(f"     Gap Filter: {'ENABLED' if self.filter_gap_enabled else 'DISABLED'} (max {self.filter_gap_max:.0f} pts)")
         logger.info(f"     Volatility Filter: {'ENABLED' if self.filter_volatility_enabled else 'DISABLED'} (ATR {self.filter_atr_min:.0f}-{self.filter_atr_max:.0f})")
         logger.info(f"     DLL Proximity: {'ENABLED' if self.filter_dll_proximity_enabled else 'DISABLED'} (threshold {self.filter_dll_threshold:.0%})")
+        if self.filter_skip_weekdays:
+            logger.info(f"     Skip weekdays: {sorted(self.filter_skip_weekdays)} (Mon=0 … Sun=6)")
+        logger.info(
+            f"     Replay open window: {self.replay_order_window_minutes} min after {self.market_open_time} "
+            f"(strategy CSV replay only)"
+        )
     
+    def _parse_cfg_time(self, s: str) -> time:
+        parts = str(s).strip().split(":")
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        return time(h, m)
+
+    def _is_strategy_replay_mode(self) -> bool:
+        return bool(getattr(self.trading_bot, "_is_strategy_replay", False))
+
+    def _current_bar_datetime_utc(self) -> Optional[datetime]:
+        raw = getattr(self.trading_bot, "_current_bar_timestamp", None)
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            dt = raw
+        elif hasattr(raw, "to_pydatetime"):
+            try:
+                dt = raw.to_pydatetime()
+            except Exception:
+                return None
+        else:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+
+    def _effective_now_et(self) -> Optional[datetime]:
+        """Wall clock for filters: replay uses current bar time; live uses now in session timezone."""
+        if self._is_strategy_replay_mode():
+            cu = self._current_bar_datetime_utc()
+            if cu is None:
+                return None
+            if self.timezone != timezone.utc:
+                return cu.astimezone(self.timezone)
+            return cu
+        if self.timezone != timezone.utc:
+            return datetime.now(self.timezone)
+        return datetime.now(timezone.utc)
+
+    def _replay_in_order_placement_window(self, now_et: datetime) -> bool:
+        mo = self._parse_cfg_time(self.market_open_time)
+        d0 = now_et.date()
+        try:
+            if pytz is not None and hasattr(self.timezone, "localize"):
+                start_dt = self.timezone.localize(datetime.combine(d0, mo))
+            else:
+                tz = now_et.tzinfo if now_et.tzinfo else self.timezone
+                start_dt = datetime.combine(d0, mo, tzinfo=tz)
+        except Exception:
+            return False
+        end_dt = start_dt + timedelta(minutes=max(1, self.replay_order_window_minutes))
+        return start_dt <= now_et < end_dt
+
+    def format_overnight_session_window_label(self) -> str:
+        """
+        Calendar window for the overnight session in Eastern, e.g.
+        ``Apr 30 6:00 PM → May 1 9:29 AM US/Eastern`` (crosses midnight).
+        """
+        if pytz is None or self.timezone == timezone.utc:
+            return f"{self.overnight_start} – {self.overnight_end} (install pytz for dated window)"
+        try:
+            start_t = self._parse_cfg_time(self.overnight_start)
+            end_t = self._parse_cfg_time(self.overnight_end)
+        except (ValueError, TypeError):
+            return f"{self.overnight_start} – {self.overnight_end} {self.timezone}"
+        now_et = datetime.now(self.timezone)
+        d0 = now_et.date()
+        fmt = "%b %d %I:%M %p"
+        if end_t <= start_t:
+            today_start = self.timezone.localize(datetime.combine(d0, start_t))
+            if now_et >= today_start:
+                start_dt = today_start
+                end_dt = self.timezone.localize(datetime.combine(d0 + timedelta(days=1), end_t))
+            else:
+                start_dt = self.timezone.localize(datetime.combine(d0 - timedelta(days=1), start_t))
+                end_dt = self.timezone.localize(datetime.combine(d0, end_t))
+        else:
+            start_dt = self.timezone.localize(datetime.combine(d0, start_t))
+            end_dt = self.timezone.localize(datetime.combine(d0, end_t))
+        return f"{start_dt.strftime(fmt)} → {end_dt.strftime(fmt)} US/Eastern"
+
     def _is_cooldown_active(self, symbol: str, side: str) -> Tuple[bool, float]:
         """
         Check if cooldown is active for a symbol/side combination.
@@ -880,12 +986,29 @@ class OvernightRangeStrategy(BaseStrategy):
         Returns signals for BOTH long and short breakout orders.
         """
         try:
-            # Get overnight range
-            range_data = self.active_ranges.get(symbol)
-            if not range_data:
-                range_data = await self.track_overnight_range(symbol)
-                if not range_data:
+            symbol = symbol.upper()
+
+            now_et = self._effective_now_et()
+            if self.filter_skip_weekdays and now_et is not None:
+                if now_et.weekday() in self.filter_skip_weekdays:
+                    logger.debug("Skipping %s — skip_weekdays (weekday=%s)", symbol, now_et.weekday())
                     return None
+
+            if self._is_strategy_replay_mode():
+                if now_et is None:
+                    logger.debug("Skipping %s — replay mode but no bar timestamp on bot", symbol)
+                    return None
+                if not self._replay_in_order_placement_window(now_et):
+                    return None
+                if (symbol, now_et.date()) in self._replay_sessions_signaled:
+                    return None
+
+            # Always resolve range for the *current* session clock. Do not reuse
+            # ``active_ranges`` from a prior day — that caused identical bracket
+            # prices across CSV replay sessions (stale high/low).
+            range_data = await self.track_overnight_range(symbol)
+            if not range_data:
+                return None
             
             # Calculate ATR
             atr_data = await self.calculate_atr(symbol)
@@ -930,7 +1053,12 @@ class OvernightRangeStrategy(BaseStrategy):
             short_order = signal["short_order"]
             
             result = await self.place_range_break_orders(symbol)
-            return result.get("success", False)
+            ok = bool(result.get("success", False))
+            if ok and self._is_strategy_replay_mode():
+                now_et = self._effective_now_et()
+                if now_et is not None:
+                    self._replay_sessions_signaled.add((symbol.upper(), now_et.date()))
+            return ok
             
         except Exception as e:
             logger.error(f"Error executing signal: {e}")
@@ -1710,6 +1838,60 @@ class OvernightRangeStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"Error calculating ATR for {symbol}: {e}")
             return None
+
+    def _persist_or_ranges_to_db(self) -> None:
+        """Write active OR high/low to strategy_states so the chart server can draw lines (headless executor)."""
+        now_mono = time_module.monotonic()
+        if now_mono - getattr(self, "_or_db_last_mono", 0.0) < 4.0:
+            return
+        self._or_db_last_mono = now_mono
+        db = getattr(self.trading_bot, "db", None)
+        if not db:
+            return
+        account_id = None
+        acct = getattr(self.trading_bot, "selected_account", None)
+        if isinstance(acct, dict):
+            account_id = acct.get("id")
+        elif acct is not None:
+            account_id = str(acct)
+        if not account_id:
+            return
+        aid = str(account_id)
+        try:
+            st = db.get_strategy_state(aid, "overnight_range") or {}
+            settings = dict(st.get("settings") or {})
+            snap: Dict[str, Dict[str, float]] = {}
+            for sym, r in self.active_ranges.items():
+                try:
+                    hi = float(r.high)
+                    lo = float(r.low)
+                    key = str(sym).upper()
+                    snap[key] = {"high": hi, "low": lo}
+                    # Alias for chart symbol dropdown (e.g. MNQ vs contract-prefixed keys)
+                    if "." in key:
+                        short = key.split(".")[-1].strip()
+                        if short and short != key:
+                            snap[short] = {"high": hi, "low": lo}
+                except (TypeError, ValueError):
+                    continue
+            settings["or_ranges"] = snap
+            metadata = dict(st.get("metadata") or {})
+            metadata["or_ranges_saved_at"] = datetime.now(timezone.utc).isoformat()
+            symbols = st.get("symbols")
+            if not symbols and self.config is not None:
+                symbols = list(getattr(self.config, "symbols", None) or [])
+            db.save_strategy_state(
+                account_id=aid,
+                strategy_name="overnight_range",
+                enabled=bool(st.get("enabled", True)),
+                symbols=symbols,
+                settings=settings,
+                metadata=metadata,
+                last_started=None,
+                last_stopped=None,
+            )
+        except Exception as e:
+            logger.debug("or_ranges DB snapshot skipped: %s", e, exc_info=True)
     
     async def track_overnight_range(self, symbol: str) -> Optional[OvernightRange]:
         """
@@ -1804,35 +1986,34 @@ class OvernightRangeStrategy(BaseStrategy):
                 now = datetime.now(self.timezone)
                 logger.debug(f"Using current system date: {now}")
             
-            # Check cache for this symbol and date
-            cache_key = (symbol, now.date())
-            if cache_key in self._overnight_range_cache:
-                cached_range = self._overnight_range_cache[cache_key]
-                logger.debug(f"Using cached overnight range for {symbol} on {now.date()}")
-                return cached_range
-            
             # Parse configured session times
             start_hour, start_min = map(int, self.overnight_start.split(':'))
             end_hour, end_min = map(int, self.overnight_end.split(':'))
             start_clock = time(start_hour, start_min)
             end_clock = time(end_hour, end_min)
             
-            # Determine the most recent completed session
-            # For sessions that cross midnight (e.g., 18:00 -> 09:30):
-            #   - Session starts yesterday 6pm, ends today 9:30am
-            # For sessions within same day (e.g., 09:30 -> 18:00):
-            #   - Session starts today 9:30am, ends today 6pm
+            # Determine which overnight window to use (all times in session_timezone).
+            #
+            # Cross-midnight (e.g. 18:00 -> 09:29): window is [prev_day start_clock, end_day end_clock].
+            # - From end_clock until before start_clock the same calendar day: that window is still
+            #   in progress (it ends today at end_clock).
+            # - From start_clock until midnight: a NEW window started today at start_clock and ends
+            #   tomorrow at end_clock.
+            # - From end_clock until start_clock: the window that ended today at end_clock is the
+            #   one to use for the morning session (same dates as the pre-end_clock branch).
             if end_clock <= start_clock:
-                # Session crosses midnight (e.g., 18:00 -> 09:30)
-                if now.time() >= end_clock:
-                    # We're past the end time today, so the session that just ended was:
-                    # Start: yesterday at start_clock, End: today at end_clock
+                t = now.time()
+                if t >= start_clock:
+                    # Evening: overnight in progress since today start_clock; ends tomorrow end_clock
+                    start_date = now.date()
+                    end_date = start_date + timedelta(days=1)
+                elif t >= end_clock:
+                    # Morning/afternoon after cutoff: last completed window ended today at end_clock
                     end_date = now.date()
                     start_date = end_date - timedelta(days=1)
                 else:
-                    # We're before the end time today, so the session that just ended was:
-                    # Start: day before yesterday at start_clock, End: yesterday at end_clock
-                    end_date = (now - timedelta(days=1)).date()
+                    # After midnight, before end_clock: window started yesterday, ends today
+                    end_date = now.date()
                     start_date = end_date - timedelta(days=1)
             else:
                 # Session contained within same calendar day (e.g., 09:30 -> 18:00)
@@ -1847,8 +2028,10 @@ class OvernightRangeStrategy(BaseStrategy):
                     end_date = (now - timedelta(days=1)).date()
                     start_date = (now - timedelta(days=1)).date()  # Same day
             
-            end_time = self.timezone.localize(datetime.combine(end_date, end_clock))
             start_time = self.timezone.localize(datetime.combine(start_date, start_clock))
+            end_time = self.timezone.localize(datetime.combine(end_date, end_clock))
+            # Include the full end minute so 1m bars stamped at e.g. 09:29:xx are not dropped
+            end_time = end_time + timedelta(minutes=1) - timedelta(microseconds=1)
             
             # Safety: if start_time is equal to or after end_time, something went wrong
             if start_time >= end_time:
@@ -1860,6 +2043,34 @@ class OvernightRangeStrategy(BaseStrategy):
                 else:
                     # Crosses midnight - start should be day before end
                     start_time = self.timezone.localize(datetime.combine(end_date - timedelta(days=1), start_clock))
+            
+            cache_key = (symbol, end_date)
+            # After morning cutoff on end_date, the window is fixed and safe to cache long-term.
+            cache_allowed = (now.date() > end_date) or (
+                now.date() == end_date and now.time() >= end_clock
+            )
+            if cache_allowed:
+                if cache_key in self._overnight_range_cache:
+                    logger.debug(
+                        "Using cached overnight range for %s session ending %s",
+                        symbol,
+                        end_date,
+                    )
+                    rd = self._overnight_range_cache[cache_key]
+                    self.active_ranges[symbol] = rd
+                    return rd
+            else:
+                inflight = self._overnight_range_inflight.get(cache_key)
+                if inflight is not None:
+                    cached_range, ts_mono = inflight
+                    if time_module.monotonic() - ts_mono < 45.0:
+                        logger.debug(
+                            "Using inflight overnight range for %s session ending %s (45s TTL)",
+                            symbol,
+                            end_date,
+                        )
+                        self.active_ranges[symbol] = cached_range
+                        return cached_range
             
             # Calculate how many 1-minute bars we need
             session_duration = end_time - start_time
@@ -1976,12 +2187,15 @@ class OvernightRangeStrategy(BaseStrategy):
                 midpoint=(high + low) / 2
             )
             
-            # Cache by date to avoid recalculating on every bar
-            cache_key = (symbol, now.date())
-            self._overnight_range_cache[cache_key] = range_data
+            if cache_allowed:
+                self._overnight_range_cache[cache_key] = range_data
+                self._overnight_range_inflight.pop(cache_key, None)
+            else:
+                self._overnight_range_inflight[cache_key] = (range_data, time_module.monotonic())
             
             logger.info(f"📊 Overnight range for {symbol}: High={high:.2f}, Low={low:.2f}, Range={range_data.range_size:.2f}")
             self.active_ranges[symbol] = range_data
+            self._persist_or_ranges_to_db()
             return range_data
             
         except Exception as e:
@@ -2141,12 +2355,9 @@ class OvernightRangeStrategy(BaseStrategy):
         """
         try:
             symbol = symbol.upper()
-            # Get overnight range
-            range_data = self.active_ranges.get(symbol)
+            range_data = await self.track_overnight_range(symbol)
             if not range_data:
-                range_data = await self.track_overnight_range(symbol)
-                if not range_data:
-                    return None, None
+                return None, None
             
             # Calculate ATR - use cached for daily/zones, but recalc current if placing orders
             # Check if we're being called from place_range_break_orders (use dynamic ATR)
@@ -2938,6 +3149,10 @@ class OvernightRangeStrategy(BaseStrategy):
                     await asyncio.sleep(min(self.breakout_monitor_interval, 60))  # Check at least once per minute
                     continue
 
+                if self.filter_skip_weekdays and now.weekday() in self.filter_skip_weekdays:
+                    await asyncio.sleep(self.breakout_monitor_interval)
+                    continue
+
                 # Use cached orders if available, otherwise fetch fresh
                 cache_age = (datetime.now() - orders_cache["timestamp"]).total_seconds() if orders_cache["timestamp"] else float('inf')
                 if cache_age >= orders_cache["ttl"]:
@@ -3479,7 +3694,7 @@ class OvernightRangeStrategy(BaseStrategy):
 
         # Print comprehensive initial configuration to terminal
         strategy_details = [
-            f"⏰ Session Time: {self.overnight_start} - {self.overnight_end} {self.timezone}",
+            f"⏰ Session Time: {self.format_overnight_session_window_label()}",
             f"🚪 Market Open: {self.market_open_time} {self.timezone}",
             f"📈 ATR Period: {self.atr_period} bars ({self.atr_timeframe})",
             f"🛑 Stop Loss: {self.stop_atr_multiplier}x ATR",

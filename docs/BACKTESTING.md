@@ -10,6 +10,16 @@
 
 Shell helpers: [scripts/backtest_symbol.sh](../scripts/backtest_symbol.sh), [scripts/backtest_thorough_symbol.sh](../scripts/backtest_thorough_symbol.sh), [scripts/fetch_history_csv.sh](../scripts/fetch_history_csv.sh).
 
+## Timestamps (CSV vs Eastern sessions)
+
+Exported CSV timestamps are usually **naive wall times that match UTC** (no `+00:00` in the cell). In replay and in strategies such as **`overnight_range`**, a naive bar time is treated as **UTC**, then converted with **`US/Eastern`** (see `timing.session_timezone` in `config/strategies/overnight_range.toml`) for session boundaries (e.g. 6:00 PM overnight start, 9:30 AM cash open, 9:29 scan). **DST is handled by that zone**, not by a fixed −5 offset.
+
+So backtests and replay are **consistent with live** as long as each bar’s clock instant really is UTC (normal for TopStepX exports and for files normalized by `historical_data/csv_merger.py`). If a file were mislabeled (e.g. Eastern values saved without a zone and read as UTC), session windows would shift by several hours.
+
+### `overnight_range` replay — expect a small trade count
+
+Replay places at most **one** breakout attempt per symbol per **session** (near `timing.market_open`), then **`[filters]`** and **`skip_weekdays`** remove most sessions before orders exist. A handful of trades over multi‑month CSV windows is often **by design**, not a broken backtest. To interpret frequency and relax knobs, see [OVERNIGHT_RANGE_RESEARCH.md](OVERNIGHT_RANGE_RESEARCH.md) §0 and `config/strategies/overnight_range.toml` comments under `[filters]`.
+
 ## Entrypoints
 
 | Tool | When to use |

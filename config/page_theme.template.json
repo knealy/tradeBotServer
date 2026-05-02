@@ -1,0 +1,17 @@
+{
+  "_readme": "Master dashboard (:root) CSS variables. Warm espresso/beige + dusty blue accent; crisp brown borders. Copy to config/page_theme.json (gitignored) to override. Session Theme pop-up overrides for the tab. See docs/PAGE_THEME_OPTIONS.md.",
+  "vars": {
+    "--bg-primary": "#1c1814",
+    "--bg-secondary": "#2a241d",
+    "--bg-tertiary": "#3d352c",
+    "--text-primary": "#faf6f0",
+    "--text-secondary": "#c9b8a4",
+    "--border-color": "#6f5e4f",
+    "--accent-color": "#6a9fb8",
+    "--positive-color": "#7aab7f",
+    "--negative-color": "#c4877a",
+    "--warning-color": "#d4a84b",
+    "--chart-canvas-bg": "#000000",
+    "--font-size-base": "12px"
+  }
+}

@@ -13,6 +13,8 @@ Personal / operator-focused futures stack for **TopStepX (ProjectX)** accounts: 
 
 Full topic index: [docs/README.md](docs/README.md).
 
+**Master dashboard** (`python trading_bot.py master` / `gui`): overnight-range lines for a **separate** `strategy_executor` process use `process_states.metadata.or_ranges` (embedded on each executor heartbeat) and/or `strategy_states.settings.or_ranges` (throttled DB snapshot from the strategy). The chart requests details with the **selected GUI account** so OR levels match the account you are viewing. Chart toolbar **Activity**, **Performance**, **Strategies**, **Terminal**, and **Tradeslog** open small account-scoped popout panels. **Strategy `max_pending`** (`core/risk_management.py`) counts **`stop_bracket`** entry legs that are still risk-relevant, including **`SUSPENDED`** when the broker reports brackets that way; it does **not** count terminal or fully filled legs. The chart shows **last close · bar countdown** on a price-aligned overlay (LWC does not allow custom text inside its native scale labels). **Theme** in the top bar opens session-only color/hex overrides plus **seven named presets** (reference palettes + **Lavender house**; includes **`--chart-canvas-bg`** for the chart pane / LWC background, default black; `sessionStorage`). Lightweight Charts tuning: [`docs/CHART_LIGHTWEIGHT_OPTIONS.md`](docs/CHART_LIGHTWEIGHT_OPTIONS.md); chart JSON: [`config/chart_theme.template.json`](config/chart_theme.template.json) (`python scripts/init_chart_theme_template.py`). **Master page** (CSS variables / colors): [`docs/PAGE_THEME_OPTIONS.md`](docs/PAGE_THEME_OPTIONS.md), [`config/page_theme.template.json`](config/page_theme.template.json), optional gitignored `config/page_theme.json`, `GET /api/chart/theme/page`, `python scripts/init_page_theme_template.py`.
+
 ## Backtesting — where the data comes from
 
 Examples that use **`--sample`** never touch disk: they call `HistoricalDataLoader.get_sample_data()` in [`core/backtest/data_loader.py`](core/backtest/data_loader.py), which **generates a synthetic random-walk** OHLCV series in memory (useful for plumbing / CI, **not** real price action).
@@ -43,7 +45,27 @@ MODE=api SYMBOL=MNQ DAYS=30 STRATEGY=ma_crossover bash scripts/backtest_symbol.s
 
 Exported `*.csv` files are **gitignored** (see [.gitignore](.gitignore)); keep them locally or point `CSV=` at a path outside the repo.
 
-More flags, JSON output, and replay: [docs/BACKTESTING.md](docs/BACKTESTING.md), workflow tree: [docs/STRATEGY_DEVELOPMENT.md](docs/STRATEGY_DEVELOPMENT.md).
+**Calendar gaps** — export the missing window with the **same** `--timeframe` as your series, then merge (list files oldest → newest; duplicates keep the last file’s row):
+
+```bash
+bash scripts/fetch_history_csv.sh --symbol MNQ --timeframe 5m --start 2026-03-09 --end 2026-04-07 \
+  --chunk-days 7 --output historical_data/price/MNQ_5m_gapfill.csv
+python historical_data/csv_merger.py part_before.csv historical_data/price/MNQ_5m_gapfill.csv part_after.csv \
+  -o historical_data/price/MNQ_5m_stitched.csv
+```
+
+**Mixed intervals (e.g. 1m archive + 5m recent)** — one CSV should be one bar size. Downsample the finer file, then merge:
+
+```bash
+python historical_data/resample_ohlcv_csv.py -i historical_data/price/merged.csv --to 5m \
+  -o historical_data/price/merged_5m.csv
+python historical_data/csv_merger.py historical_data/price/merged_5m.csv historical_data/price/MNQ_5m.csv \
+  -o historical_data/price/MNQ_5m_unified.csv
+```
+
+[`historical_data/csv_merger.py`](historical_data/csv_merger.py) warns when median bar spacing differs sharply between inputs.
+
+More flags, JSON output, and replay: [docs/BACKTESTING.md](docs/BACKTESTING.md), workflow tree: [docs/STRATEGY_DEVELOPMENT.md](docs/STRATEGY_DEVELOPMENT.md). **Trade review charts** (LWC HTML + optional matplotlib PNG from CSV + `--include-trades` JSON): [docs/OVERNIGHT_RANGE_RESEARCH.md](docs/OVERNIGHT_RANGE_RESEARCH.md) §2.2, `scripts/render_trade_review_charts.py`.
 
 ## Requirements
 
@@ -88,7 +110,7 @@ flowchart LR
 | Postgres + async batch writers | Active |
 | Dashboard (`servers/start_async_webhook.py`) | Active |
 | Strategy config | `config/strategies/*.toml` + [core/strategy_config.py](core/strategy_config.py); optional RTH companion: `simple_rth` |
-| Browser UI | Pre-built SPA in `static/dashboard/` (no Node stage in Docker) |
+| Browser UI | Pre-built SPA in `static/dashboard/` (no Node stage in Docker); optional unified chart UI [`gui/master_control.html`](gui/master_control.html) (served with chart server) — header checkboxes show/hide panels; chart fullscreen + next-bar countdown; OR high/low when `overnight_range` is active; bar bucket matches selected timeframe ([`docs/DASHBOARD.md`](docs/DASHBOARD.md)) |
 | Rust hot path (`TOPSTEPX_USE_RUST`) | Optional / partial — profile first; see [docs/perf/OPERATIONS_TUNING.md](docs/perf/OPERATIONS_TUNING.md) |
 
 ## Configuration

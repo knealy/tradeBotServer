@@ -68,8 +68,8 @@ class EventBus:
             event: Event to publish
         """
         if not self._running:
-            logger.warning(f"⚠️  EventBus not running, event dropped: {event}")
-            return
+            # Chart-only / partial boot paths may connect SignalR before run() starts the bus.
+            await self.start()
         
         await self._event_queue.put(event)
         self._event_count[event.type] += 1

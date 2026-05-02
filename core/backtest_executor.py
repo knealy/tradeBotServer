@@ -65,12 +65,16 @@ def _serialize_backtest_bundle(
     ok: bool,
     error: Optional[str] = None,
     monte_carlo: Optional[Dict[str, Any]] = None,
+    include_trades: bool = False,
 ) -> Dict[str, Any]:
     if not ok:
         return {"ok": False, "error": error or "unknown"}
     assert bundle is not None
     r = bundle.get("result")
-    summary = r.to_dict() if r is not None and hasattr(r, "to_dict") else {}
+    if r is not None and hasattr(r, "to_dict"):
+        summary = r.to_dict(include_trades=include_trades)
+    else:
+        summary = {}
     out: Dict[str, Any] = {
         "ok": True,
         "cache_key": bundle.get("cache_key"),
@@ -171,6 +175,17 @@ class BacktestExecutor:
             )
             if isinstance(data, pd.DataFrame):
                 _cli_print(f"✅ Loaded {len(data)} bars from CSV")
+                if start_date is not None or end_date is not None:
+                    n0 = len(data)
+                    if start_date is not None:
+                        data = data[data.index >= pd.Timestamp(start_date)]
+                    if end_date is not None:
+                        data = data[
+                            data.index < pd.Timestamp(end_date) + pd.Timedelta(days=1)
+                        ]
+                    _cli_print(
+                        f"   Date filter [{start_date} → {end_date}]: {n0} → {len(data)} bars"
+                    )
                 if strategy_name not in _FUNCTION_BACKTEST_STRATEGIES:
                     data_dicts = []
                     for idx, row in data.iterrows():
@@ -291,6 +306,7 @@ class BacktestExecutor:
                 bars=data,
                 initial_capital=initial_capital,
                 slippage_ticks=slippage_ticks,
+                replay_timeframe=timeframe,
                 **strategy_params
             )
         
@@ -604,6 +620,7 @@ class BacktestExecutor:
         slippage_ticks: float = 0.5,
         *,
         quiet: bool = False,
+        replay_timeframe: Optional[str] = None,
         **strategy_params
     ) -> Dict[str, Any]:
         """
@@ -666,7 +683,8 @@ class BacktestExecutor:
         result = await replay_engine.replay(
             symbol=symbol,
             bars=bars,
-            tick_size=self._get_tick_size(symbol)
+            tick_size=self._get_tick_size(symbol),
+            replay_timeframe=replay_timeframe,
         )
         
         # Print results
@@ -720,6 +738,8 @@ class BacktestExecutor:
                 self.bars = bars
                 self.selected_account = {'id': 'backtest_account', 'name': 'BACKTEST_PRAC_ACCOUNT'}
                 self.broker_adapter = broker_adapter
+                # Flag read by OvernightRangeStrategy to mimic live cadence (one open window / session).
+                self._is_strategy_replay = True
             
             def _parse_bar_timestamp(self, bar: Dict) -> Optional[datetime]:
                 """Parse a bar timestamp into a timezone-aware UTC datetime."""
@@ -748,6 +768,9 @@ class BacktestExecutor:
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt.astimezone(timezone.utc)
             
+            async def get_open_orders(self, account_id=None):
+                return []
+
             async def get_historical_data(self, symbol, timeframe=None, limit=None, start_time=None, end_time=None, **kwargs):
                 """Return bars for strategy analysis, filtered by time range if provided."""
                 # Start with all bars
@@ -950,6 +973,8 @@ Examples:
   python core/backtest_executor.py --strategy=ma_crossover --symbol=MNQ --sample --days=14 --format=json
   python core/backtest_executor.py --strategy=overnight_range --symbol=MNQ --replay --start=2025-01-01 --end=2025-01-14 --sample
 Research (grid + OOS + MC gate): python -m core.research.runner --help
+  python core/backtest_executor.py --strategy=overnight_range --symbol=MNQ --csv=data.csv \\
+    --start=2026-02-01 --end=2026-02-28 --format=json --include-trades
         """.strip(),
     )
 
@@ -994,6 +1019,11 @@ Research (grid + OOS + MC gate): python -m core.research.runner --help
                        help='Path to CSV file with historical data (exported from history command)')
     parser.add_argument('--replay', action='store_true',
                        help='Use replay mode (for class-based strategies like simple_candle)')
+    parser.add_argument(
+        '--include-trades',
+        action='store_true',
+        help='With --format=json, include each completed trade (entry/exit timestamps, prices, pnl)',
+    )
     
     # Backtest parameters
     parser.add_argument('--capital', type=float, default=50000.0,
@@ -1138,7 +1168,10 @@ Research (grid + OOS + MC gate): python -m core.research.runner --help
                 print(
                     dumps_str(
                         _serialize_backtest_bundle(
-                            result, ok=True, monte_carlo=mc_out
+                            result,
+                            ok=True,
+                            monte_carlo=mc_out,
+                            include_trades=args.include_trades,
                         )
                     )
                 )

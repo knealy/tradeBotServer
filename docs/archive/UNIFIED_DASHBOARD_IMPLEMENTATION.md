@@ -4,6 +4,8 @@
 **Status**: ✅ COMPLETE  
 **Request**: Consolidate all browser UI widgets onto ONE page (no tabs)
 
+> **2026-04 follow-up:** Pop-out windows and `/popout` were removed in favor of **panel checkboxes** in the header and **in-page chart fullscreen**. Stale order lines were addressed with server-side cache invalidation + client orphan line cleanup. See [../DASHBOARD.md](../DASHBOARD.md) and [CHANGELOG.md](../CHANGELOG.md) under `[Unreleased]`.
+
 ---
 
 ## What Changed

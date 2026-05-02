@@ -5,9 +5,29 @@ Defines structures for trades, positions, and backtest results.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
+
+
+def _iso_timestamp(ts: Any) -> str:
+    """Serialize bar/order timestamps for JSON (UTC ``Z`` when naive)."""
+    if ts is None:
+        return ""
+    if isinstance(ts, datetime):
+        dt = ts
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    # pandas.Timestamp, numpy.datetime64, etc.
+    if hasattr(ts, "to_pydatetime"):
+        try:
+            return _iso_timestamp(ts.to_pydatetime())
+        except Exception:
+            pass
+    if hasattr(ts, "isoformat"):
+        return str(ts.isoformat())
+    return str(ts)
 
 
 class OrderSide(Enum):
@@ -71,6 +91,27 @@ class BacktestTrade:
     max_favorable_excursion: float = 0.0  # MFE
     max_adverse_excursion: float = 0.0  # MAE
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        side_val = self.side.value if isinstance(self.side, OrderSide) else str(self.side)
+        return {
+            "trade_id": self.trade_id,
+            "symbol": self.symbol,
+            "side": side_val,
+            "entry_time": _iso_timestamp(self.entry_time),
+            "exit_time": _iso_timestamp(self.exit_time),
+            "entry_price": self.entry_price,
+            "exit_price": self.exit_price,
+            "quantity": self.quantity,
+            "pnl": self.pnl,
+            "pnl_percent": self.pnl_percent,
+            "commission": self.commission,
+            "slippage": self.slippage,
+            "bars_held": self.bars_held,
+            "exit_reason": self.exit_reason,
+            "max_favorable_excursion": self.max_favorable_excursion,
+            "max_adverse_excursion": self.max_adverse_excursion,
+        }
+
 
 @dataclass
 class BacktestPosition:
@@ -132,9 +173,9 @@ class BacktestResult:
     equity_curve: List[Tuple[datetime, float]] = field(default_factory=list)
     drawdown_curve: List[Tuple[datetime, float]] = field(default_factory=list)
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert result to dictionary."""
-        return {
+    def to_dict(self, include_trades: bool = False) -> Dict[str, Any]:
+        """Convert result to dictionary. Optionally append completed round-trips."""
+        out: Dict[str, Any] = {
             'symbol': self.symbol,
             'strategy': self.strategy_name,
             'period': f"{self.start_date.date()} to {self.end_date.date()}",
@@ -152,6 +193,6 @@ class BacktestResult:
             'average_loss': self.average_loss,
             'expectancy': self.expectancy
         }
-
-
-from typing import Tuple
+        if include_trades:
+            out['trades'] = [t.to_json_dict() for t in self.trades]
+        return out

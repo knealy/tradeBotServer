@@ -1,0 +1,55 @@
+{
+  "_readme": "Lightweight Charts v4 defaults aligned with warm Master palette. Mirror into gui/master_control.html initChart() or load programmatically. Chart pane fill follows --chart-canvas-bg on Master.",
+  "layout": {
+    "background": {
+      "color": "#000000"
+    },
+    "textColor": "#f2ebe3",
+    "fontSize": 13
+  },
+  "grid": {
+    "vertLines": {
+      "visible": false
+    },
+    "horzLines": {
+      "visible": false
+    }
+  },
+  "crosshair": {
+    "mode": "Normal",
+    "vertLine": {
+      "labelVisible": true,
+      "color": "#a89988"
+    },
+    "horzLine": {
+      "labelVisible": true,
+      "color": "#a89988"
+    }
+  },
+  "rightPriceScale": {
+    "borderColor": "#8b7765",
+    "autoScale": true,
+    "visible": true
+  },
+  "timeScale": {
+    "borderColor": "#8b7765",
+    "borderVisible": true,
+    "timeVisible": true,
+    "secondsVisible": true,
+    "visible": true
+  },
+  "candlestickSeries": {
+    "upColor": "#7da882",
+    "downColor": "#bf7a6e",
+    "borderVisible": false,
+    "wickUpColor": "#7da882",
+    "wickDownColor": "#bf7a6e"
+  },
+  "volumeHistogramSeries": {
+    "color": "#5a6d78",
+    "priceFormat": {
+      "type": "volume"
+    },
+    "priceScaleId": ""
+  }
+}

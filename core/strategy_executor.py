@@ -64,9 +64,31 @@ class StrategyExecutor:
         try:
             while self.is_running:
                 await self._update_process_state()
+                await self._sync_persisted_disable_flags()
                 await asyncio.sleep(30)
         except asyncio.CancelledError:
             raise
+
+    async def _sync_persisted_disable_flags(self) -> None:
+        """Stop strategies when Master GUI persisted ``enabled=False`` on this account."""
+        if not self.running_strategies:
+            return
+        db = get_database()
+        if not db:
+            return
+        aid = self._get_account_id()
+        if not aid:
+            return
+        for name in list(self.running_strategies.keys()):
+            row = db.get_strategy_state(str(aid), name)
+            if row and row.get("enabled") is False:
+                logger.info(
+                    "strategy_states disabled %s — stopping in executor (account %s)",
+                    name,
+                    aid,
+                )
+                await self.stop_strategy(name)
+                await self._update_process_state()
 
     async def start_strategy(self, strategy_name: str, symbols: Optional[List[str]] = None, 
                             account_id: Optional[str] = None, risk_config: Optional[Dict[str, Dict[str, Any]]] = None) -> bool:
@@ -228,6 +250,8 @@ class StrategyExecutor:
             for strategy_name in list(self.running_strategies.keys()):
                 await self.stop_strategy(strategy_name)
 
+            await self._disconnect_from_gui_websocket()
+
             if hasattr(self.trading_bot, "event_bus") and self.trading_bot.event_bus:
                 try:
                     await self.trading_bot.event_bus.stop()
@@ -303,11 +327,13 @@ class StrategyExecutor:
             
             try:
                 # Create a persistent session for WebSocket
+                from aiohttp.client_ws import ClientWSTimeout
+
                 self.ws_session = aiohttp.ClientSession()
                 self.ws_client = await self.ws_session.ws_connect(
-                    ws_url, 
-                    timeout=aiohttp.ClientTimeout(total=5),
-                    heartbeat=30  # Send ping every 30 seconds
+                    ws_url,
+                    timeout=ClientWSTimeout(ws_close=10),
+                    heartbeat=30,
                 )
                 self.ws_connected = True
                 logger.info("✅ Connected to GUI WebSocket server - signals will be broadcast")
@@ -383,15 +409,39 @@ class StrategyExecutor:
                 return
             
             account_id = self._get_account_id()
+            meta: Dict[str, Any] = {
+                'strategies': list(self.running_strategies.keys()),
+                'last_heartbeat': datetime.now(timezone.utc).isoformat(),
+            }
+            # Embed OR high/low on every heartbeat so Master GUI (separate process) can draw
+            # range lines without relying on strategy_states.settings throttling / account quirks.
+            if 'overnight_range' in self.running_strategies and hasattr(
+                self.trading_bot, 'strategy_manager'
+            ):
+                strat = self.trading_bot.strategy_manager.strategies.get('overnight_range')
+                if strat is not None:
+                    ar = getattr(strat, 'active_ranges', None) or {}
+                    snap: Dict[str, Dict[str, float]] = {}
+                    for sym, r in ar.items():
+                        try:
+                            hi = float(r.high)
+                            lo = float(r.low)
+                            key = str(sym).upper()
+                            snap[key] = {'high': hi, 'low': lo}
+                            if '.' in key:
+                                short = key.split('.')[-1].strip()
+                                if short and short != key:
+                                    snap[short] = {'high': hi, 'low': lo}
+                        except (TypeError, ValueError, AttributeError):
+                            continue
+                    if snap:
+                        meta['or_ranges'] = snap
             db.save_process_state(
                 process_id=self.process_id,
                 process_type='strategy_executor',
                 status='running',
                 account_id=account_id,
-                metadata={
-                    'strategies': list(self.running_strategies.keys()),
-                    'last_heartbeat': datetime.now(timezone.utc).isoformat()
-                }
+                metadata=meta,
             )
             logger.debug(f"💓 Process heartbeat: {len(self.running_strategies)} strategies running")
         except Exception as e:

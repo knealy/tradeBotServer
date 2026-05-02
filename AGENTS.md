@@ -43,7 +43,7 @@ scripts/run_overnight.sh <account_num>
 - [`core/strategy_config.py`](core/strategy_config.py) — TOML-based config with hot reload; all strategies must use this, not `os.getenv`.
 - [`config/strategies/`](config/strategies/) — per-strategy TOML files (`overnight_range.toml`, `_schema.toml` for validation).
 - [`servers/start_async_webhook.py`](servers/start_async_webhook.py) — production webhook/dashboard entry point.
-- [`gui/master_control.html`](gui/master_control.html) via [`gui/chart_html.py`](gui/chart_html.py) — browser-based trading dashboard.
+- [`gui/master_control.html`](gui/master_control.html) via [`gui/chart_html.py`](gui/chart_html.py) — browser-based trading dashboard (`master` / `gui` CLI). Overnight-range chart lines use in-process strategy data or Postgres `or_ranges` when `overnight_range` runs in `strategy_executor`; orders list filters terminal statuses server-side.
 
 ## Golden rules
 

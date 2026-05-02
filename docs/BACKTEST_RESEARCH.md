@@ -34,9 +34,25 @@ python3 -m core.research.runner \
   --run-tag my_experiment
 ```
 
+## CSV mode (real MNQ bars)
+
+When `--csv` is set, the runner loads OHLCV via `HistoricalDataLoader.load_from_csv` instead of synthetic data. Optional **`--csv-start`** / **`--csv-end`** (`YYYY-MM-DD`, inclusive on the index) narrow the window so IS/OOS splits stay meaningful and runtimes stay sane on 1m files.
+
+```bash
+python -m core.research.runner --strategy ma_crossover --symbol MNQ --timeframe 1m \
+  --csv historical_data/price/MNQ_1m_complete.csv --csv-start 2026-03-01 --csv-end 2026-03-31 \
+  --oos-fraction 0.2 --min-oos-bars 200 \
+  --grid "fast_period=8:14:2,slow_period=30:50:10" --max-grid 12 \
+  --mc 100 --no-db
+```
+
+Example multi-window driver: [`scripts/mnq_1m_research_sweep.sh`](../scripts/mnq_1m_research_sweep.sh).
+
+**`overnight_range` CSV replay** gates **`analyze()`** to a short window after **`timing.market_open`** (ET) and skips **`filters.skip_weekdays`**, so trade counts are no longer inflated by per-bar re-entry; fills and broker behavior still differ from live. For session-level hypotheses use **`scripts/alpha_discovery.py`** on **5m** resampled data when appropriate. See [`OVERNIGHT_RANGE_RESEARCH.md`](OVERNIGHT_RANGE_RESEARCH.md).
+
 ## Live alignment
 
-Use the same symbol and timeframe conventions as live (`StrategyConfig` + bar types). For full fidelity, prefer CSV or API-loaded bars via extending the runner to call `BacktestExecutor.run_backtest` with `--csv` / broker adapter rather than synthetic sample data.
+Use the same symbol and timeframe conventions as live (`StrategyConfig` + bar types). Omit `--csv` for synthetic sample bars; use `--csv` for exported history aligned with live (naive timestamps = UTC; see [BACKTESTING.md](BACKTESTING.md)).
 
 ## Tests
 

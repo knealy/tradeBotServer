@@ -142,6 +142,35 @@ class StrategyReplayEngine:
                         self.backtest_engine.filled_orders.append(order)
                         self.backtest_engine._update_position(order, bar['close'])
 
+                # When a simulated bracket *entry* stop fills, cancel the opposite pending
+                # entry stop for the same symbol (overnight_range places both long and short
+                # stops; live broker removes the unfilled side — stale stops caused wrong fills).
+                if filled_this_bar:
+                    for filled in filled_this_bar:
+                        if (
+                            getattr(filled, "stop_loss_price", None) is None
+                            or getattr(filled, "take_profit_price", None) is None
+                        ):
+                            continue
+                        for pending in self.backtest_engine.pending_orders[:]:
+                            if pending.order_id == filled.order_id:
+                                continue
+                            if pending.symbol != filled.symbol:
+                                continue
+                            if pending.status != OrderStatus.PENDING:
+                                continue
+                            if pending.order_type != OrderType.STOP:
+                                continue
+                            if getattr(pending, "oco_group", None):
+                                continue
+                            if (
+                                getattr(pending, "stop_loss_price", None) is None
+                                or getattr(pending, "take_profit_price", None) is None
+                            ):
+                                continue
+                            pending.status = OrderStatus.CANCELLED
+                            self.backtest_engine.pending_orders.remove(pending)
+
                 # OCO handling: if an exit order fills, cancel the sibling order(s)
                 if filled_this_bar and self.backtest_engine.pending_orders:
                     for filled in filled_this_bar:
@@ -595,7 +624,8 @@ class StrategyReplayEngine:
             timeframe: str = "1m",
             limit: int = 100,
             start_time: Optional[datetime] = None,
-            end_time: Optional[datetime] = None
+            end_time: Optional[datetime] = None,
+            **kwargs,
         ) -> List[Dict]:
             """Mock that returns historical bars only up to current replay position."""
             if symbol.upper() != replay_symbol.upper():
@@ -607,8 +637,18 @@ class StrategyReplayEngine:
             replay_tf = (self._replay_timeframe or "").lower()
             cur_utc = _current_replay_time_utc()
 
-            # Serve replay timeframe directly from bars_list
-            if replay_tf and tf == replay_tf:
+            # Serve from bars_list when: no explicit replay TF, exact TF match, or both are
+            # minute-based bars from the same CSV (e.g. replay 1m, strategy asks 5m).
+            intraday_from_csv = (
+                (not replay_tf)
+                or (tf == replay_tf)
+                or (
+                    replay_tf
+                    and tf.endswith("m")
+                    and replay_tf.endswith("m")
+                )
+            )
+            if intraday_from_csv:
                 filtered = []
                 start_utc = start_time.astimezone(timezone.utc) if (start_time and start_time.tzinfo) else start_time
                 end_utc = end_time.astimezone(timezone.utc) if (end_time and end_time.tzinfo) else end_time
@@ -658,7 +698,8 @@ class StrategyReplayEngine:
                 timeframe=timeframe,
                 limit=limit,
                 start_time=start_time,
-                end_time=effective_end
+                end_time=effective_end,
+                **kwargs,
             )
 
             if tf.endswith("d"):

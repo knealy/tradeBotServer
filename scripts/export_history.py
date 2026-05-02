@@ -7,6 +7,7 @@ suitable for backtesting.
 Usage:
     python scripts/export_history.py --symbol=MNQ --timeframe=1m --days=90
     python scripts/export_history.py --symbol=MES --timeframe=5m --start=2024-01-01 --end=2024-12-31
+    python scripts/export_history.py --symbol=MNQ --timeframe=5m --days=365 --chunk-days=45 --output=historical_data/MNQ_5m.csv
 """
 
 import sys
@@ -14,12 +15,28 @@ import os
 import asyncio
 import argparse
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from trading_bot import TopStepXTradingBot
+
+
+def _bar_ts_utc(bar) -> datetime:
+    """Normalize bar timestamp to UTC for deduplication."""
+    ts = bar.timestamp
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _dedupe_sort_bars(bars: list) -> list:
+    """Deduplicate by timestamp (last wins), sort ascending."""
+    by_ts: dict = {}
+    for b in bars:
+        by_ts[_bar_ts_utc(b)] = b
+    return sorted(by_ts.values(), key=lambda x: _bar_ts_utc(x))
 
 
 async def export_history(
@@ -28,7 +45,8 @@ async def export_history(
     days: int = None,
     start_date: str = None,
     end_date: str = None,
-    output_file: str = None
+    output_file: str = None,
+    chunk_days: int = 0,
 ):
     """
     Export historical data to CSV.
@@ -79,21 +97,53 @@ async def export_history(
             start_dt = end_dt - timedelta(days=30)
             print(f"Date Range: {start_dt.date()} to {end_dt.date()} (default 30 days)")
         
-        # Fetch historical data
+        # Fetch historical data (single request or chunked — API caps ~20k bars per call)
         print(f"\n📊 Fetching {symbol} {timeframe} bars...")
-        bars = await bot.broker_adapter.get_historical_data(
-            symbol=symbol,
-            timeframe=timeframe,
-            start_time=start_dt,
-            end_time=end_dt,
-            limit=20000,  # Broker date-range cap (see TopStepXAdapter)
-        )
-        
+        if chunk_days and chunk_days > 0:
+            all_raw: list = []
+            cursor = start_dt
+            end_bound = end_dt
+            n_chunk = 0
+            while cursor < end_bound:
+                chunk_end = min(end_bound, cursor + timedelta(days=chunk_days))
+                n_chunk += 1
+                print(f"   Chunk {n_chunk}: {cursor.date()} → {chunk_end.date()} …")
+                chunk_bars = await bot.broker_adapter.get_historical_data(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    start_time=cursor,
+                    end_time=chunk_end,
+                    limit=20000,
+                    _use_cache=False,
+                )
+                print(f"      → {len(chunk_bars)} bars")
+                all_raw.extend(chunk_bars)
+                if len(chunk_bars) >= 20000:
+                    print(
+                        "   ⚠️  Chunk hit API bar cap (20000). "
+                        "Use a smaller --chunk-days value and re-run, or merge overlapping pulls."
+                    )
+                cursor = chunk_end
+            bars = _dedupe_sort_bars(all_raw)
+        else:
+            bars = await bot.broker_adapter.get_historical_data(
+                symbol=symbol,
+                timeframe=timeframe,
+                start_time=start_dt,
+                end_time=end_dt,
+                limit=20000,  # Broker date-range cap (see TopStepXAdapter)
+            )
+            if bars and len(bars) >= 20000:
+                print(
+                    "⚠️  Response may be truncated at 20,000 bars. "
+                    "Re-run with e.g. --chunk-days 45 to page the date range."
+                )
+
         if not bars:
             print("❌ No data returned")
             return
-        
-        print(f"✅ Fetched {len(bars)} bars")
+
+        print(f"✅ Fetched {len(bars)} bars (unique timestamps)")
         
         # Generate output filename
         if not output_file:
@@ -162,16 +212,25 @@ async def main():
     # Output argument
     parser.add_argument('--output', type=str,
                        help='Output CSV filename (default: historical_data/<symbol>_<timeframe>_<timestamp>.csv)')
-    
+    parser.add_argument(
+        '--chunk-days',
+        type=int,
+        default=0,
+        metavar='N',
+        help='Split the requested range into N-day windows (each API call still obeys ~20k bar cap). '
+             'Use for long 5m/1m history (e.g. 45). 0 = one request.',
+    )
+
     args = parser.parse_args()
-    
+
     await export_history(
         symbol=args.symbol,
         timeframe=args.timeframe,
         days=args.days,
         start_date=args.start,
         end_date=args.end,
-        output_file=args.output
+        output_file=args.output,
+        chunk_days=args.chunk_days,
     )
 
 

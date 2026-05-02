@@ -105,6 +105,11 @@ class StateCache:
         Returns:
             List of orders or None if fetch fails
         """
+        if not account_id:
+            if self._timer:
+                self._timer.end("get_orders")
+            return None
+        account_id = str(account_id).strip()
         if self._timer:
             self._timer.start("get_orders")
         
@@ -200,9 +205,12 @@ class StateCache:
         Invalidate orders cache for an account.
         Called when SignalR order update event received.
         """
+        if account_id is None or account_id == "":
+            return
+        aid = str(account_id).strip()
         with self._lock:
-            self._orders_invalidated[account_id] = True
-            logger.debug("🔄 Orders cache invalidated for account %s (SignalR event)", account_id)
+            self._orders_invalidated[aid] = True
+            logger.debug("🔄 Orders cache invalidated for account %s (SignalR event)", aid)
     
     # ========== Positions Cache ==========
     

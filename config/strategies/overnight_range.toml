@@ -2,6 +2,8 @@
 # See _schema.toml for documentation of every field.
 # Edit values here without restarting unrelated strategies; the executor
 # polls mtime and reloads on next loop tick when --reload is enabled.
+# Master GUI chart OR lines (when the executor is a separate process): see
+# process_states.metadata.or_ranges + strategy_states.settings.or_ranges in README / HANDOFF.
 
 [meta]
 enabled = true
@@ -13,6 +15,8 @@ overnight_end    = "9:29"
 market_open      = "9:29"
 zone_anchor      = "9:29"
 session_timezone = "US/Eastern"
+# Strategy CSV replay only: analyze() runs in this many minutes after market_open (ET).
+replay_order_window_minutes = 8
 
 [risk]
 position_size      = 1
@@ -49,16 +53,26 @@ interval_seconds     = 15.0
 discord_after_zero_trade_sessions = 0
 
 [filters]
-range_size        = false
-gap               = false
-volatility        = false
+# --- Trade frequency note ---
+# At most ~1 bracket attempt / symbol / session near open. skip_weekdays removes 2/5 weekdays.
+# With range+gap+volatility all true and tight bands, many sessions never place orders — low trade
+# count over months is expected. For more fills in research, try one at a time:
+#   range_size = gap = volatility = false   OR   widen range_min/max, gap_max_pts, atr_min/max
+#   skip_weekdays = []   (include Mon/Fri for backtests only if you want more samples)
+#
+# Phase 1.1 (STRATEGY_IMPROVEMENT_PLAN): tighter range / gap / ATR bands.
+range_size        = true
+gap               = true
+volatility        = true
 dll_proximity     = false
-range_min_pts     = 50.0
-range_max_pts     = 500.0
-gap_max_pts       = 200.0
-atr_min           = 20.0
-atr_max           = 200.0
+range_min_pts     = 60.0
+range_max_pts     = 400.0
+gap_max_pts       = 150.0
+atr_min           = 25.0
+atr_max           = 180.0
 dll_threshold_pct = 0.75
+# Python weekday: 0=Mon … 6=Sun — skip Mon/Fri open per plan 1.2
+skip_weekdays     = [0, 4]
 
 [symbols.MNQ]
 [symbols.MES]
