@@ -136,11 +136,26 @@ class StrategyReplayEngine:
                 # Process pending orders (check fills)
                 filled_this_bar = []
                 for order in self.backtest_engine.pending_orders[:]:
+                    if order not in self.backtest_engine.pending_orders:
+                        # Cancelled by an earlier fill's OCO sibling-cancel below.
+                        continue
                     if self.backtest_engine._check_order_fill(order, bar, tick_size):
                         filled_this_bar.append(order)
                         self.backtest_engine.pending_orders.remove(order)
                         self.backtest_engine.filled_orders.append(order)
                         self.backtest_engine._update_position(order, bar['close'])
+                        # Eagerly cancel OCO siblings the instant an exit fills.
+                        # If we wait for the post-loop OCO sweep, both the SL
+                        # and the TP from the same bracket can fill in one bar
+                        # (low <= stop AND high >= limit) — the second fill
+                        # then opens a phantom reverse position because no
+                        # long position remains.
+                        oco_group = getattr(order, "oco_group", None)
+                        if oco_group:
+                            for sibling in self.backtest_engine.pending_orders[:]:
+                                if getattr(sibling, "oco_group", None) == oco_group:
+                                    sibling.status = OrderStatus.CANCELLED
+                                    self.backtest_engine.pending_orders.remove(sibling)
 
                 # When a simulated bracket *entry* stop fills, cancel the opposite pending
                 # entry stop for the same symbol (overnight_range places both long and short
@@ -182,6 +197,26 @@ class StrategyReplayEngine:
                             if getattr(pending, "oco_group", None) == oco_group:
                                 pending.status = OrderStatus.CANCELLED
                                 self.backtest_engine.pending_orders.remove(pending)
+
+                # Orphan-bracket cleanup: when stacked entries on the same symbol
+                # build qty>1 and one bracket's stop_loss fires, the *other*
+                # bracket's exit orders remain alive. If position quantity has
+                # since dropped to zero, those orphan exits would otherwise fire
+                # later and open phantom reverse positions (e.g. an orphan
+                # sell-stop opens a SHORT against intent). Cancel any oco-tagged
+                # pending orders whose symbol currently has no open position.
+                if filled_this_bar and self.backtest_engine.pending_orders:
+                    flat_symbols = {f.symbol for f in filled_this_bar}
+                    for sym in flat_symbols:
+                        if sym in self.backtest_engine.positions:
+                            continue
+                        for pending in self.backtest_engine.pending_orders[:]:
+                            if pending.symbol != sym:
+                                continue
+                            if not getattr(pending, "oco_group", None):
+                                continue
+                            pending.status = OrderStatus.CANCELLED
+                            self.backtest_engine.pending_orders.remove(pending)
 
                 # If an entry order filled and carried bracket prices, place TP/SL exit orders
                 # Note: we intentionally do NOT allow these exits to fill in the *same* bar to avoid look-ahead bias.
@@ -342,6 +377,15 @@ class StrategyReplayEngine:
     
     def _intercept_strategy_methods(self):
         """Intercept strategy's order placement methods to simulate execution."""
+        # Expose the backtest engine on the strategy + mock bot so analyze()
+        # can interrogate live positions / pending orders without going
+        # through the broker.
+        try:
+            setattr(self.trading_bot, "backtest_engine", self.backtest_engine)
+            setattr(self.strategy, "_replay_engine", self.backtest_engine)
+        except Exception:
+            pass
+
         # Intercept place_bracket_order
         if hasattr(self.strategy, 'place_bracket_order'):
             self._original_place_bracket_order = self.strategy.place_bracket_order

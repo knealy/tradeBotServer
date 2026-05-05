@@ -50,6 +50,20 @@ Example multi-window driver: [`scripts/mnq_1m_research_sweep.sh`](../scripts/mnq
 
 **`overnight_range` CSV replay** gates **`analyze()`** to a short window after **`timing.market_open`** (ET) and skips **`filters.skip_weekdays`**, so trade counts are no longer inflated by per-bar re-entry; fills and broker behavior still differ from live. For session-level hypotheses use **`scripts/alpha_discovery.py`** on **5m** resampled data when appropriate. See [`OVERNIGHT_RANGE_RESEARCH.md`](OVERNIGHT_RANGE_RESEARCH.md).
 
+### OOS / walk-forward: P0 (TOML) vs P5 (widened bands)
+
+Filter sweeps in [`scripts/run_overnight_range_sweep.sh`](../scripts/run_overnight_range_sweep.sh) use env overrides. To run the same **P0** (clear all `OVERNIGHT_RANGE_FILTERS_*` overrides → live TOML) and **P5** (widened-band env block) through the research runner’s **chronological IS/OOS split**, **Monte Carlo on OOS trades**, and optional **walk-forward folds**:
+
+```bash
+# Quick window (default USE_FAST=1 → Feb–Apr on MNQ 1m)
+bash scripts/run_overnight_range_oos_wf.sh
+
+# Full Dec–Apr span + more folds (long runtime on 1m)
+USE_FAST=0 START=2025-12-24 WALK_FORWARD=4 MC=100 bash scripts/run_overnight_range_oos_wf.sh
+```
+
+Runner flags (for custom runs): `--overnight-research-profile p0|p5`, `--replay-env KEY=VAL,...`, `--replay-env-clear KEY,...`, `--output path.json` (see `python -m core.research.runner --help`).
+
 ## Live alignment
 
 Use the same symbol and timeframe conventions as live (`StrategyConfig` + bar types). Omit `--csv` for synthetic sample bars; use `--csv` for exported history aligned with live (naive timestamps = UTC; see [BACKTESTING.md](BACKTESTING.md)).

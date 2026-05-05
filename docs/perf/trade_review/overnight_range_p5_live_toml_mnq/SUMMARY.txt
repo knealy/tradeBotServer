@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "cache_key": "overnight_range_MNQ_replay_20260503_155957",
+  "result": {
+    "symbol": "MNQ",
+    "strategy": "overnight_range",
+    "period": "2025-12-24 to 2026-04-30",
+    "initial_capital": 50000.0,
+    "final_capital": 50455.69999999999,
+    "total_pnl": 775.6999999999898,
+    "total_return_pct": 1.5513999999999797,
+    "total_trades": 64,
+    "win_rate": 51.5625,
+    "profit_factor": 1.5746990183367215,
+    "sharpe_ratio": 3.5118881247062945,
+    "max_drawdown": 383.59999999999854,
+    "max_drawdown_pct": 0.7670435231212804,
+    "average_win": 64.40757575757544,
+    "average_loss": -43.54032258064516,
+    "expectancy": 12.12031249999984
+  }
+}

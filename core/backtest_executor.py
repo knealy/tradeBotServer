@@ -97,6 +97,8 @@ def print_registered_strategies() -> None:
         "trend_scalping",
         "simple_momentum",
         "simple_rth",
+        "vwap_zscore_reversion",
+        "body_reversion",
     ]
     print("Function-based (DataFrame + BacktestEngine):")
     for s in function_strategies:
@@ -479,9 +481,10 @@ class BacktestExecutor:
         function_strategies = ['ma_crossover', 'rsi_mean_reversion', 'ema_trend']
         
         # Available class-based strategies (for replay mode)
-        class_strategies = ['simple_candle', 'overnight_range', 'mean_reversion', 
-                           'trend_following', 'trend_scalping', 'simple_momentum']
-        
+        class_strategies = ['simple_candle', 'overnight_range', 'mean_reversion',
+                           'trend_following', 'trend_scalping', 'simple_momentum',
+                           'simple_rth', 'vwap_zscore_reversion', 'body_reversion']
+
         all_strategies = function_strategies + class_strategies
         
         # Validate strategy name
@@ -725,6 +728,14 @@ class BacktestExecutor:
             elif strategy_name == 'simple_rth':
                 from strategies.simple_rth_strategy import SimpleRthStrategy
                 return SimpleRthStrategy
+            elif strategy_name == 'vwap_zscore_reversion':
+                from strategies.vwap_zscore_reversion_strategy import (
+                    VwapZscoreReversionStrategy,
+                )
+                return VwapZscoreReversionStrategy
+            elif strategy_name == 'body_reversion':
+                from strategies.body_reversion_strategy import BodyReversionStrategy
+                return BodyReversionStrategy
             else:
                 return None
         except ImportError as e:

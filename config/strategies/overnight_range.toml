@@ -54,25 +54,26 @@ discord_after_zero_trade_sessions = 0
 
 [filters]
 # --- Trade frequency note ---
-# At most ~1 bracket attempt / symbol / session near open. skip_weekdays removes 2/5 weekdays.
-# With range+gap+volatility all true and tight bands, many sessions never place orders — low trade
-# count over months is expected. For more fills in research, try one at a time:
-#   range_size = gap = volatility = false   OR   widen range_min/max, gap_max_pts, atr_min/max
-#   skip_weekdays = []   (include Mon/Fri for backtests only if you want more samples)
+# At most ~1 bracket attempt / symbol / session near open. ``skip_weekdays`` removes listed
+# weekdays (Mon=0 … Sun=6). With range+gap+volatility all true, narrow bands still skip many sessions.
 #
-# Phase 1.1 (STRATEGY_IMPROVEMENT_PLAN): tighter range / gap / ATR bands.
+# **Live (2026-05): Pathway 1 research P5** — same knobs as ``scripts/run_overnight_range_sweep.sh``
+# step P5 (filters **on**, widened bands, Mon/Fri included): ``skip_weekdays = []``,
+# ``range_min/max`` 30..600, ``gap_max_pts`` 250, ``atr_min/max`` 15..220.
+# To revert toward the prior Phase 1.1 preset: ``skip_weekdays = [0, 4]``, range 60..400,
+# gap 150, ATR 25..180.
 range_size        = true
 gap               = true
 volatility        = true
 dll_proximity     = false
-range_min_pts     = 60.0
-range_max_pts     = 400.0
-gap_max_pts       = 150.0
-atr_min           = 25.0
-atr_max           = 180.0
+range_min_pts     = 30.0
+range_max_pts     = 600.0
+gap_max_pts       = 250.0
+atr_min           = 15.0
+atr_max           = 220.0
 dll_threshold_pct = 0.75
-# Python weekday: 0=Mon … 6=Sun — skip Mon/Fri open per plan 1.2
-skip_weekdays     = [0, 4]
+# Python weekday: 0=Mon … 6=Sun — empty = trade all weekdays (P5 research).
+skip_weekdays     = []
 
 [symbols.MNQ]
 [symbols.MES]

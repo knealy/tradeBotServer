@@ -7,7 +7,7 @@ Use this page as the operator checklist when tuning **`overnight_range`** for pr
 **`overnight_range` is not a high‑frequency system.** In CSV replay (and in live near open), you get **at most one bracket placement attempt per symbol per session** in the configured open window — not one trade per bar. Rough upper bound on *sessions where a signal can exist*:
 
 - **Calendar days** in the window × **symbols** you run (often 1 in replay).
-- **`skip_weekdays = [0, 4]`** → only **Tue / Wed / Thu** count → multiply by **~3/7** (about **40%** fewer days than “every day”).
+- **`skip_weekdays`** — live TOML is currently **P5**-aligned: **`[]`** (all weekdays). If you set **`[0, 4]`** again, only **Tue / Wed / Thu** count → multiply by **~3/7** (about **40%** fewer days than “every day”).
 - **`[filters]`** (range size, gap, volatility) → each **enabled** filter removes a slice of sessions in **`check_market_conditions`** before any order is sent. With all three on and tight bands, it is common for **well under half** of remaining sessions to pass.
 - **Holidays / thin data / range too small or too large** → more skips.
 
@@ -48,10 +48,12 @@ START=2026-01-01 END=2026-01-14 bash scripts/backtest_overnight_csv.sh
 
 ```bash
 .venv/bin/python scripts/run_overnight_range_csv_chunks.py \
-  --csv historical_data/price/MNQ_1m_complete.csv --chunk-days 30 --timeframe 1m
+  --csv historical_data/price/MNQ_1m_complete.csv --chunk-days 30 --timeframe 1m --no-print-trades
 ```
 
-Output: **`docs/perf/overnight_range_MNQ_1m_chunks.json`** (each chunk may include a **`trades`** array; top-level **`all_trades`** lists every round-trip with a **`chunk`** span). Stdout prints entry/exit timestamps (ISO UTC), prices, PnL, and **`exit_reason`**. Use **`--omit-trades`** for a slimmer JSON only, or **`--no-print-trades`** to skip tables while keeping trade objects in the file.
+Output: **`docs/perf/overnight_range_MNQ_1m_chunks.json`** (each chunk may include a **`trades`** array; top-level **`all_trades`** lists every round-trip with a **`chunk`** span). Stdout prints per-chunk **`trades=`** / **`pnl=`** summary lines; omit **`--no-print-trades`** if you want full trade tables on the terminal. Use **`--omit-trades`** for a slimmer JSON only.
+
+**Regenerated 2026-04-29** with current replay logic; rollup **`sum_total_trades` = 4**, **`sum_total_pnl` ≈ 238.30** (matches a single full-span `backtest_executor` CSV run for the same archive — see [RESEARCH_PATHWAYS.md](RESEARCH_PATHWAYS.md) §A). Re-run the command above after strategy or replay changes so this file stays comparable to [response.json](../response.json)-style runs.
 
 The backtest CLI flag **`--include-trades`** (with **`--format=json`**) is implemented in **`core/backtest_executor.py`** for any replay run.
 

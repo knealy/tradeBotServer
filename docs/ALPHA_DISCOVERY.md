@@ -22,6 +22,15 @@ How to find, validate, and operationalize new trading edges in this repo.
 
 Repeat monthly or after ≥ 50 new live trades.
 
+**For bar-level edges (5m/15m/30m horizons):** add a second loop:
+
+```
+2a. Deep scan        →  .venv/bin/python scripts/deep_pattern_scan.py --symbols MNQ MES MGC --start 2024-01-01
+2b. Co-trigger audit →  .venv/bin/python scripts/body_reversion_combo_audit.py --symbols MNQ MES MGC
+```
+
+Deep scan finds **anchors** (unconditional, stable edges); co-trigger audit turns anchors into **tradeable strategies** by measuring realised R under realistic stop/hold execution and selecting robust regime filters.
+
 **Overnight range live TOML** (`config/strategies/overnight_range.toml`) can make CSV replay show **very few trades** (one attempt per session + filters + weekday skip). That is a *frequency* choice, not proof the edge is “strong.” Use this scanner to decide which filters to keep before chasing more trades — see [OVERNIGHT_RANGE_RESEARCH.md](OVERNIGHT_RANGE_RESEARCH.md) §0.
 
 ---
@@ -168,6 +177,58 @@ to express as a filter on overnight_range:
 3. Register in `strategies/strategy_manager.py`
 4. Backtest with `--strategy small_range_breakout`
 5. Paper-trade ≥ 20 sessions before going live
+
+---
+
+## Conditional short-horizon scan (bar-level)
+
+Session-level alpha above uses **9:29 ET** features + overnight-range simulation. For **short-horizon** questions (e.g. “last two 5m candles → next bar direction?”, RSI / VWAP / Bollinger vs next bar, RTH breakout vs same-day re-touch of **prior calendar-day** high/low), use:
+
+```bash
+.venv/bin/python scripts/pattern_conditional_scan.py --symbols MNQ MES MGC \
+  --start 2024-01-01 --output-dir docs/alpha
+```
+
+Outputs: [`docs/alpha/pattern_scan_INDEX.md`](alpha/pattern_scan_INDEX.md) and per-symbol markdown. Implementation: [`core/research/pattern_conditional.py`](../core/research/pattern_conditional.py). Fisher exact + BH FDR on 2×2 tables.
+
+### Deep scan (forward-return effect sizes, multi-horizon, IS/OOS)
+
+Where the conditional scan reports **lift** in next-bar direction (often tiny), the **deep** scan measures **forward-return effect sizes in points** at multiple horizons (5 / 15 / 30 / 60 min), with **IS/OOS sign stability** on a 70/30 session-date split and **RTH phase stratification** for the top features:
+
+```bash
+.venv/bin/python scripts/deep_pattern_scan.py --symbols MNQ MES MGC \
+  --start 2024-01-01 --output-dir docs/alpha
+```
+
+Outputs: [`docs/alpha/deep_scan_INDEX.md`](alpha/deep_scan_INDEX.md) + per-symbol `deep_scan_*.md`. Implementation: [`core/research/deep_pattern_scan.py`](../core/research/deep_pattern_scan.py). The first such scan promoted **big-body 5m bar mean reversion** to a research-grade strategy ([`body_reversion`](../strategies/body_reversion_strategy.py); cross-instrument, IS/OOS sign-stable).
+
+**Caveats:** many simultaneous tests still risk spurious significance; large **N** makes tiny **lifts** (e.g. 1.03×) statistically “significant” but economically useless after costs — read the caveat block in each report and follow with **`core/backtest_executor.py --replay`** or **`core.research.runner`** OOS grids before live use.
+
+### Co-trigger audit (turn an “anchor” into a tradeable strategy)
+
+Deep scans are great at finding **anchors** (robust unconditional edges). The hard part is usually turning an anchor into something that survives **fees + slippage** on micros. The workflow that worked for `body_reversion`:
+
+1. Find an anchor in `deep_scan_*` where:
+   - **IS/OOS sign-stable ✅**
+   - **FDR-significant ✅**
+   - **economically large** `|diff_pts|` (≥ 0.5 is the minimum bar for MNQ micros)
+2. Validate the anchor in the **full engine replay** (`core/backtest_executor.py --replay`) so execution bugs / OCO / costs don’t lie.
+3. Audit **co-triggers** (regime/time/structure filters) and measure *realised R* for each joint mask.
+
+This repo now has a dedicated co-trigger audit for the `body_reversion` anchor:
+
+```bash
+.venv/bin/python scripts/body_reversion_combo_audit.py --symbols MNQ MES MGC
+```
+
+Outputs: [`docs/alpha/body_reversion_combos.md`](alpha/body_reversion_combos.md).
+
+**Interpretation rule:** pick co-triggers with **positive `delta_R`** *and* enough population (**n ≥ 500**) *and* cross-instrument robustness (works on MNQ + MES + MGC). That filter found the v3 regime gates:
+
+- `atr_high_q4` (current ATR in the top quartile of the recent distribution)
+- `range_expand_1.5x` (current bar range > 1.5× the recent range MA)
+
+Those two gates multiplied realised-R and flipped MES from a v2 net-flat / short-bleed into a v3 winner (see [`docs/alpha/deep_scan_INDEX.md`](alpha/deep_scan_INDEX.md) and [`docs/perf/sweeps/CANDIDATES.md`](perf/sweeps/CANDIDATES.md)).
 
 ---
 

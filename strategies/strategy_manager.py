@@ -58,6 +58,16 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "SimpleRthStrategy",
         "RTH-hours simple momentum",
     ),
+    "vwap_zscore_reversion": (
+        "strategies.vwap_zscore_reversion_strategy",
+        "VwapZscoreReversionStrategy",
+        "Intraday VWAP Z-score mean reversion (research-grade)",
+    ),
+    "body_reversion": (
+        "strategies.body_reversion_strategy",
+        "BodyReversionStrategy",
+        "Big-body 5m bar mean reversion (research-grade)",
+    ),
 }
 
 

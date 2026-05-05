@@ -5,9 +5,32 @@ import pytest
 from core.research.runner import (
     ResearchRunConfig,
     parse_param_grid,
+    parse_replay_env,
+    parse_replay_env_clear,
+    _temp_replay_environ,
     _mc_gate,
     run_research,
 )
+
+
+def test_parse_replay_env_and_clear():
+    d = parse_replay_env("FOO=bar,EMPTY=")
+    assert d["FOO"] == "bar" and d["EMPTY"] == ""
+    t = parse_replay_env_clear("FOO,BAR")
+    assert t == ("FOO", "BAR")
+
+
+def test_temp_replay_environ_restore():
+    import os
+
+    os.environ["ZZZ_RESEARCH_TEST"] = "orig"
+    with _temp_replay_environ(("ZZZ_RESEARCH_TEST",), {"ZZZ_RESEARCH_TEST": "tmp"}):
+        assert os.environ["ZZZ_RESEARCH_TEST"] == "tmp"
+    assert os.environ["ZZZ_RESEARCH_TEST"] == "orig"
+    with _temp_replay_environ(("ZZZ_RESEARCH_TEST",), {}):
+        assert "ZZZ_RESEARCH_TEST" not in os.environ
+    assert os.environ["ZZZ_RESEARCH_TEST"] == "orig"
+    del os.environ["ZZZ_RESEARCH_TEST"]
 
 
 def test_parse_param_grid():

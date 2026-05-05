@@ -8,6 +8,16 @@
 | **No `--sample`, no `--csv`** | **TopStepX REST**: executor authenticates and loads history through the adapter (same family of calls as live). Needs API credentials. |
 | **`--csv path`** | **File**: usually produced by `python scripts/export_history.py` or `bash scripts/fetch_history_csv.sh` (wrapper). |
 
+### Databento GLBX batch (`split_symbols` → many CSVs)
+
+If you downloaded **GLBX.MDP3** `ohlcv-1m` with **separate files per instrument**, you get one CSV per outright or per roll-range (filename suffix like `MNQM5` vs `MNQM5-MNQU5`). For a **single continuous outright series** per root (`MNQ`, `MES`, `MGC`):
+
+```bash
+python scripts/merge_databento_glbx_batch.py historical_data/price/GLBX-<job_id>
+```
+
+This writes `historical_data/price/{MNQ,MES,MGC}_1m_databento_<job_id>.csv` (hyphenated roll-aggregate files are **skipped** by default because their price scale is not the outright index). Optional calendar clip: `--start YYYY-MM-DD --end YYYY-MM-DD`. To **append** with a TopStepX export on overlapping dates, list files **archive first, newest last** and run [`historical_data/csv_merger.py`](../historical_data/csv_merger.py) (later file wins on duplicate timestamps).
+
 Shell helpers: [scripts/backtest_symbol.sh](../scripts/backtest_symbol.sh), [scripts/backtest_thorough_symbol.sh](../scripts/backtest_thorough_symbol.sh), [scripts/fetch_history_csv.sh](../scripts/fetch_history_csv.sh).
 
 ## Timestamps (CSV vs Eastern sessions)
@@ -26,6 +36,7 @@ Replay places at most **one** breakout attempt per symbol per **session** (near 
 |------|-------------|
 | **`python core/backtest_executor.py`** | Single run: sample, CSV, or API-loaded bars; optional `--optimize`, `--monte-carlo`. |
 | **`python -m core.research.runner`** | Grid search + **mandatory OOS** split + **Monte Carlo gate**; optional Postgres row; walk-forward / slippage table flags. See [BACKTEST_RESEARCH.md](BACKTEST_RESEARCH.md). |
+| **`scripts/pattern_conditional_scan.py`** | Research-only: 1m CSV → 5m NY bars; Fisher + FDR on short-horizon conditionals + RTH prior-day level re-touch stats → [`docs/alpha/pattern_scan_INDEX.md`](alpha/pattern_scan_INDEX.md). |
 | **`scripts/batch_backtest.py`** | Scripted batch comparisons (legacy suite style). |
 
 Set **`ENABLE_SIGNALR=false`** so the process does not open live SignalR when you only need REST or offline data (see `.env.example`).

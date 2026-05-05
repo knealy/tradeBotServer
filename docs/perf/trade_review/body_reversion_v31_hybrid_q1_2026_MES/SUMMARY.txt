@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "cache_key": "body_reversion_MES_replay_20260505_142912",
+  "result": {
+    "symbol": "MES",
+    "strategy": "body_reversion",
+    "period": "2026-01-01 to 2026-05-01",
+    "initial_capital": 50000.0,
+    "final_capital": 50673.34849999997,
+    "total_pnl": 1003.3484999999791,
+    "total_return_pct": 2.006696999999958,
+    "total_trades": 66,
+    "win_rate": 31.818181818181817,
+    "profit_factor": 1.8885504477960566,
+    "sharpe_ratio": 3.1648395287248405,
+    "max_drawdown": 344.7770000000164,
+    "max_drawdown_pct": 0.6758794978586373,
+    "average_win": 101.54978571428555,
+    "average_loss": -25.093266666667052,
+    "expectancy": 15.202249999999687
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "cache_key": "body_reversion_MNQ_replay_20260505_140348",
+  "result": {
+    "symbol": "MNQ",
+    "strategy": "body_reversion",
+    "period": "2026-01-01 to 2026-05-01",
+    "initial_capital": 50000.0,
+    "final_capital": 50451.92820000001,
+    "total_pnl": 991.9282000000094,
+    "total_return_pct": 1.9838564000000187,
+    "total_trades": 108,
+    "win_rate": 31.48148148148148,
+    "profit_factor": 1.3366625286760891,
+    "sharpe_ratio": 1.8575615212049,
+    "max_drawdown": 579.1070000000036,
+    "max_drawdown_pct": 1.1372252971336887,
+    "average_win": 115.83193529411759,
+    "average_loss": -39.81564324324309,
+    "expectancy": 9.184520370370453
+  }
+}

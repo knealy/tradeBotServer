@@ -11,9 +11,11 @@ import argparse
 import asyncio
 import hashlib
 import itertools
+import json
 import logging
 import os
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +41,8 @@ _REPLAY_STRATEGIES = frozenset(
         "trend_scalping",
         "simple_momentum",
         "simple_rth",
+        "vwap_zscore_reversion",
+        "body_reversion",
     }
 )
 
@@ -46,6 +50,76 @@ _ALL_RESEARCH_STRATEGIES = frozenset(_GRID_STRATEGIES | _REPLAY_STRATEGIES)
 
 MAX_GRID_COMBOS_DEFAULT = 50
 MIN_OOS_BARS_DEFAULT = 50
+
+# Env keys that may override ``overnight_range`` filter TOML (see ``run_overnight_range_sweep.sh``).
+# ``P0`` research profile clears all of these so live TOML values apply.
+OVERNIGHT_RANGE_FILTER_ENV_KEYS: Tuple[str, ...] = (
+    "OVERNIGHT_RANGE_FILTERS_SKIP_WEEKDAYS",
+    "OVERNIGHT_RANGE_FILTERS_RANGE_MIN_PTS",
+    "OVERNIGHT_RANGE_FILTERS_RANGE_MAX_PTS",
+    "OVERNIGHT_RANGE_FILTERS_GAP_MAX_PTS",
+    "OVERNIGHT_RANGE_FILTERS_ATR_MIN",
+    "OVERNIGHT_RANGE_FILTERS_ATR_MAX",
+    "OVERNIGHT_RANGE_FILTERS_RANGE_SIZE",
+    "OVERNIGHT_RANGE_FILTERS_GAP",
+    "OVERNIGHT_RANGE_FILTERS_VOLATILITY",
+    "OVERNIGHT_RANGE_FILTERS_DLL_PROXIMITY",
+)
+
+# Pathway 1 sweep step P5 — filters on, widened bands (matches ``run_overnight_range_sweep.sh``).
+OVERNIGHT_RANGE_P5_RESEARCH_ENV: Dict[str, str] = {
+    "OVERNIGHT_RANGE_FILTERS_SKIP_WEEKDAYS": "",
+    "OVERNIGHT_RANGE_FILTERS_RANGE_MIN_PTS": "30",
+    "OVERNIGHT_RANGE_FILTERS_RANGE_MAX_PTS": "600",
+    "OVERNIGHT_RANGE_FILTERS_GAP_MAX_PTS": "250",
+    "OVERNIGHT_RANGE_FILTERS_ATR_MIN": "15",
+    "OVERNIGHT_RANGE_FILTERS_ATR_MAX": "220",
+}
+
+
+def parse_replay_env(spec: str) -> Dict[str, str]:
+    """
+    Parse ``KEY=VALUE`` pairs separated by commas. VALUE may be empty (e.g. clear skip list).
+    """
+    if not (spec or "").strip():
+        return {}
+    out: Dict[str, str] = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, _, val = part.partition("=")
+        out[key.strip()] = val
+    return out
+
+
+def parse_replay_env_clear(spec: str) -> Tuple[str, ...]:
+    """Comma-separated env var names to delete before applying ``replay_env``."""
+    if not (spec or "").strip():
+        return ()
+    return tuple(k.strip() for k in spec.split(",") if k.strip())
+
+
+@contextmanager
+def _temp_replay_environ(
+    clear_keys: Tuple[str, ...],
+    set_vars: Dict[str, str],
+) -> Any:
+    """Temporarily clear/set process env for strategy ``StrategyConfig`` resolution."""
+    keys: Tuple[str, ...] = tuple({*clear_keys, *set_vars.keys()})
+    saved: Dict[str, Optional[str]] = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in clear_keys:
+            os.environ.pop(k, None)
+        for k, v in set_vars.items():
+            os.environ[k] = v
+        yield
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
 
 
 @dataclass
@@ -78,6 +152,10 @@ class ResearchRunConfig:
     csv_path: Optional[str] = None
     csv_start: Optional[str] = None
     csv_end: Optional[str] = None
+    # Delete these env keys before each replay backtest (TOML baseline for overnight_range).
+    replay_env_clear: Tuple[str, ...] = ()
+    # Extra env for each replay backtest (e.g. OVERNIGHT_RANGE_FILTERS_* overrides).
+    replay_env: Dict[str, str] = field(default_factory=dict)
 
 
 def parse_param_grid(spec: str) -> Dict[str, List[float]]:
@@ -215,30 +293,31 @@ async def _run_research_backtest(
     slippage_ticks: float,
 ) -> BacktestResult:
     """Function-based engine or class replay, depending on ``cfg.strategy``."""
-    if cfg.strategy in _GRID_STRATEGIES:
-        return await _run_engine_on_df(
-            executor,
-            df,
-            cfg.strategy,
-            cfg.symbol,
-            strategy_params,
-            slippage_ticks,
-            cfg.initial_capital,
-        )
-    if cfg.strategy in _REPLAY_STRATEGIES:
-        bars = _df_to_bar_dicts(df)
-        bundle = await executor._run_strategy_replay(
-            strategy_name=cfg.strategy,
-            symbol=cfg.symbol,
-            bars=bars,
-            initial_capital=cfg.initial_capital,
-            slippage_ticks=slippage_ticks,
-            quiet=True,
-            **strategy_params,
-        )
-        if not bundle or not bundle.get("result"):
-            raise ValueError(f"Replay failed for strategy {cfg.strategy!r}")
-        return bundle["result"]
+    with _temp_replay_environ(cfg.replay_env_clear, cfg.replay_env):
+        if cfg.strategy in _GRID_STRATEGIES:
+            return await _run_engine_on_df(
+                executor,
+                df,
+                cfg.strategy,
+                cfg.symbol,
+                strategy_params,
+                slippage_ticks,
+                cfg.initial_capital,
+            )
+        if cfg.strategy in _REPLAY_STRATEGIES:
+            bars = _df_to_bar_dicts(df)
+            bundle = await executor._run_strategy_replay(
+                strategy_name=cfg.strategy,
+                symbol=cfg.symbol,
+                bars=bars,
+                initial_capital=cfg.initial_capital,
+                slippage_ticks=slippage_ticks,
+                quiet=True,
+                **strategy_params,
+            )
+            if not bundle or not bundle.get("result"):
+                raise ValueError(f"Replay failed for strategy {cfg.strategy!r}")
+            return bundle["result"]
     raise ValueError(
         f"Unknown strategy {cfg.strategy!r}; use one of {sorted(_ALL_RESEARCH_STRATEGIES)}"
     )
@@ -583,6 +662,33 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="Inclusive YYYY-MM-DD upper bound on CSV index",
     )
+    p.add_argument(
+        "--replay-env",
+        type=str,
+        default="",
+        help="Comma-separated KEY=VAL for class-strategy replay (empty VAL allowed). "
+        "Applied around each backtest so StrategyConfig picks up overrides.",
+    )
+    p.add_argument(
+        "--replay-env-clear",
+        type=str,
+        default="",
+        help="Comma-separated env var names to unset before --replay-env (TOML wins).",
+    )
+    p.add_argument(
+        "--overnight-research-profile",
+        type=str,
+        default="",
+        metavar="PROFILE",
+        help="overnight_range only: p0 = clear all OVERNIGHT_RANGE_FILTERS_* overrides (TOML); "
+        "p5 = widened-band P5 env (see run_overnight_range_sweep.sh). Leave empty to skip.",
+    )
+    p.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help="Write full research JSON (grid_results, walk_forward_by_combo, …) to this path.",
+    )
     return p
 
 
@@ -595,6 +701,21 @@ async def _async_main() -> None:
     sens: Optional[List[float]] = None
     if args.slippage_sensitivity.strip():
         sens = [float(x.strip()) for x in args.slippage_sensitivity.split(",") if x.strip()]
+
+    replay_clear = parse_replay_env_clear(args.replay_env_clear)
+    replay_set = parse_replay_env(args.replay_env)
+    prof = (args.overnight_research_profile or "").strip().lower()
+    if prof:
+        if args.strategy != "overnight_range":
+            raise SystemExit(
+                "--overnight-research-profile only applies with --strategy overnight_range"
+            )
+        if prof not in ("p0", "p5"):
+            raise SystemExit("--overnight-research-profile must be p0 or p5")
+        merged_clear = {*replay_clear, *OVERNIGHT_RANGE_FILTER_ENV_KEYS}
+        replay_clear = tuple(sorted(merged_clear))
+        if prof == "p5":
+            replay_set = {**OVERNIGHT_RANGE_P5_RESEARCH_ENV, **replay_set}
 
     cfg = ResearchRunConfig(
         strategy=args.strategy,
@@ -620,11 +741,18 @@ async def _async_main() -> None:
         csv_path=args.csv.strip() or None,
         csv_start=args.csv_start.strip() or None,
         csv_end=args.csv_end.strip() or None,
+        replay_env_clear=replay_clear,
+        replay_env=replay_set,
     )
     out = await run_research(cfg)
     logger.info("Research complete: %s", {k: out[k] for k in ("strategy", "symbol", "git_sha")})
     for r in out["grid_results"]:
         logger.info("%s", r)
+    out_path = (args.output or "").strip()
+    if out_path:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_text(json.dumps(out, indent=2, default=str) + "\n")
+        logger.info("Wrote research JSON → %s", out_path)
 
 
 def main() -> None:

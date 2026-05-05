@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>body_reversion — sample simulated trade (MNQ)</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #111; color: #e8e8e8; }
+    body { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 1.15rem; font-weight: 600; }
+    p.meta { font-size: 0.9rem; color: #9aa; line-height: 1.5; }
+    canvas { display: block; width: 100%; height: 420px; background: #1a1a1e; border-radius: 8px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; font-size: 0.8rem; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <h1>body_reversion — one replay trade (MNQ, 5m)</h1>
+  <p class="meta">
+    Source: <code>core/backtest_executor.py</code> replay with <code>--include-trades</code>,
+    window <strong>2026-03-01 → 2026-03-15</strong>, trade <strong>T000010</strong>.
+    CSV timestamps match ISO <code>Z</code> times in the trade JSON (UTC).
+  </p>
+  <canvas id="c" width="1000" height="420"></canvas>
+  <div class="legend">
+    <span><span class="dot" style="background:#4ade80"></span>Signal bar (big bull body → fade SHORT)</span>
+    <span><span class="dot" style="background:#f472b6"></span>Entry (filled stop)</span>
+    <span><span class="dot" style="background:#60a5fa"></span>Exit (take_profit in this replay)</span>
+  </div>
+  <p class="meta" style="margin-top:20px">
+    <strong>Trade</strong>: SHORT · entry 25169.875 → exit 25104.4286 · PnL +$128.39 (1 contract, after costs in replay) ·
+    exit_reason <code>take_profit</code> · bars_held 9.
+  </p>
+
+<script>
+(function () {
+  const bars = [{"t":"2026-03-10 14:50:00","o":25115.5,"h":25130.75,"l":25108.75,"c":25127.5},{"t":"2026-03-10 14:55:00","o":25127.75,"h":25153.25,"l":25123.75,"c":25151.75},{"t":"2026-03-10 15:00:00","o":25151.25,"h":25182,"l":25144.5,"c":25168},{"t":"2026-03-10 15:05:00","o":25168.5,"h":25169.75,"l":25126.25,"c":25131.25},{"t":"2026-03-10 15:10:00","o":25130.75,"h":25145.5,"l":25117.5,"c":25125},{"t":"2026-03-10 15:15:00","o":25124.75,"h":25172.25,"l":25123.25,"c":25170.25},{"t":"2026-03-10 15:20:00","o":25169.75,"h":25177,"l":25143.5,"c":25151.25},{"t":"2026-03-10 15:25:00","o":25151.5,"h":25158.75,"l":25137.25,"c":25143.25},{"t":"2026-03-10 15:30:00","o":25143,"h":25146.75,"l":25109,"c":25115.75},{"t":"2026-03-10 15:35:00","o":25115.5,"h":25139.25,"l":25113,"c":25132.75},{"t":"2026-03-10 15:40:00","o":25133,"h":25172,"l":25123.5,"c":25149.5},{"t":"2026-03-10 15:45:00","o":25149.5,"h":25157,"l":25121.5,"c":25137.25},{"t":"2026-03-10 15:50:00","o":25137.75,"h":25163.5,"l":25133,"c":25135.5},{"t":"2026-03-10 15:55:00","o":25135,"h":25156.25,"l":25125.5,"c":25148.75},{"t":"2026-03-10 16:00:00","o":25149.25,"h":25150.25,"l":25107.5,"c":25116},{"t":"2026-03-10 16:05:00","o":25116,"h":25117,"l":25080,"c":25100},{"t":"2026-03-10 16:10:00","o":25100,"h":25130,"l":25094.5,"c":25115.25},{"t":"2026-03-10 16:15:00","o":25115.25,"h":25148.75,"l":25107.25,"c":25136}];
+  const signalIdx = 5;
+  const entryIdx = 6;
+  const exitIdx = 15;
+  const entryPx = 25169.875;
+  const exitPx = 25104.4286;
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+  const padL = 56, padR = 16, padT = 24, padB = 36;
+  const n = bars.length;
+  const highs = bars.map(b => b.h);
+  const lows = bars.map(b => b.l);
+  let ymax = Math.max(...highs, entryPx, exitPx) + 8;
+  let ymin = Math.min(...lows, entryPx, exitPx) - 8;
+  const yScale = (p) => padT + (ymax - p) / (ymax - ymin) * (H - padT - padB);
+  const barW = (W - padL - padR) / n * 0.65;
+  const gap = (W - padL - padR) / n;
+
+  ctx.fillStyle = "#1a1a1e";
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const p = ymin + (ymax - ymin) * i / 4;
+    const y = yScale(p);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(W - padR, y);
+    ctx.stroke();
+    ctx.fillStyle = "#666";
+    ctx.font = "11px system-ui";
+    ctx.fillText(p.toFixed(2), 4, y + 4);
+  }
+
+  bars.forEach((b, i) => {
+    const x = padL + i * gap + (gap - barW) / 2;
+    const yH = yScale(b.h);
+    const yL = yScale(b.l);
+    const yO = yScale(b.o);
+    const yC = yScale(b.c);
+    ctx.beginPath();
+    ctx.strokeStyle = "#888";
+    ctx.moveTo(x + barW / 2, yH);
+    ctx.lineTo(x + barW / 2, yL);
+    ctx.stroke();
+    const top = Math.min(yO, yC);
+    const bot = Math.max(yO, yC);
+    const bull = b.c >= b.o;
+    ctx.fillStyle = bull ? "#22c55e" : "#ef4444";
+    if (bot - top < 1) {
+      ctx.fillRect(x, yC - 0.5, barW, 1);
+    } else {
+      ctx.fillRect(x, top, barW, bot - top);
+    }
+    if (i === signalIdx) {
+      ctx.strokeStyle = "#4ade80";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - 2, padT - 4, barW + 4, H - padT - padB + 8);
+      ctx.lineWidth = 1;
+    }
+  });
+
+  function hline(px, color, label) {
+    const y = yScale(px);
+    ctx.strokeStyle = color;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(W - padR, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = "12px system-ui";
+    ctx.fillText(label, W - padR - 120, y - 4);
+  }
+  hline(entryPx, "#f472b6", "entry " + entryPx);
+  hline(exitPx, "#60a5fa", "exit " + exitPx.toFixed(2));
+
+  ctx.fillStyle = "#ccc";
+  ctx.font = "11px system-ui";
+  ctx.fillText("15:15 UTC — signal (body ≈ 93% of range, bull)", padL, H - 18);
+
+  const bx = padL + entryIdx * gap + gap / 2;
+  ctx.fillStyle = "#f472b6";
+  ctx.beginPath();
+  ctx.arc(bx, yScale(entryPx), 5, 0, Math.PI * 2);
+  ctx.fill();
+  const ex = padL + exitIdx * gap + gap / 2;
+  ctx.fillStyle = "#60a5fa";
+  ctx.beginPath();
+  ctx.arc(ex, yScale(exitPx), 5, 0, Math.PI * 2);
+  ctx.fill();
+})();
+</script>
+</body>
+</html>

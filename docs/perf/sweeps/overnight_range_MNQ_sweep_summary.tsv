@@ -1,0 +1,7 @@
+step	description	trades	total_pnl	win_rate	sharpe	max_dd
+P0	baseline (live TOML)	4	238.30	75.00	11.11	85.20
+P1	skip_weekdays=[]	7	368.35	71.43	9.98	124.65
+P2	skip_weekdays=[] + volatility=false	45	6151.15	44.44	2.93	11924.00
+P3	skip_weekdays=[] + volatility=false + gap=false	67	6511.45	52.24	2.62	11790.75
+P4	all filters off	83	6132.65	50.60	1.83	12088.10
+P5	filters on, widened bands	64	775.70	51.56	3.51	383.60

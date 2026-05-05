@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "cache_key": "body_reversion_MGC_replay_20260505_142911",
+  "result": {
+    "symbol": "MGC",
+    "strategy": "body_reversion",
+    "period": "2026-01-01 to 2026-05-01",
+    "initial_capital": 50000.0,
+    "final_capital": 52595.6039999996,
+    "total_pnl": 3320.603999999599,
+    "total_return_pct": 6.641207999999198,
+    "total_trades": 145,
+    "win_rate": 32.41379310344827,
+    "profit_factor": 1.4974233066340659,
+    "sharpe_ratio": 2.2147162742875874,
+    "max_drawdown": 1397.7880000001896,
+    "max_drawdown_pct": 2.6095017220286567,
+    "average_win": 212.6854042553176,
+    "average_loss": -68.11846938775845,
+    "expectancy": 22.90071724137654
+  }
+}

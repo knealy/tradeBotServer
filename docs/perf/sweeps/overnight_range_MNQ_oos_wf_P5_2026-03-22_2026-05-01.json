@@ -1,0 +1,26 @@
+{
+  "strategy": "overnight_range",
+  "symbol": "MNQ",
+  "git_sha": "fec4cb906214d674958d7974bf01cdc3d6f94846",
+  "toml_hash": "",
+  "grid_results": [
+    {
+      "grid_id": 0,
+      "params": {},
+      "is_sharpe": 5.5842,
+      "is_trades": 14,
+      "oos_sharpe": -0.3817,
+      "oos_trades": 5,
+      "oos_return_pct": -0.0133,
+      "oos_slippage_break_even_ticks": null,
+      "mc_pass": false,
+      "mc_reason": "profit_prob 0.000 < 0.45",
+      "mc_profit_prob": 0.0,
+      "mc_mean_max_dd_pct": 0.18312590211977664,
+      "mc_mode": "shuffle"
+    }
+  ],
+  "slippage_sensitivity_is": [],
+  "slippage_sensitivity_oos": [],
+  "walk_forward_by_combo": []
+}
