@@ -1,4 +1,5 @@
-<!-- Last verified by: cursor-agent on 2026-04-30 (master dashboard: OR via executor heartbeat metadata + strategy_states, details `account_id` query, order terminal incl. SUSPENDED) -->
+<!-- Last verified commit ed3f8c1abb1a9f7373ac35f129cc4bbeb9803c66 -->
+<!-- Last verified by: cursor-agent on 2026-05-12 — morning_range_reversion executor script + sieve/live parity; generic breakeven opt-in; drift monitor; income brain wiring; walk-forward doc gate (STRATEGY_DEVELOPMENT); legacy replay noise fixes. Prior HANDOFF note referenced ed3f8c1… (2026-05-05; historical). Next: PRAC shadow for morning_range before meta; drift-compare; partial TP broker; breakeven/slip validation; walk-forward before CANDIDATES; INCOME_BRAIN/DRIFT_MONITOR env gates. -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 
@@ -55,6 +56,9 @@ Numbered narrative:
 - Railway deployment: `Procfile` → `web: python3 servers/start_async_webhook.py`; this process runs the dashboard API and webhook endpoints, not strategies.
 - `core/slave_process_base.py` — base class for subprocess workers that communicate with the parent bot via a shared `process_states` Postgres row and signals.
 - `scripts/monitor_positions.py` — standalone script that polls Postgres and prints live position/P&L; safe to run alongside a live process without interfering.
+- **Backtest economics on disk:** `scripts/print_weekly_income.py` reads `core/backtest_executor.py --format=json` output and prints **per-week realized PnL** when `--include-trades` was used (otherwise a naive **average $/week** from `total_pnl` ÷ calendar weeks in `period`). Use it to sanity-check sweeps (e.g. Gate **A** MNQ full-window JSON) before trusting headline totals.
+- **Gate A/B/C grid (body_reversion, full window):** `bash scripts/resume_body_rev_gate_ab_full.sh` runs **`scripts/run_body_rev_gate_ab_parallel.py`** — up to **`GATE_AB_JOBS`** concurrent subprocesses (default **3**, one per symbol), skipping cells whose output JSON is already **>200 bytes**. Same result files as the old sequential `run_full.sh`, lower wall-clock time on multi-core hosts.
+- **Custom parallel backtest matrices:** `scripts/run_backtest_manifest.py` + JSONL under `config/backtest_matrices/` — arbitrary `backtest_executor` replay jobs with per-job `env` (strategy knobs), **`BACKTEST_MANIFEST_JOBS`** for worker count. **`HistoricalDataLoader.load_from_csv`** uses an in-process LRU (**`BACKTEST_CSV_CACHE`**, **`BACKTEST_CSV_CACHE_SIZE`**) so research loops that re-open the same CSV avoid repeated disk parse; replay bar lists are built with **`core.backtest.ohlcv.replay_bars_from_ohlcv_df`** (faster than `iterrows`). See **`docs/BACKTESTING.md`** § Speed.
 - Strategy processes do not share memory. Each reads its own `strategy_states` Postgres row on startup to restore state after a restart.
 - `core/session_trade_tracker.py` — tracks within-session trade count and P&L to enforce session-level limits independently of the global risk manager.
 
@@ -158,6 +162,7 @@ All variables are documented in [`.env.example`](../.env.example). Critical ones
 | `JWT_TOKEN` | Pre-set JWT (optional) | `core/auth.py` refreshes it automatically; leave blank to let auth handle it |
 | `DATABASE_URL` | Postgres connection string | `postgresql://user:pass@host:5432/db`; required for persistence |
 | `DISCORD_WEBHOOK_URL` | Discord alert channel | Leave blank to disable Discord alerts |
+| `DISCORD_STATUS_INTERVAL_SECONDS` | Periodic status digest to webhook | `0` = off; e.g. `900` for every 15 minutes (`trading_bot` / `strategy_executor`) |
 | `TOPSTEPX_USE_RUST` | Enable Rust hotpath | `false` by default; set `1`/`true` only after building `rust/` |
 | `DAILY_LOSS_LIMIT` | Global drawdown limit | Enforced in `core/risk_management.py`; overrides TOML |
 | `INITIAL_BALANCE` | Account balance for risk sizing | Used in position sizing math |
@@ -236,7 +241,7 @@ See [docs/CHANGELOG.md](CHANGELOG.md) for the full entry. Summary:
 
 ## What is intentionally left for later
 
-See [docs/ROADMAP.md](ROADMAP.md) (canonical) and the `[Unreleased]` section of [docs/CHANGELOG.md](CHANGELOG.md). Older narrative: [docs/COMPREHENSIVE_ROADMAP.md](COMPREHENSIVE_ROADMAP.md). Key deferreds:
+See [docs/ROADMAP.md](ROADMAP.md) (canonical) and the `[Unreleased]` section of [docs/CHANGELOG.md](CHANGELOG.md). Older narrative: [docs/archive/COMPREHENSIVE_ROADMAP.md](archive/COMPREHENSIVE_ROADMAP.md). Key deferreds:
 
 - **`trading_bot.py` decomposition**: the 10 k-line god module must be split into cohesive sub-modules (auth, connection, order management, session management). No timeline set; do not add new top-level logic there.
 - **Full Rust hotpath or removal**: only 3 paths wired. Either complete the migration or remove the FFI entirely. Currently opt-in via `TOPSTEPX_USE_RUST=1`.

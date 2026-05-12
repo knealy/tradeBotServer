@@ -51,8 +51,9 @@ MES SHORT from a bleed into a winner.
 2. Compute ``body_pct = |close - open| / (high - low)`` for the **last
    completed** bar.
 3. If ``body_pct > body_pct_min`` AND ``require_high_atr`` is satisfied
-   (current ATR ≥ rolling 75th percentile) AND ``require_range_expand``
-   is satisfied (range > 1.5 × range_ma20), place a stop-bracket entry
+   (current ATR ≥ rolling quantile) AND the regime cohort passes (``require_range_expand``,
+   ``require_bb_touch``, or **both** — when both are on, **either** range expansion **or**
+   a Bollinger touch suffices), place a stop-bracket entry
    **one tick** past close on the *opposite* side
    (`bull → SHORT`, `bear → LONG`).
    - SL: ``stop_atr_multiplier × ATR(period)`` away on the wrong side.
@@ -69,8 +70,9 @@ The strategy is **research-grade** — `meta.enabled = false` by default.
 from __future__ import annotations
 
 import logging
+import statistics
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.risk_management import _order_counts_as_working_entry_for_risk
 from strategies.strategy_base import (
@@ -144,10 +146,18 @@ class BodyReversionStrategy(BaseStrategy):
         self.range_ma_period_default: int = int(self._cfg.get_int("signal.range_ma_period", 20))
         self.range_expand_mult_default: float = float(self._cfg.get_float("signal.range_expand_mult", 1.5))
 
+        # Optional Bollinger touch (see docs/BONGO.md): when combined with
+        # ``require_range_expand`` on a symbol, pass if **either** expansion
+        # **or** a band touch on the signal bar fires (MES-style OR co-trigger).
+        self.require_bb_touch_default: bool = bool(self._cfg.get_bool("signal.require_bb_touch", False))
+        self.bb_period_default: int = int(self._cfg.get_int("signal.bb_period", 20))
+        self.bb_k_default: float = float(self._cfg.get_float("signal.bb_k", 2.0))
+
         # Instance-level force overrides (used by tests / experiments). When
         # set, these take precedence over TOML and per-symbol overrides.
         self._force_require_high_atr: Optional[bool] = None
         self._force_require_range_expand: Optional[bool] = None
+        self._force_require_bb_touch: Optional[bool] = None
 
         self.rth_only: bool = bool(self._cfg.get_bool("signal.rth_only", False))
         self.rth_start: time = _parse_hhmm(
@@ -178,6 +188,14 @@ class BodyReversionStrategy(BaseStrategy):
         self._live_hold_start_utc: Dict[str, datetime] = {}
         self._live_managed_symbols: Set[str] = set()
 
+        # BONGO §1B — live-only broker breakeven (see ``TopStepXTradingBot`` generic monitor).
+        self.breakeven_enabled: bool = bool(
+            self._cfg.get_bool("position_management.breakeven_enabled", False)
+        )
+        self.breakeven_trigger_r: float = float(
+            self._cfg.get_float("position_management.breakeven_trigger_r", 0.5) or 0.5
+        )
+
         logger.info(
             "✅ body_reversion init: tf=%s body_pct_min=%.2f stop_atr=%.2f tp_r=%.2f hold=%d rth=%s "
             "high_atr=%s range_exp=%s long=%s short=%s",
@@ -192,6 +210,11 @@ class BodyReversionStrategy(BaseStrategy):
             "on" if self.allow_long else "off",
             "on" if self.allow_short else "off",
         )
+        if self.breakeven_enabled:
+            logger.info(
+                "   breakeven: ON (trigger_r=%.2f × initial stop distance)",
+                self.breakeven_trigger_r,
+            )
 
     # ------------------------------------------------------------------ v3.1 compat shims
     #
@@ -219,6 +242,15 @@ class BodyReversionStrategy(BaseStrategy):
     def require_range_expand(self, value: bool) -> None:
         self._force_require_range_expand = bool(value)
         self.require_range_expand_default = bool(value)
+
+    @property
+    def require_bb_touch(self) -> bool:
+        return bool(self.require_bb_touch_default)
+
+    @require_bb_touch.setter
+    def require_bb_touch(self, value: bool) -> None:
+        self._force_require_bb_touch = bool(value)
+        self.require_bb_touch_default = bool(value)
 
     @property
     def atr_regime_quantile(self) -> float:
@@ -445,7 +477,25 @@ class BodyReversionStrategy(BaseStrategy):
                 out[i] = sum(trs[-period:]) / period
         return out
 
-    def _check_regime_gates(self, symbol: str, bars: List[Dict[str, Any]]) -> Optional[str]:
+    @staticmethod
+    def _bollinger_last(
+        bars: List[Dict[str, Any]], period: int, k: float, val_fn
+    ) -> Optional[Tuple[float, float, float]]:
+        """Return (mid, upper, lower) for the last bar using closes of the last ``period`` bars."""
+        if period < 2 or len(bars) < period:
+            return None
+        closes = [val_fn(b, "close", "c") for b in bars[-period:]]
+        mid = float(statistics.fmean(closes))
+        st = float(statistics.pstdev(closes))
+        if st <= 0.0:
+            return mid, mid, mid
+        upper = mid + k * st
+        lower = mid - k * st
+        return mid, upper, lower
+
+    def _check_regime_gates(
+        self, symbol: str, bars: List[Dict[str, Any]], bull_bar: bool
+    ) -> Optional[str]:
         """Return ``None`` if all required regime gates pass, else a string
         describing the first failed gate (for debug logging)."""
         sym = symbol.upper()
@@ -465,7 +515,15 @@ class BodyReversionStrategy(BaseStrategy):
                     sym, "signal.require_range_expand", self.require_range_expand_default, hint=bool
                 )
             )
-        if not require_high_atr and not require_range_expand:
+        if self._force_require_bb_touch is not None:
+            require_bb_touch = bool(self._force_require_bb_touch)
+        else:
+            require_bb_touch = bool(
+                self._cfg.symbol_override(
+                    sym, "signal.require_bb_touch", self.require_bb_touch_default, hint=bool
+                )
+            )
+        if not require_high_atr and not require_range_expand and not require_bb_touch:
             return None
 
         last = bars[-1]
@@ -477,18 +535,6 @@ class BodyReversionStrategy(BaseStrategy):
         range_expand_mult = float(
             self._cfg.symbol_override(sym, "signal.range_expand_mult", self.range_expand_mult_default, hint=float)
         )
-
-        if require_range_expand:
-            tail = bars[-(range_ma_period + 1) : -1]
-            if len(tail) < range_ma_period:
-                return f"range_expand: need {range_ma_period} prior bars, have {len(tail)}"
-            ranges = [self._val(b, "high", "h") - self._val(b, "low", "l") for b in tail]
-            range_ma = sum(ranges) / len(ranges) if ranges else 0.0
-            if range_ma <= 0 or rng <= range_expand_mult * range_ma:
-                return (
-                    f"range_expand fail: rng={rng:.4f} "
-                    f"<= {range_expand_mult:.2f} × ma{range_ma_period}={range_ma:.4f}"
-                )
 
         atr_regime_lookback = int(
             self._cfg.symbol_override(sym, "signal.atr_regime_lookback", self.atr_regime_lookback_default, hint=int)
@@ -521,6 +567,53 @@ class BodyReversionStrategy(BaseStrategy):
                     f"<= q{int(atr_regime_quantile * 100)}={quantile_threshold:.4f} "
                     f"(over {len(finite)} samples)"
                 )
+
+        range_ok = True
+        range_ma = 0.0
+        if require_range_expand:
+            tail = bars[-(range_ma_period + 1) : -1]
+            if len(tail) < range_ma_period:
+                return f"range_expand: need {range_ma_period} prior bars, have {len(tail)}"
+            ranges = [self._val(b, "high", "h") - self._val(b, "low", "l") for b in tail]
+            range_ma = sum(ranges) / len(ranges) if ranges else 0.0
+            range_ok = bool(range_ma > 0 and rng > range_expand_mult * range_ma)
+
+        bb_ok = True
+        bb_period = int(
+            self._cfg.symbol_override(sym, "signal.bb_period", self.bb_period_default, hint=int)
+        )
+        bb_k = float(self._cfg.symbol_override(sym, "signal.bb_k", self.bb_k_default, hint=float))
+        if require_bb_touch:
+            bands = self._bollinger_last(bars, bb_period, bb_k, self._val)
+            if bands is None:
+                return f"bb_touch: need {bb_period} closes for Bollinger window"
+            _mid, upper, lower = bands
+            h = self._val(last, "high", "h")
+            lo = self._val(last, "low", "l")
+            tick = self._tick_size(sym)
+            eps = max(1e-9, 0.25 * tick)
+            if bull_bar:
+                bb_ok = h + eps >= upper
+            else:
+                bb_ok = lo - eps <= lower
+
+        if require_range_expand and require_bb_touch:
+            if not (range_ok or bb_ok):
+                return (
+                    f"range_expand OR bb_touch fail: range_ok={range_ok} bb_ok={bb_ok} "
+                    f"rng={rng:.4f} vs {range_expand_mult:.2f}×ma{range_ma_period}={range_ma:.4f} "
+                    f"bull_bar={bull_bar}"
+                )
+        elif require_range_expand:
+            if not range_ok:
+                return (
+                    f"range_expand fail: rng={rng:.4f} "
+                    f"<= {range_expand_mult:.2f} × ma{range_ma_period}={range_ma:.4f}"
+                )
+        elif require_bb_touch:
+            if not bb_ok:
+                return f"bb_touch fail: bull_bar={bull_bar}"
+
         return None
 
     async def analyze(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -554,6 +647,7 @@ class BodyReversionStrategy(BaseStrategy):
             min_required = max(
                 self.atr_period + 51,  # enough for ≥50 finite ATR samples
                 self.range_ma_period_default + 5,
+                self.bb_period_default + 5,
                 30,
             )
             if not bars or len(bars) < min_required:
@@ -584,7 +678,8 @@ class BodyReversionStrategy(BaseStrategy):
 
             # v3 regime gates: require the bar to also be in the high-ATR
             # quartile and an expanded-range bar (see combo audit).
-            gate_fail = self._check_regime_gates(symbol, bars)
+            bull_bar = c > o
+            gate_fail = self._check_regime_gates(symbol, bars, bull_bar)
             if gate_fail is not None:
                 logger.debug("body_reversion %s regime gate skip: %s", symbol, gate_fail)
                 return None
@@ -668,6 +763,12 @@ class BodyReversionStrategy(BaseStrategy):
         try:
             side = "BUY" if signal["action"] == "LONG" else "SELL"
             qty = max(int(self.config.position_size or 1), 1)
+            r0 = abs(float(signal["entry_price"]) - float(signal["stop_loss"]))
+            be_thr = (
+                float(self.breakeven_trigger_r) * r0
+                if self.breakeven_enabled and r0 > 0
+                else None
+            )
             result = await self.place_bracket_order(
                 symbol=signal["symbol"],
                 side=side,
@@ -676,6 +777,7 @@ class BodyReversionStrategy(BaseStrategy):
                 stop_loss_price=signal["stop_loss"],
                 take_profit_price=signal["take_profit"],
                 enable_breakeven=False,
+                breakeven_profit_threshold=be_thr,
             )
             if result and result.get("error"):
                 logger.warning(

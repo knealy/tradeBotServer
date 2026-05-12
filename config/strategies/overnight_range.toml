@@ -38,7 +38,8 @@ tp_range_pct        = 100.0
 
 [position_management]
 breakeven_enabled          = true
-breakeven_profit_points    = 15.0
+# BONGO: tighter BE arm (validate vs slip); was 15.
+breakeven_profit_points    = 8.0
 range_break_offset         = 0.25
 use_dynamic_atr_for_orders = true
 
@@ -66,7 +67,8 @@ range_size        = true
 gap               = true
 volatility        = true
 dll_proximity     = false
-range_min_pts     = 30.0
+# BONGO: allow slightly narrower overnight boxes (replay / pathway 1 follow-up).
+range_min_pts     = 20.0
 range_max_pts     = 600.0
 gap_max_pts       = 250.0
 atr_min           = 15.0

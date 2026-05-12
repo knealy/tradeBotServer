@@ -24,6 +24,14 @@ nohup bash scripts/run_overnight.sh 3 >> logs/nohup_account3.out 2>&1 &
 echo "PID: $!"
 ```
 
+### Start morning_range_reversion (headless)
+
+[scripts/run_morning_reversion.sh](scripts/run_morning_reversion.sh) wraps `caffeinate` + [core/strategy_executor.py](core/strategy_executor.py) for **`morning_range_reversion`** (same pattern as overnight). Timestamped logs land under `logs/`. Override symbols with **`MORNING_RANGE_SYMBOLS`** (comma-separated; default **MNQ**).
+
+```bash
+bash scripts/run_morning_reversion.sh 3
+```
+
 ### Start a different strategy on account 1
 
 Pass `--strategy` and `--account_select` directly to [core/strategy_executor.py](core/strategy_executor.py). Supported strategy names: `overnight_range`, `mean_reversion`, `trend_following`, `simple_candle`, `simple_momentum`, `trend_scalping`.

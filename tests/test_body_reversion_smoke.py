@@ -176,6 +176,8 @@ def test_analyze_skipped_when_v3_regime_gates_active_and_no_expansion():
     )
     bot = _MockBot(bars)
     strat = BodyReversionStrategy(bot, cfg)
+    # MES TOML enables range_expand + optional BB OR; isolate range-only reject.
+    strat.require_bb_touch = False
     # MES has a per-symbol TOML override enabling range expansion.
     signal = asyncio.run(strat.analyze("MES"))
     assert signal is None  # filtered by range_expand gate
@@ -313,4 +315,59 @@ def test_v3_defaults_load_from_toml():
     assert strat.require_range_expand is False
     assert strat.atr_regime_quantile == 0.75
     assert strat.range_expand_mult == 1.5
+    assert strat.require_bb_touch is False
     assert strat.lookback_bars == 500
+
+
+def test_analyze_mes_emits_long_when_bb_touch_or_range_expand_bb_leg():
+    """MES OR co-trigger: range MA fails but lower Bollinger is tagged."""
+    from strategies.body_reversion_strategy import BodyReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    cfg = StrategyConfig(
+        name="body_reversion",
+        enabled=True,
+        symbols=["MES"],
+        max_positions=1,
+        position_size=1,
+        risk_per_trade_percent=0.5,
+        max_daily_trades=12,
+        preferred_conditions=[],
+        avoid_conditions=[],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        no_trade_start="",
+        no_trade_end="",
+    )
+    start = datetime(2026, 4, 1, 13, 35, tzinfo=timezone.utc)
+    # Steady 10-pt range bars so range_ma20 ≈ 10; last bar fails 1.5× expand (<15).
+    bars = [
+        _bar(start + timedelta(minutes=5 * i), 17000.0, 17010.0, 17000.0, 17005.0)
+        for i in range(82)
+    ]
+    bars.append(
+        _bar(
+            start + timedelta(minutes=5 * 82),
+            17010.0,
+            17010.1,
+            16999.5,
+            17000.0,
+        )
+    )
+    bot = _MockBot(bars)
+    strat = BodyReversionStrategy(bot, cfg)
+    strat.require_high_atr = False
+    signal = asyncio.run(strat.analyze("MES"))
+    assert signal is not None
+    assert signal["action"] == "LONG"
+
+
+def test_generic_breakeven_position_symbol_matches():
+    """BONGO §1B: broker position symbols vs plain roots (MNQ, F.US.MNQ, …)."""
+    from trading_bot import TopStepXTradingBot
+
+    m = TopStepXTradingBot._position_symbol_matches
+    assert m("F.US.MNQ", "MNQ")
+    assert m("MNQM5", "MNQ")
+    assert m("MNQ", "MNQ")
+    assert not m("MES", "MNQ")

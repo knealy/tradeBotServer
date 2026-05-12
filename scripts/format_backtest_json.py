@@ -19,6 +19,9 @@ Examples:
 
   # GitHub-style markdown table (stdout)
   .venv/bin/python scripts/format_backtest_json.py --trades-md saved.json
+
+  # Weekly realized PnL (ISO week, exit time) — see scripts/print_weekly_income.py
+  .venv/bin/python scripts/print_weekly_income.py saved.json
 """
 from __future__ import annotations
 

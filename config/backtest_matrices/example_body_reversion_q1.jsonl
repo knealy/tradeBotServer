@@ -1,0 +1,3 @@
+# Example parallel matrix for body_reversion (Gate A on MNQ, short Q1 window).
+# Run: .venv/bin/python scripts/run_backtest_manifest.py config/backtest_matrices/example_body_reversion_q1.jsonl
+{"id":"mnq_gateA_2026q1","strategy":"body_reversion","symbol":"MNQ","csv":"historical_data/price/MNQ_5m_databento.csv","start":"2026-01-01","end":"2026-03-31","timeframe":"5m","output":"/tmp/manifest_example_mnq_gateA_q1.json","include_trades":false,"env":{"BODY_REVERSION_SIGNAL_REQUIRE_HIGH_ATR":"true","BODY_REVERSION_SIGNAL_REQUIRE_RANGE_EXPAND":"false"}}

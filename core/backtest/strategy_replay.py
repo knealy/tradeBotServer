@@ -7,15 +7,88 @@ ensuring identical logic between backtest and production.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Iterator
 from datetime import datetime, timezone
 
 from .engine import BacktestEngine
 from .models import BacktestResult, OrderSide, OrderType, OrderStatus
 
 logger = logging.getLogger(__name__)
+
+
+def replay_timeframe_to_minutes(replay_timeframe: Optional[str]) -> int:
+    """Parse ``5m`` / ``15m`` / ``1h`` style replay bar width for intrabar 1m alignment."""
+    if not replay_timeframe:
+        return 1
+    s = str(replay_timeframe).strip().lower()
+    try:
+        if s.endswith("m") and s[:-1].isdigit():
+            return max(1, int(s[:-1]))
+        if s.endswith("h"):
+            return max(1, int(float(s[:-1]) * 60))
+        if s.endswith("d"):
+            return max(1, int(s[:-1]) * 1440)
+    except ValueError:
+        pass
+    return 1
+
+
+def sort_bars_1m_for_replay(bars_1m: Optional[List[Dict]]) -> Tuple[List[Dict], List[int]]:
+    """Return 1m bar dicts sorted by open time and parallel int64 nanosecond keys for bisect."""
+    import pandas as pd
+
+    if not bars_1m:
+        return [], []
+
+    def _ts_ns(b: Dict[str, Any]) -> int:
+        return int(pd.Timestamp(b.get("timestamp")).value)
+
+    sorted_bars = sorted(bars_1m, key=_ts_ns)
+    ns = [_ts_ns(b) for b in sorted_bars]
+    return sorted_bars, ns
+
+
+def intrabar_series_iter(
+    t_open: Any,
+    agg_bar: Any,
+    bars_1m_sorted: List[Dict],
+    bars_1m_ns: List[int],
+    window_minutes: int,
+) -> Iterator[Any]:
+    """
+    Yield OHLC sub-series for simulating fills inside one aggregate bar.
+
+    Uses 1m bars whose open timestamp falls in ``[t_open, t_open + window_minutes)``.
+    If none match, yields the aggregate bar once (5m-only behavior).
+    """
+    import pandas as pd
+
+    if not bars_1m_sorted or not bars_1m_ns:
+        yield agg_bar
+        return
+    t0 = pd.Timestamp(t_open)
+    t_end = t0 + pd.Timedelta(minutes=max(1, int(window_minutes)))
+    lo = bisect.bisect_left(bars_1m_ns, t0.value)
+    hi = bisect.bisect_left(bars_1m_ns, t_end.value)
+    if lo >= hi:
+        yield agg_bar
+        return
+    for j in range(lo, hi):
+        b = bars_1m_sorted[j]
+        ts = pd.Timestamp(b.get("timestamp"))
+        yield pd.Series(
+            {
+                "open": float(b.get("open", b.get("o", 0))),
+                "high": float(b.get("high", b.get("h", 0))),
+                "low": float(b.get("low", b.get("l", 0))),
+                "close": float(b.get("close", b.get("c", 0))),
+                "volume": int(b.get("volume", b.get("v", 0)) or 0),
+            },
+            name=ts,
+        )
 
 
 class StrategyReplayEngine:
@@ -72,12 +145,149 @@ class StrategyReplayEngine:
         # Keyed by (symbol, timeframe, limit, start_iso, end_day_iso)
         self._passthrough_cache: Dict[Tuple[str, str, int, str, str], List[Dict]] = {}
     
+    def _process_subbar_fills(self, bar: Any, tick_size: float) -> None:
+        """Pending-order simulation for one OHLC row (1m sub-bar or full aggregate bar)."""
+        # Process pending orders (check fills)
+        filled_this_bar: List[Any] = []
+        for order in self.backtest_engine.pending_orders[:]:
+            if order not in self.backtest_engine.pending_orders:
+                # Cancelled by an earlier fill's OCO sibling-cancel below.
+                continue
+            if self.backtest_engine._check_order_fill(order, bar, tick_size):
+                filled_this_bar.append(order)
+                self.backtest_engine.pending_orders.remove(order)
+                self.backtest_engine.filled_orders.append(order)
+                self.backtest_engine._update_position(order, bar["close"])
+                # Eagerly cancel OCO siblings the instant an exit fills.
+                # If we wait for the post-loop OCO sweep, both the SL
+                # and the TP from the same bracket can fill in one bar
+                # (low <= stop AND high >= limit) — the second fill
+                # then opens a phantom reverse position because no
+                # long position remains.
+                oco_group = getattr(order, "oco_group", None)
+                if oco_group:
+                    for sibling in self.backtest_engine.pending_orders[:]:
+                        if getattr(sibling, "oco_group", None) == oco_group:
+                            sibling.status = OrderStatus.CANCELLED
+                            self.backtest_engine.pending_orders.remove(sibling)
+
+        # When a simulated bracket *entry* stop fills, cancel the opposite pending
+        # entry stop for the same symbol (overnight_range places both long and short
+        # stops; live broker removes the unfilled side — stale stops caused wrong fills).
+        if filled_this_bar:
+            for filled in filled_this_bar:
+                if (
+                    getattr(filled, "stop_loss_price", None) is None
+                    or getattr(filled, "take_profit_price", None) is None
+                ):
+                    continue
+                for pending in self.backtest_engine.pending_orders[:]:
+                    if pending.order_id == filled.order_id:
+                        continue
+                    if pending.symbol != filled.symbol:
+                        continue
+                    if pending.status != OrderStatus.PENDING:
+                        continue
+                    if pending.order_type != OrderType.STOP:
+                        continue
+                    if getattr(pending, "oco_group", None):
+                        continue
+                    if (
+                        getattr(pending, "stop_loss_price", None) is None
+                        or getattr(pending, "take_profit_price", None) is None
+                    ):
+                        continue
+                    pending.status = OrderStatus.CANCELLED
+                    self.backtest_engine.pending_orders.remove(pending)
+
+        # OCO handling: if an exit order fills, cancel the sibling order(s)
+        if filled_this_bar and self.backtest_engine.pending_orders:
+            for filled in filled_this_bar:
+                oco_group = getattr(filled, "oco_group", None)
+                if not oco_group:
+                    continue
+                # Cancel any remaining orders in the same OCO group
+                for pending in self.backtest_engine.pending_orders[:]:
+                    if getattr(pending, "oco_group", None) == oco_group:
+                        pending.status = OrderStatus.CANCELLED
+                        self.backtest_engine.pending_orders.remove(pending)
+
+        # Orphan-bracket cleanup: when stacked entries on the same symbol
+        # build qty>1 and one bracket's stop_loss fires, the *other*
+        # bracket's exit orders remain alive. If position quantity has
+        # since dropped to zero, those orphan exits would otherwise fire
+        # later and open phantom reverse positions (e.g. an orphan
+        # sell-stop opens a SHORT against intent). Cancel any oco-tagged
+        # pending orders whose symbol currently has no open position.
+        if filled_this_bar and self.backtest_engine.pending_orders:
+            flat_symbols = {f.symbol for f in filled_this_bar}
+            for sym in flat_symbols:
+                if sym in self.backtest_engine.positions:
+                    continue
+                for pending in self.backtest_engine.pending_orders[:]:
+                    if pending.symbol != sym:
+                        continue
+                    if not getattr(pending, "oco_group", None):
+                        continue
+                    pending.status = OrderStatus.CANCELLED
+                    self.backtest_engine.pending_orders.remove(pending)
+
+        # If an entry order filled and carried bracket prices, place TP/SL exit orders
+        # Note: we intentionally do NOT allow these exits to fill in the *same* bar to avoid look-ahead bias.
+        for filled in filled_this_bar:
+            stop_loss_price = getattr(filled, "stop_loss_price", None)
+            take_profit_price = getattr(filled, "take_profit_price", None)
+            if stop_loss_price is None or take_profit_price is None:
+                continue
+
+            # Create OCO group using the entry order id
+            oco_group = f"{filled.order_id}_BRACKET"
+
+            # Attach bracket levels to the open position (for reference)
+            pos = self.backtest_engine.positions.get(filled.symbol)
+            if pos:
+                pos.stop_loss = float(stop_loss_price)
+                pos.take_profit = float(take_profit_price)
+
+            exit_side = OrderSide.SELL if filled.side == OrderSide.BUY else OrderSide.BUY
+
+            # Stop-loss exit (STOP)
+            sl_order_id = self.backtest_engine.place_order(
+                symbol=filled.symbol,
+                side=exit_side,
+                quantity=filled.quantity,
+                order_type=OrderType.STOP,
+                stop_price=float(stop_loss_price),
+                price=float(stop_loss_price),
+            )
+            for o in self.backtest_engine.pending_orders:
+                if o.order_id == sl_order_id:
+                    o.oco_group = oco_group
+                    o.exit_reason = "stop_loss"
+                    break
+
+            # Take-profit exit (LIMIT)
+            tp_order_id = self.backtest_engine.place_order(
+                symbol=filled.symbol,
+                side=exit_side,
+                quantity=filled.quantity,
+                order_type=OrderType.LIMIT,
+                limit_price=float(take_profit_price),
+                price=float(take_profit_price),
+            )
+            for o in self.backtest_engine.pending_orders:
+                if o.order_id == tp_order_id:
+                    o.oco_group = oco_group
+                    o.exit_reason = "take_profit"
+                    break
+
     async def replay(
         self,
         symbol: str,
         bars: List[Dict],
         tick_size: float = 0.25,
-        replay_timeframe: Optional[str] = None
+        replay_timeframe: Optional[str] = None,
+        bars_1m: Optional[List[Dict]] = None,
     ) -> BacktestResult:
         """
         Replay strategy on historical bars.
@@ -86,6 +296,7 @@ class StrategyReplayEngine:
             symbol: Trading symbol
             bars: List of historical bar dicts with OHLCV data (or DataFrame)
             tick_size: Minimum price increment
+            bars_1m: Optional 1m bars for intrabar fill simulation inside each aggregate bar
             
         Returns:
             BacktestResult with performance metrics
@@ -128,144 +339,25 @@ class StrategyReplayEngine:
         self._intercept_trading_bot_methods()
         
         try:
+            bars_1m_sorted, bars_1m_ns = sort_bars_1m_for_replay(bars_1m)
+            agg_minutes = replay_timeframe_to_minutes(replay_timeframe)
+            if bars_1m_sorted:
+                logger.info(
+                    "   Intrabar fills: %d 1m bars inside each %s aggregate bar (%d min window)",
+                    len(bars_1m_sorted),
+                    replay_timeframe or "?",
+                    agg_minutes,
+                )
+
             # Run strategy on each bar
             for i, (timestamp, bar) in enumerate(df.iterrows()):
                 self.backtest_engine.current_bar_index = i
                 self.backtest_engine.current_timestamp = timestamp
-                
-                # Process pending orders (check fills)
-                filled_this_bar = []
-                for order in self.backtest_engine.pending_orders[:]:
-                    if order not in self.backtest_engine.pending_orders:
-                        # Cancelled by an earlier fill's OCO sibling-cancel below.
-                        continue
-                    if self.backtest_engine._check_order_fill(order, bar, tick_size):
-                        filled_this_bar.append(order)
-                        self.backtest_engine.pending_orders.remove(order)
-                        self.backtest_engine.filled_orders.append(order)
-                        self.backtest_engine._update_position(order, bar['close'])
-                        # Eagerly cancel OCO siblings the instant an exit fills.
-                        # If we wait for the post-loop OCO sweep, both the SL
-                        # and the TP from the same bracket can fill in one bar
-                        # (low <= stop AND high >= limit) — the second fill
-                        # then opens a phantom reverse position because no
-                        # long position remains.
-                        oco_group = getattr(order, "oco_group", None)
-                        if oco_group:
-                            for sibling in self.backtest_engine.pending_orders[:]:
-                                if getattr(sibling, "oco_group", None) == oco_group:
-                                    sibling.status = OrderStatus.CANCELLED
-                                    self.backtest_engine.pending_orders.remove(sibling)
 
-                # When a simulated bracket *entry* stop fills, cancel the opposite pending
-                # entry stop for the same symbol (overnight_range places both long and short
-                # stops; live broker removes the unfilled side — stale stops caused wrong fills).
-                if filled_this_bar:
-                    for filled in filled_this_bar:
-                        if (
-                            getattr(filled, "stop_loss_price", None) is None
-                            or getattr(filled, "take_profit_price", None) is None
-                        ):
-                            continue
-                        for pending in self.backtest_engine.pending_orders[:]:
-                            if pending.order_id == filled.order_id:
-                                continue
-                            if pending.symbol != filled.symbol:
-                                continue
-                            if pending.status != OrderStatus.PENDING:
-                                continue
-                            if pending.order_type != OrderType.STOP:
-                                continue
-                            if getattr(pending, "oco_group", None):
-                                continue
-                            if (
-                                getattr(pending, "stop_loss_price", None) is None
-                                or getattr(pending, "take_profit_price", None) is None
-                            ):
-                                continue
-                            pending.status = OrderStatus.CANCELLED
-                            self.backtest_engine.pending_orders.remove(pending)
-
-                # OCO handling: if an exit order fills, cancel the sibling order(s)
-                if filled_this_bar and self.backtest_engine.pending_orders:
-                    for filled in filled_this_bar:
-                        oco_group = getattr(filled, "oco_group", None)
-                        if not oco_group:
-                            continue
-                        # Cancel any remaining orders in the same OCO group
-                        for pending in self.backtest_engine.pending_orders[:]:
-                            if getattr(pending, "oco_group", None) == oco_group:
-                                pending.status = OrderStatus.CANCELLED
-                                self.backtest_engine.pending_orders.remove(pending)
-
-                # Orphan-bracket cleanup: when stacked entries on the same symbol
-                # build qty>1 and one bracket's stop_loss fires, the *other*
-                # bracket's exit orders remain alive. If position quantity has
-                # since dropped to zero, those orphan exits would otherwise fire
-                # later and open phantom reverse positions (e.g. an orphan
-                # sell-stop opens a SHORT against intent). Cancel any oco-tagged
-                # pending orders whose symbol currently has no open position.
-                if filled_this_bar and self.backtest_engine.pending_orders:
-                    flat_symbols = {f.symbol for f in filled_this_bar}
-                    for sym in flat_symbols:
-                        if sym in self.backtest_engine.positions:
-                            continue
-                        for pending in self.backtest_engine.pending_orders[:]:
-                            if pending.symbol != sym:
-                                continue
-                            if not getattr(pending, "oco_group", None):
-                                continue
-                            pending.status = OrderStatus.CANCELLED
-                            self.backtest_engine.pending_orders.remove(pending)
-
-                # If an entry order filled and carried bracket prices, place TP/SL exit orders
-                # Note: we intentionally do NOT allow these exits to fill in the *same* bar to avoid look-ahead bias.
-                for filled in filled_this_bar:
-                    stop_loss_price = getattr(filled, "stop_loss_price", None)
-                    take_profit_price = getattr(filled, "take_profit_price", None)
-                    if stop_loss_price is None or take_profit_price is None:
-                        continue
-
-                    # Create OCO group using the entry order id
-                    oco_group = f"{filled.order_id}_BRACKET"
-
-                    # Attach bracket levels to the open position (for reference)
-                    pos = self.backtest_engine.positions.get(filled.symbol)
-                    if pos:
-                        pos.stop_loss = float(stop_loss_price)
-                        pos.take_profit = float(take_profit_price)
-
-                    exit_side = OrderSide.SELL if filled.side == OrderSide.BUY else OrderSide.BUY
-
-                    # Stop-loss exit (STOP)
-                    sl_order_id = self.backtest_engine.place_order(
-                        symbol=filled.symbol,
-                        side=exit_side,
-                        quantity=filled.quantity,
-                        order_type=OrderType.STOP,
-                        stop_price=float(stop_loss_price),
-                        price=float(stop_loss_price)
-                    )
-                    for o in self.backtest_engine.pending_orders:
-                        if o.order_id == sl_order_id:
-                            o.oco_group = oco_group
-                            o.exit_reason = "stop_loss"
-                            break
-
-                    # Take-profit exit (LIMIT)
-                    tp_order_id = self.backtest_engine.place_order(
-                        symbol=filled.symbol,
-                        side=exit_side,
-                        quantity=filled.quantity,
-                        order_type=OrderType.LIMIT,
-                        limit_price=float(take_profit_price),
-                        price=float(take_profit_price)
-                    )
-                    for o in self.backtest_engine.pending_orders:
-                        if o.order_id == tp_order_id:
-                            o.oco_group = oco_group
-                            o.exit_reason = "take_profit"
-                            break
+                for sub in intrabar_series_iter(
+                    timestamp, bar, bars_1m_sorted, bars_1m_ns, agg_minutes
+                ):
+                    self._process_subbar_fills(sub, tick_size)
                 
                 # Update unrealized P&L
                 if self.backtest_engine.positions:
@@ -286,7 +378,14 @@ class StrategyReplayEngine:
                     # Update mock trading bot's bars to current set
                     if hasattr(self.trading_bot, 'bars'):
                         self.trading_bot.bars = current_bars_for_strategy
-                    
+                    if hasattr(self.trading_bot, "bars_1m") and bars_1m_sorted:
+                        t_excl = pd.Timestamp(timestamp) + pd.Timedelta(minutes=agg_minutes)
+                        self.trading_bot.bars_1m = [
+                            b
+                            for b in bars_1m_sorted
+                            if pd.Timestamp(b.get("timestamp")) < t_excl
+                        ]
+
                     # Store current bar timestamp so strategy can use it for date determination
                     # This is critical for strategies that need to know the current date in backtest mode
                     if hasattr(self.trading_bot, '_current_bar_timestamp'):
@@ -437,7 +536,8 @@ class StrategyReplayEngine:
         entry_price: float,
         stop_loss_price: float,
         take_profit_price: float,
-        enable_breakeven: bool = False
+        enable_breakeven: bool = False,
+        breakeven_profit_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Simulate bracket order placement in backtest.
@@ -767,12 +867,19 @@ class StrategyReplayEngine:
             return positions
 
         async def mock_get_market_quote(symbol: str):
-            """Return quote derived from the current replay bar (close)."""
+            """Return quote derived from the current replay bar (close + volume)."""
             if self.backtest_engine.current_bar_index is not None and bars_list:
                 last_bar = bars_list[-1]
                 close_price = float(last_bar.get("close", last_bar.get("c", 0)) or 0)
-                return {"bid": close_price, "ask": close_price, "last": close_price}
-            return {"bid": 0, "ask": 0, "last": 0}
+                vol = int(last_bar.get("volume", last_bar.get("v", last_bar.get("Volume", 0))) or 0)
+                return {
+                    "bid": close_price,
+                    "ask": close_price,
+                    "last": close_price,
+                    "volume": vol,
+                    "Volume": vol,
+                }
+            return {"bid": 0, "ask": 0, "last": 0, "volume": 0, "Volume": 0}
         
         # Temporarily replace methods with our mocks
         if original_get_historical is not None:

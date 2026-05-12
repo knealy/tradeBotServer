@@ -7,7 +7,7 @@ and validate trading edges in this repo. Pair with:
   (pathway 1 / 2, multi-symbol export, sweep regen)
 - [docs/OVERNIGHT_RANGE_RESEARCH.md](../OVERNIGHT_RANGE_RESEARCH.md) —
   per-strategy operator checklist for `overnight_range`
-- [docs/ALPHA_DISCOVERY.md](../ALPHA_DISCOVERY.md) — session-feature scan + bar-level conditional scan (§ “Conditional short-horizon scan”)
+- [docs/ALPHA_DISCOVERY.md](../ALPHA_DISCOVERY.md) — session-feature scan + bar-level conditional scan (§ “Conditional short-horizon scan”); **`scripts/run_alpha_discovery_sprint.sh`** runs the overnight-range scan on canonical **5m** Databento CSVs while heavier replays run elsewhere
 - [docs/BACKTEST_RESEARCH.md](../BACKTEST_RESEARCH.md) — grid + OOS + MC
 - [docs/LOCAL_LLM_RESEARCH.md](../LOCAL_LLM_RESEARCH.md) — Ollama review tools
 - [docs/perf/sweeps/CANDIDATES.md](sweeps/CANDIDATES.md) — open hypothesis ledger
@@ -149,3 +149,15 @@ Other lines of attack:
   cross-instrument robustness; that filter found
   `atr_high_q4 & range_expand_1.5x` for the v3 body-reversion update,
   which lifted MES from a − $268 bleed to a + $1,003 winner on Q1 2026 OOS.
+
+---
+
+## Weekly PnL targets (e.g. **$1k/week**) — research framing
+
+That number is **not** something a single backtest line item guarantees: it implies **sustained edge after costs**, enough **frequency** (or enough **size** within prop rules), and **live** behavior matching replay. In-repo workflow: (1) finish **full-window** gate sweeps and promote only cells that survive **OOS + commission/slippage** already in `backtest_executor`; (2) **paper / small-size** shadow until realized R tracks replay within an agreed band; (3) scale contracts only inside **DLL/MLL** and `StrategyRiskManager` caps. Resume / run the grid with **`bash scripts/resume_body_rev_gate_ab_full.sh`** (parallel by default; **`GATE_AB_JOBS`**, **`BODY_REV_SKIP_EXISTING`**).
+
+**Weekly PnL from a saved replay:** **`scripts/print_weekly_income.py`** — pass the JSON from `core/backtest_executor.py --format=json`. With **`--include-trades`**, it buckets **exit week (UTC ISO)** and prints a TSV-friendly table; summary-only JSON prints **`avg_pnl_per_week_usd`** from `total_pnl` ÷ calendar weeks in **`period`** (useful immediately for e.g. **Gate A MNQ** full-window summary files while you decide whether to re-run with trades for the full distribution).
+
+**Faster iteration:** `scripts/run_backtest_manifest.py` (JSONL matrix, **`BACKTEST_MANIFEST_JOBS`**) for many executor runs in parallel; **`BACKTEST_CSV_CACHE`** / **`BACKTEST_CSV_CACHE_SIZE`** speed repeated CSV reads inside one Python process (e.g. **`core.research.runner`** grids). Details: **`docs/BACKTESTING.md`** § Speed.
+
+

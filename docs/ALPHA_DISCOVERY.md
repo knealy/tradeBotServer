@@ -22,6 +22,14 @@ How to find, validate, and operationalize new trading edges in this repo.
 
 Repeat monthly or after ≥ 50 new live trades.
 
+### Operator sprint (while long replays run)
+
+Use **`bash scripts/run_alpha_discovery_sprint.sh`** to regenerate **overnight-range** session scans into `docs/alpha/sprint_overnight_range_{MNQ,MES,MGC}.md` from **`historical_data/price/*_5m_databento.csv`**. Set **`OOS_SPLIT=0.3`** for the IS/OOS IC block in `alpha_discovery.py` (default in the script is `0` = faster, full-sample tests only).
+
+Then run the **bar-level** chain already in the TL;DR §2a–2b (`deep_pattern_scan.py`, `body_reversion_combo_audit.py`). That sequence is the fastest way to feed the “short-term cash machine” hypothesis loop **without** blocking on multi-hour `body_reversion` replays.
+
+**Watching background `backtest_executor` jobs:** `ps aux | grep 'core/backtest_executor.py' | grep -v grep` — one Python row per active replay. For the **nine-cell** `body_reversion` Gate A/B/C full-window grid, prefer **`bash scripts/resume_body_rev_gate_ab_full.sh`** (parallel subprocesses, default **3** at a time) instead of a single-threaded loop. **Weekly PnL** from any saved JSON: **`scripts/print_weekly_income.py`** (use **`--include-trades`** on the replay for ISO-week buckets).
+
 **For bar-level edges (5m/15m/30m horizons):** add a second loop:
 
 ```

@@ -68,6 +68,16 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "BodyReversionStrategy",
         "Big-body 5m bar mean reversion (research-grade)",
     ),
+    "morning_range_reversion": (
+        "strategies.morning_range_reversion_strategy",
+        "MorningRangeReversionStrategy",
+        "7am ET 5m range sweep → re-entry fade (research-grade)",
+    ),
+    "hourly_anchor_retrace": (
+        "strategies.hourly_anchor_retrace_strategy",
+        "HourlyAnchorRetraceStrategy",
+        "7–8am ET anchor hour: first close outside → stop-entry at breached extreme",
+    ),
 }
 
 

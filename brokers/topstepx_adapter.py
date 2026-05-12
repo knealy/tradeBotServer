@@ -4906,7 +4906,43 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             import traceback
             logger.error(traceback.format_exc())
             return OrderResponse(success=False, error=str(e))
-    
+
+    async def place_oco_bracket_stop_entry_partial_tp_v1(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_full_price: float,
+        scalp_r_multiple: float = 1.0,
+        account_id: Optional[str] = None,
+        enable_breakeven: bool = False,
+        strategy_name: Optional[str] = None,
+    ) -> OrderResponse:
+        """Design stub for BONGO §1A — partial TP at ``scalp_r_multiple`` R + runner.
+
+        Implementation plan: build :class:`core.bracket_orders.PartialTpStopEntryPlan`
+        via :func:`core.bracket_orders.build_partial_tp_stop_entry_plan`, place two
+        stop-entry OCO brackets (or extend ``/api/Order/place`` payload once API
+        semantics are confirmed), then arm a fill listener to trail the runner stop
+        to breakeven when the scalp leg fills.
+
+        ``enable_breakeven`` is reserved for runner SL → entry after scalp fill.
+        """
+        _ = enable_breakeven
+        logger.warning(
+            "place_oco_bracket_stop_entry_partial_tp_v1 not implemented (symbol=%s side=%s qty=%s strat=%s)",
+            symbol,
+            side,
+            quantity,
+            strategy_name,
+        )
+        return OrderResponse(
+            success=False,
+            error="partial_tp_v1_not_implemented_see_core_bracket_orders",
+        )
+
     async def _place_oco_bracket_rust(
         self,
         symbol: str,

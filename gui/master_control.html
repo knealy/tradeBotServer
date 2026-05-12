@@ -590,6 +590,38 @@
             min-width: 0;
             width: 100%;
         }
+        .chart-ctx-menu {
+            position: fixed;
+            z-index: 100000;
+            min-width: 188px;
+            background: rgba(34, 28, 24, 0.98);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+            padding: 4px 0;
+            font-size: 12px;
+        }
+        .chart-ctx-menu button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 8px 14px;
+            border: none;
+            background: transparent;
+            color: var(--text-primary);
+            cursor: pointer;
+            font: inherit;
+        }
+        .chart-ctx-menu button:hover {
+            background: rgba(168, 153, 136, 0.15);
+        }
+        .chart-ctx-menu .chart-ctx-hint {
+            padding: 6px 14px 4px;
+            color: var(--text-secondary);
+            font-size: 10px;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 4px;
+        }
         /*
          * LWC injects .tv-lightweight-charts (not in repo). Edit colors/fonts in initChart() createChart({…}).
          */
@@ -1115,6 +1147,12 @@
                     <option value="4h">4h</option>
                     <option value="1d">1d</option>
                     </select>
+                <label for="chart-history-source" style="font-size: 10px; color: #888; margin-left: 4px;">Bars</label>
+                <select id="chart-history-source" title="Databento = up to 5000 bars from local CSV on MNQ/MES/MGC; Auto = API first then file if empty; pan chart for older bars" style="width: 118px; font-size: 10px;">
+                    <option value="auto" selected>Auto (API→file)</option>
+                    <option value="api">API only</option>
+                    <option value="databento">Databento file</option>
+                </select>
                 <button class="btn-primary" onclick="refreshChart()">Refresh</button>
                 <button class="btn-primary" onclick="refreshAll()">Refresh All</button>
                 <div class="chart-context-strip" style="margin-left: 4px;">
@@ -1186,6 +1224,7 @@
                         <div>V: <span id="legend-volume" class="legend-value">---</span></div>
                     </div>
                     <div id="chart-mount"></div>
+                    <div id="chart-context-menu" class="chart-ctx-menu" style="display:none;" aria-hidden="true"></div>
                 </div>
             </div> <!-- End panel-content -->
         </div>
@@ -1458,6 +1497,25 @@
         const TIMEFRAME = (cfg && cfg.dataset.timeframe) || '5m';
         const BASE_URL = 'http://127.0.0.1:' + SERVER_PORT;
         const WS_URL = 'ws://127.0.0.1:' + SERVER_PORT + '/ws';
+
+        /** MNQ / MES / MGC (root or outright contract id) — canonical Databento CSVs exist for these. */
+        function chartSymbolHasCanonicalHistory(sym) {
+            const s = String(sym || '').trim().toUpperCase();
+            return s.startsWith('MNQ') || s.startsWith('MES') || s.startsWith('MGC');
+        }
+        /** Bar count for GET /api/chart/reload (server caps Databento at 5000). */
+        function historyReloadBarLimit(histSrc, symbol) {
+            const deep = chartSymbolHasCanonicalHistory(symbol);
+            if (histSrc === 'databento') return deep ? 5000 : 1500;
+            if (histSrc === 'auto') return deep ? 3500 : 600;
+            return deep ? 900 : 400;
+        }
+        /** Most recent candles on first load only; full reload set stays in the series (pan left for older). */
+        const CHART_INITIAL_VISIBLE_MAX = 200;
+        function initialRecentVisibleBarCount(totalBars) {
+            if (totalBars <= 0) return 0;
+            return Math.min(totalBars, CHART_INITIAL_VISIBLE_MAX);
+        }
 
         /** Apply CSS variables from GET /api/chart/theme/page (template + optional config/page_theme.json). */
         async function applyPageThemeFromServer() {
@@ -1998,6 +2056,10 @@
         let currentChartSymbol = SYMBOL || 'MNQ'; // Track current chart symbol
         let currentChartTimeframe = TIMEFRAME || '5m'; // Track current chart timeframe
         let chartUpdateInProgress = false; // Prevent concurrent chart updates
+        /** Throttle HTTP fetches for order/position price lines (avoid N×/s with fast chart refresh). */
+        let chartLinesRefreshForced = false;
+        let lastChartLinesRefreshMs = 0;
+        const CHART_LINES_MIN_INTERVAL_MS = 3500;
         let chartErrorCount = 0; // Track consecutive errors
         const maxChartErrors = 5; // Stop interval after this many consecutive errors
         
@@ -2352,7 +2414,8 @@ Speed Trading Shortcuts:
 
         function orderIsTerminalStatus(st) {
             const s = String(st == null ? '' : st).trim().toUpperCase();
-            return ['FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'DONE', 'COMPLETE', 'REPLACED', 'SUSPENDED'].includes(s);
+            // SUSPENDED is treated as working (TopStepX often reports active stop legs as SUSPENDED).
+            return ['FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'DONE', 'COMPLETE', 'REPLACED'].includes(s);
         }
 
         function orderIsWorking(order) {
@@ -3486,7 +3549,72 @@ Speed Trading Shortcuts:
                 default:
                     console.log('Unknown WebSocket message type:', type);
             }
+            if (type === 'positions' || type === 'orders' || type === 'position_update' || type === 'order_update' ||
+                type === 'order_filled' || type === 'position_closed' || type === 'position_fill' ||
+                type === 'order_updated' || type === 'order_canceled' || type === 'order_cancelled' || type === 'order_rejected') {
+                chartLinesRefreshForced = true;
+            }
         }
+
+        function hideChartContextMenu() {
+            const m = document.getElementById('chart-context-menu');
+            if (m) {
+                m.style.display = 'none';
+                m.innerHTML = '';
+                m.setAttribute('aria-hidden', 'true');
+            }
+        }
+
+        function showChartContextMenu(clientX, clientY) {
+            const m = document.getElementById('chart-context-menu');
+            if (!m) return;
+            const snap = window.__chartCrosshairSnapshot || null;
+            const hint = (snap && snap.close != null && !isNaN(snap.close))
+                ? `<div class="chart-ctx-hint">Crosshair C: ${Number(snap.close).toFixed(2)}</div>`
+                : `<div class="chart-ctx-hint">Hover a bar for OHLC (or use last known)</div>`;
+            m.innerHTML = hint +
+                '<button type="button" data-act="copy">Copy crosshair close</button>' +
+                '<button type="button" data-act="reload">Reload chart data</button>' +
+                '<button type="button" data-act="fit">Fit time scale</button>' +
+                '<button type="button" data-act="orders">Scroll to Active Trading</button>' +
+                '<button type="button" data-act="draghint">Bracket orders: drag price lines</button>';
+            m.style.display = 'block';
+            m.setAttribute('aria-hidden', 'false');
+            m.style.left = Math.min(clientX, window.innerWidth - 200) + 'px';
+            m.style.top = Math.min(clientY, window.innerHeight - 200) + 'px';
+            m.querySelectorAll('button[data-act]').forEach(btn => {
+                btn.onclick = (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const act = btn.getAttribute('data-act');
+                    hideChartContextMenu();
+                    if (act === 'copy') {
+                        const v = (snap && snap.close != null) ? String(snap.close) : '';
+                        if (v && navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(v);
+                            if (typeof showToast === 'function') showToast('Copied price', 'success', 1500);
+                        } else if (typeof showToast === 'function') {
+                            showToast('No price to copy (hover a bar)', 'warning', 2000);
+                        }
+                    } else if (act === 'reload' && typeof refreshChart === 'function') {
+                        refreshChart();
+                    } else if (act === 'fit' && chart && typeof chart.timeScale === 'function') {
+                        chart.timeScale().fitContent();
+                    } else if (act === 'orders') {
+                        const ap = document.getElementById('activity-panel');
+                        if (ap) ap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    } else if (act === 'draghint' && typeof showToast === 'function') {
+                        showToast('Drag orange/blue bracket lines to modify (POST /api/chart/order/modify)', 'info', 4000);
+                    }
+                };
+            });
+        }
+
+        document.addEventListener('mousedown', (e) => {
+            const m = document.getElementById('chart-context-menu');
+            if (!m || m.style.display === 'none') return;
+            if (!m.contains(e.target)) hideChartContextMenu();
+        }, true);
         
         // Store all logs in memory for filtering
         let allLogs = [];
@@ -4376,13 +4504,13 @@ Speed Trading Shortcuts:
             // Already polling?
             if (updateIntervals.account) return;
             
-            console.log('📡 Starting SLOW background sync (30s)');
+            console.log('📡 Starting SLOW background sync (60s)');
             // SLOW SYNC ONLY - WebSocket handles real-time events
-            // This ensures we never drift more than 30s if an event is missed
-            updateIntervals.account = setInterval(updateAccountStatus, 30000);
-            updateIntervals.positions = setInterval(updatePositions, 30000);
-            updateIntervals.orders = setInterval(updateOrders, 30000);
-            updateIntervals.strategies = setInterval(updateStrategies, 30000);
+            // When WS is down, 60s limits HTTP load vs the old 30s quad poll.
+            updateIntervals.account = setInterval(updateAccountStatus, 60000);
+            updateIntervals.positions = setInterval(updatePositions, 60000);
+            updateIntervals.orders = setInterval(updateOrders, 60000);
+            updateIntervals.strategies = setInterval(updateStrategies, 60000);
         }
         
         // Initialize chart — options below map to Lightweight Charts API (not raw HTML for .tv-lightweight-charts).
@@ -4568,6 +4696,11 @@ Speed Trading Shortcuts:
             
             // Add drag/drop support for bracket order price lines
             setupOrderLineDragDrop();
+
+            mount.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showChartContextMenu(e.clientX, e.clientY);
+            });
             
             // OHLCV Legend update on crosshair move
             chart.subscribeCrosshairMove(param => {
@@ -4600,6 +4733,13 @@ Speed Trading Shortcuts:
                 const volData = param.seriesData.get(volumeSeries);
                 
                 if (candleData) {
+                    window.__chartCrosshairSnapshot = {
+                        time: param.time,
+                        open: candleData.open,
+                        high: candleData.high,
+                        low: candleData.low,
+                        close: candleData.close,
+                    };
                     legendOpen.textContent = candleData.open.toFixed(2);
                     legendHigh.textContent = candleData.high.toFixed(2);
                     legendLow.textContent = candleData.low.toFixed(2);
@@ -4626,8 +4766,19 @@ Speed Trading Shortcuts:
             try {
                 const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
                 const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
-                const response = await fetch(`${BASE_URL}/api/chart/reload?symbol=${symbol}&timeframe=${timeframe}&limit=300`);
+                const histSrc = document.getElementById('chart-history-source')?.value || 'auto';
+                const barLimit = historyReloadBarLimit(histSrc, symbol);
+                const q = new URLSearchParams({
+                    symbol: String(symbol),
+                    timeframe: String(timeframe),
+                    limit: String(barLimit),
+                    source: String(histSrc),
+                });
+                const response = await fetch(`${BASE_URL}/api/chart/reload?${q.toString()}`);
                 const data = await response.json();
+                if (data.error && (!data.bars || data.bars.length === 0)) {
+                    console.warn('Chart reload:', data.error);
+                }
                 if (data.bars && candlestickSeries && chart) {
                     // Clear old data and set new data
                     const bars = data.bars.map(bar => ({
@@ -4653,15 +4804,14 @@ Speed Trading Shortcuts:
                     candlestickSeries.setData(bars);
                     if (volumeSeries) volumeSeries.setData(volumeData);
                     
-                    // Reset visible range to show recent bars (last ~50 bars)
+                    const src = data.history_source || 'api';
                     if (bars.length > 0) {
                         const lastBar = bars[bars.length - 1];
                         window.__lastBarOpenSec = typeof lastBar.time === 'number' ? lastBar.time : null;
                         window.__lastBarClose = lastBar.close != null ? parseFloat(lastBar.close) : null;
-                        const firstVisibleBar = Math.max(0, bars.length - 50);
+                        const vis = initialRecentVisibleBarCount(bars.length);
+                        const firstVisibleBar = Math.max(0, bars.length - vis);
                         const firstBar = bars[firstVisibleBar];
-                        
-                        // Set visible range to show recent data
                         chart.timeScale().setVisibleRange({
                             from: firstBar.time,
                             to: lastBar.time
@@ -4677,7 +4827,7 @@ Speed Trading Shortcuts:
                     lastOvernightRangeFetch = 0;
                     updateOvernightRangePriceLines();
                     
-                    console.log(`✅ Chart loaded ${bars.length} bars for ${symbol} ${timeframe}`);
+                    console.log(`✅ Chart loaded ${bars.length} bars for ${symbol} ${timeframe} (${src})`);
                 }
             } catch (error) {
                 console.error('Error loading chart:', error);
@@ -4920,13 +5070,15 @@ Speed Trading Shortcuts:
                 // Reset error count on success
                 chartErrorCount = 0;
                 
-                // Refresh chart lines and indicators (order lines, position lines, etc.)
-                // Only update visual elements, don't make additional fetch requests
-                if (typeof updateOrderLines === 'function') {
-                    updateOrderLines();
-                }
-                if (typeof updatePositionLines === 'function') {
-                    updatePositionLines();
+                // Order/position lines: expensive HTTP — refresh on WS-driven flag or every few seconds.
+                const _nowLines = Date.now();
+                const _needLines = chartLinesRefreshForced ||
+                    (_nowLines - lastChartLinesRefreshMs >= CHART_LINES_MIN_INTERVAL_MS);
+                if (_needLines) {
+                    lastChartLinesRefreshMs = _nowLines;
+                    chartLinesRefreshForced = false;
+                    if (typeof updateOrderLines === 'function') await updateOrderLines();
+                    if (typeof updatePositionLines === 'function') await updatePositionLines();
                 }
                 const _nowOr = Date.now();
                 if (_nowOr - lastOvernightRangeFetch > 8000) {

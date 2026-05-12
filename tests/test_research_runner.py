@@ -67,3 +67,6 @@ async def test_run_research_smoke():
     assert out["strategy"] == "ma_crossover"
     assert len(out["grid_results"]) == 1
     assert "git_sha" in out
+    gr0 = out["grid_results"][0]
+    for k in ("is_return_pct", "is_total_pnl", "oos_return_pct", "oos_total_pnl"):
+        assert k in gr0

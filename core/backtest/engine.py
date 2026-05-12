@@ -224,16 +224,21 @@ class BacktestEngine:
                 
                 # Calculate P&L for closed portion
                 if pos.side == OrderSide.BUY:
-                    pnl = (filled_order.filled_price - pos.entry_price) * qty_to_close * self.point_value
+                    gross = (filled_order.filled_price - pos.entry_price) * qty_to_close * self.point_value
                 else:
-                    pnl = (pos.entry_price - filled_order.filled_price) * qty_to_close * self.point_value
-                
-                # Subtract commission and slippage
-                pnl -= commission
-                pnl -= filled_order.slippage * qty_to_close * self.point_value
-                
-                self.capital += pnl
-                
+                    gross = (pos.entry_price - filled_order.filled_price) * qty_to_close * self.point_value
+
+                slip_dollars = filled_order.slippage * qty_to_close * self.point_value
+                # Line above already did self.capital -= commission for this (exit) fill.
+                # Do not subtract exit commission again inside pnl before capital += … that double-counted
+                # exit fees vs trade.pnl and broke ``initial + sum(trade.pnl) == final_capital``.
+                exit_comm = commission
+                entry_comm = self.commission_per_contract * qty_to_close
+                round_trip_commission = exit_comm + entry_comm
+                pnl = gross - round_trip_commission - slip_dollars
+
+                self.capital += gross - slip_dollars
+
                 # Create trade record
                 self.trade_counter += 1
                 trade = BacktestTrade(
@@ -247,8 +252,8 @@ class BacktestEngine:
                     quantity=qty_to_close,
                     pnl=pnl,
                     pnl_percent=(pnl / pos.entry_price / qty_to_close) * 100,
-                    commission=commission,
-                    slippage=filled_order.slippage * qty_to_close * self.point_value,
+                    commission=round_trip_commission,
+                    slippage=slip_dollars,
                     bars_held=max(0, self.current_bar_index - getattr(pos, "entry_bar_index", 0)),
                     exit_reason=getattr(filled_order, "exit_reason", "signal"),
                     max_favorable_excursion=pos.max_favorable_excursion,

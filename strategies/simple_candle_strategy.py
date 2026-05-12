@@ -33,25 +33,8 @@ class SimpleCandleStrategy(BaseStrategy):
         """Initialize the strategy."""
         # Create config if not provided
         if config is None:
-            config = StrategyConfig(
-                name="simple_candle",
-                enabled=True,
-                symbols=["MNQ"],  # Default to MNQ
-                max_positions=2,
-                position_size=1,
-                risk_per_trade_percent=0.5,
-                max_daily_trades=30,  # Allow many trades for testing
-                preferred_conditions=[],
-                avoid_conditions=[],
-                trading_start_time="16:30",
-                trading_end_time="23:00",
-                no_trade_start="",
-                no_trade_end="",
-                respect_dll=True,
-                respect_mll=True,
-                max_dll_usage_percent=0.70
-            )
-        
+            config = StrategyConfig.from_env("simple_candle")
+
         super().__init__(trading_bot, config)
 
         # Strategy config (legacy env keys for this strategy are unprefixed).
@@ -358,6 +341,8 @@ class SimpleCandleStrategy(BaseStrategy):
         Returns signal dict or None.
         """
         try:
+            _replay = getattr(self.trading_bot, "_is_strategy_replay", False)
+
             # Determine current position direction for this symbol (if any)
             # Only place orders in the direction of the current position unless flat.
             # Use the CLI command path to check current positions (more reliable)
@@ -489,7 +474,18 @@ class SimpleCandleStrategy(BaseStrategy):
                             
                             # First match is enough
                             if pos_side:
-                                logger.warning(f"✅ Found {pos_side} position for {symbol}: qty={qty}, side_val={side_val}")
+                                if _replay:
+                                    logger.debug(
+                                        "Found %s position for %s: qty=%s, side_val=%s",
+                                        pos_side,
+                                        symbol,
+                                        qty,
+                                        side_val,
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"✅ Found {pos_side} position for {symbol}: qty={qty}, side_val={side_val}"
+                                    )
                                 break
                             else:
                                 logger.error(f"❌ Could not determine position side for {symbol}: side_val={side_val}, qty={qty}")
@@ -499,9 +495,15 @@ class SimpleCandleStrategy(BaseStrategy):
                     logger.warning("No account_id available for position check")
                     
                 if pos_side:
-                    logger.warning(f"📊 DETECTED {pos_side} POSITION for {symbol}")
+                    if _replay:
+                        logger.debug("Detected %s position for %s", pos_side, symbol)
+                    else:
+                        logger.warning(f"📊 DETECTED {pos_side} POSITION for {symbol}")
                 else:
-                    logger.info(f"📊 No position detected for {symbol} - FLAT")
+                    if _replay:
+                        logger.debug("No position detected for %s — FLAT", symbol)
+                    else:
+                        logger.info(f"📊 No position detected for {symbol} - FLAT")
                     
             except Exception as e:
                 logger.error(f"❌ Error checking current positions for {symbol}: {e}")
@@ -539,15 +541,21 @@ class SimpleCandleStrategy(BaseStrategy):
                         
                         # Log trend quality (only if below threshold to reduce noise)
                         if not trend_score.is_trending:
-                            logger.warning(
-                                f"🚫 CHOPPY MARKET: Trend score {trend_score.total_score}/100 "
-                                f"(EMA sep: {trend_score.ema_separation_score}, "
-                                f"Dir: {trend_score.direction_consistency_score}, "
-                                f"Mom: {trend_score.momentum_score}, "
-                                f"ATR: {trend_score.atr_expansion_score}, "
-                                f"Candles: {trend_score.candle_consistency_score}) - "
-                                f"Skipping trade"
-                            )
+                            if _replay:
+                                logger.debug(
+                                    "Choppy market (trend score %s/100) — skip",
+                                    trend_score.total_score,
+                                )
+                            else:
+                                logger.warning(
+                                    f"🚫 CHOPPY MARKET: Trend score {trend_score.total_score}/100 "
+                                    f"(EMA sep: {trend_score.ema_separation_score}, "
+                                    f"Dir: {trend_score.direction_consistency_score}, "
+                                    f"Mom: {trend_score.momentum_score}, "
+                                    f"ATR: {trend_score.atr_expansion_score}, "
+                                    f"Candles: {trend_score.candle_consistency_score}) - "
+                                    f"Skipping trade"
+                                )
                             return None  # Block trade in choppy market
                         else:
                             # Log occasionally for trending markets (every 10th check)
@@ -611,10 +619,16 @@ class SimpleCandleStrategy(BaseStrategy):
             # Log when signals are blocked by position gating
             if long_distance_ok and not allow_long:
                 msg = f"🚫 LONG signal BLOCKED for {symbol} - Current position is {pos_side}, cannot add opposing orders"
-                logger.warning(msg)
+                if _replay:
+                    logger.debug(msg)
+                else:
+                    logger.warning(msg)
             if short_distance_ok and not allow_short:
                 msg = f"🚫 SHORT signal BLOCKED for {symbol} - Current position is {pos_side}, cannot add opposing orders"
-                logger.warning(msg)
+                if _replay:
+                    logger.debug(msg)
+                else:
+                    logger.warning(msg)
 
             if long_distance_ok and allow_long:
                 # 2 consecutive bullish candles = LONG signal

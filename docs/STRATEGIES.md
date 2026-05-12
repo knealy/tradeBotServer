@@ -21,5 +21,5 @@ Reference only (not imported by Python): [strategies/pine/](../strategies/pine/)
 
 ## Legacy guides
 
-- [MODULAR_STRATEGY_GUIDE.md](MODULAR_STRATEGY_GUIDE.md) — modular design notes.
-- [BACKTEST_ENGINE_GUIDE.md](BACKTEST_ENGINE_GUIDE.md) touches backtest wiring; see also [BACKTESTING.md](BACKTESTING.md).
+- [archive/MODULAR_STRATEGY_GUIDE.md](archive/MODULAR_STRATEGY_GUIDE.md) — modular design notes.
+- [archive/BACKTEST_ENGINE_GUIDE.md](archive/BACKTEST_ENGINE_GUIDE.md) touches backtest wiring; see also [BACKTESTING.md](BACKTESTING.md).

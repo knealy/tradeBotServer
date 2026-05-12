@@ -9,6 +9,7 @@ import os
 import re
 import asyncio
 import math
+import hashlib
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 from pathlib import Path
@@ -41,6 +42,50 @@ def _parse_strategy_settings_blob(settings: Any) -> Dict[str, Any]:
         except (json.JSONDecodeError, TypeError, ValueError):
             return {}
     return {}
+
+
+def broker_bars_to_chart_rows(bars: List[Any]) -> List[Dict[str, Any]]:
+    """Normalize ``get_historical_data`` return value into Lightweight Charts payloads."""
+    chart_data: List[Dict[str, Any]] = []
+    for bar in bars or []:
+        try:
+            if hasattr(bar, "timestamp"):
+                if isinstance(bar.timestamp, datetime):
+                    ts = int(bar.timestamp.timestamp())
+                elif isinstance(bar.timestamp, str):
+                    from datetime import datetime as dt
+
+                    dt_obj = dt.fromisoformat(bar.timestamp.replace("Z", "+00:00"))
+                    ts = int(dt_obj.timestamp())
+                else:
+                    ts = int(bar.timestamp)
+            elif isinstance(bar, dict):
+                ts_val = bar.get("timestamp")
+                if isinstance(ts_val, datetime):
+                    ts = int(ts_val.timestamp())
+                elif isinstance(ts_val, str):
+                    from datetime import datetime as dt
+
+                    dt_obj = dt.fromisoformat(ts_val.replace("Z", "+00:00"))
+                    ts = int(dt_obj.timestamp())
+                else:
+                    ts = int(ts_val) if ts_val else 0
+            else:
+                continue
+            chart_data.append(
+                {
+                    "time": ts,
+                    "open": float(bar.open if hasattr(bar, "open") else bar.get("open", 0)),
+                    "high": float(bar.high if hasattr(bar, "high") else bar.get("high", 0)),
+                    "low": float(bar.low if hasattr(bar, "low") else bar.get("low", 0)),
+                    "close": float(bar.close if hasattr(bar, "close") else bar.get("close", 0)),
+                    "volume": float(bar.volume if hasattr(bar, "volume") else bar.get("volume", 0)),
+                }
+            )
+        except Exception as e:
+            logger.warning("Failed to convert bar: %s", e)
+            continue
+    return chart_data
 
 
 def _or_ranges_from_strategy_state_row(st_row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -130,6 +175,52 @@ def json_serialize_safe(obj: Any) -> Any:
         return [json_serialize_safe(item) for item in obj]
     else:
         return obj
+
+
+def _ws_snapshot_fingerprint_orders(orders: Optional[List[Any]]) -> str:
+    """Compact stable fingerprint for order lists (skip redundant WS payloads)."""
+    if not orders:
+        return "o:0"
+    parts: List[str] = []
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+        oid = str(o.get("order_id") or o.get("id") or o.get("orderId") or "")
+        st = str(o.get("status") or "")
+        q = str(o.get("quantity") or o.get("size") or "")
+        px = (
+            o.get("price")
+            or o.get("stopPrice")
+            or o.get("limitPrice")
+            or o.get("stop_price")
+            or o.get("limit_price")
+            or ""
+        )
+        parts.append(f"{oid}|{st}|{q}|{px}")
+    payload = "\n".join(sorted(parts))
+    if not payload:
+        return "o:0"
+    return "o:" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def _ws_snapshot_fingerprint_positions(positions: Optional[List[Any]]) -> str:
+    """Compact stable fingerprint for position lists."""
+    if not positions:
+        return "p:0"
+    parts: List[str] = []
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("position_id") or p.get("id") or "")
+        sym = str(p.get("symbol") or "")
+        qty = str(p.get("quantity") or p.get("size") or "")
+        ep = str(p.get("entryPrice") or p.get("entry_price") or "")
+        parts.append(f"{pid}|{sym}|{qty}|{ep}")
+    payload = "\n".join(sorted(parts))
+    if not payload:
+        return "p:0"
+    return "p:" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+
 
 # Global server instance for real-time charts
 _chart_server = None
@@ -1273,7 +1364,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         elif status == 4:
                             order_dict['status'] = 'REJECTED'
                         else:
-                            order_dict['status'] = 'SUSPENDED'
+                            # Preserve unknown numeric statuses without forcing SUSPENDED.
+                            order_dict['status'] = 'UNKNOWN'
                     elif isinstance(status, str) and status.upper() == 'PENDING':
                         order_dict['status'] = 'OPEN'  # Normalize to OPEN for display
                     elif isinstance(status, str) and status.strip().lower() == 'suspended':
@@ -1363,7 +1455,6 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     "DONE",
                     "COMPLETE",
                     "REPLACED",
-                    "SUSPENDED",
                 ):
                     return True
                 try:
@@ -1548,69 +1639,73 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             return response
     
     async def handle_reload_data(request):
-        """Handle chart data reload requests."""
+        """Handle chart data reload requests (broker API and/or canonical Databento CSVs)."""
         try:
-            # Get symbol and timeframe from query params, fallback to outer scope
-            reload_symbol = request.query.get('symbol') or symbol
-            reload_timeframe = request.query.get('timeframe') or timeframe
-            limit = int(request.query.get('limit', 100))
-            
-            # Fetch fresh historical data
-            bars = await trading_bot.get_historical_data(
-                symbol=reload_symbol,
-                timeframe=reload_timeframe,
-                limit=limit
-            )
-            
-            # Convert bars to chart format
-            chart_data = []
-            for bar in bars:
+            reload_symbol = request.query.get("symbol") or symbol
+            reload_timeframe = request.query.get("timeframe") or timeframe
+            limit = int(request.query.get("limit", 100))
+            source = (
+                request.query.get("source") or os.environ.get("CHART_RELOAD_SOURCE") or "auto"
+            ).strip().lower()
+            if source not in ("api", "databento", "auto"):
+                source = "auto"
+
+            chart_data: List[Dict[str, Any]] = []
+            history_source: Optional[str] = None
+
+            if source in ("api", "auto"):
                 try:
-                    # Handle timestamp - can be datetime object or string
-                    if hasattr(bar, 'timestamp'):
-                        if isinstance(bar.timestamp, datetime):
-                            ts = int(bar.timestamp.timestamp())
-                        elif isinstance(bar.timestamp, str):
-                            # Parse ISO string
-                            from datetime import datetime as dt
-                            dt_obj = dt.fromisoformat(bar.timestamp.replace('Z', '+00:00'))
-                            ts = int(dt_obj.timestamp())
-                        else:
-                            ts = int(bar.timestamp)
-                    elif isinstance(bar, dict):
-                        ts_val = bar.get('timestamp')
-                        if isinstance(ts_val, datetime):
-                            ts = int(ts_val.timestamp())
-                        elif isinstance(ts_val, str):
-                            from datetime import datetime as dt
-                            dt_obj = dt.fromisoformat(ts_val.replace('Z', '+00:00'))
-                            ts = int(dt_obj.timestamp())
-                        else:
-                            ts = int(ts_val) if ts_val else 0
-                    else:
-                        continue
-                    
-                    chart_data.append({
-                        'time': ts,
-                        'open': float(bar.open if hasattr(bar, 'open') else bar.get('open', 0)),
-                        'high': float(bar.high if hasattr(bar, 'high') else bar.get('high', 0)),
-                        'low': float(bar.low if hasattr(bar, 'low') else bar.get('low', 0)),
-                        'close': float(bar.close if hasattr(bar, 'close') else bar.get('close', 0)),
-                        'volume': float(bar.volume if hasattr(bar, 'volume') else bar.get('volume', 0))
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to convert bar: {e}")
-                    continue
-            
-            response = web.json_response({'bars': chart_data, 'symbol': reload_symbol, 'timeframe': reload_timeframe})
-            response.headers['Access-Control-Allow-Origin'] = '*'
+                    bars = await trading_bot.get_historical_data(
+                        symbol=reload_symbol,
+                        timeframe=reload_timeframe,
+                        limit=limit,
+                    )
+                    chart_data = broker_bars_to_chart_rows(bars)
+                    if chart_data:
+                        history_source = "api"
+                except Exception as api_exc:
+                    if source == "api":
+                        raise
+                    logger.warning("Chart reload API path failed (%s); trying Databento: %s", source, api_exc)
+
+            if source == "databento" or (source == "auto" and not chart_data):
+                from core.chart_databento_loader import load_databento_bars_for_chart
+
+                db_bars, db_err = load_databento_bars_for_chart(
+                    reload_symbol, reload_timeframe, limit
+                )
+                if db_bars:
+                    chart_data = db_bars
+                    history_source = "databento"
+                elif source == "databento":
+                    response = web.json_response(
+                        {
+                            "error": db_err or "no_databento_csv",
+                            "bars": [],
+                            "symbol": reload_symbol,
+                            "timeframe": reload_timeframe,
+                            "history_source": "databento",
+                        },
+                        status=404,
+                    )
+                    response.headers["Access-Control-Allow-Origin"] = "*"
+                    return response
+
+            payload: Dict[str, Any] = {
+                "bars": chart_data,
+                "symbol": reload_symbol,
+                "timeframe": reload_timeframe,
+                "history_source": history_source,
+            }
+            response = web.json_response(payload)
+            response.headers["Access-Control-Allow-Origin"] = "*"
             return response
         except Exception as e:
             logger.error(f"Error reloading chart data: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            response = web.json_response({'error': str(e), 'bars': []}, status=500)
-            response.headers['Access-Control-Allow-Origin'] = '*'
+            response = web.json_response({"error": str(e), "bars": []}, status=500)
+            response.headers["Access-Control-Allow-Origin"] = "*"
             return response
     
     async def handle_strategy_status(request):
@@ -3944,6 +4039,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         'performance_metrics': None,
         'pnl_history': None
     }
+    _last_ws_orders_positions_fp: Dict[str, str] = {}
 
     # ============================================================================
     # EVENT-DRIVEN HANDLERS - React to events from the event bus
@@ -3999,6 +4095,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         else:
                             orders = await trading_bot.get_open_orders(account_id=account_id_str)
                         
+                        fp = _ws_snapshot_fingerprint_orders(orders)
+                        key_o = f"orders:{account_id_str}"
+                        if _last_ws_orders_positions_fp.get(key_o) == fp:
+                            return
+                        _last_ws_orders_positions_fp[key_o] = fp
+
                         await broadcast_update({
                             'type': 'orders',
                             'data': {'orders': orders}
@@ -4018,6 +4120,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         else:
                             positions = await trading_bot.get_open_positions(account_id=account_id_str)
                         
+                        fp = _ws_snapshot_fingerprint_positions(positions)
+                        key_p = f"positions:{account_id_str}"
+                        if _last_ws_orders_positions_fp.get(key_p) == fp:
+                            return
+                        _last_ws_orders_positions_fp[key_p] = fp
+
                         await broadcast_update({
                             'type': 'positions',
                             'data': {'positions': positions}
@@ -4098,6 +4206,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         else:
                             positions = await trading_bot.get_open_positions(account_id=account_id_str)
                         
+                        fp = _ws_snapshot_fingerprint_positions(positions)
+                        key_p = f"positions:{account_id_str}"
+                        if _last_ws_orders_positions_fp.get(key_p) == fp:
+                            return
+                        _last_ws_orders_positions_fp[key_p] = fp
+
                         await broadcast_update({
                             'type': 'positions',
                             'data': {'positions': positions}
@@ -4117,6 +4231,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         else:
                             orders = await trading_bot.get_open_orders(account_id=account_id_str)
                         
+                        fp = _ws_snapshot_fingerprint_orders(orders)
+                        key_o = f"orders:{account_id_str}"
+                        if _last_ws_orders_positions_fp.get(key_o) == fp:
+                            return
+                        _last_ws_orders_positions_fp[key_o] = fp
+
                         await broadcast_update({
                             'type': 'orders',
                             'data': {'orders': orders}
@@ -4176,6 +4296,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         
         # Start log tailing in separate task
         log_task = asyncio.create_task(tail_log_file())
+        last_reconcile = asyncio.get_event_loop().time()
         
         while True:
             try:
@@ -4187,6 +4308,36 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         'timestamp': datetime.now(timezone.utc).isoformat(),
                         'clients': len(_ws_clients)
                     }, immediate=False)
+
+                    # Safety net: reconcile orders/positions periodically in case we miss SignalR invalidations.
+                    # Keeps the Active Trading panel from drifting with stale/false orders.
+                    now = asyncio.get_event_loop().time()
+                    if now - last_reconcile >= 60.0:
+                        last_reconcile = now
+                        try:
+                            account_id = None
+                            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                                if isinstance(trading_bot.selected_account, dict):
+                                    account_id = trading_bot.selected_account.get('id')
+                                else:
+                                    account_id = str(trading_bot.selected_account)
+                            if account_id and hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
+                                aid = str(account_id)
+                                orders = await trading_bot.state_cache.get_orders(aid, force_refresh=True)
+                                positions = await trading_bot.state_cache.get_positions(aid, force_refresh=True)
+                                olist = orders or []
+                                plist = positions or []
+                                ofp = _ws_snapshot_fingerprint_orders(olist)
+                                pfp = _ws_snapshot_fingerprint_positions(plist)
+                                ko, kp = f"orders:{aid}", f"positions:{aid}"
+                                if _last_ws_orders_positions_fp.get(ko) != ofp:
+                                    _last_ws_orders_positions_fp[ko] = ofp
+                                    await broadcast_update({'type': 'orders', 'data': {'orders': olist}}, immediate=True)
+                                if _last_ws_orders_positions_fp.get(kp) != pfp:
+                                    _last_ws_orders_positions_fp[kp] = pfp
+                                    await broadcast_update({'type': 'positions', 'data': {'positions': plist}}, immediate=True)
+                        except Exception as e:
+                            logger.debug("Periodic reconcile failed: %s", e)
                 
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
@@ -5785,7 +5936,7 @@ def generate_chart_html(
             updateStatus(`Loading ${{newSymbol}} ${{newTimeframe}}...`);
             
             try {{
-                const response = await fetch(`http://127.0.0.1:${{serverPort}}/api/chart/reload?symbol=${{encodeURIComponent(newSymbol)}}&timeframe=${{encodeURIComponent(newTimeframe)}}&limit=100`);
+                const response = await fetch(`http://127.0.0.1:${{serverPort}}/api/chart/reload?symbol=${{encodeURIComponent(newSymbol)}}&timeframe=${{encodeURIComponent(newTimeframe)}}&limit=3500&source=auto`);
                 const data = await response.json();
                 
                 if (data.error) {{

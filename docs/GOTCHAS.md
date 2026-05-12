@@ -4,6 +4,11 @@
 
 Dense reference for behavior that is easy to misread or break. Prefer the cited files over this list when in doubt.
 
+### Ops / deploy hygiene
+
+- **Legacy cron → webhook**: If an old machine still runs `curl` to a retired Railway URL on a schedule, remove the line from `crontab -e` (or launchd plist) so you are not hammering a dead endpoint. Railway: cancel the project in the Railway dashboard when decommissioning; env vars there are not auto-deleted from your shell profile.
+- **Discord heartbeat**: Optional `DISCORD_STATUS_INTERVAL_SECONDS` + `DISCORD_WEBHOOK_URL` sends a short status digest from the interactive bot or `strategy_executor` (see [core/discord_notifier.py](../core/discord_notifier.py)).
+
 ### Environment variables
 
 - `PROJECT_X_API_KEY` and `PROJECT_X_USERNAME` each fall back to the transposed spellings `TOPSETPX_API_KEY` and `TOPSETPX_USERNAME`. Keep both spellings working or migrate env docs and Railway vars explicitly—dropping aliases breaks setups that still export the typo form.
@@ -35,6 +40,12 @@ Dense reference for behavior that is easy to misread or break. Prefer the cited 
 - `rust/target/` must stay out of the index; `.gitignore` documents it as a former multi-thousand-file mistake.
 
 - Citation: [`.gitignore`](../.gitignore#L121-L122).
+
+### TopStepX / Project X — account “lockout” vs API
+
+- **`POST /api/Account/search`** (see `AuthManager.list_accounts` in [`core/auth.py`](../core/auth.py)) returns **active** accounts with a normalized **`status`** field copied from the API payload (default `"active"` if missing). You can treat **non-active / disabled** style statuses as “do not trade,” but **prop daily loss limit (DLL) and max loss limit (MLL) thresholds are not exposed** as first-class fields on the account objects this code path normalizes.
+- **Order and position reality** still wins: repeated **order rejections**, missing permissions, or **no fills when risk expects working orders** are practical lockout signals the bot already surfaces through logs and risk layers.
+- **Local enforcement** remains authoritative for DLL/MLL-style rules: [`core/risk_management.py`](../core/risk_management.py) (`StrategyRiskManager`, env-driven caps) and [`core/account_tracker.py`](../core/account_tracker.py) track PnL/compliance-style state; do not assume the REST API will pre-empt every firm-side lock before you try to trade.
 
 ### Async / concurrency
 

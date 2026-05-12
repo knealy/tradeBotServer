@@ -49,6 +49,10 @@ flowchart TD
 - Grid search without recording `git_sha` / config hash (research runner does this when DB persist succeeds).
 - Moving quote handlers to the deferred queue for latency-sensitive paths (see OPERATIONS_TUNING).
 
+## Promotion gate — walk-forward (BONGO Tier 2L)
+
+Before a strategy id moves from **research / idea** to **live** in `docs/perf/sweeps/CANDIDATES.md` (or any internal promotion list), run at least one **walk-forward** pass with `python -m core.research.runner --walk-forward <FOLDS> …` where **`<FOLDS>` ≥ 2** (see [BACKTEST_RESEARCH.md](BACKTEST_RESEARCH.md) for flags, grid caps, and persistence). Single-window IS-only grids are allowed for screening; **graduation** requires walk-forward (or equivalent documented time-split evidence) so curve-fit parameter islands do not ship on production accounts.
+
 ## Related docs
 
 - [BACKTESTING.md](BACKTESTING.md) — executor flags, env, CSV/replay.

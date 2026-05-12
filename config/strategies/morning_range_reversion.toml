@@ -1,0 +1,88 @@
+# Morning range reversion (7:00–7:55 US/Eastern anchor range → fade vs breakout).
+#
+# Validated edge (MNQ Databento 2024-01-01..2026-05-01, see
+# docs/perf/morning_range_reversion_validation.md):
+#   require_reentry_close=true, max_fades_per_session=1 →
+#     529 trades / 62.95% WR / +0.26R per trade / ~+$400/mo after costs (1 contract)
+# The third-party 92.2% headline (docs/alpha/morning_reversion_info.md) does NOT
+# replicate on Databento data and is treated as a ceiling, not a target.
+#
+# Defaults below match the validated configuration. The legacy literature flow
+# (require_reentry_close=true) is the only mode with positive expectancy on
+# this dataset; immediate-fade was net-negative at every cap value tested.
+#
+# Offline sieve: pair canonical ``historical_data/price/MNQ_5m_databento.csv`` with
+# ``MNQ_1m_databento.csv`` via ``--1m-csv`` on ``validate_morning_range_reversion.py``
+# for intrabar TP vs SL (live replay still 5m-only until wired).
+#
+# Live / executor: OFF by default (enable after a 30-trade PRAC shadow matches
+# replay R within 20% drift — see docs/perf/morning_range_reversion_validation.md).
+#
+# Executor ``should_trade`` window: US/Eastern wall clock (see ``MorningRangeReversionStrategy._in_trading_window``).
+# Start before ``signal.range_start`` so the 07:00–08:00 ET anchor can build on live bars.
+start_time       = "06:55"
+end_time         = "16:00"
+# Disable generic RTH no-trade clip (``flat_before`` still manages end-of-day intent).
+no_trade_start   = ""
+no_trade_end     = ""
+
+[meta]
+enabled = true
+symbols = ["MNQ","MES","MGC"]
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 4
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[position_management]
+# BONGO §1B: broker stop → entry after ``breakeven_trigger_r`` × |entry − stop| favourable move.
+breakeven_enabled   = false
+breakeven_trigger_r = 0.5
+
+[signal]
+timeframe         = "5m"
+lookback_bars     = 400
+session_timezone  = "America/New_York"
+# Bar opens in [range_start, range_end_open) define the pre-market range (5m bars).
+range_start       = "07:00"
+range_end_open    = "08:00"
+# Force-flat any managed position at or after this US/Eastern clock time (live).
+flat_before       = "16:00"
+# Replay safety: market-close stale brackets (5m bars ≈ 8h session cap).
+max_hold_bars     = 96
+allow_long        = true
+allow_short       = true
+
+# Execution geometry (multipliers vs half-range). Defaults preserve 1:1 vs midpoint.
+# stop_distance = (width/2) * sl_mult
+# target_distance = (width/2) * tp_mult  (tp_mult=1.0 -> midpoint target)
+sl_mult          = 1.0
+tp_mult          = 1.0
+# Validated default: legacy literature path (wait for close back inside range
+# after a sweep) is the only mode with positive expectancy on Databento data.
+# Override with MORNING_RANGE_REVERSION_SIGNAL_REQUIRE_REENTRY_CLOSE=false to
+# test the immediate-fade path; expect negative net R on this dataset.
+require_reentry_close = true
+# Cap fade arms per ET session date (0 = unlimited). 1 = highest WR / cleanest
+# read on the edge; 2–4 widen cadence at lower WR. See validation report for
+# the cadence ↔ WR ↔ PnL trade-off curve.
+# BONGO §4.4: raising to 2 only after replay with tighter re-entry (e.g.
+# ``reentry_frac = 0.15``) — do not pair uncapped re-entry with max_fades>1.
+max_fades_per_session = 1
+# Inner-band for legacy re-entry (0.0 = arm on first close inside [L, H]).
+# BONGO §4.2: try 0.15 for deeper re-entry (sieve + live use the same band).
+reentry_frac          = 0.0
+
+# BONGO §4.1: closer TP (e.g. 0.7) — replay before live; default stays 1.0 (midpoint).
+# tp_mult = 0.7
+
+# BONGO §4.3: optional ATR regime gate (same spirit as body_reversion). Off until replay confirms.
+require_high_atr       = false
+atr_period             = 14
+atr_regime_lookback    = 500
+atr_regime_quantile    = 0.75

@@ -9,7 +9,7 @@ import os
 import logging
 import time
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import aiohttp
 from datetime import datetime, timezone
 
@@ -126,6 +126,20 @@ class DiscordNotifier:
             logger.error(f"Failed to send Discord notification: {e}")
             return False
     
+    async def send_status_digest(self, title: str, lines: List[str]) -> bool:
+        """Short plaintext status (periodic heartbeat). Uses webhook ``content`` (max 2000 chars)."""
+        if not self.enabled:
+            return False
+        try:
+            body = "\n".join(lines)
+            content = f"**{title}**\n{body}"
+            if len(content) > 2000:
+                content = content[:1997] + "..."
+            return await self._post({"content": content})
+        except Exception as e:
+            logger.error("Failed to send Discord status digest: %s", e)
+            return False
+
     async def send_error_notification(self, error_message: str, context: str = "") -> bool:
         """Send error notification to Discord"""
         if not self.enabled:

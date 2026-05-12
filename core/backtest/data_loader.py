@@ -6,13 +6,51 @@ Loads and processes historical OHLCV data from multiple sources.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
-from pathlib import Path
 import logging
 import json
+import os
+from collections import OrderedDict
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# In-process LRU for normalized CSV DataFrames (helps research grids / sequential
+# replays that re-read the same file). Disabled per-process when BACKTEST_CSV_CACHE=0.
+_CSV_DF_CACHE: "OrderedDict[tuple[str, int], Any]" = OrderedDict()
+_csv_cache_hits = 0
+_csv_cache_misses = 0
+
+
+def csv_cache_stats() -> Dict[str, Any]:
+    return {
+        "enabled": _csv_cache_enabled(),
+        "max_entries": _csv_cache_max_entries(),
+        "entries": len(_CSV_DF_CACHE),
+        "hits": _csv_cache_hits,
+        "misses": _csv_cache_misses,
+    }
+
+
+def clear_backtest_csv_cache() -> None:
+    """Drop all cached CSV frames (tests / long-running harnesses)."""
+    global _CSV_DF_CACHE, _csv_cache_hits, _csv_cache_misses
+    _CSV_DF_CACHE.clear()
+    _csv_cache_hits = 0
+    _csv_cache_misses = 0
+
+
+def _csv_cache_enabled() -> bool:
+    v = os.environ.get("BACKTEST_CSV_CACHE", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _csv_cache_max_entries() -> int:
+    try:
+        return max(0, int(os.environ.get("BACKTEST_CSV_CACHE_SIZE", "4")))
+    except ValueError:
+        return 4
 
 
 class HistoricalDataLoader:
@@ -123,10 +161,29 @@ class HistoricalDataLoader:
         """
         import pandas as pd
 
+        global _csv_cache_hits, _csv_cache_misses
+
         logger.info(f"Loading {symbol} data from CSV: {filepath}")
-        
-        # Read CSV
-        df = pd.read_csv(filepath)
+
+        resolved = Path(filepath).expanduser().resolve()
+        mtime_ns = int(resolved.stat().st_mtime_ns)
+        cache_key = (str(resolved), mtime_ns)
+        max_entries = _csv_cache_max_entries()
+
+        if _csv_cache_enabled() and max_entries > 0 and cache_key in _CSV_DF_CACHE:
+            _csv_cache_hits += 1
+            _CSV_DF_CACHE.move_to_end(cache_key)
+            logger.debug("CSV cache hit %s", resolved.name)
+            return _CSV_DF_CACHE[cache_key].copy()
+
+        if _csv_cache_enabled() and max_entries > 0:
+            _csv_cache_misses += 1
+
+        # Read CSV (optional pyarrow engine when available — faster parse)
+        try:
+            df = pd.read_csv(resolved, engine="pyarrow")
+        except (ImportError, ValueError, OSError):
+            df = pd.read_csv(resolved)
         
         # Auto-detect column names (case-insensitive)
         column_mapping = {}
@@ -174,9 +231,15 @@ class HistoricalDataLoader:
         
         # Drop rows with NaN
         df.dropna(inplace=True)
-        
+
+        if _csv_cache_enabled() and max_entries > 0:
+            _CSV_DF_CACHE[cache_key] = df
+            _CSV_DF_CACHE.move_to_end(cache_key)
+            while len(_CSV_DF_CACHE) > max_entries:
+                _CSV_DF_CACHE.popitem(last=False)
+
         logger.info(f"✅ Loaded {len(df)} bars from CSV")
-        return df
+        return df.copy() if (_csv_cache_enabled() and max_entries > 0) else df
     
     def load_from_json(
         self,

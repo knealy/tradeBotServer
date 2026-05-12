@@ -50,13 +50,8 @@ class TrendScalpingStrategy(BaseStrategy):
             config: Optional strategy configuration
         """
         if config is None:
-            cfg = load_strategy_config("trend_scalping", env_prefix="TREND_SCALP_")
-            config = StrategyConfig(
-                name="trend_scalping",
-                symbols=cfg.get_list("symbols", ["MNQ"]),
-                enabled=True
-            )
-        
+            config = StrategyConfig.from_env("trend_scalping")
+
         super().__init__(trading_bot, config)
 
         self._cfg = load_strategy_config("trend_scalping", env_prefix="TREND_SCALP_")

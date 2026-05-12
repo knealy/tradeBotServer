@@ -79,6 +79,10 @@ stop_atr_multiplier        = 0.5
 # post-event drift, not in a small TP. Practical exit is the time unwind
 # (max_hold_bars) — tp_r_multiple guards against runaway moves.
 tp_r_multiple              = 3.0
+# Optional “greedier peel” experiments (Q1 / short-window replay first; do not
+# ship live without OOS evidence): env overrides —
+#   BODY_REVERSION_SIGNAL_TP_R_MULTIPLE=1.5   # bank TP sooner → higher win%, lower avg R
+#   BODY_REVERSION_SIGNAL_MIN_BARS_BETWEEN_SIGNALS=4   # more signals (cluster risk)
 # Stop-entry offset beyond bar close, in ticks.
 entry_offset_ticks         = 1.0
 # Cooldown: refuse new signals for N bars after the last one fired
@@ -109,6 +113,11 @@ atr_regime_quantile        = 0.75
 # i.e. an actual capitulation event rather than a normal big body in a slow
 # day.
 require_range_expand       = false
+# When true **together** with ``require_range_expand`` on a symbol, pass if
+# **either** range expansion **or** a Bollinger touch fires (docs/BONGO.md).
+require_bb_touch           = false
+bb_period                  = 20
+bb_k                       = 2.0
 range_ma_period            = 20
 range_expand_mult          = 1.5
 
@@ -118,7 +127,18 @@ rth_only                   = false
 rth_start                  = "09:35"
 rth_end                    = "15:30"
 skip_open_minutes          = 30
+# BONGO §1C (experiment; do not ship without replay): combo audit suggests skipping
+# the first ~5–15 min of RTH lifts WR on kept trades. Safe probe is
+#   rth_only = true
+#   skip_open_minutes = 5
+# (leave defaults above until a symbol replay confirms cadence vs WR trade-off).
 session_timezone           = "US/Eastern"
+
+[position_management]
+# BONGO §1B: after ``breakeven_trigger_r`` × initial stop distance (price) in your favour,
+# move the broker stop toward entry. Replay before enabling live.
+breakeven_enabled   = false
+breakeven_trigger_r = 0.5
 
 [symbols.MNQ]
 [symbols.MES]
@@ -127,3 +147,9 @@ session_timezone           = "US/Eastern"
 # Per-symbol overrides (v3.1): MES needs the range-expansion gate, MNQ/MGC do not.
 [symbols.MES.signal]
 require_range_expand = true
+# BONGO OR co-trigger: capitulation wick can tag the band without 1.5× range MA.
+require_bb_touch = true
+
+[symbols.MGC.signal]
+# BONGO: slightly looser ATR gate on gold (replay evidence); validate before live.
+atr_regime_quantile = 0.65

@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 class SimpleRthStrategy(SimpleMomentumStrategy):
     """Momentum during configured RTH window (see ``simple_rth.toml``)."""
 
+    STRATEGY_ID = "simple_rth"
+
     def __init__(self, trading_bot, config=None):
         super().__init__(trading_bot, config)
         logger.info("Simple RTH momentum strategy ready (inherits simple_momentum logic)")

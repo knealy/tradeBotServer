@@ -507,7 +507,8 @@ class BaseStrategy(ABC):
     
     async def place_bracket_order(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float, 
-                                  take_profit_price: float, enable_breakeven: bool = False) -> Dict:
+                                  take_profit_price: float, enable_breakeven: bool = False,
+                                  breakeven_profit_threshold: Optional[float] = None) -> Dict:
         """
         Place a bracket order using the verified working method (same as CLI stop_bracket command).
         
@@ -527,7 +528,10 @@ class BaseStrategy(ABC):
             entry_price: Entry/stop price for the order
             stop_loss_price: Stop loss price
             take_profit_price: Take profit price
-            enable_breakeven: Enable automatic breakeven stop adjustment (default: False)
+            enable_breakeven: Passed to broker OCO path (reserved / hybrid; default False).
+            breakeven_profit_threshold: When > 0, registers bot-level generic breakeven
+                (BONGO §1B): after this much favourable **price** move, SL is tightened
+                toward ``entry_price``. Typically ``breakeven_trigger_r * |entry - stop|``.
         
         Returns:
             Dict with 'success' bool, 'orderId', 'method', and optional 'error'
@@ -548,6 +552,31 @@ class BaseStrategy(ABC):
         """
         logger.info(f"📝 {self.config.name}: Placing bracket order via verified path")
         logger.info(f"   {side} {quantity} {symbol} @ {entry_price:.2f}, SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}")
+
+        # Opt-in equity-tier sizing + daily halt (see core.income_brain, INCOME_BRAIN=true).
+        bot = self.trading_bot
+        if hasattr(bot, "income_brain_entry_quantity"):
+            try:
+                q_adj = int(bot.income_brain_entry_quantity(self.config.name, quantity))
+            except Exception as exc:
+                logger.warning(
+                    "%s: income_brain_entry_quantity failed (%s) — using requested qty",
+                    self.config.name,
+                    exc,
+                )
+                q_adj = int(quantity)
+            if q_adj <= 0:
+                msg = "Income brain blocked entry (daily halt or zero size)"
+                logger.warning("⚠️  %s: %s", self.config.name, msg)
+                return {"success": False, "error": msg, "orderId": None}
+            if q_adj != quantity:
+                logger.info(
+                    "📉 %s: income brain clamped quantity %s → %s",
+                    self.config.name,
+                    quantity,
+                    q_adj,
+                )
+            quantity = q_adj
         
         # CENTRALIZED RISK MANAGEMENT: Check if order is allowed
         allowed, reason = await self.risk_manager.check_order_allowed(
@@ -588,6 +617,22 @@ class BaseStrategy(ABC):
             # Record successful order placement for cooldown tracking
             if order_id:
                 await self.risk_manager.record_order_placement(symbol, side)
+                if breakeven_profit_threshold is not None and hasattr(
+                    bot, "register_generic_breakeven_watch"
+                ):
+                    try:
+                        thr = float(breakeven_profit_threshold)
+                    except (TypeError, ValueError):
+                        thr = 0.0
+                    if thr > 0:
+                        bot.register_generic_breakeven_watch(
+                            str(order_id),
+                            symbol=symbol,
+                            side=side,
+                            entry_price=float(entry_price),
+                            profit_threshold=thr,
+                            strategy_name=self.config.name,
+                        )
         
         return result
     

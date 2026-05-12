@@ -4,6 +4,8 @@
 
 A pop-out / dev-oriented chart path uses [chart_html.py](chart_html.py) (aiohttp) and [master_control.html](master_control.html). The notes below describe chart-style usage; prefer the static dashboard for Railway/production.
 
+**Master chart history:** `GET /api/chart/reload` accepts `source=auto|api|databento` (default `auto` or `CHART_RELOAD_SOURCE` from env). **`databento`** reads the stitched canonical files under `historical_data/price/{MNQ,MES,MGC}_{1m,5m}_databento.csv` (see `scripts/databento_stitch_canonical.py`). The Master panel includes a **Bars** dropdown next to the timeframe selector. For **MNQ / MES / MGC** (including outright contract ids), reload **limits** are raised (up to **5000** bars for **Databento file**); the **first viewport** only shows the **most recent ≤200** bars so the chart stays readable—**pan left** for older loaded bars.
+
 ## Features
 
 - 📊 **Real-time Charts**: Display candlestick charts with live data

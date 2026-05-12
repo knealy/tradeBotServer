@@ -395,7 +395,10 @@ class TrendDetector:
         """
         try:
             if not bars or len(bars) < self.ema_slow_period * 2:
-                logger.warning(f"Not enough bars for trend analysis: {len(bars) if bars else 0}")
+                logger.debug(
+                    "Not enough bars for trend analysis: %s",
+                    len(bars) if bars else 0,
+                )
                 return TrendQualityScore(
                     total_score=0,
                     ema_separation_score=0,

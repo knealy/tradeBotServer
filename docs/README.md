@@ -32,7 +32,7 @@ This page lists the **canonical** topics. Deeper notes live under [reference/](r
 ## Legacy and reference
 
 - **[reference/](reference/)** — long-form deployment, env, Rust, and API notes.
-- **[01-QUICK-START.md](01-QUICK-START.md)** — optional fast path (may be stale; prefer HANDOFF + PLAYBOOK).
+- **[archive/01-QUICK-START.md](archive/01-QUICK-START.md)** — optional fast path (may be stale; prefer HANDOFF + PLAYBOOK).
 
 ---
 

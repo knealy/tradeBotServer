@@ -11,13 +11,13 @@ Strategy Logic:
 - Designed to make multiple trades in a 2-hour window
 """
 
-import os
 import logging
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
+from core.strategy_config import load_strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -28,32 +28,30 @@ class SimpleMomentumStrategy(BaseStrategy):
     
     Designed to make multiple trades in a short time window.
     """
-    
+
+    STRATEGY_ID = "simple_momentum"
+
+    @staticmethod
+    def _bar_float(bar: Dict, *keys: str, default: float = 0.0) -> float:
+        for k in keys:
+            v = bar.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+        return default
+
     def __init__(self, trading_bot, config: StrategyConfig = None):
         """Initialize the strategy."""
-        # Create config if not provided
+        sid = getattr(type(self), "STRATEGY_ID", "simple_momentum")
         if config is None:
-            config = StrategyConfig(
-                name="simple_momentum",
-                enabled=True,
-                symbols=["MNQ"],  # Default to MNQ
-                max_positions=2,
-                position_size=1,
-                risk_per_trade_percent=0.5,
-                max_daily_trades=20,  # Allow many trades for testing
-                preferred_conditions=[],
-                avoid_conditions=[],
-                trading_start_time="09:30",
-                trading_end_time="16:00",
-                no_trade_start="",
-                no_trade_end="",
-                respect_dll=True,
-                respect_mll=True,
-                max_dll_usage_percent=0.70
-            )
-        
+            config = StrategyConfig.from_env(sid)
+
         super().__init__(trading_bot, config)
-        
+
+        self._cfg = load_strategy_config(sid, env_prefix=f"{sid.upper()}_")
+
         # Strategy-specific settings
         self.lookback_bars = 10  # Look at last 10 bars
         self.profit_ticks = 10  # Take profit at 10 ticks
@@ -66,7 +64,32 @@ class SimpleMomentumStrategy(BaseStrategy):
         self.volume_averages = {}  # {symbol: float}
         
         logger.info(f"✅ Simple Momentum Strategy initialized for {config.symbols}")
-    
+
+    def _has_open_position_for_symbol(self, symbol: str) -> bool:
+        for pos in getattr(self, "active_positions", None) or []:
+            if str(pos.get("symbol", "")).upper() == symbol.upper():
+                return True
+        return False
+
+    def _replay_has_pending_bracket_entry(self, symbol: str) -> bool:
+        """True when class-strategy replay has a simulated stop bracket entry working."""
+        eng = getattr(self.trading_bot, "backtest_engine", None)
+        if eng is None:
+            return False
+        for o in list(getattr(eng, "pending_orders", None) or []):
+            if str(getattr(o, "symbol", "")).upper() != symbol.upper():
+                continue
+            st = getattr(o, "status", None)
+            name = getattr(st, "name", None) or (str(st).split(".")[-1] if st is not None else "")
+            if name and name.upper() != "PENDING":
+                continue
+            if (
+                getattr(o, "stop_loss_price", None) is not None
+                and getattr(o, "take_profit_price", None) is not None
+            ):
+                return True
+        return False
+
     async def analyze(self, symbol: str) -> Optional[Dict]:
         """
         Analyze market and generate trading signal.
@@ -74,6 +97,15 @@ class SimpleMomentumStrategy(BaseStrategy):
         Returns signal dict or None.
         """
         try:
+            # Matrix / class replay: without this, every bar can stack new stop brackets
+            # while prior entry stops are still pending (mock open-orders are empty).
+            if self._has_open_position_for_symbol(symbol):
+                return None
+            if self._replay_has_pending_bracket_entry(symbol):
+                return None
+            if len(getattr(self, "active_positions", None) or []) >= int(self.config.max_positions):
+                return None
+
             # Get recent bars (1-minute bars for quick signals)
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
@@ -84,14 +116,18 @@ class SimpleMomentumStrategy(BaseStrategy):
             if not bars or len(bars) < self.lookback_bars:
                 return None
             
-            # Calculate recent high/low and average volume
+            # Calculate recent high/low and average volume (support h/l/c CSV keys)
             recent_bars = bars[-self.lookback_bars:]
-            highs = [bar.get('high', bar.get('High', 0)) for bar in recent_bars]
-            lows = [bar.get('low', bar.get('Low', 999999)) for bar in recent_bars]
-            volumes = [bar.get('volume', bar.get('Volume', 0)) for bar in recent_bars]
+            highs = [self._bar_float(bar, "high", "h", "High") for bar in recent_bars]
+            lows = [self._bar_float(bar, "low", "l", "Low") for bar in recent_bars]
+            volumes = [self._bar_float(bar, "volume", "v", "Volume") for bar in recent_bars]
             
+            if not highs or max(highs) <= 0:
+                return None
             recent_high = max(highs)
             recent_low = min(lows)
+            if recent_low <= 0:
+                return None
             avg_volume = sum(volumes) / len(volumes) if volumes else 0
             
             # Store for reference
@@ -159,8 +195,7 @@ class SimpleMomentumStrategy(BaseStrategy):
             take_profit = signal['take_profit']
 
             # TESTING MODE: Skip should_trade checks
-            print(f"⚡ TESTING MODE: Bypassing should_trade() checks")
-            logger.info(f"⚡ TESTING MODE: Bypassing should_trade() checks")
+            logger.info("TESTING MODE: Bypassing should_trade() checks")
 
             # Get account ID
             account_id = None
@@ -170,7 +205,6 @@ class SimpleMomentumStrategy(BaseStrategy):
                 account_id = self.trading_bot.selected_account
 
             if not account_id:
-                print("❌ No account selected")
                 logger.error("No account selected")
                 return False
             
@@ -178,11 +212,16 @@ class SimpleMomentumStrategy(BaseStrategy):
             side = "BUY" if action == "LONG" else "SELL"
             quantity = self.config.position_size
 
-            print(f"📈 Executing {action} on {symbol}: Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
-            logger.info(f"📈 Executing {action} on {symbol}: Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
+            logger.info(
+                "Executing %s on %s: Entry=%.2f SL=%.2f TP=%.2f",
+                action,
+                symbol,
+                entry_price,
+                stop_loss,
+                take_profit,
+            )
 
             # Use the verified working bracket order method from BaseStrategy
-            print("📝 Placing bracket order (verified working method)...")
             logger.info("Using BaseStrategy.place_bracket_order() - same path as CLI stop_bracket")
             
             result = await self.place_bracket_order(
@@ -197,17 +236,13 @@ class SimpleMomentumStrategy(BaseStrategy):
 
             if result.get("error"):
                 error_msg = result.get("error")
-                print(f"❌ Stop bracket order failed: {error_msg}")
-                logger.error(f"Stop bracket order failed: {error_msg}")
+                logger.error("Stop bracket order failed: %s", error_msg)
                 return False
 
             # Success!
             order_id = result.get('orderId')
             method = result.get('method', 'unknown')
-            print(f"✅ Stop bracket order placed successfully!")
-            print(f"   Order ID: {order_id}")
-            print(f"   Method: {method}")
-            logger.info(f"✅ Stop bracket placed: Order ID {order_id}, Method: {method}")
+            logger.info("Stop bracket placed: order_id=%s method=%s", order_id, method)
             self.daily_trades += 1
             return True
                 
@@ -276,8 +311,12 @@ class SimpleMomentumStrategy(BaseStrategy):
         while self.status == StrategyStatus.ACTIVE:
             try:
                 loop_count += 1
-                if loop_count % 6 == 0:  # Print status every 6 loops (every minute)
-                    print(f"🔄 Strategy running... ({len(self.active_positions)} positions, {self.daily_trades} trades today)")
+                if loop_count % 6 == 0:  # status every 6 loops (~minute at 10s interval)
+                    logger.debug(
+                        "Strategy running (%s positions, %s trades today)",
+                        len(self.active_positions),
+                        self.daily_trades,
+                    )
                 
                 # Manage existing positions
                 await self.manage_positions()
@@ -287,32 +326,38 @@ class SimpleMomentumStrategy(BaseStrategy):
                     # Skip if we're at max positions
                     if len(self.active_positions) >= self.config.max_positions:
                         if loop_count % 2 == 0:
-                            print(f"⏸️  Max positions reached ({len(self.active_positions)}/{self.config.max_positions}), skipping {symbol}")
+                            logger.debug(
+                                "Max positions reached (%s/%s), skipping %s",
+                                len(self.active_positions),
+                                self.config.max_positions,
+                                symbol,
+                            )
                         continue
                     
                     # Analyze for signals
                     signal = await self.analyze(symbol)
                     
                     if signal:
-                        print(f"📊 Signal detected: {signal['action']} {signal['symbol']} - {signal['reason']}")
-                        logger.info(f"📊 Signal detected: {signal['action']} {signal['symbol']} - {signal['reason']}")
+                        logger.info(
+                            "Signal detected: %s %s — %s",
+                            signal["action"],
+                            signal["symbol"],
+                            signal.get("reason", ""),
+                        )
                         await self.execute(signal)
                 
                 # Wait before next check
                 await asyncio.sleep(check_interval)
                 
             except KeyboardInterrupt:
-                print("\n🛑 Strategy stopped by user")
-                logger.info("🛑 Strategy stopped by user")
+                logger.info("Strategy stopped by user")
                 break
             except Exception as e:
-                print(f"❌ Error in strategy loop: {e}")
-                logger.error(f"Error in strategy loop: {e}")
+                logger.error("Error in strategy loop: %s", e)
                 import traceback
+
                 logger.error(traceback.format_exc())
-                print(traceback.format_exc())
                 await asyncio.sleep(check_interval)
-        
-        print("✅ Simple Momentum Strategy finished")
-        logger.info("✅ Simple Momentum Strategy finished")
+
+        logger.info("Simple Momentum Strategy finished")
         self.status = StrategyStatus.IDLE

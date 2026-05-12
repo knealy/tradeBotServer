@@ -12,7 +12,7 @@ High-level layout of the TopStepX bot. For the tick-by-tick narrative, see [HAND
 
 ## Further reading
 
-- [FRAMEWORK_AND_ARCHITECTURE.md](FRAMEWORK_AND_ARCHITECTURE.md) — older but detailed framework notes.
-- [EVENT_DRIVEN_ARCHITECTURE.md](EVENT_DRIVEN_ARCHITECTURE.md) — event-driven view.
+- [archive/FRAMEWORK_AND_ARCHITECTURE.md](archive/FRAMEWORK_AND_ARCHITECTURE.md) — older but detailed framework notes.
+- [EVENT_DRIVEN_ARCHITECTURE.md](EVENT_DRIVEN_ARCHITECTURE.md) — event-driven view (canonical short doc).
 - [MAP.md](MAP.md) — generated file ↔ responsibility mapping.
 - [DECISIONS.md](DECISIONS.md) — why key choices were made.

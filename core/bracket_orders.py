@@ -1,6 +1,11 @@
 """
 Bracket order and position-monitoring flows (extracted from trading_bot).
 Calls TopStepXTradingBot for stop/trailing/OCO helpers that remain on the bot.
+
+**Partial TP (BONGO §1A)** — design types and price math live here; broker wiring is
+stubbed in :func:`place_partial_tp_oco_stop_entry_v1` and
+``TopStepXAdapter.place_oco_bracket_stop_entry_partial_tp_v1`` until TopStepX
+ticket-split / post-fill BE rules are validated on PRAC.
 """
 from __future__ import annotations
 
@@ -8,10 +13,142 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Partial TP at 1R + runner (docs/BONGO.md §1A) — pure plan + placement stub
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PartialTpLegSpec:
+    """One bracket leg after entry: protective stop + take-profit target."""
+
+    role: str  # "scalp" | "runner"
+    quantity: int
+    stop_loss_price: float
+    take_profit_price: float
+
+
+@dataclass(frozen=True)
+class PartialTpStopEntryPlan:
+    """Two-ticket split from a single signal (equal contracts each when qty is even).
+
+    **Live intent (not yet implemented end-to-end):**
+    - **scalp** — TP at ``scalp_r_multiple`` × initial stop distance (default 1R).
+    - **runner** — TP at the strategy's full target; SL trailed to breakeven when
+      the scalp leg fills (event-driven task; see adapter stub).
+    """
+
+    symbol: str
+    side: str
+    entry_stop_price: float
+    risk_distance: float
+    scalp: PartialTpLegSpec
+    runner: PartialTpLegSpec
+
+
+def compute_risk_distance(side: str, entry: float, stop: float) -> float:
+    """Return positive stop distance in price space (1R)."""
+    s = side.upper()
+    if s == "BUY":
+        return max(1e-9, float(entry) - float(stop))
+    if s == "SELL":
+        return max(1e-9, float(stop) - float(entry))
+    raise ValueError("side must be BUY or SELL")
+
+
+def compute_partial_tp_prices(
+    side: str,
+    entry: float,
+    stop: float,
+    take_profit_full: float,
+    scalp_r_multiple: float = 1.0,
+) -> Tuple[float, float]:
+    """Return (tp_scalp_price, tp_runner_price) for a stop-entry bracket.
+
+    ``take_profit_full`` is the strategy's original full target (e.g. 3R).
+    """
+    r = compute_risk_distance(side, entry, stop)
+    scalp_r = max(0.0, float(scalp_r_multiple))
+    if side.upper() == "BUY":
+        tp_scalp = float(entry) + scalp_r * r
+        return tp_scalp, float(take_profit_full)
+    tp_scalp = float(entry) - scalp_r * r
+    return tp_scalp, float(take_profit_full)
+
+
+def build_partial_tp_stop_entry_plan(
+    *,
+    symbol: str,
+    side: str,
+    quantity: int,
+    entry_stop_price: float,
+    stop_loss_price: float,
+    take_profit_full_price: float,
+    scalp_r_multiple: float = 1.0,
+) -> PartialTpStopEntryPlan:
+    """Split ``quantity`` across scalp + runner legs with derived TP prices."""
+    if quantity < 2:
+        raise ValueError("partial TP plan requires quantity >= 2")
+    q_scalp = quantity // 2
+    q_runner = quantity - q_scalp
+    if q_scalp <= 0 or q_runner <= 0:
+        raise ValueError("invalid quantity split")
+    tp_scalp, tp_runner = compute_partial_tp_prices(
+        side, entry_stop_price, stop_loss_price, take_profit_full_price, scalp_r_multiple
+    )
+    r = compute_risk_distance(side, entry_stop_price, stop_loss_price)
+    scalp = PartialTpLegSpec(
+        role="scalp",
+        quantity=q_scalp,
+        stop_loss_price=float(stop_loss_price),
+        take_profit_price=float(tp_scalp),
+    )
+    runner = PartialTpLegSpec(
+        role="runner",
+        quantity=q_runner,
+        stop_loss_price=float(stop_loss_price),
+        take_profit_price=float(tp_runner),
+    )
+    return PartialTpStopEntryPlan(
+        symbol=symbol.upper(),
+        side=side.upper(),
+        entry_stop_price=float(entry_stop_price),
+        risk_distance=float(r),
+        scalp=scalp,
+        runner=runner,
+    )
+
+
+async def place_partial_tp_oco_stop_entry_v1(
+    bot: Any,
+    plan: PartialTpStopEntryPlan,
+    account_id: Optional[str] = None,
+    strategy_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Placeholder: would place two OCO stop-entry brackets (or broker-native split).
+
+    Returns a structured error until :meth:`TopStepXAdapter.place_oco_bracket_stop_entry_partial_tp_v1`
+    and fill handlers (runner SL → BE after scalp fill) are implemented.
+    """
+    logger.warning(
+        "place_partial_tp_oco_stop_entry_v1: not wired — plan symbol=%s side=%s strat=%s",
+        plan.symbol,
+        plan.side,
+        strategy_name,
+    )
+    return {
+        "success": False,
+        "error": "partial_tp_v1_not_implemented",
+        "plan_roles": (plan.scalp.role, plan.runner.role),
+        "account_id": account_id,
+    }
 
 # ============================================================================
 # NATIVE TOPSTEPX API METHODS - BRACKET ORDER SYSTEM

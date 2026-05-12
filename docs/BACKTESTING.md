@@ -18,7 +18,39 @@ python scripts/merge_databento_glbx_batch.py historical_data/price/GLBX-<job_id>
 
 This writes `historical_data/price/{MNQ,MES,MGC}_1m_databento_<job_id>.csv` (hyphenated roll-aggregate files are **skipped** by default because their price scale is not the outright index). Optional calendar clip: `--start YYYY-MM-DD --end YYYY-MM-DD`. To **append** with a TopStepX export on overlapping dates, list files **archive first, newest last** and run [`historical_data/csv_merger.py`](../historical_data/csv_merger.py) (later file wins on duplicate timestamps).
 
+### Canonical Databento paths (MNQ / MES / MGC) — merge + stitch
+
+For backtests and scripts that expect **stable paths** (no job-id suffix), keep these files up to date whenever you drop a new `GLBX-*` batch under `historical_data/price/`:
+
+| File | Role |
+|------|------|
+| `historical_data/price/{MNQ,MES,MGC}_1m_databento.csv` | **Canonical** 1m outright series (naive UTC). |
+| `historical_data/price/{MNQ,MES,MGC}_5m_databento.csv` | Optional 5m resample from the canonical 1m (see [`historical_data/resample_ohlcv_csv.py`](../historical_data/resample_ohlcv_csv.py)). |
+
+**One-shot stitch** (merges the batch, then **stitches** into the canonical 1m so **newer timestamps win** on overlap; by default also refreshes the 5m files):
+
+```bash
+# Newest GLBX-* under historical_data/price/ (or set DATABENTO_BATCH_DIR, or pass --batch-dir)
+.venv/bin/python scripts/databento_stitch_canonical.py
+```
+
+```bash
+# Explicit batch; skip 5m if you only need 1m (faster)
+.venv/bin/python scripts/databento_stitch_canonical.py --batch-dir historical_data/price/GLBX-<job_id> --skip-5m
+```
+
+This script **does not download** from Databento; fetch via their portal/CLI/job, unzip into `historical_data/price/`, then run the stitcher. **Cron (weekly example):** after each fetch, `cd` to the repo and run the same command; optional `DATABENTO_BATCH_DIR=/abs/path/to/GLBX-…` if multiple batch folders exist and the lexicographic “newest” name is not the one you want.
+
+**Master GUI chart:** the aiohttp route **`GET /api/chart/reload`** can read the same canonical files (`source=auto|databento`, optional env **`CHART_RELOAD_SOURCE`**) so the TradingView-style chart in **`gui/master_control.html`** can show long local history for MNQ/MES/MGC without relying on broker bar depth. See [`gui/README.md`](../gui/README.md).
+
 Shell helpers: [scripts/backtest_symbol.sh](../scripts/backtest_symbol.sh), [scripts/backtest_thorough_symbol.sh](../scripts/backtest_thorough_symbol.sh), [scripts/fetch_history_csv.sh](../scripts/fetch_history_csv.sh).
+
+## Speed — parallel matrices, CSV cache, bar conversion
+
+- **Parallel job matrix:** [`scripts/run_backtest_manifest.py`](../scripts/run_backtest_manifest.py) runs many `core/backtest_executor.py` replay lines from a **JSONL manifest** (example: [`config/backtest_matrices/example_body_reversion_q1.jsonl`](../config/backtest_matrices/example_body_reversion_q1.jsonl)). Set **`BACKTEST_MANIFEST_JOBS`** or **`--jobs`** for concurrency. Pair with [`scripts/print_weekly_income.py`](../scripts/print_weekly_income.py) when manifests use **`"include_trades": true`**.
+- **Gate A/B/C grid (`body_reversion`):** [`scripts/resume_body_rev_gate_ab_full.sh`](../scripts/resume_body_rev_gate_ab_full.sh) → [`scripts/run_body_rev_gate_ab_parallel.py`](../scripts/run_body_rev_gate_ab_parallel.py) (default **3** workers).
+- **In-process CSV LRU:** `HistoricalDataLoader.load_from_csv` caches normalized frames by **(path, mtime)** — speeds **`python -m core.research.runner`** and any loop re-reading the same file. Env: **`BACKTEST_CSV_CACHE`**, **`BACKTEST_CSV_CACHE_SIZE`**. Introspection: `csv_cache_stats()` / `clear_backtest_csv_cache()` in [`core/backtest/data_loader.py`](../core/backtest/data_loader.py).
+- **Replay prep:** [`core/backtest/ohlcv.py`](../core/backtest/ohlcv.py) **`replay_bars_from_ohlcv_df`** builds bar dicts with a numpy scan (used from **`core/backtest_executor.py`** instead of `iterrows`).
 
 ## Timestamps (CSV vs Eastern sessions)
 
@@ -36,7 +68,9 @@ Replay places at most **one** breakout attempt per symbol per **session** (near 
 |------|-------------|
 | **`python core/backtest_executor.py`** | Single run: sample, CSV, or API-loaded bars; optional `--optimize`, `--monte-carlo`. |
 | **`python -m core.research.runner`** | Grid search + **mandatory OOS** split + **Monte Carlo gate**; optional Postgres row; walk-forward / slippage table flags. See [BACKTEST_RESEARCH.md](BACKTEST_RESEARCH.md). |
+| **`scripts/run_backtest_manifest.py`** | Parallel **JSONL** matrix of `backtest_executor` replay jobs (`config/backtest_matrices/*.jsonl`). |
 | **`scripts/pattern_conditional_scan.py`** | Research-only: 1m CSV → 5m NY bars; Fisher + FDR on short-horizon conditionals + RTH prior-day level re-touch stats → [`docs/alpha/pattern_scan_INDEX.md`](alpha/pattern_scan_INDEX.md). |
+| **`scripts/strategy_litmus.py`** | Fast **preset** checks on a **short tail** of CSV (default `--last-days 90`); e.g. `morning_range` runs the same sieve as `validate_morning_range_reversion.py` without loading the full history. Optional **`--1m-csv`** aligns with **`scripts/validate_morning_range_reversion.py --1m-csv`** for **1m-resolved** TP vs SL inside a 5m bar. `--why` explains common gaps vs vendor headlines. |
 | **`scripts/batch_backtest.py`** | Scripted batch comparisons (legacy suite style). |
 
 Set **`ENABLE_SIGNALR=false`** so the process does not open live SignalR when you only need REST or offline data (see `.env.example`).
@@ -105,4 +139,4 @@ See **[STRATEGY_DEVELOPMENT.md](STRATEGY_DEVELOPMENT.md)** for the full decision
 
 ## Older docs
 
-- [BACKTEST_ENGINE_GUIDE.md](BACKTEST_ENGINE_GUIDE.md) — supplementary; verify paths against current `core/`.
+- [archive/BACKTEST_ENGINE_GUIDE.md](archive/BACKTEST_ENGINE_GUIDE.md) — supplementary; verify paths against current `core/`.

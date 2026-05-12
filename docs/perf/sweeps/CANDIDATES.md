@@ -76,6 +76,8 @@ core feature, no single-trade dominance).
   | **MGC**   | 53     | **+ $632**   | 32.1 % | **1.27** | **1.51** | 2.61 %   | **+ $11.92/tr**   |
   | **Total** | **167**| **+ $2,055** | 30.5 % |          |          |          | **+ $12.31/tr**   |
 
+  **Full-window gate A (MNQ, 2024-01-01 → 2026-05-01, interim):** one completed replay with **ATR-only** gates shows **962 trades**, **+$12,475** PnL, **PF 1.46**, **Sharpe 1.83** (local `/tmp/body_rev_gate_ab/full_2024_2026/body_rev_MNQ_A.json`). **Weekly read:** `scripts/print_weekly_income.py` on that JSON (summary mode) prints **`avg_pnl_per_week_usd`**; for a true week-by-week histogram, re-run the cell once with **`--include-trades`** and point the script at the larger JSON. **Resume the full 9-cell grid:** **`bash scripts/resume_body_rev_gate_ab_full.sh`** — parallel (**`GATE_AB_JOBS`** default **3**), skips JSON **>200 bytes**. Rough **~30–60 min per cell** CPU time ⇒ sequential wall-clock **~5–9 h** for nine from scratch; parallel cuts wall-clock toward **~2–3 h** when three symbols saturate cores (MES/MGC cells still heavy).
+
   **Actionable decision:** use **v3.1 hybrid** (ATR-only on MNQ/MGC, Both on MES). This is the first configuration that:
   - keeps **MNQ/MGC cadence** without sacrificing Sharpe
   - fixes MES by applying the stricter event filter only where it is needed.

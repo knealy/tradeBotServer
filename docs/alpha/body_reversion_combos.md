@@ -1,5 +1,7 @@
 # Body-reversion combo-trigger audit
 
+**Ops — income cadence:** after any `body_reversion` replay JSON from `core/backtest_executor.py`, run **`scripts/print_weekly_income.py`** on that file for a **weekly PnL table** (needs `--include-trades` on the replay for true per-week buckets; without trades it prints **average $/week** from the summary). For the **Gate A/B/C × MNQ/MES/MGC** full-window grid, use **`bash scripts/resume_body_rev_gate_ab_full.sh`** (parallel subprocesses, **`GATE_AB_JOBS`** default 3). For **custom matrices** (many symbols / env overrides / date windows), add rows to a **JSONL** file and run **`scripts/run_backtest_manifest.py`** (`config/backtest_matrices/example_body_reversion_q1.jsonl`).
+
 Pair the **big-body anchor** with each candidate co-trigger and report
 **realized R** under two execution models. R unit = stop distance.
 

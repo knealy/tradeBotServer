@@ -134,6 +134,8 @@ class TopStepXTradingBot:
         self._cached_order_ids = {}
         # Structure: { accountId: { symbol: set([positionId, ...]) } }
         self._cached_position_ids = {}
+        # Opt-in income brain: one :class:`~core.income_brain.IncomeBrain` per account id
+        self._income_brain_cache: Dict[str, Any] = {}
         # Real-time quote cache: { SYMBOL: { 'bid': float, 'ask': float, 'last': float, 'volume': float, 'ts': iso } }
         self._quote_cache: Dict[str, Dict] = {}
         self._quote_cache_lock: Lock = Lock()
@@ -194,7 +196,12 @@ class TopStepXTradingBot:
         
         # Remove backward compatibility code - overnight_strategy will be created on-demand
         self.overnight_strategy = None  # Lazy-loaded when needed
-        
+
+        # BONGO §1B: R-based breakeven for bracket strategies (body_reversion, morning_range, …).
+        # Keyed by entry stop-order id from ``place_oco_bracket_with_stop_entry``.
+        self._generic_breakeven_monitoring: Dict[str, Dict[str, Any]] = {}
+        self._generic_breakeven_task: Optional[Any] = None
+
         # Order counter for unique custom tags
         self._order_counter = 0
         
@@ -877,6 +884,25 @@ class TopStepXTradingBot:
         self.user_hub_manager.register_position_callback(on_position_update)
         
         logger.info(f"✅ Event-driven cache invalidation enabled for account {account_id}")
+
+    def _income_brain_account_id(self) -> Optional[str]:
+        from core.income_brain import income_brain_account_id_from_bot
+
+        return income_brain_account_id_from_bot(self)
+
+    def income_brain_entry_quantity(self, strategy_name: str, requested: int) -> int:
+        """Clamp entry size when ``INCOME_BRAIN`` is enabled; else passthrough.
+
+        Uses ``account_tracker.get_daily_pnl`` so daily halt matches broker session PnL.
+        """
+        try:
+            from core.income_brain import income_brain_entry_quantity_for_bot
+        except ImportError:
+            try:
+                return max(0, int(requested))
+            except (TypeError, ValueError):
+                return 0
+        return income_brain_entry_quantity_for_bot(self, strategy_name, requested)
 
     def select_account(self, accounts: List[Dict]) -> Optional[Dict]:
         """
@@ -2145,6 +2171,181 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.error(f"Failed to fetch positions: {str(e)}")
             return []
+
+    async def get_positions(self, account_id: str = None) -> List[Dict]:
+        """Alias for :meth:`get_open_positions` (overnight breakeven + legacy call sites)."""
+        return await self.get_open_positions(account_id=account_id)
+
+    @staticmethod
+    def _position_symbol_matches(pos_sym: str, want: str) -> bool:
+        ps = (pos_sym or "").upper().strip()
+        w = (want or "").upper().strip()
+        if not w:
+            return False
+        if ps == w:
+            return True
+        if ps.endswith("." + w):
+            return True
+        # e.g. MNQM6, CON.F.US.MNQU5 — root symbol prefix
+        return len(ps) > len(w) and ps.startswith(w)
+
+    def _start_generic_breakeven_monitor_if_needed(self) -> None:
+        if self._generic_breakeven_task is not None and not self._generic_breakeven_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("generic breakeven: no running event loop — monitor not started")
+            return
+        self._generic_breakeven_task = loop.create_task(self._generic_breakeven_monitor_loop())
+
+    def register_generic_breakeven_watch(
+        self,
+        order_id: str,
+        *,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        profit_threshold: float,
+        strategy_name: str,
+    ) -> None:
+        """Arm broker stop → entry after ``profit_threshold`` price move in favour (BONGO §1B)."""
+        if not order_id or profit_threshold is None or float(profit_threshold) <= 0:
+            return
+        su = str(side).upper()
+        row = {
+            "symbol": str(symbol).upper().strip(),
+            "side": "LONG" if su in ("BUY", "LONG") else "SHORT",
+            "entry_price": float(entry_price),
+            "profit_threshold": float(profit_threshold),
+            "breakeven_triggered": False,
+            "position_filled": False,
+            "strategy_name": str(strategy_name),
+        }
+        self._generic_breakeven_monitoring[str(order_id)] = row
+        self._start_generic_breakeven_monitor_if_needed()
+        logger.info(
+            "generic breakeven: armed order=%s sym=%s strat=%s thr=%.4f (entry=%.4f)",
+            order_id,
+            row["symbol"],
+            strategy_name,
+            float(profit_threshold),
+            float(entry_price),
+        )
+
+    async def _generic_breakeven_monitor_loop(self) -> None:
+        """Poll open positions; when unrealized move ≥ threshold, tighten SL toward entry."""
+        logger.info("🔄 Generic breakeven monitor loop started (R-threshold path)")
+        while True:
+            try:
+                await asyncio.sleep(10)
+                if not self._generic_breakeven_monitoring:
+                    continue
+
+                positions = await self.get_open_positions()
+                acct = getattr(self, "selected_account", None)
+                account_id = acct.get("id") if isinstance(acct, dict) else None
+
+                for oid, monitor_data in list(self._generic_breakeven_monitoring.items()):
+                    if monitor_data.get("breakeven_triggered"):
+                        del self._generic_breakeven_monitoring[oid]
+                        continue
+
+                    sym_want = monitor_data["symbol"]
+                    side = monitor_data["side"]
+                    entry_price = float(monitor_data["entry_price"])
+                    thr = float(monitor_data["profit_threshold"])
+
+                    position = None
+                    if positions:
+                        for p in positions:
+                            ps = p.get("symbol") or p.get("contractName") or ""
+                            qty = p.get("quantity") or p.get("size") or 0
+                            if abs(float(qty or 0)) <= 0:
+                                continue
+                            if self._position_symbol_matches(str(ps), sym_want):
+                                position = p
+                                break
+
+                    if not position:
+                        if monitor_data.get("position_filled"):
+                            logger.info(
+                                "generic breakeven: position gone for %s — removing watch %s",
+                                sym_want,
+                                oid,
+                            )
+                            del self._generic_breakeven_monitoring[oid]
+                        continue
+
+                    if not monitor_data.get("position_filled"):
+                        monitor_data["position_filled"] = True
+                        logger.info(
+                            "generic breakeven: %s %s opened @ %.4f (watch order=%s strat=%s)",
+                            sym_want,
+                            side,
+                            entry_price,
+                            oid,
+                            monitor_data.get("strategy_name", ""),
+                        )
+
+                    cur = position.get("currentPrice") or position.get("current_price") or position.get("lastPrice")
+                    if cur is None:
+                        continue
+                    try:
+                        cur_f = float(cur)
+                    except (TypeError, ValueError):
+                        continue
+
+                    if side == "LONG":
+                        profit_move = cur_f - entry_price
+                    else:
+                        profit_move = entry_price - cur_f
+
+                    if profit_move < thr:
+                        continue
+
+                    monitor_data["breakeven_triggered"] = True
+                    logger.info(
+                        "generic breakeven: %s %s move=%.4f ≥ thr=%.4f — moving stop toward entry %.4f",
+                        sym_want,
+                        side,
+                        profit_move,
+                        thr,
+                        entry_price,
+                    )
+                    position_id = position.get("id") or position.get("positionId") or position.get("position_id")
+                    if account_id and position_id:
+                        try:
+                            res = await self.modify_stop_loss(
+                                str(position_id),
+                                float(entry_price),
+                                account_id=str(account_id),
+                            )
+                            if isinstance(res, dict) and res.get("error"):
+                                logger.warning(
+                                    "generic breakeven: modify_stop_loss failed %s: %s",
+                                    sym_want,
+                                    res.get("error"),
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "generic breakeven: modify_stop_loss error %s: %s",
+                                sym_want,
+                                exc,
+                                exc_info=True,
+                            )
+                    else:
+                        logger.debug(
+                            "generic breakeven: missing account_id or position_id for %s",
+                            sym_want,
+                        )
+
+            except asyncio.CancelledError:
+                logger.info("Generic breakeven monitor loop cancelled")
+                raise
+            except Exception as e:
+                logger.error("generic breakeven monitor error: %s", e, exc_info=True)
+                await asyncio.sleep(60)
 
     # ============================================================================
     # ID CACHE HELPERS
@@ -4251,6 +4452,54 @@ class TopStepXTradingBot:
                 logger.error(f"Auto fill checker error: {e}")
                 await asyncio.sleep(self._fill_check_interval)
     
+    async def _discord_status_reporter_loop(self) -> None:
+        """Optional periodic account snapshot to Discord (set DISCORD_STATUS_INTERVAL_SECONDS > 0)."""
+        interval = int(os.getenv("DISCORD_STATUS_INTERVAL_SECONDS", "0") or "0")
+        if interval <= 0:
+            return
+        await asyncio.sleep(20)
+        while True:
+            try:
+                notifier = getattr(self, "discord_notifier", None)
+                if not notifier or not notifier.enabled:
+                    await asyncio.sleep(interval)
+                    continue
+                aid = None
+                acc_name = ""
+                if self.selected_account:
+                    if isinstance(self.selected_account, dict):
+                        aid = self.selected_account.get("id")
+                        acc_name = str(self.selected_account.get("name") or "")
+                    else:
+                        aid = str(self.selected_account)
+                lines = [
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                ]
+                if acc_name:
+                    lines.append(f"account={acc_name}")
+                if aid:
+                    aid_s = str(aid)
+                    if hasattr(self, "state_cache") and self.state_cache:
+                        pos = await self.state_cache.get_positions(aid_s)
+                        ord_ = await self.state_cache.get_orders(aid_s)
+                        lines.append(f"positions={len(pos or [])} orders={len(ord_ or [])}")
+                    if hasattr(self, "account_tracker") and self.account_tracker:
+                        st = self.account_tracker.get_state(aid_s)
+                        if isinstance(st, dict) and st:
+                            bal = st.get("balance")
+                            ru = st.get("realized_pnl")
+                            uu = st.get("unrealized_pnl")
+                            if bal is not None:
+                                lines.append(f"balance={bal}")
+                            if ru is not None or uu is not None:
+                                lines.append(f"realized_pnl={ru} unrealized_pnl={uu}")
+                await notifier.send_status_digest("Trade bot status", lines)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Discord status reporter tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
     async def _eod_scheduler(self) -> None:
         """
         Background task to update account tracker at end of day (midnight UTC).
@@ -4446,6 +4695,11 @@ class TopStepXTradingBot:
             # Step 8b: Start EOD scheduler for account tracking
             asyncio.create_task(self._eod_scheduler())
             logger.info("EOD scheduler background task started")
+
+            _st_int = int(os.getenv("DISCORD_STATUS_INTERVAL_SECONDS", "0") or "0")
+            if _st_int > 0:
+                asyncio.create_task(self._discord_status_reporter_loop())
+                logger.info("Discord status reporter started (every %ss)", _st_int)
             
             # Step 9: Auto-start enabled strategies (optional; default disabled for interactive CLI)
             auto_start_flag = os.getenv("AUTO_START_STRATEGIES", "0").lower() in ("1", "true", "yes")

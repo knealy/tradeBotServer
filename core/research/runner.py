@@ -43,6 +43,8 @@ _REPLAY_STRATEGIES = frozenset(
         "simple_rth",
         "vwap_zscore_reversion",
         "body_reversion",
+        "morning_range_reversion",
+        "hourly_anchor_retrace",
     }
 )
 
@@ -150,6 +152,10 @@ class ResearchRunConfig:
     full_days: int = 0
     """Load bars from CSV instead of synthetic sample (same columns as export_history)."""
     csv_path: Optional[str] = None
+    """Optional 1m CSV for intrabar fills in replay strategies."""
+    csv_1m_path: Optional[str] = None
+    """Preloaded 1m bars (dicts) for replay intrabar fills (avoid reloading per combo)."""
+    bars_1m: Optional[List[Dict[str, Any]]] = None
     csv_start: Optional[str] = None
     csv_end: Optional[str] = None
     # Delete these env keys before each replay backtest (TOML baseline for overnight_range).
@@ -232,6 +238,26 @@ def _coerce_param_dict_for_strategy(strategy: str, params: Dict[str, Any]) -> Di
         if "ema_long" in params:
             out["ema_long"] = int(params["ema_long"])
         return out
+    if strategy == "morning_range_reversion":
+        out: Dict[str, Any] = {}
+        if "max_hold_bars" in params:
+            out["max_hold_bars"] = int(params["max_hold_bars"])
+        if "require_reentry_close" in params:
+            v = params["require_reentry_close"]
+            if isinstance(v, str):
+                out["require_reentry_close"] = v.strip().lower() in ("1", "true", "yes")
+            else:
+                out["require_reentry_close"] = bool(v)
+        for k in ("sl_mult", "tp_mult", "reentry_frac"):
+            if k in params:
+                out[k] = float(params[k])
+        for k, v in params.items():
+            if k not in out:
+                out[k] = v
+        return out
+    if strategy == "hourly_anchor_retrace":
+        # No special coercions yet; keep floats and strings as-is.
+        return params
     return params
 
 
@@ -306,12 +332,15 @@ async def _run_research_backtest(
             )
         if cfg.strategy in _REPLAY_STRATEGIES:
             bars = _df_to_bar_dicts(df)
+            bars_1m = cfg.bars_1m
             bundle = await executor._run_strategy_replay(
                 strategy_name=cfg.strategy,
                 symbol=cfg.symbol,
                 bars=bars,
+                bars_1m=bars_1m,
                 initial_capital=cfg.initial_capital,
                 slippage_ticks=slippage_ticks,
+                replay_timeframe=cfg.timeframe,
                 quiet=True,
                 **strategy_params,
             )
@@ -403,6 +432,17 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
             days=effective_days,
             timeframe=cfg.timeframe,
         )
+
+    # Preload intrabar 1m bars once for replay strategies (huge speedup vs per-combo loads).
+    if cfg.csv_1m_path and cfg.strategy in _REPLAY_STRATEGIES:
+        raw_1m = executor.loader.load_from_csv(cfg.csv_1m_path, cfg.symbol)
+        if isinstance(raw_1m, pd.DataFrame) and not raw_1m.empty:
+            if cfg.csv_start:
+                raw_1m = raw_1m[raw_1m.index >= pd.Timestamp(cfg.csv_start)]
+            if cfg.csv_end:
+                raw_1m = raw_1m[raw_1m.index < pd.Timestamp(cfg.csv_end) + pd.Timedelta(days=1)]
+            cfg.bars_1m = _df_to_bar_dicts(raw_1m)
+            logger.info("Loaded %d 1m bars for intrabar replay", len(cfg.bars_1m))
     if not isinstance(raw, pd.DataFrame) or len(raw) < cfg.min_oos_bars + 20:
         raise ValueError(
             "Insufficient bars for IS+OOS; increase --days, widen --csv-start/--csv-end, "
@@ -472,9 +512,12 @@ async def run_research(cfg: ResearchRunConfig) -> Dict[str, Any]:
             "params": params,
             "is_sharpe": round(is_res.sharpe_ratio, 4),
             "is_trades": is_res.total_trades,
+            "is_return_pct": round(is_res.total_return_pct, 4),
+            "is_total_pnl": round(is_res.total_pnl, 2),
             "oos_sharpe": round(oos_res.sharpe_ratio, 4),
             "oos_trades": oos_res.total_trades,
             "oos_return_pct": round(oos_res.total_return_pct, 4),
+            "oos_total_pnl": round(oos_res.total_pnl, 2),
             "oos_slippage_break_even_ticks": oos_be_ticks,
             "mc_pass": passed,
             "mc_reason": reason,
@@ -651,6 +694,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="OHLCV CSV path (uses HistoricalDataLoader); omit for synthetic sample",
     )
     p.add_argument(
+        "--csv-1m",
+        type=str,
+        default="",
+        help="Optional 1m OHLCV CSV (replay strategies only): intrabar order fills inside each aggregate bar",
+    )
+    p.add_argument(
         "--csv-start",
         type=str,
         default="",
@@ -739,6 +788,7 @@ async def _async_main() -> None:
         screen_days=max(0, int(args.screen_days)),
         full_days=max(0, int(args.full_days)),
         csv_path=args.csv.strip() or None,
+        csv_1m_path=args.csv_1m.strip() or None,
         csv_start=args.csv_start.strip() or None,
         csv_end=args.csv_end.strip() or None,
         replay_env_clear=replay_clear,

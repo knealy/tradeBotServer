@@ -30,6 +30,7 @@ except ImportError:
 
 from strategies.strategy_base import BaseStrategy, StrategyConfig, MarketCondition, StrategyStatus
 from core.strategy_config import load_strategy_config
+from core.risk_management import _order_counts_as_working_entry_for_risk
 
 logger = logging.getLogger(__name__)
 
@@ -858,6 +859,9 @@ class OvernightRangeStrategy(BaseStrategy):
             total_quantity = 0
             
             for order in orders_list:
+                if not isinstance(order, dict):
+                    continue
+
                 # Get symbol from order - try multiple fields
                 order_symbol = order.get('symbol', '').upper()
                 if not order_symbol:
@@ -874,6 +878,10 @@ class OvernightRangeStrategy(BaseStrategy):
                 
                 if not order_symbol or order_symbol != symbol_upper:
                     continue
+
+                # Critical: count only working / live orders as pending.
+                if not _order_counts_as_working_entry_for_risk(order):
+                    continue
                 
                 # Get order type - must be a stop order (type 4)
                 order_type = order.get('type') or order.get('raw_type')
@@ -889,11 +897,13 @@ class OvernightRangeStrategy(BaseStrategy):
                 # If it explicitly says -SL or -TP, it's a bracket order, not an entry order
                 custom_tag = order.get('customTag') or order.get('custom_tag') or ''
                 is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag)
+                is_stop_bracket = 'stop_bracket' in str(custom_tag) or 'stop-bracket' in str(custom_tag)
+                is_overnight = 'overnight_range' in str(custom_tag) or 'overnight-range' in str(custom_tag)
                 
                 # IMPORTANT: We count ALL stop orders that are NOT reduce-only and NOT explicitly bracket SL/TP
                 # This includes suspended bracket entry orders which may not have the exact pattern we expect
                 # The key is: if it's a stop order, not reduce-only, and not explicitly -SL/-TP, count it
-                if not is_bracket_sl_tp:
+                if is_stop_bracket and is_overnight and not is_bracket_sl_tp:
                     qty = order.get('quantity') or order.get('size') or 0
                     if qty:
                         total_quantity += abs(int(qty))

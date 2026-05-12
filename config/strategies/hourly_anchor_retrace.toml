@@ -1,0 +1,37 @@
+[meta]
+enabled = false
+symbols = ["MNQ"]
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 1
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = "5m"
+lookback_bars     = 400
+session_timezone  = "America/New_York"
+
+# Anchor hour: bars whose open in [anchor_start, anchor_end_open)
+anchor_start      = "07:00"
+anchor_end_open   = "08:00"
+
+# Optional: force-flat by time in live (not implemented yet; placeholder for consistency).
+flat_before       = "16:00"
+
+allow_long        = true
+allow_short       = true
+
+# Entry offset (in ticks) inside the range to reduce missed fills / friction:
+# - SHORT (close>H): entry = H - entry_offset_ticks*tick_size
+# - LONG  (close<L): entry = L + entry_offset_ticks*tick_size
+entry_offset_ticks = 0.0
+
+# Optional anchor range width filter (points). Use 0 to disable.
+min_range_pts = 0.0
+max_range_pts = 0.0
+

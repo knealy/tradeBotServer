@@ -51,6 +51,10 @@ class StrategyExecutor:
         self.ws_port = None
         self.ws_connected = False
         self._lifecycle_bound = None
+        # Optional drift monitor (DRIFT_MONITOR=true). Subscribes to ORDER_FILLED
+        # and writes a JSONL log under logs/drift/. Compare offline with
+        # ``python -m core.drift_monitor compare ...``.
+        self.drift_monitor = None
 
     async def _on_strategy_lifecycle_event(self, event: Event) -> None:
         """EventBus subscriber: run health check when strategies start/stop."""
@@ -222,11 +226,28 @@ class StrategyExecutor:
             bus.subscribe(EventType.STRATEGY_STOPPED, self._lifecycle_bound)
             logger.debug("Subscribed strategy executor to STRATEGY_STARTED / STRATEGY_STOPPED")
 
+            if os.getenv("DRIFT_MONITOR", "").strip().lower() in {"1", "true", "yes", "on"}:
+                try:
+                    from core.drift_monitor import DriftMonitor
+
+                    log_dir = os.getenv("DRIFT_MONITOR_LOG_DIR", "logs/drift")
+                    self.drift_monitor = DriftMonitor(log_dir=log_dir)
+                    await self.drift_monitor.attach(bus)
+                    logger.info("DriftMonitor attached → %s", log_dir)
+                except Exception as exc:
+                    logger.warning("DriftMonitor failed to attach: %s", exc)
+                    self.drift_monitor = None
+
         await self._check_strategy_status()
 
         logger.info("🔄 Strategy executor running... (Press Ctrl+C to stop)")
         hang = asyncio.get_running_loop().create_future()
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        discord_status_task = None
+        _dst = int(os.getenv("DISCORD_STATUS_INTERVAL_SECONDS", "0") or "0")
+        if _dst > 0:
+            discord_status_task = asyncio.create_task(self.trading_bot._discord_status_reporter_loop())
+            logger.info("Discord status reporter started (every %ss)", _dst)
         try:
             await hang
         except asyncio.CancelledError:
@@ -238,6 +259,12 @@ class StrategyExecutor:
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
+            if discord_status_task:
+                discord_status_task.cancel()
+                try:
+                    await discord_status_task
+                except asyncio.CancelledError:
+                    pass
 
             if bus and self._lifecycle_bound:
                 try:
@@ -246,6 +273,17 @@ class StrategyExecutor:
                 except Exception as exc:
                     logger.debug("Could not unsubscribe lifecycle handler: %s", exc)
                 self._lifecycle_bound = None
+
+            if self.drift_monitor is not None:
+                try:
+                    await self.drift_monitor.detach()
+                    logger.info(
+                        "DriftMonitor detached (records logged: %d)",
+                        self.drift_monitor.records_logged,
+                    )
+                except Exception as exc:
+                    logger.debug("DriftMonitor detach error: %s", exc)
+                self.drift_monitor = None
 
             for strategy_name in list(self.running_strategies.keys()):
                 await self.stop_strategy(strategy_name)

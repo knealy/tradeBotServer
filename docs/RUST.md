@@ -9,6 +9,6 @@
 
 - [reference/rust/RUST_INTEGRATION_GUIDE.md](reference/rust/RUST_INTEGRATION_GUIDE.md)
 - [reference/rust/RUST_PHASE1_QUICKSTART.md](reference/rust/RUST_PHASE1_QUICKSTART.md)
-- [RUST_PYTHON_EXECUTION_PATHS.md](RUST_PYTHON_EXECUTION_PATHS.md) — path overview at repo root of `docs/`.
+- [archive/RUST_PYTHON_EXECUTION_PATHS.md](archive/RUST_PYTHON_EXECUTION_PATHS.md) — path overview (archived; may lag `rust/` layout).
 
 Treat benchmark numbers in old docs as **environment-specific** unless reproduced on your hardware.
