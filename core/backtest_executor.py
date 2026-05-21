@@ -33,6 +33,31 @@ from core.json_fast import dumps_str
 
 logger = logging.getLogger(__name__)
 
+
+def _strategy_replay_tf_minutes(tf: Optional[str]) -> Optional[int]:
+    """Bar length in whole minutes for common replay labels (``5m``, ``15m``, ``1h``, ``2h``, ``1d``).
+
+    Returns ``None`` for unsupported / sub-minute strings so callers fall back to raw replay bars.
+    """
+    if not tf:
+        return None
+    t = str(tf).strip().lower()
+    if len(t) < 2:
+        return None
+    unit = t[-1]
+    num_s = t[:-1]
+    if not num_s.isdigit():
+        return None
+    n = int(num_s)
+    if unit == "m":
+        return n
+    if unit == "h":
+        return n * 60
+    if unit == "d":
+        return n * 24 * 60
+    return None
+
+
 # Must match ``_get_strategy_function`` function-based names (sample/CSV path keeps DataFrame for these).
 _FUNCTION_BACKTEST_STRATEGIES = frozenset(
     {"ma_crossover", "rsi_mean_reversion", "ema_trend"}
@@ -91,8 +116,8 @@ def print_registered_strategies() -> None:
     """Stdout listing for ``--list-strategies`` (always prints; ignores JSON quiet mode)."""
     function_strategies = ["ma_crossover", "rsi_mean_reversion", "ema_trend"]
     class_strategies = [
-        "simple_candle",
         "overnight_range",
+        "overnight_reversion",
         "mean_reversion",
         "trend_following",
         "trend_scalping",
@@ -102,12 +127,17 @@ def print_registered_strategies() -> None:
         "body_reversion",
         "morning_range_reversion",
         "hourly_anchor_retrace",
+        "ema_stack_trend_15m",
+        "rsi_switch_15m",
     ]
-    print("Function-based (DataFrame + BacktestEngine):")
+    testing_only = ("simple_candle",)
     for s in function_strategies:
         print(f"  - {s}")
     print("\nClass-based / replay (use --replay):")
     for s in class_strategies:
+        print(f"  - {s}")
+    print("\nTesting-only replay:")
+    for s in testing_only:
         print(f"  - {s}")
     print(
         "\nResearch grid (sample in-sample + OOS + MC): python -m core.research.runner --help"
@@ -487,10 +517,22 @@ class BacktestExecutor:
         function_strategies = ['ma_crossover', 'rsi_mean_reversion', 'ema_trend']
         
         # Available class-based strategies (for replay mode)
-        class_strategies = ['simple_candle', 'overnight_range', 'mean_reversion',
-                           'trend_following', 'trend_scalping', 'simple_momentum',
-                           'simple_rth', 'vwap_zscore_reversion', 'body_reversion',
-                           'morning_range_reversion', 'hourly_anchor_retrace']
+        class_strategies = [
+            "simple_candle",
+            "overnight_range",
+            "overnight_reversion",
+            "mean_reversion",
+            "trend_following",
+            "trend_scalping",
+            "simple_momentum",
+            "simple_rth",
+            "vwap_zscore_reversion",
+            "body_reversion",
+            "morning_range_reversion",
+            "hourly_anchor_retrace",
+            "ema_stack_trend_15m",
+            "rsi_switch_15m",
+        ]
 
         all_strategies = function_strategies + class_strategies
         
@@ -503,7 +545,10 @@ class BacktestExecutor:
             _cli_print(f"\n📋 Available class-based strategies (use --replay flag):")
             for s in class_strategies:
                 _cli_print(f"   - {s}")
-            _cli_print(f"\nExample: python core/backtest_executor.py --strategy=simple_candle --symbol=MNQ --start=2025-12-01 --end=2025-12-07 --replay")
+            _cli_print(
+                "\nExample: python core/backtest_executor.py --strategy=body_reversion "
+                "--symbol=MNQ --start=2025-12-01 --end=2025-12-07 --replay"
+            )
             raise ValueError(f"Unknown strategy: {strategy_name}. Available: {', '.join(all_strategies)}")
         
         # Return None for class-based strategies (handled separately in replay mode)
@@ -673,6 +718,7 @@ class BacktestExecutor:
                 bars,
                 broker_adapter=self.loader.broker_adapter,
                 bars_1m=bars_1m,
+                replay_timeframe=replay_timeframe,
             )
         elif bars_1m:
             setattr(trading_bot, "bars_1m", list(bars_1m))
@@ -728,6 +774,9 @@ class BacktestExecutor:
             elif strategy_name == 'overnight_range':
                 from strategies.overnight_range_strategy import OvernightRangeStrategy
                 return OvernightRangeStrategy
+            elif strategy_name == 'overnight_reversion':
+                from strategies.overnight_reversion_strategy import OvernightReversionStrategy
+                return OvernightReversionStrategy
             elif strategy_name == 'mean_reversion':
                 from strategies.mean_reversion_strategy import MeanReversionStrategy
                 return MeanReversionStrategy
@@ -761,6 +810,14 @@ class BacktestExecutor:
                     HourlyAnchorRetraceStrategy,
                 )
                 return HourlyAnchorRetraceStrategy
+            elif strategy_name == 'ema_stack_trend_15m':
+                from strategies.ema_stack_trend_15m_strategy import EmaStackTrend15mStrategy
+
+                return EmaStackTrend15mStrategy
+            elif strategy_name == 'rsi_switch_15m':
+                from strategies.rsi_switch_15m_strategy import RsiSwitch15mStrategy
+
+                return RsiSwitch15mStrategy
             else:
                 return None
         except ImportError as e:
@@ -772,17 +829,97 @@ class BacktestExecutor:
         bars: List[Dict],
         broker_adapter=None,
         bars_1m: Optional[List[Dict]] = None,
+        *,
+        replay_timeframe: Optional[str] = None,
     ):
         """Create a minimal trading bot mock for strategy replay."""
+        hist_loader = HistoricalDataLoader()
+
         class MockTradingBot:
-            def __init__(self, bars, broker_adapter=None, bars_1m=None):
+            def __init__(self, bars, broker_adapter=None, bars_1m=None, replay_timeframe=None):
                 self.bars = bars
                 self.bars_1m = list(bars_1m) if bars_1m else []
                 self.selected_account = {'id': 'backtest_account', 'name': 'BACKTEST_PRAC_ACCOUNT'}
                 self.broker_adapter = broker_adapter
                 # Flag read by OvernightRangeStrategy to mimic live cadence (one open window / session).
                 self._is_strategy_replay = True
-            
+                # Replay CSV cadence (e.g. ``5m``). Used to resample when strategies request other TFs.
+                self.replay_timeframe = (replay_timeframe or "5m").strip().lower()
+                self._resampled_cache: Dict[str, List[Dict]] = {}
+                self._hist_loader = hist_loader
+
+            def _bars_to_ohlcv_dataframe(self):
+                """Build a sorted OHLCV DataFrame from ``self.bars`` (replay stream)."""
+                import pandas as pd
+
+                rows: List[Dict[str, Any]] = []
+                for b in self.bars:
+                    ts = self._parse_bar_timestamp(b)
+                    if ts is None:
+                        continue
+                    rows.append(
+                        {
+                            "timestamp": ts,
+                            "open": float(b.get("open", b.get("o", 0))),
+                            "high": float(b.get("high", b.get("h", 0))),
+                            "low": float(b.get("low", b.get("l", 0))),
+                            "close": float(b.get("close", b.get("c", 0))),
+                            "volume": float(b.get("volume", b.get("v", 0)) or 0),
+                        }
+                    )
+                if len(rows) < 2:
+                    return None
+                df = pd.DataFrame(rows)
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+                df.set_index("timestamp", inplace=True)
+                df.sort_index(inplace=True)
+                return df
+
+            def _resample_native_to(self, target_tf: str) -> List[Dict]:
+                if target_tf in self._resampled_cache:
+                    return self._resampled_cache[target_tf]
+                try:
+                    df = self._bars_to_ohlcv_dataframe()
+                    if df is None or len(df) < 2:
+                        out = list(self.bars)
+                    else:
+                        rs = self._hist_loader.resample(df, target_tf)
+                        out = replay_bars_from_ohlcv_df(rs)
+                    self._resampled_cache[target_tf] = out
+                    return out
+                except Exception as exc:
+                    logger.warning(
+                        "Mock bot: resample replay %s → %s failed (%s); using native replay bars",
+                        self.replay_timeframe,
+                        target_tf,
+                        exc,
+                    )
+                    out = list(self.bars)
+                    self._resampled_cache[target_tf] = out
+                    return out
+
+            def _select_historical_source(self, tf: str) -> List[Dict]:
+                """Bars for ``timeframe``: 1m slice, native replay list, or OHLCV-resampled coarser TFs."""
+                if tf == "1m" and self.bars_1m:
+                    return self.bars_1m
+                native = self.replay_timeframe
+                if tf == native:
+                    return self.bars
+                req_m = _strategy_replay_tf_minutes(tf)
+                nat_m = _strategy_replay_tf_minutes(native)
+                if req_m is None or nat_m is None:
+                    return self.bars
+                if req_m == nat_m:
+                    return self.bars
+                if req_m < nat_m:
+                    logger.debug(
+                        "Mock bot: requested %s is finer than replay %s — returning native replay bars",
+                        tf,
+                        native,
+                    )
+                    return self.bars
+                return self._resample_native_to(tf)
+
             def _parse_bar_timestamp(self, bar: Dict) -> Optional[datetime]:
                 """Parse a bar timestamp into a timezone-aware UTC datetime."""
                 ts = bar.get('timestamp') or bar.get('time') or bar.get('t')
@@ -816,7 +953,7 @@ class BacktestExecutor:
             async def get_historical_data(self, symbol, timeframe=None, limit=None, start_time=None, end_time=None, **kwargs):
                 """Return bars for strategy analysis, filtered by time range if provided."""
                 tf = (timeframe or "1m").strip().lower()
-                source = self.bars_1m if tf == "1m" and self.bars_1m else self.bars
+                source = self._select_historical_source(tf)
                 # Start with all bars
                 filtered_bars = source
                 
@@ -855,7 +992,7 @@ class BacktestExecutor:
                         
                         filtered_bars.append(bar)
                     
-                    logger.debug(f"Mock bot: Filtered {len(filtered_bars)} bars from {len(self.bars)} total bars")
+                    logger.debug(f"Mock bot: Filtered {len(filtered_bars)} bars from {len(source)} source bars")
                     
                     # Sort by timestamp (oldest first)
                     filtered_bars.sort(key=lambda b: self._parse_bar_timestamp(b) or datetime.min.replace(tzinfo=timezone.utc))
@@ -957,6 +1094,40 @@ class BacktestExecutor:
                     'message': 'Order simulated in backtest (replay engine will handle execution)',
                     'method': 'backtest_mock'
                 }
+
+            async def place_oco_bracket_with_stop_entry_partial_tp(
+                self,
+                symbol: str,
+                side: str,
+                quantity: int,
+                entry_price: float,
+                stop_loss_price: float,
+                take_profit_full_price: float,
+                account_id: Optional[str] = None,
+                *,
+                scalp_r_multiple: float = 1.0,
+                enable_breakeven: bool = False,
+                strategy_name: Optional[str] = None,
+            ) -> Dict[str, Any]:
+                """Replay engine replaces this; stub satisfies ``hasattr`` before intercept."""
+                import uuid
+
+                _ = (account_id, scalp_r_multiple, enable_breakeven, strategy_name)
+                mock_order_id = str(uuid.uuid4())[:8]
+                logger.debug(
+                    "Mock partial-TP bracket: %s %s %s @ %s (orderId=%s)",
+                    side,
+                    quantity,
+                    symbol,
+                    entry_price,
+                    mock_order_id,
+                )
+                return {
+                    "success": True,
+                    "orderId": mock_order_id,
+                    "message": "Partial-TP order simulated in backtest (replay intercept)",
+                    "method": "backtest_mock_partial_tp",
+                }
             
             async def place_stop_order(
                 self,
@@ -1000,7 +1171,12 @@ class BacktestExecutor:
                     'method': 'backtest_mock'
                 }
         
-        return MockTradingBot(bars, broker_adapter=broker_adapter, bars_1m=bars_1m)
+        return MockTradingBot(
+            bars,
+            broker_adapter=broker_adapter,
+            bars_1m=bars_1m,
+            replay_timeframe=replay_timeframe,
+        )
 
 
 async def main():
@@ -1069,7 +1245,7 @@ Research (grid + OOS + MC gate): python -m core.research.runner --help
         help='Optional 1m OHLCV CSV (use with --csv): intrabar order fills during class-strategy replay',
     )
     parser.add_argument('--replay', action='store_true',
-                       help='Use replay mode (for class-based strategies like simple_candle)')
+                       help='Use replay mode (for class-based strategies; see --list-strategies)')
     parser.add_argument(
         '--include-trades',
         action='store_true',

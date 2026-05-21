@@ -1,0 +1,75 @@
+{
+  "comment": "One wave = one focused variable family. Env keys follow core.strategy_config: STRATEGY_UPPER + dotted path with underscores (e.g. OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER). Edit dates/symbols to match your CSV coverage.",
+  "defaults": {
+    "timeframe": "5m",
+    "replay": true,
+    "start": "2026-04-11",
+    "end": "2026-05-01",
+    "csv_template": "{root}/historical_data/price/{sym_lower}_5m_databento.csv"
+  },
+  "waves": [
+    {
+      "id": "overnight_atr_bracket",
+      "description": "Overnight range: stop vs take-profit ATR multipliers (MNQ)",
+      "strategy": "overnight_range",
+      "symbols": ["MNQ"],
+      "runs": [
+        { "label": "base_toml", "env": {} },
+        {
+          "label": "sl1p0_tp1p5",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.0",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "1.5"
+          }
+        },
+        {
+          "label": "sl1p25_tp2p0",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.25",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.0"
+          }
+        },
+        {
+          "label": "sl1p5_tp2p5",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5"
+          }
+        }
+      ]
+    },
+    {
+      "id": "overnight_session_end",
+      "description": "Overnight tracking window end (timing.overnight_end); market_open unchanged",
+      "strategy": "overnight_range",
+      "symbols": ["MNQ", "MES", "MGC"],
+      "runs": [
+        { "label": "end_0929", "env": { "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "9:29" } },
+        { "label": "end_0800", "env": { "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "8:00" } },
+        { "label": "end_0700", "env": { "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "7:00" } }
+      ]
+    },
+    {
+      "id": "body_reversion_body_pct",
+      "description": "Body-reversion: minimum body % threshold",
+      "strategy": "body_reversion",
+      "symbols": ["MNQ", "MES", "MGC"],
+      "runs": [
+        { "label": "body085", "env": { "BODY_REVERSION_SIGNAL_BODY_PCT_MIN": "0.85" } },
+        { "label": "body090", "env": { "BODY_REVERSION_SIGNAL_BODY_PCT_MIN": "0.90" } },
+        { "label": "body095", "env": { "BODY_REVERSION_SIGNAL_BODY_PCT_MIN": "0.95" } }
+      ]
+    },
+    {
+      "id": "morning_tp_mult",
+      "description": "Morning range reversion: TP multiple vs half-range (signal.tp_mult)",
+      "strategy": "morning_range_reversion",
+      "symbols": ["MNQ"],
+      "runs": [
+        { "label": "tp0p8", "env": { "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "0.8" } },
+        { "label": "tp1p0", "env": { "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.0" } },
+        { "label": "tp1p2", "env": { "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.2" } }
+      ]
+    }
+  ]
+}

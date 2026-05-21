@@ -11,7 +11,7 @@ import asyncio
 import math
 import hashlib
 from datetime import datetime, timezone
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
 from collections import defaultdict
 from aiohttp import web, WSMsgType
@@ -46,6 +46,8 @@ def _parse_strategy_settings_blob(settings: Any) -> Dict[str, Any]:
 
 def broker_bars_to_chart_rows(bars: List[Any]) -> List[Dict[str, Any]]:
     """Normalize ``get_historical_data`` return value into Lightweight Charts payloads."""
+    from core.backtest.ohlcv import sanitize_ohlcv_ohlc
+
     chart_data: List[Dict[str, Any]] = []
     for bar in bars or []:
         try:
@@ -72,13 +74,19 @@ def broker_bars_to_chart_rows(bars: List[Any]) -> List[Dict[str, Any]]:
                     ts = int(ts_val) if ts_val else 0
             else:
                 continue
+
+            o0 = float(bar.open if hasattr(bar, "open") else bar.get("open", 0))
+            h0 = float(bar.high if hasattr(bar, "high") else bar.get("high", 0))
+            l0 = float(bar.low if hasattr(bar, "low") else bar.get("low", 0))
+            c0 = float(bar.close if hasattr(bar, "close") else bar.get("close", 0))
+            o0, h0, l0, c0 = sanitize_ohlcv_ohlc(o0, h0, l0, c0)
             chart_data.append(
                 {
                     "time": ts,
-                    "open": float(bar.open if hasattr(bar, "open") else bar.get("open", 0)),
-                    "high": float(bar.high if hasattr(bar, "high") else bar.get("high", 0)),
-                    "low": float(bar.low if hasattr(bar, "low") else bar.get("low", 0)),
-                    "close": float(bar.close if hasattr(bar, "close") else bar.get("close", 0)),
+                    "open": o0,
+                    "high": h0,
+                    "low": l0,
+                    "close": c0,
                     "volume": float(bar.volume if hasattr(bar, "volume") else bar.get("volume", 0)),
                 }
             )
@@ -4456,6 +4464,9 @@ def generate_chart_html(
     backtest_speed: float = 1.0,
     server_port: Optional[int] = None,
     trade_overlays: Optional[List[Dict[str, Any]]] = None,
+    axis_time_zone: Optional[str] = None,
+    morning_range_et_shade: bool = False,
+    overnight_range_et_shade: bool = False,
 ) -> str:
     """
     Generate standalone HTML file with TradingView Lightweight Charts.
@@ -4471,13 +4482,38 @@ def generate_chart_html(
         server_port: Port for real-time server (if realtime=True)
         trade_overlays: Optional list of trade dicts for static review charts (not live server).
             Each item may include: trade_id, side (BUY/SELL), entry_time, exit_time (Unix seconds
-            or ISO strings), entry_price, exit_price. Renders LWC markers + horizontal price lines
-            when not in ``backtest`` replay mode.
+            or ISO strings), entry_price, exit_price, exit_reason (e.g. ``stop_loss``, ``take_profit``).
+            Renders **blue** entry and **light grey** exit horizontal price lines, plus a **line
+            series** from (entry_time, entry_price) to (exit_time, exit_price). Horizontal lines
+            span the full chart width (they are not clipped to the trade window). No candle markers.
+        axis_time_zone: Optional IANA zone for tick labels / crosshair (e.g. ``America/New_York``).
+            Unix bar times are unchanged; only label formatting shifts. Recommended for US-session
+            strategy review HTML so wall-clock matches ``signal.session_timezone`` / TOML docs.
+        morning_range_et_shade: When True (and not ``backtest`` initial-empty mode), draws a
+            semi-transparent **07:00–08:00** (exclusive of 08:00) **box** in ``axis_time_zone`` or
+            ``America/New_York``: horizontal span = those bars; vertical span = **max(high)** /
+            **min(low)** over the same bars (per ET calendar day), matching the morning anchor
+            range geometry behind candles.
+        overnight_range_et_shade: When True (and not ``backtest`` initial-empty mode), draws
+            **overnight range** boxes from shipped ``overnight_range.toml`` timing (evening start
+            through next-morning end, ET): session **high/low** over all bars in that window, with
+            separate baseline fills for evening vs morning segments when the slice has gaps.
 
     Returns:
         Path to generated HTML file
     """
     trade_overlays_json = json.dumps(trade_overlays or [], default=str)
+    axis_tz_js = "null" if not axis_time_zone else json.dumps(axis_time_zone)
+    morning_shade_js = "true" if morning_range_et_shade else "false"
+    overnight_shade_js = "true" if overnight_range_et_shade else "false"
+    info_axis = f" | Axis: {axis_time_zone}" if axis_time_zone else ""
+    info_shade = ""
+    if morning_range_et_shade:
+        info_shade += " | 7-8am ET range box"
+    if overnight_range_et_shade:
+        info_shade += " | overnight ET range box"
+    from core.backtest.ohlcv import sanitize_ohlcv_ohlc
+
     # Prepare data for TradingView format
     chart_data = []
     for bar in bars:
@@ -4496,12 +4532,19 @@ def generate_chart_html(
         else:
             continue
         
+        o0, h0, l0, c0 = (
+            float(bar.get('open', 0)),
+            float(bar.get('high', 0)),
+            float(bar.get('low', 0)),
+            float(bar.get('close', 0)),
+        )
+        o0, h0, l0, c0 = sanitize_ohlcv_ohlc(o0, h0, l0, c0)
         chart_data.append({
             'time': timestamp_sec,
-            'open': float(bar.get('open', 0)),
-            'high': float(bar.get('high', 0)),
-            'low': float(bar.get('low', 0)),
-            'close': float(bar.get('close', 0)),
+            'open': o0,
+            'high': h0,
+            'low': l0,
+            'close': c0,
             'volume': int(bar.get('volume', 0))
         })
     
@@ -4510,7 +4553,51 @@ def generate_chart_html(
     
     # Sort chart_data by time to ensure chronological order
     chart_data.sort(key=lambda x: x['time'])
-    
+    # Duplicate Unix timestamps (e.g. stitched broker + canonical CSV) draw two candles at one x.
+    _by_t: Dict[int, Dict[str, Any]] = {}
+    for row in chart_data:
+        t = int(row["time"])
+        _by_t[t] = row
+    chart_data = [_by_t[k] for k in sorted(_by_t.keys())]
+
+    overnight_segments: List[Dict[str, Any]] = []
+    if overnight_range_et_shade and chart_data:
+        try:
+            from core.backtest.session_shade import (
+                load_overnight_range_timing_from_toml,
+                overnight_range_baseline_segments,
+                segments_to_jsonable,
+            )
+
+            ost, oen, oz = load_overnight_range_timing_from_toml()
+            ref_unix: Optional[int] = None
+            if trade_overlays:
+                t0 = trade_overlays[0].get("entry_time")
+                if isinstance(t0, (int, float)):
+                    ref_unix = int(t0)
+                elif isinstance(t0, str):
+                    try:
+                        from datetime import datetime as _dt
+
+                        ref_unix = int(
+                            _dt.fromisoformat(str(t0).replace("Z", "+00:00")).timestamp()
+                        )
+                    except (ValueError, TypeError, OSError):
+                        ref_unix = None
+            overnight_segments = segments_to_jsonable(
+                overnight_range_baseline_segments(
+                    chart_data,
+                    overnight_start=ost,
+                    overnight_end=oen,
+                    zone=oz,
+                    reference_unix=ref_unix,
+                )
+            )
+        except Exception:
+            logger.debug("overnight range shade skipped", exc_info=True)
+            overnight_segments = []
+    overnight_segments_json = json.dumps(overnight_segments)
+
     # Generate HTML with TradingView Lightweight Charts
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -4633,7 +4720,7 @@ def generate_chart_html(
         <div class="header">
             <h1>{symbol} {timeframe} Chart</h1>
             <div class="info">
-                {len(chart_data)} bars | Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                {len(chart_data)} bars | Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{info_axis}{info_shade}
             </div>
         </div>
         <div id="chart-container"></div>
@@ -4702,7 +4789,19 @@ def generate_chart_html(
         const ORDER_UPDATE_INTERVAL = 3000; // 3 seconds (reduced for faster updates)
         const STRATEGY_LINES_INTERVAL = 3000;
         let chartData = {json.dumps(chart_data)};
+        (function dedupeChartDataByBarTime() {{
+            const m = new Map();
+            for (let i = 0; i < chartData.length; i++) {{
+                const b = chartData[i];
+                const t = Number(b.time);
+                if (!isFinite(t)) continue;
+                m.set(t, Object.assign({{}}, b, {{ time: t }}));
+            }}
+            chartData = Array.from(m.keys()).sort((a, b) => a - b).map((k) => m.get(k));
+        }})();
         let tradeOverlays = {trade_overlays_json};
+        let tradeRecapPriceLines = [];
+        let tradeRecapConnectorSeries = [];
         let realtimeActive = {'true' if realtime else 'false'};
         let backtestMode = {'true' if backtest else 'false'}; // Mode enabled, not necessarily running
         let backtestActive = false; // Actually running
@@ -4739,59 +4838,141 @@ def generate_chart_html(
             return 60;
         }}
         
+        const axisTimeZone = {axis_tz_js};
+        const morningRangeEtShade = {morning_shade_js};
+        const overnightRangeEtShade = {overnight_shade_js};
+        const overnightRangeSegments = {overnight_segments_json};
+        function _fmtBarTime(d, opts) {{
+            const o = Object.assign({{}}, opts || {{}});
+            if (axisTimeZone) o.timeZone = axisTimeZone;
+            return d.toLocaleString(undefined, o);
+        }}
+        
         const timeframeSeconds = getTimeframeSeconds(timeframe);
         const backtestIntervalMs = (timeframeSeconds * 1000) / backtestSpeed;
 
+        function overlayUnixSeconds(v) {{
+            if (v == null || v === '') return NaN;
+            if (typeof v === 'number' && isFinite(v)) {{
+                const n = Math.floor(v);
+                return v > 1e12 ? Math.floor(v / 1000) : n;
+            }}
+            if (typeof v === 'string') {{
+                const t = v.trim();
+                if (/^-?\\d+(\\.\\d+)?$/.test(t)) {{
+                    const num = parseFloat(t);
+                    if (!isFinite(num)) return NaN;
+                    return num > 1e12 ? Math.floor(num / 1000) : Math.floor(num);
+                }}
+                const ms = Date.parse(t);
+                return isNaN(ms) ? NaN : Math.floor(ms / 1000);
+            }}
+            return NaN;
+        }}
+
         function applyTradeOverlays() {{
             if (!tradeOverlays || tradeOverlays.length === 0) return;
-            if (!candlestickSeries) return;
-            if (typeof candlestickSeries.setMarkers !== 'function') return;
+            if (!chart || !candlestickSeries) return;
             try {{
-                const markers = [];
+                for (let i = 0; i < tradeRecapPriceLines.length; i++) {{
+                    try {{ tradeRecapPriceLines[i].remove(); }} catch (e) {{}}
+                }}
+                tradeRecapPriceLines = [];
+                for (let i = 0; i < tradeRecapConnectorSeries.length; i++) {{
+                    try {{ chart.removeSeries(tradeRecapConnectorSeries[i]); }} catch (e) {{}}
+                }}
+                tradeRecapConnectorSeries = [];
+                const overlayMarkers = [];
+                if (typeof candlestickSeries.setMarkers === 'function') {{
+                    candlestickSeries.setMarkers([]);
+                }}
                 for (const t of tradeOverlays) {{
-                    const et = (typeof t.entry_time === 'number')
-                        ? t.entry_time
-                        : Math.floor(Date.parse(t.entry_time) / 1000);
-                    const xt = (typeof t.exit_time === 'number')
-                        ? t.exit_time
-                        : Math.floor(Date.parse(t.exit_time) / 1000);
-                    const sell = String(t.side || '').toUpperCase() === 'SELL';
-                    markers.push({{
-                        time: et,
-                        position: sell ? 'aboveBar' : 'belowBar',
-                        color: sell ? '#ef5350' : '#26a69a',
-                        shape: sell ? 'arrowDown' : 'arrowUp',
-                        text: 'Entry ' + (t.trade_id || '')
-                    }});
-                    markers.push({{
-                        time: xt,
-                        position: 'inBar',
-                        color: '#fbc02d',
-                        shape: 'square',
-                        text: 'Exit ' + (t.trade_id || '')
-                    }});
-                    if (t.entry_price != null && typeof candlestickSeries.createPriceLine === 'function') {{
-                        candlestickSeries.createPriceLine({{
-                            price: parseFloat(t.entry_price),
-                            title: 'Entry ' + (t.trade_id || ''),
-                            color: '#66bb6a',
+                    const ep = t.entry_price != null ? parseFloat(t.entry_price) : NaN;
+                    const xp = t.exit_price != null ? parseFloat(t.exit_price) : NaN;
+                    const entryLineColor = '#2196f3';
+                    const exitLineColor = '#cfd8dc';
+                    if (!isNaN(ep) && typeof candlestickSeries.createPriceLine === 'function') {{
+                        tradeRecapPriceLines.push(candlestickSeries.createPriceLine({{
+                            price: ep,
+                            title: '',
+                            color: entryLineColor,
                             lineWidth: 1,
-                            lineStyle: 2,
+                            lineStyle: 0,
                             axisLabelVisible: true,
+                        }}));
+                    }}
+                    if (!isNaN(xp) && typeof candlestickSeries.createPriceLine === 'function') {{
+                        tradeRecapPriceLines.push(candlestickSeries.createPriceLine({{
+                            price: xp,
+                            title: '',
+                            color: exitLineColor,
+                            lineWidth: 1,
+                            lineStyle: 0,
+                            axisLabelVisible: true,
+                        }}));
+                    }}
+                    const et = overlayUnixSeconds(t.entry_time);
+                    let xt = overlayUnixSeconds(t.exit_time);
+                    let xtDraw = xt;
+                    if (isFinite(et) && isFinite(xt) && xt <= et) {{
+                        xtDraw = et + timeframeSeconds;
+                    }}
+                    if (isFinite(et) && isFinite(xtDraw) && !isNaN(ep) && !isNaN(xp)
+                            && typeof chart.addLineSeries === 'function') {{
+                        try {{
+                            const ln = chart.addLineSeries({{
+                                color: 'rgba(100, 181, 246, 0.95)',
+                                lineWidth: 2,
+                                lineStyle: 0,
+                                priceScaleId: 'right',
+                                lastValueVisible: false,
+                                priceLineVisible: false,
+                                crosshairMarkerVisible: false,
+                            }});
+                            ln.setData([
+                                {{ time: et, value: ep }},
+                                {{ time: xtDraw, value: xp }},
+                            ]);
+                            tradeRecapConnectorSeries.push(ln);
+                        }} catch (eLn) {{
+                            console.warn('trade recap connector:', eLn);
+                        }}
+                    }}
+                    const sideUp = (t.side || '').toString().toUpperCase();
+                    const isLong = sideUp === 'BUY' || sideUp === 'LONG';
+                    if (isFinite(et) && !isNaN(ep)) {{
+                        overlayMarkers.push({{
+                            time: et,
+                            position: isLong ? 'belowBar' : 'aboveBar',
+                            color: isLong ? '#42a5f5' : '#ef5350',
+                            shape: isLong ? 'arrowUp' : 'arrowDown',
+                            text: 'entry',
                         }});
                     }}
-                    if (t.exit_price != null && typeof candlestickSeries.createPriceLine === 'function') {{
-                        candlestickSeries.createPriceLine({{
-                            price: parseFloat(t.exit_price),
-                            title: 'Exit ' + (t.trade_id || ''),
-                            color: '#ffeb3b',
-                            lineWidth: 1,
-                            lineStyle: 2,
-                            axisLabelVisible: true,
+                    if (isFinite(xt) && !isNaN(xp)) {{
+                        overlayMarkers.push({{
+                            time: xt,
+                            position: isLong ? 'aboveBar' : 'belowBar',
+                            color: '#90a4ae',
+                            shape: 'square',
+                            text: t.exit_reason ? String(t.exit_reason) : 'exit',
+                        }});
+                    }}
+                    const sig = overlayUnixSeconds(t.signal_time);
+                    if (isFinite(sig)) {{
+                        overlayMarkers.push({{
+                            time: sig,
+                            position: isLong ? 'belowBar' : 'aboveBar',
+                            color: '#ffd54f',
+                            shape: 'circle',
+                            text: t.signal_label ? String(t.signal_label) : 'signal',
                         }});
                     }}
                 }}
-                candlestickSeries.setMarkers(markers);
+                if (overlayMarkers.length && typeof candlestickSeries.setMarkers === 'function') {{
+                    overlayMarkers.sort((a, b) => a.time - b.time);
+                    try {{ candlestickSeries.setMarkers(overlayMarkers); }} catch (eMk) {{ console.warn('overlay markers:', eMk); }}
+                }}
             }} catch (e) {{
                 console.warn('applyTradeOverlays:', e);
             }}
@@ -4889,7 +5070,7 @@ def generate_chart_html(
                         locale: navigator.language || 'en-US',
                         timeFormatter: (timestamp) => {{
                             const date = new Date(timestamp * 1000);
-                            return date.toLocaleString(undefined, {{
+                            return _fmtBarTime(date, {{
                                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                             }});
                         }},
@@ -4906,11 +5087,11 @@ def generate_chart_html(
                                 if (typeof tickMarkType === 'number' && T && (
                                     tickMarkType === T.DayOfMonth || tickMarkType === T.Month || tickMarkType === T.Year
                                 )) {{
-                                    return d.toLocaleDateString(locale || undefined, {{
+                                    return _fmtBarTime(d, {{
                                         weekday: 'short', month: 'short', day: 'numeric'
                                     }});
                                 }}
-                                return d.toLocaleString(locale || undefined, {{
+                                return _fmtBarTime(d, {{
                                     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                                 }});
                             }}
@@ -4929,6 +5110,152 @@ def generate_chart_html(
                 
                 console.log('Chart created successfully');
                 
+                let morningRangeSeriesList = [];
+                if (morningRangeEtShade && !backtestMode && chartData.length > 0) {{
+                    const tzShade = axisTimeZone || 'America/New_York';
+                    const m7 = 7 * 60;
+                    const m8 = 8 * 60;
+                    function minutesSinceMidnightInZone(tsSec) {{
+                        const d = new Date(tsSec * 1000);
+                        const f = new Intl.DateTimeFormat('en-US', {{
+                            timeZone: tzShade,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                        }});
+                        const s = f.format(d);
+                        const m = s.match(/(\d{{1,2}}):(\d{{2}})/);
+                        if (!m) return -1;
+                        return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+                    }}
+                    function etDateKey(tsSec) {{
+                        const d = new Date(tsSec * 1000);
+                        const f = new Intl.DateTimeFormat('en-CA', {{
+                            timeZone: tzShade,
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                        }});
+                        return f.format(d);
+                    }}
+                    const dayMap = new Map();
+                    for (const b of chartData) {{
+                        const mins = minutesSinceMidnightInZone(b.time);
+                        if (mins < m7 || mins >= m8) continue;
+                        const dk = etDateKey(b.time);
+                        if (!dayMap.has(dk)) dayMap.set(dk, []);
+                        dayMap.get(dk).push(b);
+                    }}
+                    if (typeof chart.addBaselineSeries === 'function') {{
+                        for (const [dk, winBars] of dayMap.entries()) {{
+                            if (!winBars || winBars.length === 0) continue;
+                            let hi = -Infinity;
+                            let lo = Infinity;
+                            for (const b of winBars) {{
+                                hi = Math.max(hi, parseFloat(b.high));
+                                lo = Math.min(lo, parseFloat(b.low));
+                            }}
+                            if (!(hi > lo) || !isFinite(hi) || !isFinite(lo)) continue;
+                            const sorted = winBars.slice().sort((a, b) => a.time - b.time);
+                            const seg = sorted.map((b) => ({{ time: b.time, value: hi }}));
+                            try {{
+                                const s = chart.addBaselineSeries({{
+                                    priceScaleId: 'right',
+                                    baseValue: {{ type: 'price', price: lo }},
+                                    topFillColor1: 'rgba(99, 102, 241, 0.28)',
+                                    topFillColor2: 'rgba(129, 140, 248, 0.14)',
+                                    topLineColor: 'rgba(0,0,0,0)',
+                                    bottomFillColor1: 'rgba(0,0,0,0)',
+                                    bottomFillColor2: 'rgba(0,0,0,0)',
+                                    bottomLineColor: 'rgba(0,0,0,0)',
+                                    lineWidth: 0,
+                                    lineVisible: false,
+                                    priceLineVisible: false,
+                                    lastValueVisible: false,
+                                    crosshairMarkerVisible: false,
+                                }});
+                                s.setData(seg);
+                                morningRangeSeriesList.push(s);
+                                const mid = (hi + lo) / 2;
+                                const midSeg = sorted.map((b) => ({{ time: b.time, value: mid }}));
+                                try {{
+                                    const midLn = chart.addLineSeries({{
+                                        color: 'rgba(226, 232, 240, 0.72)',
+                                        lineWidth: 1,
+                                        lineStyle: 2,
+                                        priceScaleId: 'right',
+                                        lastValueVisible: false,
+                                        priceLineVisible: false,
+                                        crosshairMarkerVisible: false,
+                                    }});
+                                    midLn.setData(midSeg);
+                                    morningRangeSeriesList.push(midLn);
+                                }} catch (e2) {{
+                                    console.warn('morning range ET midline ' + dk + ':', e2);
+                                }}
+                            }} catch (e) {{
+                                console.warn('morning range ET box ' + dk + ':', e);
+                            }}
+                        }}
+                    }}
+                }}
+
+                let overnightRangeSeriesList = [];
+                if (overnightRangeEtShade && !backtestMode && chartData.length > 0
+                        && overnightRangeSegments && overnightRangeSegments.length > 0) {{
+                    if (typeof chart.addBaselineSeries === 'function') {{
+                        for (let si = 0; si < overnightRangeSegments.length; si++) {{
+                            const seg = overnightRangeSegments[si];
+                            const hi = parseFloat(seg.hi);
+                            const lo = parseFloat(seg.lo);
+                            const ts = seg.times || [];
+                            if (!(hi > lo) || !isFinite(hi) || !isFinite(lo) || ts.length === 0) continue;
+                            const sorted = ts.slice().sort((a, b) => a - b);
+                            const dataPts = sorted.map((t) => ({{ time: t, value: hi }}));
+                            try {{
+                                const s = chart.addBaselineSeries({{
+                                    priceScaleId: 'right',
+                                    baseValue: {{ type: 'price', price: lo }},
+                                    topFillColor1: 'rgba(245, 158, 11, 0.28)',
+                                    topFillColor2: 'rgba(251, 191, 36, 0.14)',
+                                    topLineColor: 'rgba(0,0,0,0)',
+                                    bottomFillColor1: 'rgba(0,0,0,0)',
+                                    bottomFillColor2: 'rgba(0,0,0,0)',
+                                    bottomLineColor: 'rgba(0,0,0,0)',
+                                    lineWidth: 0,
+                                    lineVisible: false,
+                                    priceLineVisible: false,
+                                    lastValueVisible: false,
+                                    crosshairMarkerVisible: false,
+                                }});
+                                s.setData(dataPts);
+                                overnightRangeSeriesList.push(s);
+                            }} catch (e) {{
+                                console.warn('overnight range ET box seg ' + si + ':', e);
+                            }}
+                        }}
+                    }}
+                }}
+
+                // Volume first so candlesticks (added next) paint on top in the shared pane margin.
+                volumeSeries = chart.addHistogramSeries({{
+                    color: '#26a69a',
+                    priceFormat: {{
+                        type: 'volume',
+                    }},
+                    priceScaleId: 'volume',
+                    scaleMargins: {{
+                        top: 0.8,
+                        bottom: 0,
+                    }},
+                }});
+                chart.priceScale('volume').applyOptions({{
+                    scaleMargins: {{
+                        top: 0.8,
+                        bottom: 0,
+                    }},
+                }});
+
                 // Create candlestick series
                 if (typeof chart.addCandlestickSeries !== 'function') {{
                     showError('addCandlestickSeries not available');
@@ -4944,27 +5271,6 @@ def generate_chart_html(
                     wickDownColor: '#ef5350',
                     priceScaleId: 'right',
                     visible: true,
-                }});
-                
-                // Create volume series
-                volumeSeries = chart.addHistogramSeries({{
-                    color: '#26a69a',
-                    priceFormat: {{
-                        type: 'volume',
-                    }},
-                    priceScaleId: 'volume',
-                    scaleMargins: {{
-                        top: 0.8,
-                        bottom: 0,
-                    }},
-                }});
-                
-                // Set up volume price scale
-                chart.priceScale('volume').applyOptions({{
-                    scaleMargins: {{
-                        top: 0.8,
-                        bottom: 0,
-                    }},
                 }});
                 
                 // Prepare initial data
@@ -5547,8 +5853,16 @@ def generate_chart_html(
                 
                 // Sort data by time to ensure chronological order
                 const sortedChartData = [...chartData].sort((a, b) => a.time - b.time);
+                const dedupMap = new Map();
+                for (let i = 0; i < sortedChartData.length; i++) {{
+                    const b = sortedChartData[i];
+                    const t = Number(b.time);
+                    if (!isFinite(t)) continue;
+                    dedupMap.set(t, Object.assign({{}}, b, {{ time: t }}));
+                }}
+                const dedupedChartData = Array.from(dedupMap.keys()).sort((a, b) => a - b).map((k) => dedupMap.get(k));
                 
-                const candlestickData = sortedChartData.map(bar => ({{
+                const candlestickData = dedupedChartData.map(bar => ({{
                     time: Number(bar.time), // Ensure it's a number (TradingView expects Unix timestamp in seconds)
                     open: parseFloat(bar.open),
                     high: parseFloat(bar.high),
@@ -5556,7 +5870,7 @@ def generate_chart_html(
                     close: parseFloat(bar.close),
                 }}));
                 
-                const volumeData = sortedChartData.map(bar => ({{
+                const volumeData = dedupedChartData.map(bar => ({{
                     time: Number(bar.time), // Ensure it's a number
                     value: parseInt(bar.volume) || 0,
                     color: parseFloat(bar.close) >= parseFloat(bar.open) ? '#26a69a80' : '#ef535080',
@@ -5949,24 +6263,44 @@ def generate_chart_html(
                     return;
                 }}
                 
-                // Update chart data
-                const chartBars = data.bars.map(bar => ({{
-                    time: bar.time,
+                const rawFull = data.bars.map(bar => ({{
+                    time: Number(bar.time),
                     open: bar.open,
                     high: bar.high,
                     low: bar.low,
-                    close: bar.close
+                    close: bar.close,
+                    volume: bar.volume,
                 }}));
+                const byT = new Map();
+                for (let i = 0; i < rawFull.length; i++) {{
+                    const b = rawFull[i];
+                    if (!isFinite(b.time)) continue;
+                    byT.set(b.time, b);
+                }}
+                const times = Array.from(byT.keys()).sort((a, b) => a - b);
+                const chartBars = times.map((k) => {{
+                    const b = byT.get(k);
+                    return {{
+                        time: k,
+                        open: b.open,
+                        high: b.high,
+                        low: b.low,
+                        close: b.close,
+                    }};
+                }});
                 
                 candlestickSeries.setData(chartBars);
                 
                 // Update volume if available
                 if (volumeSeries && data.bars[0].volume !== undefined) {{
-                    const volumeBars = data.bars.map(bar => ({{
-                        time: bar.time,
-                        value: bar.volume,
-                        color: bar.close >= bar.open ? '#26a69a80' : '#ef535080'
-                    }}));
+                    const volumeBars = times.map((k) => {{
+                        const b = byT.get(k);
+                        return {{
+                            time: k,
+                            value: parseInt(b.volume, 10) || 0,
+                            color: parseFloat(b.close) >= parseFloat(b.open) ? '#26a69a80' : '#ef535080'
+                        }};
+                    }});
                     volumeSeries.setData(volumeBars);
                 }}
                 

@@ -215,7 +215,15 @@ class StrategyExecutor:
         # Start requested strategies
         for strategy_name in strategies:
             await self.start_strategy(strategy_name, symbols=symbols, account_id=account_id, risk_config=risk_config)
-        
+
+        # Open Market Hub + live tick feed so strategies stop being single-pointed on REST polling.
+        # The 2026-05-21 outage (REST historical endpoint frozen for 75+ min) caused
+        # MorningRangeReversionStrategy.analyze() to poll stale bars forever. With the live feed
+        # subscribed, completed bars flow through the aggregator into TopStepXTradingBot._live_bars,
+        # which get_historical_data merges on top of the REST tail. REST stays as fallback.
+        # Disable with EXECUTOR_MARKET_HUB=false (e.g. for replay/dev where SignalR is undesired).
+        await self._wire_market_hub_for_live_strategies()
+
         # Register this process in the database
         await self._register_process()
 
@@ -311,6 +319,73 @@ class StrategyExecutor:
 
             logger.info("✅ Strategy executor stopped")
     
+    async def _wire_market_hub_for_live_strategies(self) -> None:
+        """Open Market Hub + bar aggregator subscriptions for all running strategies.
+
+        Walks ``trading_bot.strategy_manager.strategies`` for the names currently in
+        ``self.running_strategies`` and gathers each strategy's ``config.symbols`` and
+        ``self.timeframe``. Then calls :py:meth:`TopStepXTradingBot.start_market_hub_for_strategies`
+        which (idempotently) starts the Market Hub, subscribes quotes, and registers the
+        timeframes on the bar aggregator so the live cache fills.
+
+        Failure is non-fatal: REST polling remains the fallback and the freshness guard
+        will still scream if both paths stall.
+
+        Disable entirely with the env var ``EXECUTOR_MARKET_HUB=false`` (kept for
+        backtests / dev environments where SignalR is undesirable).
+        """
+        toggle = os.getenv("EXECUTOR_MARKET_HUB", "true").strip().lower()
+        if toggle in {"0", "false", "no", "off"}:
+            logger.info("📡 EXECUTOR_MARKET_HUB=%s → skipping Market Hub subscription (REST-only mode)", toggle)
+            return
+        if os.getenv("ENABLE_SIGNALR", "true").strip().lower() in {"0", "false", "no", "off"}:
+            logger.info("📡 ENABLE_SIGNALR=false → skipping Market Hub subscription")
+            return
+
+        if not self.running_strategies:
+            logger.debug("No running strategies → no Market Hub subscriptions needed")
+            return
+
+        sm = getattr(self.trading_bot, "strategy_manager", None)
+        if sm is None or not getattr(sm, "strategies", None):
+            logger.debug("strategy_manager not available — cannot determine strategy symbols/timeframes")
+            return
+
+        symbols: set = set()
+        timeframes: set = set()
+        for name in list(self.running_strategies.keys()):
+            strat = sm.strategies.get(name)
+            if strat is None:
+                continue
+            cfg_syms = list(getattr(getattr(strat, "config", None), "symbols", []) or [])
+            for s in cfg_syms:
+                if s:
+                    symbols.add(str(s).upper())
+            tf = getattr(strat, "timeframe", None)
+            if tf:
+                timeframes.add(str(tf))
+
+        if not symbols:
+            logger.debug("No symbols found across running strategies → nothing to subscribe")
+            return
+
+        logger.info(
+            "📡 Wiring Market Hub for live strategies — symbols=%s timeframes=%s",
+            sorted(symbols), sorted(timeframes),
+        )
+        try:
+            ok = await self.trading_bot.start_market_hub_for_strategies(
+                symbols=sorted(symbols),
+                timeframes=sorted(timeframes) or None,
+            )
+            if not ok:
+                logger.warning(
+                    "Market Hub wiring did not complete — strategies remain on REST polling "
+                    "(freshness guard will still flag stalls)"
+                )
+        except Exception as exc:
+            logger.warning("Market Hub wiring raised (continuing REST-only): %s", exc)
+
     async def _register_process(self):
         """Register this process in the database."""
         try:
@@ -527,6 +602,24 @@ async def main():
 
     if args.reload:
         os.environ["STRATEGY_CONFIG_RELOAD"] = "true"
+
+    from strategies.strategy_manager import TESTING_ONLY_STRATEGY_IDS, _normalize_strategy_id
+
+    if args.strategy and not args.all:
+        sid = _normalize_strategy_id(args.strategy)
+        if sid in TESTING_ONLY_STRATEGY_IDS:
+            allow = os.environ.get("ALLOW_TESTING_STRATEGIES", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if not allow:
+                logger.error(
+                    "Strategy %s is testing-only; set ALLOW_TESTING_STRATEGIES=1 to run it via executor.",
+                    sid,
+                )
+                sys.exit(2)
     
     # Get credentials
     api_key = os.getenv('PROJECT_X_API_KEY') or os.getenv('TOPSTEPX_API_KEY') or os.getenv('TOPSETPX_API_KEY')

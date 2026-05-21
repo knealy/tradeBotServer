@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward trade recaps — morning_range_reversion / MNQ</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+</style>
+</head>
+<body>
+  <h1>Walk-forward trade recaps</h1>
+  <nav>
+    <a href="metrics.html">Metrics / survivability</a>
+    <a href="metrics.json">metrics.json</a>
+    <a href="metrics_insights.json">metrics_insights.json</a>
+  </nav>
+  <p class="muted">Replay <code>5m</code> from <code>{csv_dir}/{sym}_5m_databento.csv</code> · anchor end <strong>2026-05-19</strong> ·
+    <strong>35</strong> calendar days · <strong>1</strong> folds · last <strong>15</strong> trades charted per fold.
+    Charts: <code>trades/&lt;slug&gt;_trade_chart.html</code> (1m when CSV present).</p>
+  <p class="muted">Shading: <strong>morning_range_reversion</strong> → 7–8am ET anchor;
+    <strong>overnight_range</strong> / <strong>overnight_reversion</strong> → overnight box (timing from <code>overnight_range.toml</code>).</p>
+  <ul><li><a href='#fold0'>Fold 0: 2026-04-14 → 2026-05-19</a></li></ul>
+  <h2 id='fold0'>Fold 0: 2026-04-14 → 2026-05-19</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-04-28T12:20:00Z</td><td>2026-04-28T13:25:00Z</td><td>169.75</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000009_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-04-29T12:15:00Z</td><td>2026-04-29T12:30:00Z</td><td>-70.75</td><td>stop_loss</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000010_1_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-04-30T12:40:00Z</td><td>2026-04-30T13:30:00Z</td><td>103.75</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000011_2_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-05-01T12:45:00Z</td><td>2026-05-01T13:05:00Z</td><td>-57.75</td><td>stop_loss</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000012_3_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-05-04T12:15:00Z</td><td>2026-05-04T13:00:00Z</td><td>48.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000013_4_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-05-06T14:40:00Z</td><td>2026-05-06T15:15:00Z</td><td>100.75</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000014_5_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-05-07T12:40:00Z</td><td>2026-05-07T13:05:00Z</td><td>27.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000015_6_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-05-08T12:55:00Z</td><td>2026-05-08T13:05:00Z</td><td>31.75</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000016_7_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-05-11T12:25:00Z</td><td>2026-05-11T13:30:00Z</td><td>68.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000017_8_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-05-12T12:25:00Z</td><td>2026-05-12T12:30:00Z</td><td>65.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000018_9_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-05-13T12:05:00Z</td><td>2026-05-13T12:10:00Z</td><td>27.75</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000019_10_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-05-14T13:30:00Z</td><td>2026-05-14T13:35:00Z</td><td>50.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000020_11_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-05-15T13:25:00Z</td><td>2026-05-15T13:30:00Z</td><td>-121.75</td><td>stop_loss</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000021_12_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>SELL</td><td>2026-05-18T13:35:00Z</td><td>2026-05-18T13:40:00Z</td><td>206.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000022_13_trade_chart.html">trade_chart</a></td></tr><tr><td><code>morning_range_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-05-19T13:30:00Z</td><td>2026-05-19T13:35:00Z</td><td>78.25</td><td>take_profit</td><td><a href="trades/fold0_morning_range_reversion_MNQ_T000023_14_trade_chart.html">trade_chart</a></td></tr></tbody></table>
+</body>
+</html>

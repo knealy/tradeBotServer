@@ -1,0 +1,167 @@
+{
+  "comment": "MNQ-only overnight_range grid after adopting stop_atr_multiplier=1.5 / tp_atr_multiplier=2.5 in TOML. Every run pins ATR via env so sweeps stay comparable.",
+  "defaults": {
+    "timeframe": "5m",
+    "replay": true,
+    "start": "2026-04-11",
+    "end": "2026-05-01",
+    "csv_template": "{root}/historical_data/price/{sym_lower}_5m_databento.csv"
+  },
+  "waves": [
+    {
+      "id": "overnight_session_end_mnq",
+      "description": "Overnight range cutoff (timing.overnight_end); ATR pinned 1.5 / 2.5",
+      "strategy": "overnight_range",
+      "symbols": ["MNQ"],
+      "runs": [
+        {
+          "label": "end_0700",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "7:00"
+          }
+        },
+        {
+          "label": "end_0800",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "8:00"
+          }
+        },
+        {
+          "label": "end_0929",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "9:29"
+          }
+        }
+      ]
+    },
+    {
+      "id": "overnight_session_start_mnq",
+      "description": "Overnight range start (timing.overnight_start); ATR pinned 1.5 / 2.5",
+      "strategy": "overnight_range",
+      "symbols": ["MNQ"],
+      "runs": [
+        {
+          "label": "start_1700",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "17:00"
+          }
+        },
+        {
+          "label": "start_1800",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "18:00"
+          }
+        },
+        {
+          "label": "start_1900",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "19:00"
+          }
+        }
+      ]
+    },
+    {
+      "id": "overnight_market_open_mnq",
+      "description": "Bracket anchor / RTH open (timing.market_open + zone_anchor); ATR pinned 1.5 / 2.5",
+      "strategy": "overnight_range",
+      "symbols": ["MNQ"],
+      "runs": [
+        {
+          "label": "open_0925",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:25",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:25"
+          }
+        },
+        {
+          "label": "open_0929",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:29",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:29"
+          }
+        },
+        {
+          "label": "open_0930",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:30",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:30"
+          }
+        }
+      ]
+    },
+    {
+      "id": "overnight_atr_timeframe_mnq",
+      "description": "ATR bar length for stops/targets (signal.atr_timeframe); replay bar stream stays 5m. Pins ATR 1.5/2.5 + timing 19:00–9:29 / open 9:29.",
+      "strategy": "overnight_range",
+      "symbols": ["MNQ"],
+      "runs": [
+        {
+          "label": "atr_tf_5m",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "19:00",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "9:29",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:29",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:29",
+            "OVERNIGHT_RANGE_SIGNAL_ATR_TIMEFRAME": "5m"
+          }
+        },
+        {
+          "label": "atr_tf_15m",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "19:00",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "9:29",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:29",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:29",
+            "OVERNIGHT_RANGE_SIGNAL_ATR_TIMEFRAME": "15m"
+          }
+        },
+        {
+          "label": "atr_tf_30m",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "19:00",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "9:29",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:29",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:29",
+            "OVERNIGHT_RANGE_SIGNAL_ATR_TIMEFRAME": "30m"
+          }
+        },
+        {
+          "label": "atr_tf_1h",
+          "env": {
+            "OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER": "1.5",
+            "OVERNIGHT_RANGE_SIGNAL_TP_ATR_MULTIPLIER": "2.5",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_START": "19:00",
+            "OVERNIGHT_RANGE_TIMING_OVERNIGHT_END": "9:29",
+            "OVERNIGHT_RANGE_TIMING_MARKET_OPEN": "9:29",
+            "OVERNIGHT_RANGE_TIMING_ZONE_ANCHOR": "9:29",
+            "OVERNIGHT_RANGE_SIGNAL_ATR_TIMEFRAME": "1h"
+          }
+        }
+      ]
+    }
+  ]
+}

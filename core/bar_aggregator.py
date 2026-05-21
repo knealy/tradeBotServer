@@ -102,6 +102,11 @@ class BarAggregator:
             broadcast_callback: Function to call when a bar update is ready
         """
         self.broadcast_callback = broadcast_callback
+        # Additional fan-out for completed bars (live strategies, caches, drift monitor, …).
+        # Each callback receives a fully-built ``Bar`` instance synchronously on the aggregator
+        # loop. Best-effort: exceptions are caught and logged so a misbehaving subscriber
+        # cannot corrupt the broadcast pipeline.
+        self._completed_bar_callbacks: List[Callable[[Bar], None]] = []
         self.bar_builders: Dict[str, Dict[str, BarBuilder]] = defaultdict(dict)  # {symbol: {timeframe: BarBuilder}}
         self.completed_bars: Dict[str, Dict[str, Bar]] = defaultdict(dict)  # {symbol: {timeframe: Bar}}
         self._broadcast_log_counts: Dict[str, int] = defaultdict(int)
@@ -245,6 +250,32 @@ class BarAggregator:
             },
             debug_key=f"{bar.symbol}:{bar.timeframe}",
         )
+        if self._completed_bar_callbacks:
+            for cb in list(self._completed_bar_callbacks):
+                try:
+                    cb(bar)
+                except Exception as exc:
+                    logger.debug("completed-bar callback %r failed: %s", cb, exc)
+
+    def register_completed_bar_callback(self, callback: Callable[[Bar], None]) -> None:
+        """Register a callback invoked synchronously whenever a bar closes.
+
+        Used by strategies / live caches that want fresh OHLCV without waiting for
+        the next REST poll. Multiple subscribers are supported; each receives the
+        same ``Bar`` instance. Exceptions are isolated per-subscriber.
+        """
+        if callback in self._completed_bar_callbacks:
+            return
+        self._completed_bar_callbacks.append(callback)
+        name = getattr(callback, "__name__", repr(callback))
+        logger.debug("Registered completed-bar callback: %s", name)
+
+    def unregister_completed_bar_callback(self, callback: Callable[[Bar], None]) -> None:
+        """Remove a previously registered completed-bar callback (no-op if missing)."""
+        try:
+            self._completed_bar_callbacks.remove(callback)
+        except ValueError:
+            pass
 
     def add_quote(self, symbol: str, price: float, volume: int = 0, timestamp: Optional[datetime] = None):
         """

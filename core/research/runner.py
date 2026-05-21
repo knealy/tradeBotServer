@@ -34,8 +34,8 @@ _GRID_STRATEGIES = frozenset({"ma_crossover", "rsi_mean_reversion", "ema_trend"}
 # Live strategy classes — grid-searched via StrategyReplayEngine + mock bot (see backtest_executor).
 _REPLAY_STRATEGIES = frozenset(
     {
-        "simple_candle",
         "overnight_range",
+        "overnight_reversion",
         "mean_reversion",
         "trend_following",
         "trend_scalping",
@@ -45,6 +45,8 @@ _REPLAY_STRATEGIES = frozenset(
         "body_reversion",
         "morning_range_reversion",
         "hourly_anchor_retrace",
+        "ema_stack_trend_15m",
+        "rsi_switch_15m",
     }
 )
 

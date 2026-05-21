@@ -1,0 +1,100 @@
+{
+  "strategy": "rsi_switch_15m",
+  "description": "Seed population for RSI switch walk-forward survival tournament",
+  "candidates": [
+    {
+      "id": "baseline_hook",
+      "label": "Current TOML defaults (5m hook / 35-65)",
+      "env": {}
+    },
+    {
+      "id": "tight_30_70",
+      "label": "Deeper extremes 30/70, hook buffer 2",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_RSI_LONG_MAX": "30",
+        "RSI_SWITCH_15M_SIGNAL_RSI_SHORT_MIN": "70",
+        "RSI_SWITCH_15M_SIGNAL_RSI_HOOK_BUFFER": "2",
+        "RSI_SWITCH_15M_SIGNAL_RSI_DEEP_EXTRA": "3"
+      }
+    },
+    {
+      "id": "tight_28_72",
+      "label": "Sweep winner hint 28/72",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_RSI_LONG_MAX": "28",
+        "RSI_SWITCH_15M_SIGNAL_RSI_SHORT_MIN": "72",
+        "RSI_SWITCH_15M_SIGNAL_RSI_HOOK_BUFFER": "2",
+        "RSI_SWITCH_15M_SIGNAL_RSI_DEEP_EXTRA": "4"
+      }
+    },
+    {
+      "id": "mid_32_68",
+      "label": "Mid band 32/68",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_RSI_LONG_MAX": "32",
+        "RSI_SWITCH_15M_SIGNAL_RSI_SHORT_MIN": "68",
+        "RSI_SWITCH_15M_SIGNAL_RSI_HOOK_BUFFER": "3",
+        "RSI_SWITCH_15M_SIGNAL_RSI_DEEP_EXTRA": "2"
+      }
+    },
+    {
+      "id": "tp_150",
+      "label": "Wider TP 1.5R",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_TP_R_MULTIPLE": "1.5"
+      }
+    },
+    {
+      "id": "tp_100_scalp",
+      "label": "Tight TP 1.0R + earlier profit RSI",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_TP_R_MULTIPLE": "1.0",
+        "RSI_SWITCH_15M_SIGNAL_RSI_PROFIT_EXIT_LONG": "50",
+        "RSI_SWITCH_15M_SIGNAL_RSI_PROFIT_EXIT_SHORT": "50",
+        "RSI_SWITCH_15M_SIGNAL_FLAT_MOVE_ATR": "0.06"
+      }
+    },
+    {
+      "id": "ema_strict",
+      "label": "Tighter EMA touch 0.35 ATR",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_REACTION_TOL_ATR": "0.35"
+      }
+    },
+    {
+      "id": "ema_loose",
+      "label": "Looser EMA touch 0.55 ATR",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_REACTION_TOL_ATR": "0.55"
+      }
+    },
+    {
+      "id": "no_confirm",
+      "label": "No confirm candle",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_REQUIRE_CONFIRM_CANDLE": "false"
+      }
+    },
+    {
+      "id": "slow_spacing",
+      "label": "Wider entry spacing (6 bars)",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_MIN_BARS_BETWEEN_ENTRIES": "6"
+      }
+    },
+    {
+      "id": "loss_tight",
+      "label": "Tighter loss cut 0.55 ATR",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_LOSS_CUT_ATR": "0.55"
+      }
+    },
+    {
+      "id": "no_counter_block",
+      "label": "Allow counter-trend entries",
+      "env": {
+        "RSI_SWITCH_15M_SIGNAL_BLOCK_COUNTER_TREND": "false"
+      }
+    }
+  ]
+}

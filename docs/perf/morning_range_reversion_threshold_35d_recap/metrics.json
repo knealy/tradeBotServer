@@ -1,0 +1,28 @@
+[
+  {
+    "fold": 0,
+    "fold_start": "2026-04-14",
+    "fold_end": "2026-05-19",
+    "strategy": "morning_range_reversion",
+    "symbol": "MNQ",
+    "ok": true,
+    "n_trades": 23,
+    "total_pnl": 789.25,
+    "wins": 18,
+    "losses": 5,
+    "win_rate": 0.782608695652174,
+    "expectancy": 34.31521739130435,
+    "pnl_stdev": 83.8867342892982,
+    "profit_factor": 2.690948044991966,
+    "avg_win": 69.77777777777777,
+    "avg_loss": -93.35,
+    "best_trade": 206.25,
+    "worst_trade": -154.25,
+    "max_consec_wins": 8,
+    "max_consec_losses": 1,
+    "max_drawdown": 154.25,
+    "avg_bars_held": 7.0,
+    "sum_r_multiple": 5.978352897569359,
+    "n_trades_with_risk": 23
+  }
+]

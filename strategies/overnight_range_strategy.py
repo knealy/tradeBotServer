@@ -4,23 +4,27 @@ Overnight Range Breakout Strategy Module
 This module implements a trading strategy that:
 1. Tracks overnight price ranges (6pm-9:30am EST)
 2. Calculates ATR (Average True Range) for dynamic stops/targets
-3. Places stop bracket orders at market open (9:30am EST) for range breakouts
+3. Arms breakout stop-entry brackets when price approaches range extremes (live), or
+   places resting brackets at the replay window (CSV / ``_is_strategy_replay``)
 4. Implements breakeven stop management for winning trades
 
-Strategy Logic:
-- Track highest/lowest prices during overnight session
-- Calculate current price ATR and daily ATR zones
-- At market open, place stop orders slightly above/below range extremes
-- Stop loss: -1 to -1.5 ATR from entry
-- Take profit: Daily ATR zone target
-- Move stop to breakeven after +15 pts profit
+Strategy Logic (live, default ``breakout_monitor.enabled``):
+- Track highest/lowest prices during the overnight session and compute bracket templates
+  for long (above range high) and short (below range low) breakouts.
+- After the cash open, ``monitor_breakout_levels`` watches quotes and submits **one side
+  at a time** when price is within a proximity band of that side’s entry — not both
+  resting stops parked at the range borders at the open.
+
+Replay / mock bots (``_is_strategy_replay`` or ``trading_bot.bars``): ``analyze`` still
+returns both templates and ``place_range_break_orders`` may place **both** legs inside
+the configured post-open window for deterministic simulation.
 """
 
 import logging
 import asyncio
 import time as time_module
 from datetime import datetime, date, time, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import deque
 try:
@@ -33,6 +37,37 @@ from core.strategy_config import load_strategy_config
 from core.risk_management import _order_counts_as_working_entry_for_risk
 
 logger = logging.getLogger(__name__)
+
+# Legacy ``[filters]`` / ``[symbols.*.filters]`` point knobs were calibrated on MNQ near
+# ~21k; when only ``*_pts`` keys are present, we convert to percent-of-(H+L)/2 at runtime.
+_OVERNIGHT_FILTER_LEGACY_REF_PX = 21_000.0
+
+
+def _filter_pct_from_table(
+    filt: Optional[dict],
+    pct_leaf: str,
+    pts_leaf: str,
+) -> Optional[float]:
+    """Return a resolved filter percent from a ``filters`` table, or None if unset."""
+    if not isinstance(filt, dict):
+        return None
+    if pct_leaf in filt and filt[pct_leaf] is not None:
+        return float(filt[pct_leaf])
+    if pts_leaf in filt and filt[pts_leaf] is not None:
+        return (float(filt[pts_leaf]) / _OVERNIGHT_FILTER_LEGACY_REF_PX) * 100.0
+    return None
+
+
+def _default_overnight_filter_pcts() -> Tuple[float, float, float, float, float]:
+    """Percent bands matching legacy MNQ globals at ``_OVERNIGHT_FILTER_LEGACY_REF_PX``."""
+    ref = _OVERNIGHT_FILTER_LEGACY_REF_PX
+    return (
+        (15.0 / ref) * 100.0,
+        (600.0 / ref) * 100.0,
+        (250.0 / ref) * 100.0,
+        (10.0 / ref) * 100.0,
+        (220.0 / ref) * 100.0,
+    )
 
 
 @dataclass
@@ -81,14 +116,16 @@ class RangeBreakOrder:
 class OvernightRangeStrategy(BaseStrategy):
     """
     Manages overnight range breakout strategy execution.
-    
-    Features:
-    - Tracks overnight ranges for multiple symbols
-    - Calculates ATR for dynamic stops/targets
-    - Places orders at market open
-    - Manages breakeven stops
-    - Market condition filters (optional)
+
+    Live: caches long/short ``RangeBreakOrder`` templates and relies on
+    ``monitor_breakout_levels`` to stage stop-entry brackets when price approaches each
+    side (proximity + minimum points). CSV replay / strategy replay typically places both
+    templates as resting brackets inside the post-open window.
     """
+
+    STRATEGY_CONFIG_ENV = "OVERNIGHT_RANGE"
+    STRATEGY_TOML_STEM = "overnight_range"
+    ANALYZE_SIGNAL_REASON = "Overnight range breakout setup"
     
     def __init__(self, trading_bot, config: StrategyConfig = None):
         """
@@ -100,14 +137,16 @@ class OvernightRangeStrategy(BaseStrategy):
         """
         # Load config from environment if not provided
         if config is None:
-            config = StrategyConfig.from_env("OVERNIGHT_RANGE")
+            env_key = getattr(type(self), "STRATEGY_CONFIG_ENV", "OVERNIGHT_RANGE")
+            config = StrategyConfig.from_env(env_key)
         
         # Initialize base strategy
         super().__init__(trading_bot, config)
 
         # Strategy-specific config (TOML-backed) for all non-secret knobs.
         # This replaces direct environment-variable reads throughout this strategy.
-        self._cfg = load_strategy_config("overnight_range")
+        toml_stem = getattr(type(self), "STRATEGY_TOML_STEM", "overnight_range")
+        self._cfg = load_strategy_config(toml_stem)
         
         # Overnight-specific state
         self.active_ranges: Dict[str, OvernightRange] = {}
@@ -151,6 +190,9 @@ class OvernightRangeStrategy(BaseStrategy):
         # Risk management
         self.stop_atr_multiplier = float(self._cfg.get_float("signal.stop_atr_multiplier", 1.25))  # 1.0-1.5 ATR
         self.tp_atr_multiplier = float(self._cfg.get_float("signal.tp_atr_multiplier", 2.0))  # Daily ATR zone
+        # BONGO §1A — dual native OCO stop-entry when qty ≥ 2 (see docs/BONGO.md).
+        self.partial_tp_enabled = bool(self._cfg.get_bool("signal.partial_tp_enabled", False))
+        self.partial_tp_scalp_r = float(self._cfg.get_float("signal.partial_tp_scalp_r", 1.0) or 1.0)
         
         # Breakeven management (optional)
         self.breakeven_enabled = self._cfg.get_bool("position_management.breakeven_enabled", True)
@@ -171,17 +213,31 @@ class OvernightRangeStrategy(BaseStrategy):
         # Note: Order cooldown and quantity limits are now handled by centralized StrategyRiskManager
         # (accessed via self.risk_manager from BaseStrategy)
         
-        # Market condition filters (OPTIONAL - defaulted to OFF)
+        # Market condition filters (OPTIONAL - defaulted to OFF).
+        # Range / gap / ATR bands are **percent of overnight midpoint** (H+L)/2 — one scale for
+        # all instruments. TOML may set ``*_pct`` or legacy ``*_pts`` (converted vs 21k ref).
+        d_rmin, d_rmax, d_gap, d_amin, d_amax = _default_overnight_filter_pcts()
+        root_filters = self._cfg._data.get("filters") or {}
         self.filter_range_size_enabled = self._cfg.get_bool("filters.range_size", False)
-        self.filter_range_min = float(self._cfg.get_float("filters.range_min_pts", 50.0))
-        self.filter_range_max = float(self._cfg.get_float("filters.range_max_pts", 500.0))
-        
+        self.filter_range_min_pct = float(
+            _filter_pct_from_table(root_filters, "range_min_pct", "range_min_pts") or d_rmin
+        )
+        self.filter_range_max_pct = float(
+            _filter_pct_from_table(root_filters, "range_max_pct", "range_max_pts") or d_rmax
+        )
+
         self.filter_gap_enabled = self._cfg.get_bool("filters.gap", False)
-        self.filter_gap_max = float(self._cfg.get_float("filters.gap_max_pts", 200.0))
-        
+        self.filter_gap_max_pct = float(
+            _filter_pct_from_table(root_filters, "gap_max_pct", "gap_max_pts") or d_gap
+        )
+
         self.filter_volatility_enabled = self._cfg.get_bool("filters.volatility", False)
-        self.filter_atr_min = float(self._cfg.get_float("filters.atr_min", 20.0))
-        self.filter_atr_max = float(self._cfg.get_float("filters.atr_max", 200.0))
+        self.filter_atr_min_pct = float(
+            _filter_pct_from_table(root_filters, "atr_min_pct", "atr_min") or d_amin
+        )
+        self.filter_atr_max_pct = float(
+            _filter_pct_from_table(root_filters, "atr_max_pct", "atr_max") or d_amax
+        )
         
         self.filter_dll_proximity_enabled = self._cfg.get_bool("filters.dll_proximity", False)
         self.filter_dll_threshold = float(self._cfg.get_float("filters.dll_threshold_pct", 0.75))  # 75%
@@ -196,9 +252,11 @@ class OvernightRangeStrategy(BaseStrategy):
 
         # CSV / strategy replay calls analyze every bar; gate to [market_open, +N minutes) ET.
         self.replay_order_window_minutes = int(
-            self._cfg.get_int("timing.replay_order_window_minutes", 8) or 8
+            self._cfg.get_int("timing.replay_order_window_minutes", 0) or 0
         )
         self._replay_sessions_signaled: set[Tuple[str, date]] = set()
+        # Replay: mirror live market-open cancel once per (symbol, session end_date) before placement.
+        self._replay_open_session_cancel_done: set[Tuple[str, date]] = set()
         
         # Strategy state
         self.is_tracking = False
@@ -220,17 +278,39 @@ class OvernightRangeStrategy(BaseStrategy):
         
         # Log market condition filters status
         logger.info(f"   Market Condition Filters:")
-        logger.info(f"     Range Size: {'ENABLED' if self.filter_range_size_enabled else 'DISABLED'} ({self.filter_range_min:.0f}-{self.filter_range_max:.0f} pts)")
-        logger.info(f"     Gap Filter: {'ENABLED' if self.filter_gap_enabled else 'DISABLED'} (max {self.filter_gap_max:.0f} pts)")
-        logger.info(f"     Volatility Filter: {'ENABLED' if self.filter_volatility_enabled else 'DISABLED'} (ATR {self.filter_atr_min:.0f}-{self.filter_atr_max:.0f})")
+        logger.info(
+            f"     Range Size: {'ENABLED' if self.filter_range_size_enabled else 'DISABLED'} "
+            f"({self.filter_range_min_pct:.4f}-{self.filter_range_max_pct:.4f}% of midpoint)"
+        )
+        logger.info(
+            f"     Gap Filter: {'ENABLED' if self.filter_gap_enabled else 'DISABLED'} "
+            f"(max {self.filter_gap_max_pct:.4f}% of midpoint)"
+        )
+        logger.info(
+            f"     Volatility Filter: {'ENABLED' if self.filter_volatility_enabled else 'DISABLED'} "
+            f"(ATR {self.filter_atr_min_pct:.4f}-{self.filter_atr_max_pct:.4f}% of midpoint)"
+        )
         logger.info(f"     DLL Proximity: {'ENABLED' if self.filter_dll_proximity_enabled else 'DISABLED'} (threshold {self.filter_dll_threshold:.0%})")
         if self.filter_skip_weekdays:
             logger.info(f"     Skip weekdays: {sorted(self.filter_skip_weekdays)} (Mon=0 … Sun=6)")
-        logger.info(
-            f"     Replay open window: {self.replay_order_window_minutes} min after {self.market_open_time} "
-            f"(strategy CSV replay only)"
-        )
-    
+        if self.replay_order_window_minutes <= 0:
+            logger.info(
+                "     Replay open window: from market_open through end of CSV replay "
+                "(timing.replay_order_window_minutes<=0; no minute cap after open; CSV replay only)"
+            )
+        else:
+            logger.info(
+                f"     Replay open window: {self.replay_order_window_minutes} min after {self.market_open_time} "
+                f"(strategy CSV replay only)"
+            )
+        # Executor ``should_trade`` uses :meth:`_in_trading_window` (overnight wrap); keep linear
+        # bounds wide so other tooling does not see the broken 18:00 > 09:29 same-day range.
+        if hasattr(self, "config"):
+            self.config.trading_start_time = "00:00"
+            self.config.trading_end_time = "23:59"
+            self.config.no_trade_start = ""
+            self.config.no_trade_end = ""
+
     def _parse_cfg_time(self, s: str) -> time:
         parts = str(s).strip().split(":")
         h = int(parts[0])
@@ -272,19 +352,219 @@ class OvernightRangeStrategy(BaseStrategy):
             return datetime.now(self.timezone)
         return datetime.now(timezone.utc)
 
+    def _in_trading_window_at(self, now_et: datetime) -> bool:
+        """True when *now_et* falls in ``[overnight_start, overnight_end]`` with cross-midnight wrap."""
+        cur = now_et.hour * 60 + now_et.minute
+        sh, sm = map(int, str(self.overnight_start).split(":"))
+        eh, em = map(int, str(self.overnight_end).split(":"))
+        start_m = sh * 60 + sm
+        end_m = eh * 60 + em
+        if start_m <= end_m:
+            in_session = start_m <= cur <= end_m
+        else:
+            in_session = cur >= start_m or cur <= end_m
+        if not in_session:
+            return False
+
+        if self.config.no_trade_start and self.config.no_trade_start.strip():
+            no_trade_start_h, no_trade_start_m = map(int, self.config.no_trade_start.split(":"))
+            no_trade_start = no_trade_start_h * 60 + no_trade_start_m
+        else:
+            no_trade_start = -1
+        if self.config.no_trade_end and self.config.no_trade_end.strip():
+            no_trade_end_h, no_trade_end_m = map(int, self.config.no_trade_end.split(":"))
+            no_trade_end = no_trade_end_h * 60 + no_trade_end_m
+        else:
+            no_trade_end = -1
+        if no_trade_start >= 0 and no_trade_end >= 0:
+            if no_trade_start <= cur <= no_trade_end:
+                return False
+        return True
+
+    def _in_trading_window(self) -> bool:
+        """Executor gate: session timezone, overnight wrap (e.g. 18:00–09:29 crosses midnight).
+
+        ``BaseStrategy`` uses a single-day minute range and fails for ``overnight_start`` >
+        ``overnight_end``; replay skips this gate because :meth:`analyze` applies its own windows.
+        """
+        if getattr(self.trading_bot, "_is_strategy_replay", False):
+            return True
+        try:
+            now_et = datetime.now(self.timezone)
+        except Exception:
+            return True
+        return self._in_trading_window_at(now_et)
+
+    def _overnight_session_dates_et(self, now: datetime) -> Tuple[date, date]:
+        """Calendar ``(start_date, end_date)`` for the overnight window containing ``now`` (ET).
+
+        Matches the branching in :meth:`track_overnight_range` (cross-midnight vs same-day).
+        ``end_date`` is the **morning** calendar day when the session ends at ``overnight_end``.
+        """
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=self.timezone)
+        else:
+            now = now.astimezone(self.timezone)
+        start_hour, start_min = map(int, self.overnight_start.split(":"))
+        end_hour, end_min = map(int, self.overnight_end.split(":"))
+        start_clock = time(start_hour, start_min)
+        end_clock = time(end_hour, end_min)
+        if end_clock <= start_clock:
+            t = now.time()
+            if t >= start_clock:
+                start_date = now.date()
+                end_date = start_date + timedelta(days=1)
+            elif t >= end_clock:
+                end_date = now.date()
+                start_date = end_date - timedelta(days=1)
+            else:
+                end_date = now.date()
+                start_date = end_date - timedelta(days=1)
+        else:
+            if now.time() >= end_clock:
+                end_date = now.date()
+                start_date = now.date()
+            else:
+                end_date = (now - timedelta(days=1)).date()
+                start_date = end_date
+        return start_date, end_date
+
+    def _replay_has_open_position_for_base(self, base: str) -> bool:
+        """True if ``backtest_engine`` shows an open position for a root symbol (e.g. MNQ)."""
+        be = getattr(self.trading_bot, "backtest_engine", None)
+        if be is None or not getattr(be, "positions", None):
+            return False
+        b = (base or "").strip().upper()
+        if not b:
+            return False
+        for k, pos in be.positions.items():
+            if str(k).upper().startswith(b) and int(getattr(pos, "quantity", 0) or 0) != 0:
+                return True
+        return False
+
+    def _replay_cancel_pending_stop_entries(self, symbols: List[str]) -> int:
+        """Remove unfilled stop-entry brackets from the CSV replay engine (live: next open cancel).
+
+        Exit legs use ``oco_group``; resting breakout entries do not. Requires ``custom_tag``
+        Exit legs use ``oco_group``; resting stop-entry brackets do not. ``custom_tag`` must contain
+        the strategy id (e.g. ``overnight_range`` / ``overnight_reversion``) from replay simulators.
+        """
+        from core.backtest.models import OrderStatus, OrderType
+
+        be = getattr(self.trading_bot, "backtest_engine", None)
+        if be is None or not getattr(be, "pending_orders", None):
+            return 0
+        bases = [s.strip().upper() for s in (symbols or []) if s and str(s).strip()]
+        if not bases:
+            return 0
+        removed = 0
+        for o in list(be.pending_orders):
+            if o.status != OrderStatus.PENDING or o.order_type != OrderType.STOP:
+                continue
+            if getattr(o, "oco_group", None):
+                continue
+            if getattr(o, "stop_loss_price", None) is None or getattr(o, "take_profit_price", None) is None:
+                continue
+            tag = str(getattr(o, "custom_tag", "") or "").lower()
+            stoken = str(self.config.name or "").lower().replace("-", "_")
+            if not stoken or stoken not in tag.replace("-", "_"):
+                continue
+            sym = (o.symbol or "").upper()
+            base = next((b for b in bases if sym.startswith(b)), None)
+            if not base:
+                continue
+            if self._replay_has_open_position_for_base(base):
+                continue
+            be.pending_orders.remove(o)
+            removed += 1
+        if removed:
+            logger.info("Replay: removed %d stale %s stop-entry order(s)", removed, self.config.name)
+        return removed
+
+    async def replay_before_bar_fills(self) -> None:
+        """Purge prior-session resting entry stops before intrabar fills (outside post-open window)."""
+        if not self._is_strategy_replay_mode():
+            return
+        now_et = self._effective_now_et()
+        if now_et is None or self._replay_in_order_placement_window(now_et):
+            return
+        syms = self._get_trade_symbols()
+        if syms:
+            self._replay_cancel_pending_stop_entries(syms)
+
     def _replay_in_order_placement_window(self, now_et: datetime) -> bool:
+        """CSV replay gate: ``analyze`` may run only on/after ``timing.market_open`` ET for ``now_et``'s date.
+
+        When ``timing.replay_order_window_minutes > 0``, also cap eligibility to that many
+        minutes after open (legacy sparse replay). When ``<= 0``, allow any bar **from open
+        onward** through the rest of the replay (no upper bound), still at most one signal per
+        symbol/session via ``_replay_sessions_signaled``.
+
+        Live mode ignores this helper entirely.
+        """
         mo = self._parse_cfg_time(self.market_open_time)
-        d0 = now_et.date()
+        _, end_date = self._overnight_session_dates_et(now_et)
         try:
             if pytz is not None and hasattr(self.timezone, "localize"):
-                start_dt = self.timezone.localize(datetime.combine(d0, mo))
+                open_dt = self.timezone.localize(datetime.combine(end_date, mo))
             else:
                 tz = now_et.tzinfo if now_et.tzinfo else self.timezone
-                start_dt = datetime.combine(d0, mo, tzinfo=tz)
+                open_dt = datetime.combine(end_date, mo, tzinfo=tz)
         except Exception:
             return False
-        end_dt = start_dt + timedelta(minutes=max(1, self.replay_order_window_minutes))
-        return start_dt <= now_et < end_dt
+        if now_et < open_dt:
+            return False
+        win = int(self.replay_order_window_minutes)
+        if win <= 0:
+            return True
+        end_dt = open_dt + timedelta(minutes=max(1, win))
+        return now_et < end_dt
+
+    def _filter_bool_for_symbol(self, symbol: str, leaf: str, global_val: bool) -> bool:
+        """``[symbols.<SYM>.filters].<leaf>`` overrides global ``[filters].<leaf>``."""
+        return bool(self._cfg.symbol_override(symbol.upper(), f"filters.{leaf}", default=global_val, hint=bool))
+
+    def _filter_float_for_symbol(self, symbol: str, leaf: str, global_val: float) -> float:
+        """``[symbols.<SYM>.filters].<leaf>`` overrides global ``[filters].<leaf>``."""
+        return float(self._cfg.symbol_override(symbol.upper(), f"filters.{leaf}", default=global_val, hint=float))
+
+    def _overnight_symbol_position_size(self, symbol: str) -> int:
+        """``[symbols.<SYM>.risk].position_size`` overrides global ``[risk].position_size`` for brackets."""
+        raw = self._cfg.symbol_override(
+            symbol.upper(),
+            "risk.position_size",
+            default=self.default_quantity,
+            hint=int,
+        )
+        try:
+            q = int(raw)
+        except (TypeError, ValueError):
+            q = int(self.default_quantity)
+        return max(1, q)
+
+    def _overnight_symbol_stop_atr_multiplier(self, symbol: str) -> float:
+        """``[symbols.<SYM>.signal].stop_atr_multiplier`` overrides global ``[signal].stop_atr_multiplier``."""
+        return float(
+            self._cfg.symbol_override(
+                symbol.upper(),
+                "signal.stop_atr_multiplier",
+                default=self.stop_atr_multiplier,
+                hint=float,
+            )
+        )
+
+    def _filter_pct_for_symbol(
+        self,
+        symbol: str,
+        pct_leaf: str,
+        pts_leaf: str,
+        global_pct: float,
+    ) -> float:
+        """Per-symbol ``filters`` table: ``*_pct`` wins; else legacy ``*_pts`` / 21k → %; else global."""
+        sym_node = self._cfg._data.get("symbols", {}).get(symbol.upper(), {})
+        sym_f = sym_node.get("filters") if isinstance(sym_node, dict) else None
+        v = _filter_pct_from_table(sym_f if isinstance(sym_f, dict) else None, pct_leaf, pts_leaf)
+        return float(v) if v is not None else float(global_pct)
 
     def format_overnight_session_window_label(self) -> str:
         """
@@ -585,7 +865,8 @@ class OvernightRangeStrategy(BaseStrategy):
                 if base_symbol in position_symbols:
                     continue  # live position — leave protective orders alone
                 tag = str(order.get('customTag') or order.get('custom_tag') or '')
-                if 'overnight_range' not in tag:
+                stoken = str(self.config.name or "").lower().replace("-", "_")
+                if stoken and stoken not in tag.lower().replace("-", "_"):
                     continue
                 order_id = str(order.get('id'))
                 logger.info(f"🗑️  Cancelling previous-session order {order_id} for {base_symbol} (tag={tag[:40]})")
@@ -645,7 +926,7 @@ class OvernightRangeStrategy(BaseStrategy):
                     asyncio.create_task(
                         dn.send_inactivity_alert(
                             account_name=account_name,
-                            strategy="overnight_range",
+                            strategy=self.config.name,
                             zero_trade_sessions=streak,
                             extra={"session_date_et": str(d_et)},
                         )
@@ -898,7 +1179,9 @@ class OvernightRangeStrategy(BaseStrategy):
                 custom_tag = order.get('customTag') or order.get('custom_tag') or ''
                 is_bracket_sl_tp = '-SL' in str(custom_tag) or '-TP' in str(custom_tag)
                 is_stop_bracket = 'stop_bracket' in str(custom_tag) or 'stop-bracket' in str(custom_tag)
-                is_overnight = 'overnight_range' in str(custom_tag) or 'overnight-range' in str(custom_tag)
+                is_overnight = str(self.config.name or "").lower().replace("-", "_") in str(custom_tag).lower().replace(
+                    "-", "_"
+                )
                 
                 # IMPORTANT: We count ALL stop orders that are NOT reduce-only and NOT explicitly bracket SL/TP
                 # This includes suspended bracket entry orders which may not have the exact pattern we expect
@@ -937,63 +1220,69 @@ class OvernightRangeStrategy(BaseStrategy):
     async def check_market_conditions(self, symbol: str, range_data: OvernightRange, atr_data: ATRData) -> Tuple[bool, str]:
         """
         Check if market conditions are favorable for trading (OPTIONAL filters).
-        
-        Filters (all default to DISABLED):
-        1. Range size filter: Avoid too small/large ranges
-        2. Gap filter: Skip large overnight gaps
-        3. Volatility filter: Avoid extreme ATR values
-        4. DLL proximity filter: Pause when close to daily loss limit
-        
-        Args:
-            symbol: Trading symbol
-            range_data: Overnight range data
-            atr_data: ATR data
-        
-        Returns:
-            (should_trade: bool, reason: str)
+
+        Thresholds resolve per **symbol** via ``[symbols.<SYM>.filters]`` in TOML
+        (see :meth:`_filter_pct_for_symbol` / :meth:`_filter_bool_for_symbol`); missing keys
+        inherit ``[filters]`` globals. Numeric bands are **percent of overnight midpoint**
+        ``(H+L)/2`` (``range_data.midpoint``), so one calibration applies to MNQ/MES/MGC.
+
+        Filters (when enabled globally or per-symbol):
+        1. Range size — min/max overnight box as **% of midpoint**.
+        2. Gap — max |overnight first open − last close| as **% of midpoint** (same as legacy pts gap).
+        3. Volatility — ``atr_timeframe`` ATR band as **% of midpoint**.
+        4. DLL proximity — account tracker (ratio threshold ``dll_threshold_pct``, unchanged).
         """
-        # Range size filter (DEFAULT: OFF)
-        if self.filter_range_size_enabled:
-            range_points = range_data.range_size
-            if range_points < self.filter_range_min:
-                return False, f"Range too small ({range_points:.2f} < {self.filter_range_min:.0f} pts)"
-            if range_points > self.filter_range_max:
-                return False, f"Range too large ({range_points:.2f} > {self.filter_range_max:.0f} pts)"
-        
-        # Gap filter (DEFAULT: OFF)
-        if self.filter_gap_enabled:
-            gap_points = abs(range_data.close - range_data.open)
-            if gap_points > self.filter_gap_max:
-                return False, f"Gap too large ({gap_points:.2f} > {self.filter_gap_max:.0f} pts)"
-        
-        # Volatility filter (DEFAULT: OFF)
-        if self.filter_volatility_enabled:
-            if atr_data.current_atr < self.filter_atr_min:
-                return False, f"ATR too low ({atr_data.current_atr:.2f} < {self.filter_atr_min:.0f})"
-            if atr_data.current_atr > self.filter_atr_max:
-                return False, f"ATR too high ({atr_data.current_atr:.2f} > {self.filter_atr_max:.0f})"
-        
-        # DLL proximity filter (DEFAULT: OFF)
-        if self.filter_dll_proximity_enabled:
-            if hasattr(self.trading_bot, 'account_tracker'):
+        sym = symbol.upper()
+        ref = max(abs(float(range_data.midpoint)), 1e-12)
+
+        if self._filter_bool_for_symbol(sym, "range_size", self.filter_range_size_enabled):
+            range_min_pct = self._filter_pct_for_symbol(sym, "range_min_pct", "range_min_pts", self.filter_range_min_pct)
+            range_max_pct = self._filter_pct_for_symbol(sym, "range_max_pct", "range_max_pts", self.filter_range_max_pct)
+            range_pct = (range_data.range_size / ref) * 100.0
+            if range_pct < range_min_pct:
+                return False, f"Range too small ({range_pct:.4f}% < {range_min_pct:.4f}%)"
+            if range_pct > range_max_pct:
+                return False, f"Range too large ({range_pct:.4f}% > {range_max_pct:.4f}%)"
+
+        if self._filter_bool_for_symbol(sym, "gap", self.filter_gap_enabled):
+            gap_max_pct = self._filter_pct_for_symbol(sym, "gap_max_pct", "gap_max_pts", self.filter_gap_max_pct)
+            gap_pct = (abs(range_data.close - range_data.open) / ref) * 100.0
+            if gap_pct > gap_max_pct:
+                return False, f"Gap too large ({gap_pct:.4f}% > {gap_max_pct:.4f}%)"
+
+        if self._filter_bool_for_symbol(sym, "volatility", self.filter_volatility_enabled):
+            atr_min_pct = self._filter_pct_for_symbol(sym, "atr_min_pct", "atr_min", self.filter_atr_min_pct)
+            atr_max_pct = self._filter_pct_for_symbol(sym, "atr_max_pct", "atr_max", self.filter_atr_max_pct)
+            atr_pct = (atr_data.current_atr / ref) * 100.0
+            if atr_pct < atr_min_pct:
+                return False, f"ATR too low ({atr_pct:.4f}% < {atr_min_pct:.4f}%)"
+            if atr_pct > atr_max_pct:
+                return False, f"ATR too high ({atr_pct:.4f}% > {atr_max_pct:.4f}%)"
+
+        if self._filter_bool_for_symbol(sym, "dll_proximity", self.filter_dll_proximity_enabled):
+            dll_thr = self._filter_float_for_symbol(sym, "dll_threshold_pct", self.filter_dll_threshold)
+            if hasattr(self.trading_bot, "account_tracker"):
                 tracker = self.trading_bot.account_tracker
                 current_daily_pnl = tracker.get_daily_pnl()
                 dll = tracker.daily_loss_limit
-                
+
                 if current_daily_pnl < 0:
                     dll_usage = abs(current_daily_pnl) / dll
-                    if dll_usage >= self.filter_dll_threshold:
-                        return False, f"Too close to DLL ({dll_usage:.1%} >= {self.filter_dll_threshold:.1%})"
-        
+                    if dll_usage >= dll_thr:
+                        return False, f"Too close to DLL ({dll_usage:.1%} >= {dll_thr:.1%})"
+
         return True, "All filters passed"
     
     # Implement abstract methods from BaseStrategy
     
     async def analyze(self, symbol: str) -> Optional[Dict]:
         """
-        Analyze overnight range and generate trading signals.
-        
-        Returns signals for BOTH long and short breakout orders.
+        Analyze overnight range and produce long/short breakout templates.
+
+        Returns a dict with **both** ``long_order`` and ``short_order`` so replay can
+        place resting brackets; live execution defers broker placement to
+        ``monitor_breakout_levels`` when ``breakout_monitor.enabled`` (see
+        ``place_range_break_orders``).
         """
         try:
             symbol = symbol.upper()
@@ -1010,7 +1299,12 @@ class OvernightRangeStrategy(BaseStrategy):
                     return None
                 if not self._replay_in_order_placement_window(now_et):
                     return None
-                if (symbol, now_et.date()) in self._replay_sessions_signaled:
+                _sess_start, sess_end = self._overnight_session_dates_et(now_et)
+                _sess_key = (symbol.upper(), sess_end)
+                if _sess_key not in self._replay_open_session_cancel_done:
+                    self._replay_cancel_pending_stop_entries([symbol])
+                    self._replay_open_session_cancel_done.add(_sess_key)
+                if (symbol, sess_end) in self._replay_sessions_signaled:
                     return None
 
             # Always resolve range for the *current* session clock. Do not reuse
@@ -1044,7 +1338,7 @@ class OvernightRangeStrategy(BaseStrategy):
                 "range_data": range_data,
                 "atr_data": atr_data,
                 "confidence": 0.8,  # High confidence for range breakouts
-                "reason": "Overnight range breakout setup"
+                "reason": getattr(type(self), "ANALYZE_SIGNAL_REASON", "Overnight range breakout setup"),
             }
             
         except Exception as e:
@@ -1053,9 +1347,10 @@ class OvernightRangeStrategy(BaseStrategy):
     
     async def execute(self, signal: Dict) -> bool:
         """
-        Execute overnight range breakout orders.
-        
-        Places BOTH long and short stop bracket orders.
+        Submit range-break orders via ``place_range_break_orders``.
+
+        Live + breakout monitor: caches templates and returns without resting both sides;
+        replay / backtest mocks typically place both stop-entry brackets in-window.
         """
         try:
             symbol = signal["symbol"]
@@ -1067,7 +1362,8 @@ class OvernightRangeStrategy(BaseStrategy):
             if ok and self._is_strategy_replay_mode():
                 now_et = self._effective_now_et()
                 if now_et is not None:
-                    self._replay_sessions_signaled.add((symbol.upper(), now_et.date()))
+                    _sd, ed = self._overnight_session_dates_et(now_et)
+                    self._replay_sessions_signaled.add((symbol.upper(), ed))
             return ok
             
         except Exception as e:
@@ -1868,7 +2164,7 @@ class OvernightRangeStrategy(BaseStrategy):
             return
         aid = str(account_id)
         try:
-            st = db.get_strategy_state(aid, "overnight_range") or {}
+            st = db.get_strategy_state(aid, self.config.name) or {}
             settings = dict(st.get("settings") or {})
             snap: Dict[str, Dict[str, float]] = {}
             for sym, r in self.active_ranges.items():
@@ -1892,7 +2188,7 @@ class OvernightRangeStrategy(BaseStrategy):
                 symbols = list(getattr(self.config, "symbols", None) or [])
             db.save_strategy_state(
                 account_id=aid,
-                strategy_name="overnight_range",
+                strategy_name=self.config.name,
                 enabled=bool(st.get("enabled", True)),
                 symbols=symbols,
                 settings=settings,
@@ -2368,6 +2664,18 @@ class OvernightRangeStrategy(BaseStrategy):
             range_data = await self.track_overnight_range(symbol)
             if not range_data:
                 return None, None
+
+            leg_qty = self._overnight_symbol_position_size(symbol)
+            stop_mult = self._overnight_symbol_stop_atr_multiplier(symbol)
+            if leg_qty != self.default_quantity or abs(stop_mult - self.stop_atr_multiplier) > 1e-9:
+                logger.info(
+                    "Overnight bracket overrides for %s: qty=%s stop_atr_mult=%.4f (defaults qty=%s stop=%.4f)",
+                    symbol,
+                    leg_qty,
+                    stop_mult,
+                    self.default_quantity,
+                    self.stop_atr_multiplier,
+                )
             
             # Calculate ATR - use cached for daily/zones, but recalc current if placing orders
             # Check if we're being called from place_range_break_orders (use dynamic ATR)
@@ -2425,7 +2733,7 @@ class OvernightRangeStrategy(BaseStrategy):
             
             # Calculate long breakout order (above overnight high)
             long_entry_raw = range_data.high + self.range_break_offset
-            long_stop_raw = long_entry_raw - (atr_data.current_atr * self.stop_atr_multiplier)
+            long_stop_raw = long_entry_raw - (atr_data.current_atr * stop_mult)
             
             # Determine TP target based on whether ATR zone overlaps with range
             # Use MIDPOINT of ATR zone (halfway between closest and farthest points)
@@ -2468,14 +2776,14 @@ class OvernightRangeStrategy(BaseStrategy):
                 entry_price=long_entry,
                 stop_loss=long_stop,
                 take_profit=long_tp,
-                quantity=self.default_quantity,
+                quantity=leg_qty,
                 range_data=range_data,
                 atr_data=atr_data
             )
             
             # Calculate short breakout order (below overnight low)
             short_entry_raw = range_data.low - self.range_break_offset
-            short_stop_raw = short_entry_raw + (atr_data.current_atr * self.stop_atr_multiplier)
+            short_stop_raw = short_entry_raw + (atr_data.current_atr * stop_mult)
             
             # Determine TP target based on whether ATR zone overlaps with range
             # Use MIDPOINT of ATR zone (halfway between closest and farthest points)
@@ -2519,7 +2827,7 @@ class OvernightRangeStrategy(BaseStrategy):
                 entry_price=short_entry,
                 stop_loss=short_stop,
                 take_profit=short_tp,
-                quantity=self.default_quantity,
+                quantity=leg_qty,
                 range_data=range_data,
                 atr_data=atr_data
             )
@@ -2564,17 +2872,67 @@ class OvernightRangeStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"Error calculating range break orders for {symbol}: {e}")
             return None, None
+
+    async def _place_oco_stop_entry_bracket(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        account_id: Optional[str],
+    ) -> Any:
+        """Native OCO stop-entry; optionally BONGO §1A dual brackets (scalp + runner qty split)."""
+        bot = self.trading_bot
+        q = int(quantity)
+        if (
+            q >= 2
+            and self.partial_tp_enabled
+            and hasattr(bot, "place_oco_bracket_with_stop_entry_partial_tp")
+        ):
+            return await bot.place_oco_bracket_with_stop_entry_partial_tp(
+                symbol=symbol,
+                side=side,
+                quantity=q,
+                entry_price=float(entry_price),
+                stop_loss_price=float(stop_loss_price),
+                take_profit_full_price=float(take_profit_price),
+                account_id=account_id,
+                scalp_r_multiple=float(self.partial_tp_scalp_r or 1.0),
+                enable_breakeven=False,
+                strategy_name=self.config.name,
+            )
+        return await bot.place_oco_bracket_with_stop_entry(
+            symbol=symbol,
+            side=side,
+            quantity=q,
+            entry_price=float(entry_price),
+            stop_loss_price=float(stop_loss_price),
+            take_profit_price=float(take_profit_price),
+            account_id=account_id,
+            strategy_name=self.config.name,
+        )
     
     async def place_range_break_orders(self, symbol: str) -> Dict:
         """
-        Place stop bracket orders for overnight range breakouts.
-        
+        Cache breakout templates and either defer broker placement to
+        ``monitor_breakout_levels`` (live + monitor on) or place stop-entry brackets
+        immediately (replay, mock ``bars`` bots, or monitor disabled).
+
         Returns:
-            Dict with order placement results
+            Dict with order placement results (``orders`` may be empty when deferred).
         """
         try:
             symbol = symbol.upper()
             logger.info(f"🚀 Placing range break orders for {symbol}...")
+
+            defer_breakout_to_monitor = (
+                self.breakout_monitor_enabled
+                and not self._is_strategy_replay_mode()
+                and not hasattr(self.trading_bot, "bars")
+            )
             
             # Calculate orders first to get quantities
             long_order, short_order = await self.calculate_range_break_orders(symbol)
@@ -2586,9 +2944,12 @@ class OvernightRangeStrategy(BaseStrategy):
             orders_list = open_orders if isinstance(open_orders, list) else []
             total_exposure = await self.get_total_exposure(symbol, orders_list)
             
-            # Check if placing both orders would exceed max quantity
-            # We place both long and short orders, so check total of both
-            new_order_quantity = long_order.quantity + short_order.quantity
+            # Live + monitor: at most one side is staged at a time — use the larger leg for headroom.
+            # Replay / immediate path may place both sides together.
+            if defer_breakout_to_monitor:
+                new_order_quantity = max(long_order.quantity, short_order.quantity)
+            else:
+                new_order_quantity = long_order.quantity + short_order.quantity
             if total_exposure + new_order_quantity > self.max_quantity_per_instrument:
                 position_qty = await self.get_current_position_quantity(symbol)
                 pending_qty = await self.get_pending_entry_order_quantity(symbol, orders_list)
@@ -2665,10 +3026,23 @@ class OvernightRangeStrategy(BaseStrategy):
                 logger.error("❌ No account selected for strategy execution")
                 return {"success": False, "error": "No account selected"}
             
+            if defer_breakout_to_monitor:
+                logger.info(
+                    f"📍 {symbol}: breakout monitor will stage stop-entry brackets when price "
+                    f"approaches each side (proximity={self.breakout_proximity_percent:.2f}% / "
+                    f"min {self.breakout_min_proximity_points:.1f} pts); skipping immediate dual placement."
+                )
+                return {
+                    "symbol": symbol,
+                    "orders": [],
+                    "success": True,
+                    "deferred_to_breakout_monitor": True,
+                }
+
             results = {"symbol": symbol, "orders": []}
             
             # Place long breakout order with strategy name in custom tag
-            long_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+            long_result = await self._place_oco_stop_entry_bracket(
                 symbol=symbol,
                 side="BUY",
                 quantity=long_order.quantity,
@@ -2676,7 +3050,6 @@ class OvernightRangeStrategy(BaseStrategy):
                 stop_loss_price=long_order.stop_loss,
                 take_profit_price=long_order.take_profit,
                 account_id=account_id,
-                strategy_name=self.config.name  # Add strategy name for tracking
             )
 
             # Check for successful order placement (response has orderId or success=True)
@@ -2770,7 +3143,7 @@ class OvernightRangeStrategy(BaseStrategy):
                     self.breakout_active_orders[symbol].pop("BUY", None)
             
             # Place short breakout order with strategy name in custom tag
-            short_result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+            short_result = await self._place_oco_stop_entry_bracket(
                 symbol=symbol,
                 side="SELL",
                 quantity=short_order.quantity,
@@ -2778,7 +3151,6 @@ class OvernightRangeStrategy(BaseStrategy):
                 stop_loss_price=short_order.stop_loss,
                 take_profit_price=short_order.take_profit,
                 account_id=account_id,
-                strategy_name=self.config.name  # Add strategy name for tracking
             )
 
             # Check for successful order placement (response has orderId)
@@ -3022,7 +3394,7 @@ class OvernightRangeStrategy(BaseStrategy):
             else:
                 account_id = self.trading_bot.selected_account
 
-        result = await self.trading_bot.place_oco_bracket_with_stop_entry(
+        result = await self._place_oco_stop_entry_bracket(
             symbol=symbol,
             side=order_template.side,
             quantity=order_template.quantity,
@@ -3030,7 +3402,6 @@ class OvernightRangeStrategy(BaseStrategy):
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,
             account_id=account_id,
-            strategy_name=self.config.name  # Add strategy name for tracking
         )
 
         if not result or not result.get("orderId"):
@@ -3574,6 +3945,11 @@ class OvernightRangeStrategy(BaseStrategy):
         self.atr_timeframe = self._cfg.get_str("signal.atr_timeframe", self.atr_timeframe)
         self.stop_atr_multiplier = float(self._cfg.get_float("signal.stop_atr_multiplier", self.stop_atr_multiplier))
         self.tp_atr_multiplier = float(self._cfg.get_float("signal.tp_atr_multiplier", self.tp_atr_multiplier))
+        self.partial_tp_enabled = bool(self._cfg.get_bool("signal.partial_tp_enabled", self.partial_tp_enabled))
+        self.partial_tp_scalp_r = float(
+            self._cfg.get_float("signal.partial_tp_scalp_r", self.partial_tp_scalp_r) or 1.0
+        )
+        self.default_quantity = int(self._cfg.get_int("risk.position_size", self.default_quantity))
 
         self.breakeven_enabled = self._cfg.get_bool("position_management.breakeven_enabled", self.breakeven_enabled)
         self.breakeven_profit_points = float(
@@ -3593,10 +3969,40 @@ class OvernightRangeStrategy(BaseStrategy):
             self._cfg.get_float("breakout_monitor.order_tolerance_points", self.breakout_order_tolerance_points)
         )
 
-        # Keep StrategyConfig in sync so persistence/UI reflect these values
-        if hasattr(self, 'config'):
-            self.config.trading_start_time = self.overnight_start
-            self.config.trading_end_time = self.overnight_end
+        self.filter_range_size_enabled = self._cfg.get_bool("filters.range_size", self.filter_range_size_enabled)
+        root_filters = self._cfg._data.get("filters") or {}
+        v = _filter_pct_from_table(root_filters, "range_min_pct", "range_min_pts")
+        self.filter_range_min_pct = float(v if v is not None else self.filter_range_min_pct)
+        v = _filter_pct_from_table(root_filters, "range_max_pct", "range_max_pts")
+        self.filter_range_max_pct = float(v if v is not None else self.filter_range_max_pct)
+        self.filter_gap_enabled = self._cfg.get_bool("filters.gap", self.filter_gap_enabled)
+        v = _filter_pct_from_table(root_filters, "gap_max_pct", "gap_max_pts")
+        self.filter_gap_max_pct = float(v if v is not None else self.filter_gap_max_pct)
+        self.filter_volatility_enabled = self._cfg.get_bool("filters.volatility", self.filter_volatility_enabled)
+        v = _filter_pct_from_table(root_filters, "atr_min_pct", "atr_min")
+        self.filter_atr_min_pct = float(v if v is not None else self.filter_atr_min_pct)
+        v = _filter_pct_from_table(root_filters, "atr_max_pct", "atr_max")
+        self.filter_atr_max_pct = float(v if v is not None else self.filter_atr_max_pct)
+        self.filter_dll_proximity_enabled = self._cfg.get_bool("filters.dll_proximity", self.filter_dll_proximity_enabled)
+        self.filter_dll_threshold = float(self._cfg.get_float("filters.dll_threshold_pct", self.filter_dll_threshold))
+        raw_skip = self._cfg.get_list("filters.skip_weekdays", [])
+        self.filter_skip_weekdays = []
+        for x in raw_skip or []:
+            try:
+                self.filter_skip_weekdays.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        self.replay_order_window_minutes = int(
+            self._cfg.get_int("timing.replay_order_window_minutes", self.replay_order_window_minutes) or 0
+        )
+
+        # Keep StrategyConfig in sync for UI / persistence; executor gate uses
+        # :meth:`_in_trading_window` (overnight wrap), not these linear bounds.
+        if hasattr(self, "config"):
+            self.config.trading_start_time = "00:00"
+            self.config.trading_end_time = "23:59"
+            self.config.no_trade_start = ""
+            self.config.no_trade_end = ""
 
         logger.info(
             "Reloaded config: Overnight=%s-%s MarketOpen=%s ZoneAnchor=%s",

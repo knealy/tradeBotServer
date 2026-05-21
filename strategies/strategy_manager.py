@@ -28,6 +28,11 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "OvernightRangeStrategy",
         "Overnight range breakout",
     ),
+    "overnight_reversion": (
+        "strategies.overnight_reversion_strategy",
+        "OvernightReversionStrategy",
+        "Overnight range failed-breakout fade to mid",
+    ),
     "mean_reversion": (
         "strategies.mean_reversion_strategy",
         "MeanReversionStrategy",
@@ -78,7 +83,21 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "HourlyAnchorRetraceStrategy",
         "7–8am ET anchor hour: first close outside → stop-entry at breached extreme",
     ),
+    "ema_stack_trend_15m": (
+        "strategies.ema_stack_trend_15m_strategy",
+        "EmaStackTrend15mStrategy",
+        "15m EMA 8/21/50/100/200 stack trend (research)",
+    ),
+    "rsi_switch_15m": (
+        "strategies.rsi_switch_15m_strategy",
+        "RsiSwitch15mStrategy",
+        "15m RSI extreme switch: enter at thresholds, exit/hold at opposite extreme",
+    ),
 }
+
+# Built-ins that stay importable for explicit replay / tests but are hidden from
+# operator catalogs and blocked from ``start_strategy`` unless ALLOW_TESTING_STRATEGIES=1.
+TESTING_ONLY_STRATEGY_IDS = frozenset({"simple_candle"})
 
 
 def _normalize_strategy_id(name: str) -> str:
@@ -99,7 +118,10 @@ def _strategy_ids_enabled_in_toml() -> Set[str]:
             meta = data.get("meta") or {}
             if meta.get("enabled", True) is False:
                 continue
-            out.add(path.stem.lower())
+            stem = path.stem.lower()
+            if stem in TESTING_ONLY_STRATEGY_IDS:
+                continue
+            out.add(stem)
         except Exception as exc:
             logger.warning("Skipping strategy TOML %s: %s", path, exc)
     return out
@@ -142,7 +164,31 @@ class StrategyManager:
         self._tasks: List[asyncio.Task] = []
         self._running = False
         self._state_cache: Dict[str, Dict] = {}
-        
+
+        # ── Event-driven loop wake-up (Option B: bar-close → instant strategy run) ──
+        # Each strategy gets an ``asyncio.Event`` set whenever a completed bar on its
+        # symbol+timeframe lands in ``bar_aggregator``. The strategy's main loop blocks
+        # on this event (with a max-interval timeout fallback) so it fires within
+        # ~250–500 ms of a real bar close instead of waiting up to 60 s of polling.
+        # The aggregator callback runs from the SignalR thread; we wake the loop via
+        # ``loop.call_soon_threadsafe`` to stay async-safe.
+        self._strategy_wake_events: Dict[str, asyncio.Event] = {}
+        self._strategy_loops: Dict[str, asyncio.AbstractEventLoop] = {}
+        self._completed_bar_cb_registered = False
+        # Ceiling for the wake-up wait. With SignalR alive this rarely fires;
+        # it's the fallback so ``manage_positions()`` and ``should_trade()`` still
+        # tick during dead-air (outside market hours, SignalR drop, etc.). Lower
+        # values = snappier outage detection at the cost of more REST calls during
+        # those outages. Default 5 s is a sensible middle ground for futures.
+        try:
+            self._loop_max_interval_sec = float(
+                os.environ.get("STRATEGY_LOOP_MAX_INTERVAL_SEC", "5") or 5.0
+            )
+        except ValueError:
+            self._loop_max_interval_sec = 5.0
+        if self._loop_max_interval_sec <= 0:
+            self._loop_max_interval_sec = 5.0
+
         logger.info("✨ Strategy Manager initialized")
 
     async def _publish_strategy_lifecycle(self, event_type: EventType, strategy_name: str) -> None:
@@ -172,16 +218,23 @@ class StrategyManager:
 
     def catalog_strategy_names(self) -> List[str]:
         """Full built-in catalog plus any extra registered/loaded ids (for UIs, CLI lists)."""
-        return sorted(
-            set(self.builtin_strategy_ids())
+        names = (
+            set(StrategyManager.operator_builtin_strategy_ids())
             | set(self._all_registered_names())
             | set(self.strategies.keys())
         )
+        names -= TESTING_ONLY_STRATEGY_IDS
+        return sorted(names)
 
     @staticmethod
     def builtin_strategy_ids() -> List[str]:
         """All built-in strategy ids (catalog); does not import strategy modules."""
         return sorted(BUILTIN_STRATEGY_SPECS.keys())
+
+    @staticmethod
+    def operator_builtin_strategy_ids() -> List[str]:
+        """Built-in ids exposed in operator UIs / default registration (excludes testing-only)."""
+        return sorted(set(BUILTIN_STRATEGY_SPECS.keys()) - TESTING_ONLY_STRATEGY_IDS)
 
     def _is_registered(self, name: str) -> bool:
         n = _normalize_strategy_id(name)
@@ -264,7 +317,7 @@ class StrategyManager:
         # Keep only ids that map to lazy built-in modules (ignore unknown TOML stems).
         selected = {n for n in selected if n in BUILTIN_STRATEGY_SPECS}
         if not selected:
-            selected = set(BUILTIN_STRATEGY_SPECS.keys())
+            selected = set(BUILTIN_STRATEGY_SPECS.keys()) - TESTING_ONLY_STRATEGY_IDS
         for n in sorted(selected):
             spec = BUILTIN_STRATEGY_SPECS[n]
             self.register_strategy_lazy(n, spec[0], spec[1])
@@ -545,8 +598,27 @@ class StrategyManager:
             or account.get('accountId')
         )
     
+    # Time-window settings live in ``config/strategies/<name>.toml`` (``start_time`` /
+    # ``end_time`` / ``no_trade_start`` / ``no_trade_end``). They are *not* operator-edited
+    # via the GUI today; we used to echo them back to ``strategy_states.settings`` on every
+    # save, which froze the very first value the row ever saw and silently overrode later
+    # TOML edits via :meth:`_apply_config_settings`. The 2026-05-19 morning_range_reversion
+    # outage was a direct hit: TOML said 06:55 ET, persisted row said 09:30 ET, executor
+    # waited until 09:30 and missed the 07:00–08:00 anchor build.
+    _TOML_AUTHORITATIVE_TIME_KEYS = (
+        "trading_start_time",
+        "trading_end_time",
+        "no_trade_start",
+        "no_trade_end",
+    )
+
     def _serialize_config(self, config: StrategyConfig, strategy: Optional[BaseStrategy] = None) -> Dict[str, Any]:
-        """Serialize strategy config and strategy-specific settings for persistence."""
+        """Serialize strategy config and strategy-specific settings for persistence.
+
+        ``_TOML_AUTHORITATIVE_TIME_KEYS`` are intentionally excluded — TOML is the source
+        of truth for ``start_time`` / ``end_time`` / ``no_trade_start`` / ``no_trade_end``.
+        Writing them here would re-poison ``strategy_states.settings`` on the next save.
+        """
         serialized = {
             "max_positions": config.max_positions,
             "position_size": config.position_size,
@@ -554,10 +626,6 @@ class StrategyManager:
             "max_daily_trades": config.max_daily_trades,
             "preferred_conditions": [c.value for c in config.preferred_conditions],
             "avoid_conditions": [c.value for c in config.avoid_conditions],
-            "trading_start_time": config.trading_start_time,
-            "trading_end_time": config.trading_end_time,
-            "no_trade_start": config.no_trade_start,
-            "no_trade_end": config.no_trade_end,
             "respect_dll": config.respect_dll,
             "respect_mll": config.respect_mll,
             "max_dll_usage_percent": config.max_dll_usage_percent,
@@ -617,14 +685,25 @@ class StrategyManager:
                 MarketCondition(value) for value in settings['avoid_conditions']
                 if value in MarketCondition._value2member_map_
             ]
-        if 'trading_start_time' in settings:
-            config.trading_start_time = settings['trading_start_time']
-        if 'trading_end_time' in settings:
-            config.trading_end_time = settings['trading_end_time']
-        if 'no_trade_start' in settings:
-            config.no_trade_start = settings['no_trade_start']
-        if 'no_trade_end' in settings:
-            config.no_trade_end = settings['no_trade_end']
+        # TOML wins for trading window. Persisted values are legacy echoes from
+        # ``_serialize_config`` (see _TOML_AUTHORITATIVE_TIME_KEYS) and applying them here
+        # would silently revert TOML edits at every executor / server restart. Log a one-
+        # liner when the DB row still carries stale values so operators can spot rows that
+        # would benefit from a re-save (which now drops the keys) or a manual scrub.
+        stale_time = {
+            k: settings[k]
+            for k in self._TOML_AUTHORITATIVE_TIME_KEYS
+            if k in settings
+            and str(settings[k]) != str(getattr(config, k, None))
+        }
+        if stale_time:
+            logger.info(
+                "🕐 Ignoring stale persisted time-window settings for %s (TOML wins): "
+                "db=%s toml=%s",
+                getattr(config, "name", "?"),
+                stale_time,
+                {k: getattr(config, k, None) for k in stale_time},
+            )
         if 'respect_dll' in settings:
             config.respect_dll = bool(settings['respect_dll'])
         if 'respect_mll' in settings:
@@ -915,9 +994,22 @@ class StrategyManager:
             tuple: (success: bool, message: str)
         """
         n = _normalize_strategy_id(name)
+        if n in TESTING_ONLY_STRATEGY_IDS:
+            allow = os.environ.get("ALLOW_TESTING_STRATEGIES", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if not allow:
+                return (
+                    False,
+                    f"Strategy {n} is testing-only. Set ALLOW_TESTING_STRATEGIES=1 to start it "
+                    "(development / explicit validation only).",
+                )
         if n not in self.strategies:
             if not self._is_known_strategy(n):
-                catalog = self.builtin_strategy_ids()
+                catalog = StrategyManager.operator_builtin_strategy_ids()
                 reg = self._all_registered_names()
                 logger.error(
                     "❌ Strategy not found: %s. Built-ins: %s. Pre-registered: %s",
@@ -1074,6 +1166,82 @@ class StrategyManager:
         """Alias for stop_all_strategies()."""
         return await self.stop_all_strategies()
     
+    # ── Event-driven wake-up plumbing ─────────────────────────────────────────────
+
+    def _ensure_completed_bar_callback(self) -> None:
+        """Register the manager's completed-bar wake-up callback on the bar aggregator.
+
+        Idempotent: subsequent calls are no-ops. Safe to invoke even when the bar
+        aggregator is absent (unit tests, REST-only mode); in that case strategies
+        fall back to the timeout ceiling.
+        """
+        if self._completed_bar_cb_registered:
+            return
+        agg = getattr(self.trading_bot, "bar_aggregator", None)
+        if agg is None or not hasattr(agg, "register_completed_bar_callback"):
+            return
+        try:
+            agg.register_completed_bar_callback(self._on_completed_bar_wake)
+            self._completed_bar_cb_registered = True
+            logger.debug("Registered strategy-manager wake-up callback on bar aggregator")
+        except Exception as exc:
+            logger.debug("Could not register completed-bar wake-up callback: %s", exc)
+
+    def _on_completed_bar_wake(self, bar: Any) -> None:
+        """Bar aggregator completed-bar callback. Wakes any strategy that cares.
+
+        Invoked synchronously from the aggregator path (which itself may run from the
+        SignalR thread). We must NOT touch the asyncio.Event directly here — instead
+        we schedule the ``.set()`` via the strategy's event loop using
+        ``call_soon_threadsafe``. A strategy "cares" when (a) its config.symbols
+        contains the bar's symbol AND (b) its ``self.timeframe`` matches the bar's
+        timeframe (case- and unit-insensitive). Strategies without a declared
+        timeframe wake on every bar close for their symbols (acceptable since
+        ``should_trade()`` still gates real work).
+        """
+        try:
+            sym = str(getattr(bar, "symbol", "") or "").upper()
+            tf_raw = getattr(bar, "timeframe", "") or ""
+            if not sym:
+                return
+            normalize = getattr(self.trading_bot, "_normalize_timeframe_key", None)
+            tf_norm = normalize(tf_raw) if callable(normalize) else str(tf_raw).strip().lower()
+        except Exception:
+            return
+
+        for name in list(self.active_strategies):
+            strat = self.strategies.get(name)
+            if strat is None:
+                continue
+            try:
+                cfg_syms = {str(s).upper() for s in (getattr(strat.config, "symbols", []) or [])}
+            except Exception:
+                cfg_syms = set()
+            if sym not in cfg_syms:
+                continue
+            strat_tf_raw = getattr(strat, "timeframe", "") or ""
+            strat_tf = (
+                normalize(strat_tf_raw) if callable(normalize) else str(strat_tf_raw).strip().lower()
+            )
+            if strat_tf and tf_norm and strat_tf != tf_norm:
+                continue
+
+            wake = self._strategy_wake_events.get(name)
+            loop = self._strategy_loops.get(name)
+            if wake is None or loop is None:
+                continue
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:
+                continue
+            except Exception as exc:
+                logger.debug("Wake-up schedule failed for %s: %s", name, exc)
+
+    def _release_wake_event(self, strategy_name: str) -> None:
+        """Drop the wake event/loop registration for a stopped strategy."""
+        self._strategy_wake_events.pop(strategy_name, None)
+        self._strategy_loops.pop(strategy_name, None)
+
     async def _run_strategy(self, strategy: BaseStrategy):
         """
         Run a strategy's main loop.
@@ -1082,7 +1250,25 @@ class StrategyManager:
             strategy: Strategy instance to run
         """
         logger.info(f"▶️  Running strategy loop: {strategy.config.name}")
-        
+
+        # ── Wire wake-up event so the loop fires on bar close, not on a 60 s timer ──
+        strategy_name = strategy.config.name
+        wake_event = asyncio.Event()
+        self._strategy_wake_events[strategy_name] = wake_event
+        try:
+            self._strategy_loops[strategy_name] = asyncio.get_running_loop()
+        except RuntimeError:
+            self._strategy_loops[strategy_name] = None  # type: ignore[assignment]
+        self._ensure_completed_bar_callback()
+        try:
+            tf_str = str(getattr(strategy, "timeframe", "") or "(unspecified)")
+            logger.info(
+                "🔔 Wake-driven loop active for %s (timeframe=%s, max_interval=%.1fs)",
+                strategy_name, tf_str, self._loop_max_interval_sec,
+            )
+        except Exception:
+            pass
+
         try:
             while strategy.status == StrategyStatus.ACTIVE:
                 # Optional hot-reload for TOML configs (cheap mtime poll).
@@ -1198,15 +1384,29 @@ class StrategyManager:
                     await strategy.manage_positions()
                 except Exception as e:
                     logger.error(f"❌ Error managing positions in {strategy.config.name}: {e}")
-                
-                # Wait before next iteration
-                await asyncio.sleep(60)  # Check every minute
-        
+
+                # Wait for the next bar close (woken by ``_on_completed_bar_wake``) or the
+                # max-interval timeout — whichever fires first. Clearing BEFORE the wait
+                # captures any bar close that arrived during ``analyze()``/``execute()``
+                # processing, so we never miss a wake-up signal.
+                wake_event.clear()
+                try:
+                    await asyncio.wait_for(
+                        wake_event.wait(),
+                        timeout=self._loop_max_interval_sec,
+                    )
+                except asyncio.TimeoutError:
+                    # No bar close within the ceiling — re-iterate to tick housekeeping
+                    # (position management, time-window checks, hot-reload, freshness guard).
+                    pass
+
         except asyncio.CancelledError:
             logger.info(f"🛑 Strategy loop cancelled: {strategy.config.name}")
         except Exception as e:
             logger.error(f"❌ Strategy loop error: {strategy.config.name} - {e}")
             strategy.status = StrategyStatus.ERROR
+        finally:
+            self._release_wake_event(strategy_name)
     
     async def auto_select_strategies(self):
         """

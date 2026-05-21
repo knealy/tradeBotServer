@@ -1,0 +1,524 @@
+"""Walk-forward recap helpers: simulated equity curves and loss diagnostics.
+
+Used by ``scripts/walkforward_trade_recap_report.py`` to enrich ``metrics.html``
+without pulling in GUI / LWC from Python (chart is embedded as JSON + JS).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import statistics
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _parse_iso_utc(s: str) -> datetime:
+    s = str(s).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def sort_trades_by_exit_time(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(trades, key=lambda t: _parse_iso_utc(str(t.get("exit_time") or "1970-01-01")))
+
+
+def equity_curve_from_trades(
+    trades: List[Dict[str, Any]],
+    *,
+    start_equity: float = 2000.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Build a step equity series at each exit (for LWC ``time`` / ``value``).
+
+    Inserts a baseline point at the earliest ``entry_time`` so the curve starts at
+    ``start_equity`` before the first close. Uses UTCTimestamp seconds for LWC.
+
+    Returns:
+        ``points``: ``[{time, equity, trade_pnl, cumulative_pnl}, ...]`` sorted by ``time``
+        ``summary``: final equity, max DD $, max DD %, return %
+    """
+    if start_equity <= 0:
+        start_equity = 2000.0
+    ordered = sort_trades_by_exit_time([t for t in trades if isinstance(t, dict)])
+    if not ordered:
+        return (
+            [],
+            {
+                "start_equity": start_equity,
+                "final_equity": start_equity,
+                "total_return_pct": 0.0,
+                "max_drawdown_dollars": 0.0,
+                "max_drawdown_pct": 0.0,
+                "n_trades": 0,
+            },
+        )
+
+    points: List[Dict[str, Any]] = []
+    equity = float(start_equity)
+    peak = equity
+    max_dd = 0.0
+    max_dd_pct = 0.0
+    cum_pnl = 0.0
+
+    earliest_entry = min(_parse_iso_utc(str(t.get("entry_time") or t.get("exit_time"))) for t in ordered)
+    t0 = int(earliest_entry.timestamp())
+    points.append(
+        {
+            "time": t0,
+            "equity": round(equity, 2),
+            "trade_pnl": 0.0,
+            "cumulative_pnl": 0.0,
+        }
+    )
+
+    last_ts = t0
+    for t in ordered:
+        pnl = float(t.get("pnl") or 0)
+        xt = _parse_iso_utc(str(t.get("exit_time")))
+        ts = int(xt.timestamp())
+        if ts <= last_ts:
+            ts = last_ts + 1
+        cum_pnl += pnl
+        equity += pnl
+        peak = max(peak, equity)
+        dd = peak - equity
+        max_dd = max(max_dd, dd)
+        if peak > 1e-9:
+            max_dd_pct = max(max_dd_pct, (dd / peak) * 100.0)
+        points.append(
+            {
+                "time": ts,
+                "equity": round(equity, 2),
+                "trade_pnl": round(pnl, 4),
+                "cumulative_pnl": round(cum_pnl, 4),
+            }
+        )
+        last_ts = ts
+
+    summary = {
+        "start_equity": start_equity,
+        "final_equity": round(equity, 2),
+        "total_return_pct": round((equity - start_equity) / start_equity * 100.0, 3)
+        if start_equity
+        else 0.0,
+        "max_drawdown_dollars": round(max_dd, 2),
+        "max_drawdown_pct": round(max_dd_pct, 3),
+        "n_trades": len(ordered),
+    }
+    return points, summary
+
+
+def _pearson(xs: List[float], ys: List[float]) -> Optional[float]:
+    n = len(xs)
+    if n < 3 or n != len(ys):
+        return None
+    mx = statistics.fmean(xs)
+    my = statistics.fmean(ys)
+    num = sum((xi - mx) * (yi - my) for xi, yi in zip(xs, ys))
+    denx = math.sqrt(sum((xi - mx) ** 2 for xi in xs))
+    deny = math.sqrt(sum((yi - my) ** 2 for yi in ys))
+    if denx < 1e-12 or deny < 1e-12:
+        return None
+    return num / (denx * deny)
+
+
+def _trade_pnl(t: Dict[str, Any]) -> float:
+    return float(t.get("pnl") or 0)
+
+
+def _trade_side(t: Dict[str, Any]) -> str:
+    return str(t.get("side") or "").upper() or "—"
+
+
+def _exit_reason(t: Dict[str, Any]) -> str:
+    return str(t.get("exit_reason") or "unknown")
+
+
+def entry_weekday_et_label(t: Dict[str, Any]) -> str:
+    """Mon..Sun label for entry bar (ET)."""
+    try:
+        et = _parse_iso_utc(str(t.get("entry_time")))
+        wd = et.astimezone(_ET).weekday()
+        return ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[wd]
+    except (ValueError, TypeError, OSError):
+        return "—"
+
+
+def entry_hour_et(t: Dict[str, Any]) -> int:
+    try:
+        et = _parse_iso_utc(str(t.get("entry_time")))
+        return int(et.astimezone(_ET).hour)
+    except (ValueError, TypeError, OSError):
+        return -1
+
+
+def extended_performance_insights(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extra aggregates beyond fold_metrics (recovery factor, breakeven WR, hold skew)."""
+    if not trades:
+        return {}
+
+    pnls = [_trade_pnl(t) for t in trades]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    n = len(pnls)
+    sum_w = float(sum(wins)) if wins else 0.0
+    sum_l_abs = float(abs(sum(losses))) if losses else 0.0
+
+    # sequential DD on PnL (same as fold_metrics_deep)
+    peak = cum = 0.0
+    max_dd_seq = 0.0
+    for p in pnls:
+        cum += p
+        peak = max(peak, cum)
+        max_dd_seq = max(max_dd_seq, peak - cum)
+
+    avg_win = sum_w / len(wins) if wins else 0.0
+    avg_loss_mag = sum_l_abs / len(losses) if losses else 0.0
+    # Breakeven win rate: W * avg_win - (1-W) * avg_loss_mag = 0 => W = L / (A + L)
+    breakeven_wr: Optional[float]
+    if avg_win + avg_loss_mag > 1e-9:
+        breakeven_wr = avg_loss_mag / (avg_win + avg_loss_mag)
+    else:
+        breakeven_wr = None
+
+    recovery = float(sum(pnls) / max_dd_seq) if max_dd_seq > 1e-9 else None
+
+    bars_all = [int(t.get("bars_held") or 0) for t in trades if t.get("bars_held") is not None]
+    bars_w = [
+        int(t.get("bars_held") or 0) for t in trades if _trade_pnl(t) > 0 and t.get("bars_held") is not None
+    ]
+    bars_l = [
+        int(t.get("bars_held") or 0) for t in trades if _trade_pnl(t) < 0 and t.get("bars_held") is not None
+    ]
+
+    r_w: List[float] = []
+    r_l: List[float] = []
+    for t in trades:
+        p = _trade_pnl(t)
+        r = float(t.get("initial_risk_dollars") or 0)
+        if r > 1e-9:
+            if p > 0:
+                r_w.append(p / r)
+            elif p < 0:
+                r_l.append(p / r)
+
+    return {
+        "n_trades": n,
+        "recovery_factor_pnl_vs_seq_dd": round(recovery, 3) if recovery is not None else None,
+        "breakeven_win_rate": round(breakeven_wr, 4) if breakeven_wr is not None else None,
+        "actual_win_rate": round(len(wins) / n, 4) if n else 0.0,
+        "median_bars_held_win": float(statistics.median(bars_w)) if len(bars_w) > 0 else None,
+        "median_bars_held_loss": float(statistics.median(bars_l)) if len(bars_l) > 0 else None,
+        "mean_mae_losers": round(
+            statistics.fmean(
+                [float(t.get("max_adverse_excursion") or 0) for t in trades if _trade_pnl(t) < 0]
+            ),
+            4,
+        )
+        if losses
+        else None,
+        "mean_mfe_winners": round(
+            statistics.fmean(
+                [float(t.get("max_favorable_excursion") or 0) for t in trades if _trade_pnl(t) > 0]
+            ),
+            4,
+        )
+        if wins
+        else None,
+        "avg_r_winners": round(statistics.fmean(r_w), 3) if len(r_w) > 1 else (round(r_w[0], 3) if r_w else None),
+        "avg_r_losers": round(statistics.fmean(r_l), 3) if len(r_l) > 1 else (round(r_l[0], 3) if r_l else None),
+    }
+
+
+def loss_pattern_analysis(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Structured comparison winners vs losers for categorical + correlation hints."""
+    if not trades:
+        return {"n": 0}
+
+    losses = [t for t in trades if _trade_pnl(t) < 0]
+    wins = [t for t in trades if _trade_pnl(t) > 0]
+    n_l, n_w = len(losses), len(wins)
+
+    # exit_reason x outcome
+    by_reason: Dict[str, Dict[str, int]] = {}
+    for t in trades:
+        r = _exit_reason(t)
+        by_reason.setdefault(r, {"wins": 0, "losses": 0, "n": 0})
+        by_reason[r]["n"] += 1
+        if _trade_pnl(t) > 0:
+            by_reason[r]["wins"] += 1
+        elif _trade_pnl(t) < 0:
+            by_reason[r]["losses"] += 1
+
+    # side: loss rate
+    by_side: Dict[str, Dict[str, Any]] = {}
+    for t in trades:
+        s = _trade_side(t)
+        by_side.setdefault(s, {"n": 0, "losses": 0})
+        by_side[s]["n"] += 1
+        if _trade_pnl(t) < 0:
+            by_side[s]["losses"] += 1
+    for s in by_side:
+        nn = by_side[s]["n"]
+        by_side[s]["loss_rate_pct"] = round(100.0 * by_side[s]["losses"] / nn, 1) if nn else 0.0
+
+    # weekday: where do losses cluster?
+    by_dow: Dict[str, Dict[str, int]] = {}
+    for t in losses:
+        lbl = entry_weekday_et_label(t)
+        by_dow.setdefault(lbl, {"losses": 0})
+        by_dow[lbl]["losses"] += 1
+    dow_all: Dict[str, int] = {}
+    for t in trades:
+        lbl = entry_weekday_et_label(t)
+        dow_all[lbl] = dow_all.get(lbl, 0) + 1
+    dow_order = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    dow_summary: Dict[str, Dict[str, Any]] = {}
+    for d in dow_order:
+        if d not in dow_all:
+            continue
+        nlost = by_dow.get(d, {}).get("losses", 0)
+        dow_summary[d] = {
+            "losses": nlost,
+            "trades": dow_all.get(d, 0),
+            "loss_share_of_losses_pct": round(100.0 * nlost / n_l, 1) if n_l else 0.0,
+        }
+
+    # Pearson: indicator 1=loss vs numeric factors
+    y_loss = [1.0 if _trade_pnl(t) < 0 else 0.0 for t in trades]
+    bars = [float(t.get("bars_held") or 0) for t in trades]
+    risks = [float(t.get("initial_risk_dollars") or 0) for t in trades]
+    hours = [float(entry_hour_et(t)) for t in trades if entry_hour_et(t) >= 0]
+
+    correlations: List[Dict[str, Any]] = []
+    r_bars = _pearson(bars, y_loss)
+    if r_bars is not None:
+        correlations.append(
+            {
+                "factor": "bars_held",
+                "pearson_vs_loss_indicator": round(r_bars, 4),
+                "n": len(trades),
+                "hint": _correlation_hint("bars_held", r_bars),
+            }
+        )
+    # risk: only where risk > 0
+    idx_r = [i for i, t in enumerate(trades) if float(t.get("initial_risk_dollars") or 0) > 1e-9]
+    if len(idx_r) > 4:
+        rs = [risks[i] for i in idx_r]
+        ys = [y_loss[i] for i in idx_r]
+        r_risk = _pearson(rs, ys)
+        if r_risk is not None:
+            correlations.append(
+                {
+                    "factor": "initial_risk_dollars",
+                    "pearson_vs_loss_indicator": round(r_risk, 4),
+                    "n": len(idx_r),
+                    "hint": _correlation_hint("initial_risk_dollars", r_risk),
+                }
+            )
+    if len(hours) == len(trades) and len(trades) > 4:
+        r_h = _pearson([float(entry_hour_et(t)) for t in trades], y_loss)
+        if r_h is not None:
+            correlations.append(
+                {
+                    "factor": "entry_hour_et",
+                    "pearson_vs_loss_indicator": round(r_h, 4),
+                    "n": len(trades),
+                    "hint": _correlation_hint("entry_hour_et", r_h),
+                }
+            )
+
+    loss_reason_pct = {
+        r: round(100.0 * v["losses"] / n_l, 1) if n_l else 0.0 for r, v in by_reason.items() if v["losses"] > 0
+    }
+
+    by_strategy_mix: Dict[str, Dict[str, Any]] = {}
+    if any(t.get("_strategy") for t in trades):
+        strat_loss: Dict[str, int] = {}
+        strat_all: Dict[str, int] = {}
+        for t in trades:
+            st = str(t.get("_strategy") or "—")
+            strat_all[st] = strat_all.get(st, 0) + 1
+        for t in losses:
+            st = str(t.get("_strategy") or "—")
+            strat_loss[st] = strat_loss.get(st, 0) + 1
+        for st in sorted(strat_all.keys()):
+            nl_ = strat_loss.get(st, 0)
+            by_strategy_mix[st] = {
+                "losses": nl_,
+                "trades": strat_all[st],
+                "pct_of_all_losses": round(100.0 * nl_ / n_l, 1) if n_l else 0.0,
+            }
+
+    return {
+        "n_trades": len(trades),
+        "n_losses": n_l,
+        "n_wins": n_w,
+        "by_exit_reason": by_reason,
+        "losses_by_exit_reason_pct": loss_reason_pct,
+        "by_side_loss_rate": by_side,
+        "by_strategy_loss_mix": by_strategy_mix or None,
+        "losses_by_weekday": dow_summary,
+        "correlations_with_loss": correlations,
+    }
+
+
+def _correlation_hint(factor: str, r: float) -> str:
+    if abs(r) < 0.08:
+        return f"Weak linear association between {factor} and losing trades (|r|≈{abs(r):.2f})."
+    direction = "higher" if r > 0 else "lower"
+    return (
+        f"When {factor} is {direction}, losing trades are slightly more common "
+        f"(Pearson r≈{r:.2f}); treat as exploratory—causation not implied."
+    )
+
+
+def format_insights_html(
+    *,
+    title: str,
+    extended: Dict[str, Any],
+    loss_patterns: Dict[str, Any],
+) -> str:
+    """Single collapsible-style section for metrics.html."""
+    if not extended and int(loss_patterns.get("n_trades") or 0) == 0:
+        return ""
+
+    rows_ext: List[str] = []
+    if extended:
+        be = extended.get("breakeven_win_rate")
+        be_s = f"{100.0 * float(be):.1f}%" if be is not None else "—"
+        rf = extended.get("recovery_factor_pnl_vs_seq_dd")
+        m_w = extended.get("median_bars_held_win")
+        m_l = extended.get("median_bars_held_loss")
+        rows_ext.append(
+            f"<tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>{be_s}</td>"
+            f"<td>Actual WR {100.0 * float(extended.get('actual_win_rate') or 0):.1f}%</td></tr>"
+        )
+        rows_ext.append(
+            f"<tr><td>Recovery factor (total PnL / sequential max DD)</td>"
+            f"<td class='num'>{rf if rf is not None else '—'}</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr>"
+        )
+        rows_ext.append(
+            f"<tr><td>Median bars held</td><td class='num'>W:{m_w if m_w is not None else '—'} "
+            f"/ L:{m_l if m_l is not None else '—'}</td><td>Win vs loss holding time</td></tr>"
+        )
+        arw = extended.get("avg_r_winners")
+        arl = extended.get("avg_r_losers")
+        rows_ext.append(
+            f"<tr><td>Avg R multiples</td><td class='num'>win:{arw if arw is not None else '—'} "
+            f"loss:{arl if arl is not None else '—'}</td><td>Where initial_risk_dollars recorded</td></tr>"
+        )
+
+    reason_rows: List[str] = []
+    for reason, pct in sorted(
+        (loss_patterns.get("losses_by_exit_reason_pct") or {}).items(), key=lambda x: -x[1]
+    ):
+        br = (loss_patterns.get("by_exit_reason") or {}).get(reason, {})
+        reason_rows.append(
+            f"<tr><td><code>{reason}</code></td><td class='num'>{pct}%</td>"
+            f"<td>losses {br.get('losses',0)} / events {br.get('n',0)}</td></tr>"
+        )
+
+    side_rows: List[str] = []
+    for side, info in sorted((loss_patterns.get("by_side_loss_rate") or {}).items()):
+        side_rows.append(
+            f"<tr><td><code>{side}</code></td><td class='num'>{info.get('loss_rate_pct',0)}%</td>"
+            f"<td>{info.get('losses',0)} losses / {info.get('n',0)} trades</td></tr>"
+        )
+
+    strat_rows: List[str] = []
+    for st, info in sorted((loss_patterns.get("by_strategy_loss_mix") or {}).items()):
+        strat_rows.append(
+            f"<tr><td><code>{_html_escape(st)}</code></td><td class='num'>{info.get('losses',0)}</td>"
+            f"<td>{info.get('pct_of_all_losses',0)}% of all losses · {info.get('trades',0)} trades in leg</td></tr>"
+        )
+
+    corr_rows: List[str] = []
+    for c in loss_patterns.get("correlations_with_loss") or []:
+        corr_rows.append(
+            f"<tr><td><code>{c.get('factor')}</code></td><td class='num'>{c.get('pearson_vs_loss_indicator')}</td>"
+            f"<td>{_html_escape(str(c.get('hint', '')))}</td></tr>"
+        )
+
+    dow_rows: List[str] = []
+    for d, info in (loss_patterns.get("losses_by_weekday") or {}).items():
+        dow_rows.append(
+            f"<tr><td>{d}</td><td class='num'>{info.get('losses',0)}</td>"
+            f"<td>{info.get('loss_share_of_losses_pct',0)}% of all losses; "
+            f"{info.get('trades',0)} entries this weekday</td></tr>"
+        )
+
+    return f"""
+<h3>{_html_escape(title)}</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody>{''.join(rows_ext) if rows_ext else '<tr><td colspan="3">—</td></tr>'}</tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody>{''.join(reason_rows) if reason_rows else '<tr><td colspan="3">—</td></tr>'}</tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody>{''.join(side_rows) if side_rows else '<tr><td colspan="3">—</td></tr>'}</tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody>{''.join(strat_rows) if strat_rows else '<tr><td colspan="3">—</td></tr>'}</tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody>{''.join(dow_rows) if dow_rows else '<tr><td colspan="3">—</td></tr>'}</tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody>{''.join(corr_rows) if corr_rows else '<tr><td colspan="3">—</td></tr>'}</tbody></table>
+"""
+
+
+def _html_escape(s: str) -> str:
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def equity_chart_embed_js(equity_points: List[Dict[str, Any]], *, chart_id: str = "equityChart") -> str:
+    """Return HTML fragment: container + script for Lightweight Charts v4."""
+    data = [{"time": p["time"], "value": p["equity"]} for p in equity_points]
+    payload = json.dumps(data)
+    div = f'<div id="{chart_id}" style="width:100%;height:340px;position:relative;"></div>'
+    cdn = (
+        '<script src="https://unpkg.com/lightweight-charts@4.1.3/'
+        'dist/lightweight-charts.standalone.production.js"></script>\n'
+    )
+    script = (
+        "<script>\n"
+        "(function() {\n"
+        f'  const el = document.getElementById("{chart_id}");\n'
+        "  if (!el || typeof LightweightCharts === 'undefined') return;\n"
+        "  const chart = LightweightCharts.createChart(el, {\n"
+        "    layout: { background: { color: '#131316' }, textColor: '#c8c8d0' },\n"
+        "    grid: { vertLines: { color: '#2c2c34' }, horzLines: { color: '#2c2c34' } },\n"
+        "    rightPriceScale: { borderColor: '#2c2c34' },\n"
+        "    timeScale: { borderColor: '#2c2c34', timeVisible: true, secondsVisible: false },\n"
+        "  });\n"
+        "  const series = chart.addLineSeries({ color: '#5ecf8e', lineWidth: 2 });\n"
+        f"  const raw = {payload};\n"
+        "  series.setData(raw);\n"
+        "  chart.timeScale().fitContent();\n"
+        "  window.addEventListener('resize', () => {\n"
+        "    chart.applyOptions({ width: el.clientWidth });\n"
+        "  });\n"
+        "})();\n"
+        "</script>\n"
+    )
+    return div + "\n" + cdn + script

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward metrics — body_reversion / MNQ, MGC</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+</style>
+</head>
+<body>
+  <p><a href="index.html">← Back to report hub</a></p>
+  <h1>Walk-forward performance (replay)</h1>
+  <p class="muted">Fold × strategy × symbol from <code>backtest_executor.py --replay --include-trades</code>.
+    <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
+    <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
+    <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
+  <div class="banner">
+    <strong>All folds pooled:</strong> 177 trades · PnL <strong>1359.28</strong>
+    · expectancy <strong>7.680</strong> / trade · σ <strong>127.292</strong>
+    · PF <strong>1.18</strong> · max consecutive losses <strong>10</strong>
+    · max DD (sequential) <strong>1115.73</strong>
+  </div>
+  <div class="callout">
+    <strong>Survivability read:</strong> high <em>max consecutive losses</em> inside a fold with negative expectancy
+    usually means the edge is not stable across that window. Compare the <em>rollup</em> table (all folds merged
+    per strategy×symbol) to per-fold rows — widening σ or falling PF in later folds is a simple walk-forward stress signal.
+  </div>
+  <h2>Per fold</h2>
+  <table>
+    <thead><tr><th>fold</th><th>start</th><th>end</th><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th>
+    <th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>win</th><th>loss</th><th>max win str</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td>0</td><td>2026-03-15</td><td>2026-03-24</td><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>18</td><td class='num'>1923.12</td><td class='num'>38.9%</td><td class='num'>106.840</td><td class='num'>272.540</td><td class='num'>2.94</td><td class='num'>486.89</td><td>7</td><td>11</td><td>2</td><td>5</td><td class='num'>12.9</td><td class='num'>8.64</td></tr><tr><td>0</td><td>2026-03-15</td><td>2026-03-24</td><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>22</td><td class='num'>143.89</td><td class='num'>31.8%</td><td class='num'>6.541</td><td class='num'>169.801</td><td class='num'>1.10</td><td class='num'>601.14</td><td>7</td><td>15</td><td>2</td><td>5</td><td class='num'>2.0</td><td class='num'>4.02</td></tr><tr><td>1</td><td>2026-03-25</td><td>2026-04-03</td><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>15</td><td class='num'>-67.73</td><td class='num'>26.7%</td><td class='num'>-4.515</td><td class='num'>84.578</td><td class='num'>0.88</td><td class='num'>331.98</td><td>4</td><td>11</td><td>2</td><td>7</td><td class='num'>4.3</td><td class='num'>-0.87</td></tr><tr><td>1</td><td>2026-03-25</td><td>2026-04-03</td><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>19</td><td class='num'>-77.25</td><td class='num'>26.3%</td><td class='num'>-4.066</td><td class='num'>110.666</td><td class='num'>0.92</td><td class='num'>496.11</td><td>5</td><td>14</td><td>2</td><td>5</td><td class='num'>2.0</td><td class='num'>-0.99</td></tr><tr><td>2</td><td>2026-04-04</td><td>2026-04-13</td><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>8</td><td class='num'>-279.68</td><td class='num'>12.5%</td><td class='num'>-34.960</td><td class='num'>47.477</td><td class='num'>0.21</td><td class='num'>279.68</td><td>1</td><td>7</td><td>1</td><td>4</td><td class='num'>5.8</td><td class='num'>-5.24</td></tr><tr><td>2</td><td>2026-04-04</td><td>2026-04-13</td><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>12</td><td class='num'>-104.57</td><td class='num'>25.0%</td><td class='num'>-8.714</td><td class='num'>89.468</td><td class='num'>0.80</td><td class='num'>243.00</td><td>3</td><td>9</td><td>1</td><td>5</td><td class='num'>2.7</td><td class='num'>-1.53</td></tr><tr><td>3</td><td>2026-04-14</td><td>2026-04-23</td><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>23</td><td class='num'>-157.66</td><td class='num'>26.1%</td><td class='num'>-6.855</td><td class='num'>57.234</td><td class='num'>0.76</td><td class='num'>301.05</td><td>6</td><td>17</td><td>2</td><td>7</td><td class='num'>4.0</td><td class='num'>-3.57</td></tr><tr><td>3</td><td>2026-04-14</td><td>2026-04-23</td><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>9</td><td class='num'>40.64</td><td class='num'>33.3%</td><td class='num'>4.516</td><td class='num'>74.603</td><td class='num'>1.15</td><td class='num'>229.96</td><td>3</td><td>6</td><td>2</td><td>5</td><td class='num'>6.1</td><td class='num'>1.48</td></tr><tr><td>4</td><td>2026-04-24</td><td>2026-05-03</td><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>5</td><td class='num'>8.14</td><td class='num'>40.0%</td><td class='num'>1.629</td><td class='num'>77.950</td><td class='num'>1.05</td><td class='num'>120.46</td><td>2</td><td>3</td><td>1</td><td>2</td><td class='num'>1.4</td><td class='num'>2.18</td></tr><tr><td>4</td><td>2026-04-24</td><td>2026-05-03</td><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>16</td><td class='num'>331.71</td><td class='num'>43.8%</td><td class='num'>20.732</td><td class='num'>76.112</td><td class='num'>1.86</td><td class='num'>173.39</td><td>7</td><td>9</td><td>2</td><td>3</td><td class='num'>2.8</td><td class='num'>9.07</td></tr><tr><td>5</td><td>2026-05-04</td><td>2026-05-14</td><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>14</td><td class='num'>-292.59</td><td class='num'>14.3%</td><td class='num'>-20.899</td><td class='num'>52.147</td><td class='num'>0.40</td><td class='num'>321.05</td><td>2</td><td>12</td><td>1</td><td>6</td><td class='num'>2.1</td><td class='num'>-8.47</td></tr><tr><td>5</td><td>2026-05-04</td><td>2026-05-14</td><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>16</td><td class='num'>-108.75</td><td class='num'>25.0%</td><td class='num'>-6.797</td><td class='num'>70.103</td><td class='num'>0.80</td><td class='num'>209.04</td><td>4</td><td>12</td><td>2</td><td>5</td><td class='num'>2.7</td><td class='num'>-2.64</td></tr></tbody>
+  </table>
+  <h2>Rollup — all folds merged (per strategy × symbol)</h2>
+  <table>
+    <thead><tr><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th><th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td><code>body_reversion</code></td><td><code>MGC</code></td><td class='num'>94</td><td class='num'>225.68</td><td class='num'>30.9%</td><td class='num'>2.401</td><td class='num'>110.158</td><td class='num'>1.05</td><td class='num'>830.64</td><td>10</td><td class='num'>2.7</td><td class='num'>9.41</td></tr><tr><td><code>body_reversion</code></td><td><code>MNQ</code></td><td class='num'>83</td><td class='num'>1133.61</td><td class='num'>26.5%</td><td class='num'>13.658</td><td class='num'>144.730</td><td class='num'>1.35</td><td class='num'>876.30</td><td>8</td><td class='num'>5.7</td><td class='num'>-7.33</td></tr></tbody>
+  </table>
+</body>
+</html>

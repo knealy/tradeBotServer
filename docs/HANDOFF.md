@@ -1,5 +1,5 @@
-<!-- Last verified commit 4653935a859cc747bca1a8fcdf9a9cf3a8ce67bc -->
-<!-- Last verified by: cursor-agent on 2026-05-12 — morning_range_reversion executor script + sieve/live parity; generic breakeven opt-in; drift monitor; income brain wiring; walk-forward doc gate (STRATEGY_DEVELOPMENT); legacy replay noise fixes. Prior HANDOFF note referenced ed3f8c1… (2026-05-05; historical). Next: PRAC shadow for morning_range before meta; drift-compare; partial TP broker; breakeven/slip validation; walk-forward before CANDIDATES; INCOME_BRAIN/DRIFT_MONITOR env gates. -->
+<!-- Last verified commit 79ab12f6f8f2d9dca53efef3eb0fba3853e077db -->
+<!-- Last verified by: cursor-agent on 2026-05-16 — simple_candle testing-only gate (ALLOW_TESTING_STRATEGIES); ema_stack_trend_15m research scaffold; 120d/5f walk-forward batch (core arsenal + MES/MGC vwap/hourly + MNQ range vs reversion recap). -->
 
 ## You are inheriting an autonomous TopStepX futures trading bot. It has been actively traded; do not break it.
 

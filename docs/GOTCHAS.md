@@ -4,6 +4,54 @@
 
 Dense reference for behavior that is easy to misread or break. Prefer the cited files over this list when in doubt.
 
+### Historical OHLCV data
+
+- **Quarterly futures rolls interleave two contracts** in the canonical Databento CSVs under `historical_data/price/*_1m_databento.csv` and `*_5m_databento.csv`. Around the 10th–17th of every Mar/Jun/Sep/Dec (≈3–7 trading days before the third-Friday expiry), individual minutes alternate between front-month and back-month bars, with a price spread of ~150–300 pt on MNQ (cost-of-carry basis). Rendered as-is, you get **two parallel candle sequences** at the same x-positions, and intrabar replay fills can trip on prices the contract you would actually trade never touched. `core/backtest/ohlcv.deroll_dual_contract_bars` removes the non-continuing-contract bars and is wired into both `dataframe_to_chart_bars_unix` and `replay_bars_from_ohlcv_df` by default (pass `deroll=False` to opt out). Symptoms when disabled: trade exit prices that don't line up with any visible OHLC bar, "double vision" candles on Mar/Jun/Sep/Dec recap charts, and `cluster_spread` > 200 pt in `_two_means_1d` on rolling days.
+
+- Citation: [core/backtest/ohlcv.py](../core/backtest/ohlcv.py).
+
+### Backtest fill semantics
+
+- **STOP orders are direction-validated against placement_price.** `BacktestEngine._check_order_fill` only fires a BUY STOP when `placement_price <= stop_price` (price has to rise to it) and a SELL STOP when `placement_price >= stop_price` (price has to fall to it). `placement_price` is captured from `BacktestEngine.last_close` at order-creation time and updated in the run loop / at the top of `StrategyReplayEngine._process_subbar_fills` so it matches the bar the strategy just saw. The old behavior — fire a BUY STOP the moment any later bar's high crossed the stop, even when the bar's low never came near it — produced impossible fills like the 2026-05-19 MNQ "LONG @ 28853.88 at 9:45 ET" (the bar's low was 28868.75; price didn't re-trade 28853 until 10:05). If you're writing a strategy that emits an entry at a level the current bar has already crossed past, treat it as a **LIMIT** (waits for retrace) or a **MARKET** (fills at next bar open) — a same-direction stop is the bug magnet.
+
+- Citation: [core/backtest/engine.py](../core/backtest/engine.py), [core/backtest/strategy_replay.py](../core/backtest/strategy_replay.py).
+
+- **`morning_range_reversion.signal.reentry_threshold_points`** (> 0): on the **first 5m close outside** the 7–8am anchor, immediately place a resting stop-entry ``threshold`` pts back inside the box (low sweep → BUY STOP at L + threshold; high sweep → SELL STOP at H − threshold), same intent as **overnight_range** advance brackets. The order rests until price trades through the level (e.g. May 19 2026: sweep close 9:20 ET → stop at 28860.75 → fill 9:30 open rip). TOML default **7 pts** (MNQ); MES/MGC overrides use **0** (legacy candle-close) until tuned. With threshold **0**, legacy `require_reentry_close` / immediate-at-extreme paths apply; replay fills are honest thanks to the stop-direction guard above.
+
+- **`morning_range_reversion` — R-ratio structural problem.** With entry at `L + threshold` and the default stop at `L - half × sl_mult` (stop anchored to the **range extreme**, not to entry), the risk is `half + threshold` while the reward is only `half - threshold`. On a 50-pt range (half=25) with threshold=7: risk=32 pts, reward=18 pts → breakeven WR = 32/(32+18) = 64 %; including $5 commission the breakeven rises to ~69 %. The 700-day MNQ replay had a 65.5 % actual WR and only 0.91 PF as a result. **Fix: `signal.sl_fixed_pts`** — when set to e.g. `14` (= 2 × threshold), stop moves to `entry − 14` (LONG) and breakeven WR drops to ~52 %, giving +EV at 65.5 % WR. Walk-forward before deploying live; a tighter stop will increase the stop-loss-hit rate.
+
+- **`morning_range_reversion` — TP-in-loss bug on narrow range days.** When the morning range is narrower than `2 × threshold` (e.g. < 14 pts for MNQ with threshold=7), `depth` is capped to `half − ε ≈ midpoint`, making `entry ≈ TP`. A TP fill earns near-zero gross PnL; after the $5 round-trip commission it records a **net loss**. This was responsible for 7 "exit_reason=take_profit → pnl < 0" rows in the 700-day MNQ walk-forward. **Fix: `signal.min_range_width_points`** — skip fade signals on days where the morning range is narrower than this threshold. Minimum useful value = `2 × threshold + small_buffer` (e.g. 20 for MNQ with threshold=7).
+
+### Live data freshness — REST polling is the only bar source
+
+- **Live executor now wires Market Hub + bar aggregator + REST merge (2026-05-21 fix).** As of CHANGELOG entry "Market Hub wired into StrategyExecutor", `core/strategy_executor.py` calls `TopStepXTradingBot.start_market_hub_for_strategies(symbols, timeframes)` immediately after the strategies start. That opens the SignalR Market Hub, subscribes quotes for every symbol declared in any running strategy's `config.symbols`, registers each strategy's `timeframe` on `core/bar_aggregator.BarAggregator`, and pipes completed bars into a per-(symbol, timeframe) ring buffer on the bot (`_live_bars`, capped by `LIVE_BAR_CACHE_MAXLEN`, default 240). `trading_bot.get_historical_data()` then merges any cached bars **newer than the REST tail** onto the REST response, so when `POST /api/History/retrieveBars` stalls — as it did on 2026-05-21 EDT (last bar frozen at `12:30Z` / 08:30 EDT for 75+ minutes for MNQ/MES/MGC) — strategies still see fresh data. Disable with `EXECUTOR_MARKET_HUB=false` (e.g. backtests, dev without SignalR). `ENABLE_SIGNALR=false` also short-circuits the wiring. The freshness guard (`signal.max_bar_staleness_seconds`, default 600s) remains the last-line scream when *both* REST and the live feed go dark. Tests: `tests/test_live_bar_pipeline.py` (14 tests covering callback fan-out, cache merge, env toggles) + `tests/test_morning_range_reversion_smoke.py::test_freshness_guard_*`. Verify the live feed off-process with:
+
+```bash
+ENABLE_SIGNALR=false .venv/bin/python -c "
+import asyncio
+from trading_bot import TopStepXTradingBot
+async def main():
+    bot = TopStepXTradingBot()
+    await bot.initialize()
+    bars = await bot.get_historical_data('MNQ', '5m', limit=5)
+    for b in bars: print(b['timestamp'], 'C', b['close'])
+asyncio.run(main())"
+```
+If the last timestamp is more than ~5 minutes behind wall clock during market hours **and the live cache is also empty** (check executor log for `📡 Market Hub wired for N symbol(s)` on startup), the broker is the problem on both paths — restarting the executor is the last resort. Tests: `test_freshness_guard_*` in `tests/test_morning_range_reversion_smoke.py`.
+
+### Strategy loop is event-driven, not polling — `analyze()` fires per bar close
+
+The `StrategyManager._run_strategy` loop **does not poll on a fixed 60 s timer anymore** (since the wake-driven refactor above). Each strategy blocks on an `asyncio.Event` that is set by the bar aggregator the instant a bar closes for its `(symbol, timeframe)` pair, with a fallback timeout of `STRATEGY_LOOP_MAX_INTERVAL_SEC` (default **5 s**). Implications:
+
+- **`analyze()` runs ~250–500 ms after a real-world bar close**, not up to 60 s later. The previous behaviour is gone — do not assume the loop sleeps 60 s between iterations.
+- **REST traffic is lower, not higher.** A 5m strategy polls historical bars roughly every 5 minutes (driven by closes), not every 60 s. The 5 s ceiling only fires during SignalR outages or dead hours.
+- **A misbehaving `analyze()` blocks its own loop.** If a strategy's `analyze()` takes 10 s, the wake event will pile up but only the first wake matters (`asyncio.Event.set()` is idempotent). The next iteration handles it. No bar closes are lost.
+- **The clear-before-wait ordering** in `_run_strategy` is intentional: bar closes that arrive *during* `analyze()`/`execute()` are captured for the next iteration. Don't move the `wake_event.clear()` to after the wait — that would silently drop concurrent wakes.
+- **Strategies without `self.timeframe`** wake on every bar close for their symbols. Harmless (`should_trade()` still gates), but noisier. Declare `self.timeframe` explicitly.
+- **Tuning**: set `STRATEGY_LOOP_MAX_INTERVAL_SEC=1` for snappier outage detection (you'll see more REST calls during outages but the freshness guard still fires before damage). Set higher (e.g. `30`) if you want to deliberately tick housekeeping less often. Setting to `0` falls back to default 5 s (would otherwise busy-spin).
+
+- Citation: [config/strategies/morning_range_reversion.toml](../config/strategies/morning_range_reversion.toml), [strategies/morning_range_reversion_strategy.py](../strategies/morning_range_reversion_strategy.py).
+
 ### Ops / deploy hygiene
 
 - **Legacy cron → webhook**: If an old machine still runs `curl` to a retired Railway URL on a schedule, remove the line from `crontab -e` (or launchd plist) so you are not hammering a dead endpoint. Railway: cancel the project in the Railway dashboard when decommissioning; env vars there are not auto-deleted from your shell profile.

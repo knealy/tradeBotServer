@@ -2,10 +2,10 @@
 Bracket order and position-monitoring flows (extracted from trading_bot).
 Calls TopStepXTradingBot for stop/trailing/OCO helpers that remain on the bot.
 
-**Partial TP (BONGO §1A)** — design types and price math live here; broker wiring is
-stubbed in :func:`place_partial_tp_oco_stop_entry_v1` and
-``TopStepXAdapter.place_oco_bracket_stop_entry_partial_tp_v1`` until TopStepX
-ticket-split / post-fill BE rules are validated on PRAC.
+**Partial TP (BONGO §1A)** — design types and price math live here; live broker wiring is
+:func:`place_partial_tp_oco_stop_entry_v1` (delegates to ``bot.place_oco_bracket_with_stop_entry_partial_tp`` when present) and
+``TopStepXAdapter.place_oco_bracket_stop_entry_partial_tp_v1`` (dual native stop-entry OCO brackets).
+``StrategyReplayEngine`` intercepts ``place_oco_bracket_with_stop_entry_partial_tp`` and simulates scalp + runner stages.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Partial TP at 1R + runner (docs/BONGO.md §1A) — pure plan + placement stub
+# Partial TP at 1R + runner (docs/BONGO.md §1A) — plan types + placement helpers
 # ---------------------------------------------------------------------------
 
 
@@ -39,10 +39,9 @@ class PartialTpLegSpec:
 class PartialTpStopEntryPlan:
     """Two-ticket split from a single signal (equal contracts each when qty is even).
 
-    **Live intent (not yet implemented end-to-end):**
     - **scalp** — TP at ``scalp_r_multiple`` × initial stop distance (default 1R).
-    - **runner** — TP at the strategy's full target; SL trailed to breakeven when
-      the scalp leg fills (event-driven task; see adapter stub).
+    - **runner** — TP at the strategy's full target. Live dual-bracket path does not
+      auto-tighten runner SL after the scalp fills; replay models that stage.
     """
 
     symbol: str
@@ -131,24 +130,43 @@ async def place_partial_tp_oco_stop_entry_v1(
     plan: PartialTpStopEntryPlan,
     account_id: Optional[str] = None,
     strategy_name: Optional[str] = None,
+    *,
+    scalp_r_multiple: float = 1.0,
 ) -> Dict[str, Any]:
-    """Placeholder: would place two OCO stop-entry brackets (or broker-native split).
+    """Place partial TP stop-entry when the bot exposes ``place_oco_bracket_with_stop_entry_partial_tp``.
 
-    Returns a structured error until :meth:`TopStepXAdapter.place_oco_bracket_stop_entry_partial_tp_v1`
-    and fill handlers (runner SL → BE after scalp fill) are implemented.
+    Otherwise returns a structured not-implemented error (same as the historical stub).
     """
-    logger.warning(
-        "place_partial_tp_oco_stop_entry_v1: not wired — plan symbol=%s side=%s strat=%s",
+    fn = getattr(bot, "place_oco_bracket_with_stop_entry_partial_tp", None)
+    if fn is None or not callable(fn):
+        logger.warning(
+            "place_partial_tp_oco_stop_entry_v1: bot has no place_oco_bracket_with_stop_entry_partial_tp — "
+            "symbol=%s strat=%s",
+            plan.symbol,
+            strategy_name,
+        )
+        return {
+            "success": False,
+            "error": "partial_tp_v1_not_implemented",
+            "plan_roles": (plan.scalp.role, plan.runner.role),
+            "account_id": account_id,
+        }
+    total_qty = int(plan.scalp.quantity) + int(plan.runner.quantity)
+    out = await fn(
         plan.symbol,
         plan.side,
-        strategy_name,
+        total_qty,
+        plan.entry_stop_price,
+        plan.scalp.stop_loss_price,
+        plan.runner.take_profit_price,
+        account_id=account_id,
+        scalp_r_multiple=float(scalp_r_multiple),
+        enable_breakeven=False,
+        strategy_name=strategy_name,
     )
-    return {
-        "success": False,
-        "error": "partial_tp_v1_not_implemented",
-        "plan_roles": (plan.scalp.role, plan.runner.role),
-        "account_id": account_id,
-    }
+    if isinstance(out, dict):
+        return out
+    return {"success": False, "error": "partial_tp_unexpected_response", "raw": str(out)}
 
 # ============================================================================
 # NATIVE TOPSTEPX API METHODS - BRACKET ORDER SYSTEM

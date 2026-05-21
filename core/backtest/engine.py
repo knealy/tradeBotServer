@@ -64,6 +64,10 @@ class BacktestEngine:
         self.current_timestamp: Optional[datetime] = None
         self.trade_counter = 0
         self.order_counter = 0
+        # Last observed close — proxy for the bid/ask at order-placement time. Used to validate
+        # stop-entry direction (see ``BacktestOrder.placement_price``). Updated by the replay loop
+        # via ``set_last_close`` before each strategy ``analyze`` / ``execute`` call.
+        self.last_close: Optional[float] = None
     
     def reset(self):
         """Reset engine state for new backtest."""
@@ -77,6 +81,16 @@ class BacktestEngine:
         self.current_timestamp = None
         self.trade_counter = 0
         self.order_counter = 0
+        self.last_close = None
+
+    def set_last_close(self, close: Optional[float]) -> None:
+        """Record the most recent reference price for STOP direction validation."""
+        if close is None:
+            return
+        try:
+            self.last_close = float(close)
+        except (TypeError, ValueError):
+            pass
     
     def place_order(
         self,
@@ -86,7 +100,8 @@ class BacktestEngine:
         order_type: OrderType = OrderType.MARKET,
         price: Optional[float] = None,
         stop_price: Optional[float] = None,
-        limit_price: Optional[float] = None
+        limit_price: Optional[float] = None,
+        placement_price: Optional[float] = None,
     ) -> str:
         """
         Place an order in the backtest.
@@ -99,13 +114,18 @@ class BacktestEngine:
             price: Entry price (for market orders, filled at next bar open)
             stop_price: Stop trigger price
             limit_price: Limit price
+            placement_price: Reference market price at placement time. When omitted, falls back to
+                ``self.last_close``. STOP orders use this to validate direction (BUY STOP must be
+                above market, SELL STOP must be below) so the engine cannot fill physically
+                impossible "stop-entries pointed the wrong way."
             
         Returns:
             Order ID
         """
         self.order_counter += 1
         order_id = f"BT{self.order_counter:06d}"
-        
+
+        pp = placement_price if placement_price is not None else self.last_close
         order = BacktestOrder(
             order_id=order_id,
             timestamp=self.current_timestamp,
@@ -115,7 +135,8 @@ class BacktestEngine:
             quantity=quantity,
             price=price,
             stop_price=stop_price,
-            limit_price=limit_price
+            limit_price=limit_price,
+            placement_price=float(pp) if pp is not None else None,
         )
         
         self.pending_orders.append(order)
@@ -171,11 +192,17 @@ class BacktestEngine:
                     return True
         
         elif order.order_type == OrderType.STOP:
-            # Stop buy triggers if high >= stop_price
-            # Stop sell triggers if low <= stop_price
+            # STOP-direction validation (see ``BacktestOrder.placement_price``):
+            # - BUY STOP is valid only when placement_price <= stop_price (price must rise to it).
+            # - SELL STOP is valid only when placement_price >= stop_price (price must fall to it).
+            # ``placement_price=None`` (legacy callers) is treated as "trust the caller" so we keep
+            # backward compatibility with existing tests / scripts that don't plumb it through.
+            pp = order.placement_price
             if order.side == OrderSide.BUY:
+                if pp is not None and pp > order.stop_price:
+                    # Wrong-side BUY STOP (below market). A real broker rejects this; do not fill.
+                    return False
                 if bar['high'] >= order.stop_price:
-                    # Fills at stop price + slippage
                     slippage_amount = self.slippage_ticks * tick_size
                     order.filled_price = order.stop_price + slippage_amount
                     order.filled_timestamp = bar.name
@@ -183,8 +210,10 @@ class BacktestEngine:
                     order.status = OrderStatus.FILLED
                     return True
             else:  # SELL
+                if pp is not None and pp < order.stop_price:
+                    # Wrong-side SELL STOP (above market). Do not fill.
+                    return False
                 if bar['low'] <= order.stop_price:
-                    # Fills at stop price - slippage
                     slippage_amount = self.slippage_ticks * tick_size
                     order.filled_price = order.stop_price - slippage_amount
                     order.filled_timestamp = bar.name
@@ -239,6 +268,15 @@ class BacktestEngine:
 
                 self.capital += gross - slip_dollars
 
+                risk_pts = 0.0
+                sl_px = getattr(pos, "stop_loss", None)
+                if sl_px is not None:
+                    try:
+                        risk_pts = abs(float(pos.entry_price) - float(sl_px))
+                    except (TypeError, ValueError):
+                        risk_pts = 0.0
+                initial_risk_dollars = float(risk_pts * qty_to_close * self.point_value)
+
                 # Create trade record
                 self.trade_counter += 1
                 trade = BacktestTrade(
@@ -257,7 +295,8 @@ class BacktestEngine:
                     bars_held=max(0, self.current_bar_index - getattr(pos, "entry_bar_index", 0)),
                     exit_reason=getattr(filled_order, "exit_reason", "signal"),
                     max_favorable_excursion=pos.max_favorable_excursion,
-                    max_adverse_excursion=pos.max_adverse_excursion
+                    max_adverse_excursion=pos.max_adverse_excursion,
+                    initial_risk_dollars=initial_risk_dollars,
                 )
                 self.trades.append(trade)
                 
@@ -379,6 +418,13 @@ class BacktestEngine:
             equity = self._calculate_equity()
             self.equity_curve.append((timestamp, equity))
             
+            # Refresh the reference price BEFORE the strategy emits any orders, so STOP-entry
+            # direction validation uses the bar the strategy actually saw.
+            try:
+                self.set_last_close(float(bar['close']))
+            except (KeyError, TypeError, ValueError):
+                pass
+
             # Call strategy logic
             try:
                 # Strategy returns signals: {"action": "BUY"|"SELL"|None, "quantity": 1, ...}
@@ -476,7 +522,14 @@ class BacktestEngine:
         
         expectancy = (average_win * (winning_trades / total_trades) + 
                      average_loss * (losing_trades / total_trades)) if total_trades > 0 else 0.0
-        
+
+        rr_vals = [
+            t.pnl / t.initial_risk_dollars
+            for t in self.trades
+            if getattr(t, "initial_risk_dollars", 0.0) and t.initial_risk_dollars > 1e-12
+        ]
+        avg_reward_risk = float(np.mean(rr_vals)) if rr_vals else 0.0
+
         # Calculate drawdown
         equity_values = [eq[1] for eq in self.equity_curve]
         max_dd, max_dd_pct = self._calculate_max_drawdown(equity_values)
@@ -507,6 +560,7 @@ class BacktestEngine:
             largest_loss=largest_loss,
             max_drawdown=max_dd,
             max_drawdown_pct=max_dd_pct,
+            avg_reward_risk=avg_reward_risk,
             sharpe_ratio=sharpe,
             sortino_ratio=sortino,
             profit_factor=profit_factor,

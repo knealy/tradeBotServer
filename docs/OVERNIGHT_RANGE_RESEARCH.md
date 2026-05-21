@@ -124,7 +124,7 @@ Open each **`.html`** in Chrome/Safari/Firefox. The page uses the same **`genera
 
 Replay mode sets **`trading_bot._is_strategy_replay`**. The strategy then:
 
-- Evaluates **`analyze()`** only in **`[timing.market_open, timing.market_open + timing.replay_order_window_minutes)`** US/Eastern (configurable; avoids per-bar duplicate brackets when the mock has no working-order mirror).
+- Evaluates **`analyze()`** for bracket placement in CSV replay only on/after **`timing.market_open`** (US/Eastern for that session date). When **`timing.replay_order_window_minutes > 0`**, only that many minutes after open are considered (legacy sparse replay). When **`<= 0`**, there is **no post-open minute cap** — bars from **open through the end of the CSV slice** may still trigger the one-shot session attempt (via **`_replay_sessions_signaled`**), but **never before** `market_open`.
 - Honors **`filters.skip_weekdays`** (Python weekday: Monday **0**, Friday **4**) using the **current bar** clock in replay.
 
 Knobs live in **`config/strategies/overnight_range.toml`** (hot-reload under the executor). Compare metrics before/after each filter change and record a dated row in [`BACKTEST_RESEARCH.md`](BACKTEST_RESEARCH.md) if you keep a lab notebook there.

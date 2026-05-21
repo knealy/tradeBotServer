@@ -195,6 +195,8 @@ class BodyReversionStrategy(BaseStrategy):
         self.breakeven_trigger_r: float = float(
             self._cfg.get_float("position_management.breakeven_trigger_r", 0.5) or 0.5
         )
+        self.partial_tp_enabled: bool = bool(self._cfg.get_bool("signal.partial_tp_enabled", False))
+        self.partial_tp_scalp_r: float = float(self._cfg.get_float("signal.partial_tp_scalp_r", 1.0) or 1.0)
 
         logger.info(
             "✅ body_reversion init: tf=%s body_pct_min=%.2f stop_atr=%.2f tp_r=%.2f hold=%d rth=%s "
@@ -291,6 +293,10 @@ class BodyReversionStrategy(BaseStrategy):
             if anchor.tzinfo is None:
                 anchor = anchor.replace(tzinfo=timezone.utc)
             return anchor.astimezone(self._tz)
+        return datetime.now(self._tz)
+
+    def _session_tz_wall_now(self) -> datetime:
+        """Wall clock in ``signal.session_timezone`` (used by :meth:`_in_trading_window`)."""
         return datetime.now(self._tz)
 
     def _in_rth_window(self, ts_eastern: datetime) -> bool:
@@ -778,6 +784,8 @@ class BodyReversionStrategy(BaseStrategy):
                 take_profit_price=signal["take_profit"],
                 enable_breakeven=False,
                 breakeven_profit_threshold=be_thr,
+                partial_tp_enabled=self.partial_tp_enabled,
+                partial_tp_scalp_r=float(self.partial_tp_scalp_r or 1.0),
             )
             if result and result.get("error"):
                 logger.warning(
@@ -958,9 +966,38 @@ class BodyReversionStrategy(BaseStrategy):
         self.status = StrategyStatus.IDLE
 
     def _in_trading_window(self) -> bool:
+        """Same minute-window rules as :meth:`BaseStrategy._in_trading_window` in ``signal.session_timezone``."""
         if getattr(self.trading_bot, "_is_strategy_replay", False):
             return True
-        return super()._in_trading_window()
+        now_et = self._session_tz_wall_now()
+        current_time = now_et.hour * 60 + now_et.minute
+
+        start_hour, start_min = map(int, self.config.trading_start_time.split(":"))
+        end_hour, end_min = map(int, self.config.trading_end_time.split(":"))
+
+        if self.config.no_trade_start and self.config.no_trade_start.strip():
+            no_trade_start_h, no_trade_start_m = map(int, self.config.no_trade_start.split(":"))
+            no_trade_start = no_trade_start_h * 60 + no_trade_start_m
+        else:
+            no_trade_start = -1
+
+        if self.config.no_trade_end and self.config.no_trade_end.strip():
+            no_trade_end_h, no_trade_end_m = map(int, self.config.no_trade_end.split(":"))
+            no_trade_end = no_trade_end_h * 60 + no_trade_end_m
+        else:
+            no_trade_end = -1
+
+        start_t = start_hour * 60 + start_min
+        end_t = end_hour * 60 + end_min
+
+        if not (start_t <= current_time <= end_t):
+            return False
+
+        if no_trade_start >= 0 and no_trade_end >= 0:
+            if no_trade_start <= current_time <= no_trade_end:
+                return False
+
+        return True
 
     def get_market_condition(self, symbol: str) -> MarketCondition:
         return MarketCondition.RANGING

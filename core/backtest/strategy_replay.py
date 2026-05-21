@@ -10,11 +10,14 @@ from __future__ import annotations
 import bisect
 import logging
 import asyncio
+import pandas as pd
 from typing import Optional, Dict, Any, List, Tuple, Iterator
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .engine import BacktestEngine
 from .models import BacktestResult, OrderSide, OrderType, OrderStatus
+from .ohlcv import sanitize_replay_bars_list
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,39 @@ def intrabar_series_iter(
         )
 
 
+def bar_minutes_since_midnight_et(ts: Any) -> int:
+    """US/Eastern minutes from local midnight for the bar clock (``timestamp`` / index)."""
+    import pandas as pd
+
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    et = t.tz_convert(ZoneInfo("America/New_York"))
+    return int(et.hour) * 60 + int(et.minute)
+
+
+def parse_replay_force_flat_et_minutes(raw: Any) -> Optional[int]:
+    """
+    Parse ``timing.replay_force_flat_et`` (``\"16:00\"`` US/Eastern wall clock).
+
+    Returns minutes since local midnight in US/Eastern, or ``None`` if disabled.
+    """
+    s = str(raw or "").strip()
+    if not s or s.lower() in ("off", "none", "false", "0"):
+        return None
+    parts = s.replace(" ", "").split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hh = int(parts[0])
+        mm = int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    return hh * 60 + mm
+
+
 class StrategyReplayEngine:
     """
     Replay engine that runs actual strategy classes on historical data.
@@ -134,6 +170,7 @@ class StrategyReplayEngine:
         
         # Track original trading bot methods
         self._original_trading_bot_place_oco = None
+        self._original_trading_bot_place_oco_partial = None
         self._original_trading_bot_place_stop = None
         self._original_trading_bot_place_limit = None
         
@@ -147,6 +184,14 @@ class StrategyReplayEngine:
     
     def _process_subbar_fills(self, bar: Any, tick_size: float) -> None:
         """Pending-order simulation for one OHLC row (1m sub-bar or full aggregate bar)."""
+        # Refresh the reference price for STOP direction validation. Any SL/TP orders the bracket
+        # path places below from a freshly-filled entry will inherit this as their placement_price,
+        # which is correct because the entry just filled at (or very near) this price.
+        try:
+            self.backtest_engine.set_last_close(float(bar["close"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+
         # Process pending orders (check fills)
         filled_this_bar: List[Any] = []
         for order in self.backtest_engine.pending_orders[:]:
@@ -240,16 +285,61 @@ class StrategyReplayEngine:
             if stop_loss_price is None or take_profit_price is None:
                 continue
 
-            # Create OCO group using the entry order id
-            oco_group = f"{filled.order_id}_BRACKET"
+            tp_scalp = getattr(filled, "partial_tp_scalp_price", None)
+            q_scalp_attr = getattr(filled, "partial_tp_scalp_qty", None)
 
-            # Attach bracket levels to the open position (for reference)
             pos = self.backtest_engine.positions.get(filled.symbol)
             if pos:
                 pos.stop_loss = float(stop_loss_price)
                 pos.take_profit = float(take_profit_price)
 
             exit_side = OrderSide.SELL if filled.side == OrderSide.BUY else OrderSide.BUY
+
+            # BONGO §1A — stage 1: full-size protective stop + scalp TP (OCO); runner armed after scalp fills.
+            if (
+                tp_scalp is not None
+                and q_scalp_attr is not None
+                and int(q_scalp_attr) > 0
+                and int(q_scalp_attr) < int(filled.quantity)
+            ):
+                oco_group = f"{filled.order_id}_PTP1"
+                q_scalp = int(q_scalp_attr)
+                tp_runner = float(getattr(filled, "partial_tp_runner_price", take_profit_price))
+                if pos:
+                    setattr(pos, "_partial_tp_runner_price", tp_runner)
+                    setattr(pos, "_partial_tp_stage2_armed", False)
+
+                sl_order_id = self.backtest_engine.place_order(
+                    symbol=filled.symbol,
+                    side=exit_side,
+                    quantity=int(filled.quantity),
+                    order_type=OrderType.STOP,
+                    stop_price=float(stop_loss_price),
+                    price=float(stop_loss_price),
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == sl_order_id:
+                        o.oco_group = oco_group
+                        o.exit_reason = "stop_loss"
+                        break
+
+                tp_scalp_id = self.backtest_engine.place_order(
+                    symbol=filled.symbol,
+                    side=exit_side,
+                    quantity=q_scalp,
+                    order_type=OrderType.LIMIT,
+                    limit_price=float(tp_scalp),
+                    price=float(tp_scalp),
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == tp_scalp_id:
+                        o.oco_group = oco_group
+                        o.exit_reason = "partial_tp_scalp"
+                        break
+                continue
+
+            # Standard single-target bracket
+            oco_group = f"{filled.order_id}_BRACKET"
 
             # Stop-loss exit (STOP)
             sl_order_id = self.backtest_engine.place_order(
@@ -281,6 +371,156 @@ class StrategyReplayEngine:
                     o.exit_reason = "take_profit"
                     break
 
+        self._maybe_arm_partial_tp_stage2(filled_this_bar, bar)
+
+    def _maybe_arm_partial_tp_stage2(self, filled_this_bar: List[Any], bar: Any) -> None:
+        """After partial scalp leg fills, place breakeven stop + runner TP (OCO) on remaining qty."""
+        _ = bar
+        for filled in filled_this_bar:
+            if getattr(filled, "exit_reason", None) != "partial_tp_scalp":
+                continue
+            sym = filled.symbol
+            pos = self.backtest_engine.positions.get(sym)
+            if not pos or pos.quantity <= 0:
+                continue
+            if getattr(pos, "_partial_tp_stage2_armed", False):
+                continue
+            runner_px = getattr(pos, "_partial_tp_runner_price", None)
+            if runner_px is None:
+                continue
+
+            entry_px = float(pos.entry_price)
+            qty = int(pos.quantity)
+            if qty <= 0:
+                continue
+
+            oco2 = f"{filled.order_id}_PTP2_{sym}"
+            if pos.side == OrderSide.BUY:
+                ex = OrderSide.SELL
+                sl_id = self.backtest_engine.place_order(
+                    symbol=sym,
+                    side=ex,
+                    quantity=qty,
+                    order_type=OrderType.STOP,
+                    stop_price=entry_px,
+                    price=entry_px,
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == sl_id:
+                        o.oco_group = oco2
+                        o.exit_reason = "stop_loss"
+                        break
+                tp_id = self.backtest_engine.place_order(
+                    symbol=sym,
+                    side=ex,
+                    quantity=qty,
+                    order_type=OrderType.LIMIT,
+                    limit_price=float(runner_px),
+                    price=float(runner_px),
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == tp_id:
+                        o.oco_group = oco2
+                        o.exit_reason = "take_profit"
+                        break
+            else:
+                ex = OrderSide.BUY
+                sl_id = self.backtest_engine.place_order(
+                    symbol=sym,
+                    side=ex,
+                    quantity=qty,
+                    order_type=OrderType.STOP,
+                    stop_price=entry_px,
+                    price=entry_px,
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == sl_id:
+                        o.oco_group = oco2
+                        o.exit_reason = "stop_loss"
+                        break
+                tp_id = self.backtest_engine.place_order(
+                    symbol=sym,
+                    side=ex,
+                    quantity=qty,
+                    order_type=OrderType.LIMIT,
+                    limit_price=float(runner_px),
+                    price=float(runner_px),
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == tp_id:
+                        o.oco_group = oco2
+                        o.exit_reason = "take_profit"
+                        break
+            setattr(pos, "_partial_tp_stage2_armed", True)
+
+    def _replay_force_flat_cutoff_minutes_et(self) -> Optional[int]:
+        """US/Eastern ``HH:MM`` after which replay must be flat (prop day cap). Default ``16:00``."""
+        raw = "16:00"
+        cfg = getattr(self.strategy, "_cfg", None)
+        if cfg is not None and hasattr(cfg, "get_str"):
+            v = cfg.get_str("timing.replay_force_flat_et", "16:00")
+            if v is not None and str(v).strip():
+                raw = str(v).strip()
+            else:
+                fb = cfg.get_str("signal.flat_before", None)
+                if fb is not None and str(fb).strip():
+                    raw = str(fb).strip()
+        return parse_replay_force_flat_et_minutes(raw)
+
+    def _replay_cancel_all_pending_orders(self) -> None:
+        for order in self.backtest_engine.pending_orders[:]:
+            order.status = OrderStatus.CANCELLED
+        self.backtest_engine.pending_orders.clear()
+
+    def _replay_market_flat_all_open_positions(self, bar: pd.Series) -> None:
+        """Market-close every open position at this bar's open; tag exit reason for JSON."""
+        if not isinstance(bar, pd.Series):
+            return
+        px = float(bar["open"])
+        ts_name = bar.name
+        for _ in range(32):  # guard against pathological loops
+            if not self.backtest_engine.positions:
+                break
+            pos = next(iter(self.backtest_engine.positions.values()))
+            closing_side = OrderSide.SELL if pos.side == OrderSide.BUY else OrderSide.BUY
+            close_order_id = self.backtest_engine.place_order(
+                symbol=pos.symbol,
+                side=closing_side,
+                quantity=pos.quantity,
+                order_type=OrderType.MARKET,
+                price=px,
+            )
+            filled = False
+            for order in self.backtest_engine.pending_orders[:]:
+                if order.order_id == close_order_id:
+                    order.filled_price = px
+                    order.filled_timestamp = ts_name
+                    order.status = OrderStatus.FILLED
+                    setattr(order, "exit_reason", "replay_force_flat_et")
+                    self.backtest_engine._update_position(order, px)
+                    self.backtest_engine.filled_orders.append(order)
+                    self.backtest_engine.pending_orders.remove(order)
+                    filled = True
+                    break
+            if not filled:
+                logger.warning("replay force-flat: failed to fill synthetic market for %s", pos.symbol)
+                break
+
+    def _maybe_replay_force_flat_et(
+        self,
+        bar: pd.Series,
+        *,
+        cutoff_minutes: Optional[int],
+        bar_minutes_et: int,
+    ) -> None:
+        if cutoff_minutes is None or bar_minutes_et < cutoff_minutes:
+            return
+        if not self.backtest_engine.positions and not self.backtest_engine.pending_orders:
+            return
+        self._replay_cancel_all_pending_orders()
+        if self.backtest_engine.positions:
+            self._replay_market_flat_all_open_positions(bar)
+
     async def replay(
         self,
         symbol: str,
@@ -301,8 +541,6 @@ class StrategyReplayEngine:
         Returns:
             BacktestResult with performance metrics
         """
-        import pandas as pd
-
         # Handle DataFrame input (from sample data)
         if isinstance(bars, pd.DataFrame):
             # Convert DataFrame to list of dicts
@@ -317,6 +555,9 @@ class StrategyReplayEngine:
                     'volume': int(row.get('volume', row.get('Volume', 0)))
                 })
             bars = bars_list
+
+        if isinstance(bars, list) and bars and isinstance(bars[0], dict):
+            bars = sanitize_replay_bars_list(bars)
         
         logger.info(f"🔄 Starting strategy replay: {self.strategy.config.name} on {symbol}")
         logger.info(f"   Bars: {len(bars)}")
@@ -339,7 +580,12 @@ class StrategyReplayEngine:
         self._intercept_trading_bot_methods()
         
         try:
-            bars_1m_sorted, bars_1m_ns = sort_bars_1m_for_replay(bars_1m)
+            if bars_1m:
+                bars_1m_sorted, bars_1m_ns = sort_bars_1m_for_replay(
+                    sanitize_replay_bars_list(list(bars_1m))
+                )
+            else:
+                bars_1m_sorted, bars_1m_ns = [], []
             agg_minutes = replay_timeframe_to_minutes(replay_timeframe)
             if bars_1m_sorted:
                 logger.info(
@@ -354,10 +600,35 @@ class StrategyReplayEngine:
                 self.backtest_engine.current_bar_index = i
                 self.backtest_engine.current_timestamp = timestamp
 
-                for sub in intrabar_series_iter(
-                    timestamp, bar, bars_1m_sorted, bars_1m_ns, agg_minutes
-                ):
-                    self._process_subbar_fills(sub, tick_size)
+                # Bar clock before intrabar fills so strategies can purge stale resting orders
+                # (e.g. overnight_range stop entries) before OHLC is applied to pending brackets.
+                if hasattr(self.trading_bot, "_current_bar_timestamp"):
+                    self.trading_bot._current_bar_timestamp = timestamp
+                else:
+                    setattr(self.trading_bot, "_current_bar_timestamp", timestamp)
+
+                cutoff_minutes = self._replay_force_flat_cutoff_minutes_et()
+                bar_minutes_et = bar_minutes_since_midnight_et(timestamp)
+                past_cutoff = cutoff_minutes is not None and bar_minutes_et >= cutoff_minutes
+
+                try:
+                    hook = getattr(self.strategy, "replay_before_bar_fills", None)
+                    if hook is not None:
+                        await hook()
+                except Exception as hook_err:
+                    logger.error("Strategy replay_before_bar_fills failed: %s", hook_err, exc_info=True)
+
+                self._maybe_replay_force_flat_et(
+                    bar,
+                    cutoff_minutes=cutoff_minutes,
+                    bar_minutes_et=bar_minutes_et,
+                )
+
+                if not past_cutoff:
+                    for sub in intrabar_series_iter(
+                        timestamp, bar, bars_1m_sorted, bars_1m_ns, agg_minutes
+                    ):
+                        self._process_subbar_fills(sub, tick_size)
                 
                 # Update unrealized P&L
                 if self.backtest_engine.positions:
@@ -366,7 +637,10 @@ class StrategyReplayEngine:
                 # Record equity
                 equity = self.backtest_engine._calculate_equity()
                 self.backtest_engine.equity_curve.append((timestamp, equity))
-                
+
+                if past_cutoff:
+                    continue
+
                 # Call strategy's analyze() method with current bar data
                 try:
                     # Update strategy's active_positions from backtest engine
@@ -378,6 +652,11 @@ class StrategyReplayEngine:
                     # Update mock trading bot's bars to current set
                     if hasattr(self.trading_bot, 'bars'):
                         self.trading_bot.bars = current_bars_for_strategy
+                        # Coarser TF requests delegate to MockTradingBot resampling, which caches by
+                        # target timeframe only; invalidate when the prefix grows.
+                        rc = getattr(self.trading_bot, "_resampled_cache", None)
+                        if isinstance(rc, dict):
+                            rc.clear()
                     if hasattr(self.trading_bot, "bars_1m") and bars_1m_sorted:
                         t_excl = pd.Timestamp(timestamp) + pd.Timedelta(minutes=agg_minutes)
                         self.trading_bot.bars_1m = [
@@ -386,13 +665,6 @@ class StrategyReplayEngine:
                             if pd.Timestamp(b.get("timestamp")) < t_excl
                         ]
 
-                    # Store current bar timestamp so strategy can use it for date determination
-                    # This is critical for strategies that need to know the current date in backtest mode
-                    if hasattr(self.trading_bot, '_current_bar_timestamp'):
-                        self.trading_bot._current_bar_timestamp = timestamp
-                    else:
-                        setattr(self.trading_bot, '_current_bar_timestamp', timestamp)
-                    
                     # Call strategy analyze (it will use trading_bot.get_historical_data internally)
                     # Also mock get_open_positions / get_market_quote so the strategy behaves like live
                     signal = await self._call_strategy_analyze(symbol, current_bars_for_strategy)
@@ -509,6 +781,14 @@ class StrategyReplayEngine:
             self._original_trading_bot_place_oco = self.trading_bot.place_oco_bracket_with_stop_entry
             self.trading_bot.place_oco_bracket_with_stop_entry = self._simulate_place_oco_bracket
         
+        if hasattr(self.trading_bot, "place_oco_bracket_with_stop_entry_partial_tp"):
+            self._original_trading_bot_place_oco_partial = (
+                self.trading_bot.place_oco_bracket_with_stop_entry_partial_tp
+            )
+            self.trading_bot.place_oco_bracket_with_stop_entry_partial_tp = (
+                self._simulate_place_oco_partial_tp
+            )
+        
         # Intercept place_stop_order
         if hasattr(self.trading_bot, 'place_stop_order'):
             self._original_trading_bot_place_stop = self.trading_bot.place_stop_order
@@ -523,6 +803,10 @@ class StrategyReplayEngine:
         """Restore original trading bot methods."""
         if self._original_trading_bot_place_oco:
             self.trading_bot.place_oco_bracket_with_stop_entry = self._original_trading_bot_place_oco
+        if self._original_trading_bot_place_oco_partial:
+            self.trading_bot.place_oco_bracket_with_stop_entry_partial_tp = (
+                self._original_trading_bot_place_oco_partial
+            )
         if self._original_trading_bot_place_stop:
             self.trading_bot.place_stop_order = self._original_trading_bot_place_stop
         if self._original_trading_bot_place_limit:
@@ -538,6 +822,10 @@ class StrategyReplayEngine:
         take_profit_price: float,
         enable_breakeven: bool = False,
         breakeven_profit_threshold: Optional[float] = None,
+        *,
+        partial_tp_enabled: bool = False,
+        partial_tp_scalp_r: float = 1.0,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Simulate bracket order placement in backtest.
@@ -545,6 +833,21 @@ class StrategyReplayEngine:
         This intercepts the strategy's place_bracket_order call and
         simulates execution using the BacktestEngine.
         """
+        strategy_name = kwargs.get("strategy_name")
+        if partial_tp_enabled and int(quantity) >= 2:
+            return await self._simulate_place_oco_partial_tp(
+                symbol,
+                side,
+                quantity,
+                entry_price,
+                stop_loss_price,
+                take_profit_price,
+                None,
+                enable_breakeven,
+                None,
+                scalp_r_multiple=float(partial_tp_scalp_r or 1.0),
+                strategy_name=strategy_name,
+            )
         logger.debug(f"📝 Simulating bracket order: {side} {quantity} {symbol} @ {entry_price:.2f}")
         
         # Convert side to OrderSide
@@ -570,6 +873,8 @@ class StrategyReplayEngine:
                 # Store bracket prices in order (we'll use these when entry fills)
                 entry_order.stop_loss_price = stop_loss_price
                 entry_order.take_profit_price = take_profit_price
+                sn = str(kwargs.get("strategy_name") or "").strip().lower() or "unknown"
+                entry_order.custom_tag = f"TB-stop_bracket-{sn}-replay"
                 break
         
         return {
@@ -653,6 +958,8 @@ class StrategyReplayEngine:
                 # Store bracket prices in order (we'll use these when entry fills)
                 entry_order.stop_loss_price = stop_loss_price
                 entry_order.take_profit_price = take_profit_price
+                sn = str(strategy_name or "").strip().lower() or "unknown"
+                entry_order.custom_tag = f"TB-stop_bracket-{sn}-replay"
                 break
         
         return {
@@ -660,6 +967,69 @@ class StrategyReplayEngine:
             'orderId': entry_order_id,
             'message': 'OCO bracket order simulated in backtest',
             'method': 'backtest_simulation'
+        }
+
+    async def _simulate_place_oco_partial_tp(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_full_price: float,
+        account_id: Optional[str] = None,
+        enable_breakeven: bool = False,
+        strategy_name: Optional[str] = None,
+        *,
+        scalp_r_multiple: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Simulate BONGO §1A partial TP stop-entry (two-stage exits in ``_process_subbar_fills``)."""
+        from core.bracket_orders import build_partial_tp_stop_entry_plan
+
+        _ = (account_id, enable_breakeven, strategy_name)
+        if int(quantity) < 2:
+            return {"success": False, "error": "partial_tp_requires_quantity_ge_2", "orderId": None}
+        logger.debug(
+            "📝 Simulating partial-TP OCO stop entry: %s %s %s @ %.2f",
+            side,
+            quantity,
+            symbol,
+            entry_price,
+        )
+        plan = build_partial_tp_stop_entry_plan(
+            symbol=symbol,
+            side=side,
+            quantity=int(quantity),
+            entry_stop_price=float(entry_price),
+            stop_loss_price=float(stop_loss_price),
+            take_profit_full_price=float(take_profit_full_price),
+            scalp_r_multiple=float(scalp_r_multiple or 1.0),
+        )
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        entry_order_id = self.backtest_engine.place_order(
+            symbol=symbol,
+            side=order_side,
+            quantity=int(quantity),
+            order_type=OrderType.STOP,
+            stop_price=float(entry_price),
+            price=float(entry_price),
+        )
+        for order in self.backtest_engine.pending_orders:
+            if order.order_id == entry_order_id:
+                order.stop_loss_price = float(stop_loss_price)
+                order.take_profit_price = float(take_profit_full_price)
+                order.partial_tp_scalp_price = float(plan.scalp.take_profit_price)
+                order.partial_tp_runner_price = float(plan.runner.take_profit_price)
+                order.partial_tp_scalp_qty = int(plan.scalp.quantity)
+                order.partial_tp_runner_qty = int(plan.runner.quantity)
+                sn = str(strategy_name or "").strip().lower() or "unknown"
+                order.custom_tag = f"TB-stop_bracket-{sn}-replay"
+                break
+        return {
+            "success": True,
+            "orderId": entry_order_id,
+            "message": "Partial-TP OCO bracket simulated in backtest",
+            "method": "backtest_simulation_partial_tp",
         }
     
     async def _simulate_place_stop_order(
@@ -781,17 +1151,10 @@ class StrategyReplayEngine:
             replay_tf = (self._replay_timeframe or "").lower()
             cur_utc = _current_replay_time_utc()
 
-            # Serve from bars_list when: no explicit replay TF, exact TF match, or both are
-            # minute-based bars from the same CSV (e.g. replay 1m, strategy asks 5m).
-            intraday_from_csv = (
-                (not replay_tf)
-                or (tf == replay_tf)
-                or (
-                    replay_tf
-                    and tf.endswith("m")
-                    and replay_tf.endswith("m")
-                )
-            )
+            # Serve from bars_list only for the native replay cadence (or legacy runs with no
+            # replay_tf). Do not treat ``15m``/``30m`` as "same CSV" when replay is ``5m`` — those
+            # must go through ``MockTradingBot.get_historical_data`` so OHLCV resample applies.
+            intraday_from_csv = (not replay_tf) or (tf == replay_tf)
             if intraday_from_csv:
                 filtered = []
                 start_utc = start_time.astimezone(timezone.utc) if (start_time and start_time.tzinfo) else start_time

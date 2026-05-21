@@ -13,11 +13,14 @@ implements the same *mechanical* rules so we can replay them independently;
 
 1. Range = high/low of all 5m bars whose **open** in US/Eastern is in ``[07:00, 08:00)``.
 2. After the range window, first **close** above range high ⇒ **high sweep**; below range low ⇒ **low sweep**.
-3. **Default (``require_reentry_close = false``)** — on that same bar, arm a **fade** (stop-entry + brackets, same bot path as overnight_range):
-   - High sweep → **SHORT** at range **high**, TP at **midpoint** (modulo ``tp_mult``), SL scaled by ``sl_mult``.
-   - Low sweep → **LONG** at range **low**, symmetric.
-   **Legacy (``signal.require_reentry_close = true``)** — wait for an additional bar whose **close** is back
-   inside the **inner band** ``[L + reentry_frac·W, H − reentry_frac·W]`` (``reentry_frac=0`` → full box).
+   Bracket **fills** may occur on later bars once the stop triggers (often **after 08:00 ET**); the 7–8 window defines the anchor box, not the only wall-clock time when trades may complete.
+   **Fade validity:** new sweeps / re-entry arms are ignored after ``range_end_open`` on the anchor ET date plus ``range_effectiveness_hours`` (default **4** → cutoff **12:00 ET** when the box ends at 08:00).
+3. **Advance stop (``signal.reentry_threshold_points > 0``)** — on the **first close outside** the box,
+   immediately place stop-entry + brackets ``threshold`` pts back inside (overnight_range style):
+   low sweep → **LONG** stop at **L + threshold**; high sweep → **SHORT** stop at **H − threshold**.
+   **Immediate at extreme (``require_reentry_close = false`` and threshold = 0)** — entry at range **high** / **low**.
+   **Legacy candle-close (``require_reentry_close = true`` and threshold = 0)** — wait for **close** back
+   inside ``[L + reentry_frac·W, H − reentry_frac·W]``.
 4. Multiple sequences per session are allowed after the simulated trade is flat again (new sweep required).
 
 Intrabar: pass ``one_minute_df`` into ``sieve_simulate_from_ohlcv`` to resolve
@@ -101,6 +104,15 @@ def _open_et(ts, tz) -> datetime:
 def _in_morning_range_window(open_et: datetime, start_t: time, end_open_t: time) -> bool:
     t = open_et.time()
     return start_t <= t < end_open_t
+
+
+def _et_datetime_combine(tz, d: date, t: time) -> datetime:
+    """Wall-clock *d* + *t* in *tz* (pytz or ZoneInfo)."""
+    naive = datetime.combine(d, t)
+    loc = getattr(tz, "localize", None)
+    if callable(loc):
+        return loc(naive)
+    return naive.replace(tzinfo=tz)
 
 
 def _sieve_tr_atr_arrays(
@@ -302,10 +314,15 @@ def sieve_simulate_from_ohlcv(
     sl_mult: float = 1.0,
     tp_mult: float = 1.0,
     reentry_frac: float = 0.0,
+    reentry_threshold_points: float = 0.0,
     require_high_atr: bool = False,
     atr_period: int = 14,
     atr_regime_lookback: int = 500,
     atr_regime_quantile: float = 0.75,
+    range_effectiveness_hours: float = 4.0,
+    sl_fixed_pts: float = 0.0,
+    min_range_width_points: float = 0.0,
+    max_range_width_points: float = 0.0,
 ) -> List[SieveTrade]:
     """Offline trade list + win/loss labels (no execution model).
 
@@ -333,6 +350,11 @@ def sieve_simulate_from_ohlcv(
     ``require_high_atr`` (BONGO §4.3): when **True**, only arm when the current
     bar's rolling ATR exceeds the rolling ``atr_regime_quantile`` of the prior
     ``atr_regime_lookback`` ATR samples (same spirit as ``body_reversion``).
+
+    ``range_effectiveness_hours`` (default **4.0**, use **0** to disable): after
+    ``range_end_open`` on the anchor session date in ``session_tz``, no new
+    fade arms (``scan`` / ``wait_re``) once the bar open is at or past that
+    instant plus this many hours (matches live ``analyze``).
     """
     tz = _load_tz(session_tz)
     if df is None or len(df) == 0:
@@ -351,6 +373,10 @@ def sieve_simulate_from_ohlcv(
     sl_m = max(0.1, float(sl_mult))
     tp_m = max(0.1, float(tp_mult))
     r_frac = max(0.0, min(0.49, float(reentry_frac)))
+    threshold_pts = max(0.0, float(reentry_threshold_points or 0.0))
+    sl_fp = max(0.0, float(sl_fixed_pts or 0.0))
+    min_w = max(0.0, float(min_range_width_points or 0.0))
+    max_w = max(0.0, float(max_range_width_points or 0.0))
     atr_arr: Optional[np.ndarray] = None
     if require_high_atr:
         h_a = work["high"].to_numpy(dtype=float, copy=False)
@@ -382,8 +408,12 @@ def sieve_simulate_from_ohlcv(
         c: float,
         d: date,
         bar_idx: int,
+        *,
+        entry_depth_pts: float = 0.0,
     ) -> None:
-        """Arm synthetic entry at range extreme (mirrors stop-entry fade geometry)."""
+        """Arm synthetic entry at the range edge (default) or ``entry_depth_pts`` inside the
+        range (used by the points-threshold re-entry mode so the fill simulates the broker
+        stop-entry waiting for price to traverse back to the trigger level)."""
         nonlocal pending, in_trade, phase, sweep_side, trades, fades_this_session
         if max_fades_per_session and fades_this_session >= max_fades_per_session:
             return
@@ -396,16 +426,31 @@ def sieve_simulate_from_ohlcv(
                 len(work),
             ):
                 return
+        # Range-width guards.
+        if min_w > 0 and width < min_w:
+            return
+        if max_w > 0 and width > max_w:
+            return
         fades_this_session += 1
         half = width / 2.0
+        depth = max(0.0, float(entry_depth_pts or 0.0))
+        max_depth = max(0.0, half - 1e-6)
+        if depth > max_depth:
+            depth = max_depth
         if sv == "high":
-            entry = H
-            stop_px = H + half * sl_m
+            entry = H - depth
+            if sl_fp > 0:
+                stop_px = entry + sl_fp
+            else:
+                stop_px = H + half * sl_m
             tgt_px = H - half * tp_m
             side = "SHORT"
         else:
-            entry = L
-            stop_px = L - half * sl_m
+            entry = L + depth
+            if sl_fp > 0:
+                stop_px = entry - sl_fp
+            else:
+                stop_px = L - half * sl_m
             tgt_px = L + half * tp_m
             side = "LONG"
 
@@ -642,6 +687,17 @@ def sieve_simulate_from_ohlcv(
         if not range_ready or phase == "idle":
             continue
 
+        if (
+            range_effectiveness_hours > 0
+            and not in_trade
+            and open_et
+            >= _et_datetime_combine(tz, d, range_end_open)
+            + timedelta(hours=float(range_effectiveness_hours))
+        ):
+            phase = "idle"
+            sweep_side = None
+            continue
+
         # Same as live analyze(): allow another immediate arm only after a close inside the range.
         if L <= c <= H:
             block_next_immediate = False
@@ -650,8 +706,15 @@ def sieve_simulate_from_ohlcv(
         if phase == "scan" and not in_trade:
             if sweep_side is None:
                 if c > H:
-                    sweep_side = "high"
-                    if require_reentry_close:
+                    if threshold_pts > 0.0:
+                        if not block_next_immediate:
+                            arm_from_sweep(
+                                "high", ts, o, hi, lo, c, d, bar_idx,
+                                entry_depth_pts=threshold_pts,
+                            )
+                            block_next_immediate = True
+                    elif require_reentry_close:
+                        sweep_side = "high"
                         phase = "wait_re"
                     else:
                         if block_next_immediate:
@@ -660,8 +723,15 @@ def sieve_simulate_from_ohlcv(
                             arm_from_sweep("high", ts, o, hi, lo, c, d, bar_idx)
                             block_next_immediate = True
                 elif c < L:
-                    sweep_side = "low"
-                    if require_reentry_close:
+                    if threshold_pts > 0.0:
+                        if not block_next_immediate:
+                            arm_from_sweep(
+                                "low", ts, o, hi, lo, c, d, bar_idx,
+                                entry_depth_pts=threshold_pts,
+                            )
+                            block_next_immediate = True
+                    elif require_reentry_close:
+                        sweep_side = "low"
                         phase = "wait_re"
                     else:
                         if block_next_immediate:
@@ -671,6 +741,22 @@ def sieve_simulate_from_ohlcv(
                             block_next_immediate = True
 
         if phase == "wait_re" and not in_trade and sweep_side is not None:
+            if threshold_pts > 0.0:
+                # Points-threshold re-entry: arm the moment price traverses ``threshold_pts``
+                # into the range (intra-bar). Entry rides the trigger level itself so the
+                # simulated stop-entry direction is valid.
+                if sweep_side == "high":
+                    trigger_px = H - threshold_pts
+                    crossed = lo <= trigger_px
+                else:
+                    trigger_px = L + threshold_pts
+                    crossed = hi >= trigger_px
+                if crossed:
+                    arm_from_sweep(
+                        sweep_side, ts, o, hi, lo, c, d, bar_idx,
+                        entry_depth_pts=threshold_pts,
+                    )
+                continue
             inner_lo = L + r_frac * width
             inner_hi = H - r_frac * width
             if inner_lo <= c <= inner_hi:
@@ -686,6 +772,10 @@ class MorningRangeReversionStrategy(BaseStrategy):
     bracket legs (``place_oco_bracket_with_stop_entry``, same pathway as overnight_range).
     Set ``signal.require_reentry_close = true`` to restore the legacy “sweep then wait
     for close back inside (inner band via ``reentry_frac``)” flow.
+
+    ``signal.range_effectiveness_hours`` (default **4**): after ``range_end_open`` on the
+    anchor ET session date, no new fade signals (including re-entry) once wall-clock is
+    past that instant plus the configured hours.
     """
 
     NAME = "morning_range_reversion"
@@ -715,11 +805,29 @@ class MorningRangeReversionStrategy(BaseStrategy):
         # Execution geometry knobs (can be overridden by replay runner via setattr)
         self.sl_mult: float = float(self._cfg.get_float("signal.sl_mult", 1.0) or 1.0)
         self.tp_mult: float = float(self._cfg.get_float("signal.tp_mult", 1.0) or 1.0)
+        # Fixed-pts SL override: when > 0, stop is placed sl_fixed_pts away from entry
+        # rather than at L/H ± half * sl_mult.  Improves R-ratio on typical-range days.
+        self.sl_fixed_pts: float = float(self._cfg.get_float("signal.sl_fixed_pts", 0.0) or 0.0)
+        # Range-width guard: skip fade when morning range is outside [min, max] (0 = off).
+        self.min_range_width_points: float = float(
+            self._cfg.get_float("signal.min_range_width_points", 0.0) or 0.0
+        )
+        self.max_range_width_points: float = float(
+            self._cfg.get_float("signal.max_range_width_points", 0.0) or 0.0
+        )
         self.reentry_frac: float = float(self._cfg.get_float("signal.reentry_frac", 0.0) or 0.0)
         # False: first close outside range → stop-entry + brackets at once (overnight-style OCO path).
         # True: wait for a close back inside the inner band (reentry_frac) before signaling (legacy).
         self.require_reentry_close: bool = bool(
             self._cfg.get_bool("signal.require_reentry_close", False)
+        )
+        # Points-threshold re-entry trigger (replaces the candle-close wait when > 0). Detects
+        # price physically returning into the range by this many points (intra-bar) and places the
+        # stop-entry at the trigger level itself — guaranteed valid stop direction (price has to
+        # traverse back to fire), and matches the realistic broker flow the legacy candle-close
+        # path violated. See ``BacktestEngine`` placement_price guard for the fill semantics.
+        self.reentry_threshold_points: float = float(
+            self._cfg.get_float("signal.reentry_threshold_points", 7.0) or 0.0
         )
         # 0 = unlimited; else max completed fade *signals* per ET session date (same anchor day).
         self.max_fades_per_session: int = int(self._cfg.get_int("signal.max_fades_per_session", 0))
@@ -728,6 +836,19 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self.atr_period: int = int(self._cfg.get_int("signal.atr_period", 14))
         self.atr_regime_lookback: int = int(self._cfg.get_int("signal.atr_regime_lookback", 500))
         self.atr_regime_quantile: float = float(self._cfg.get_float("signal.atr_regime_quantile", 0.75))
+        # After range_end_open on the anchor ET date, ignore new sweeps / re-arms past this horizon (0 = off).
+        self.range_effectiveness_hours: float = float(
+            self._cfg.get_float("signal.range_effectiveness_hours", 4.0) or 4.0
+        )
+        # Maximum age of the most recent bar before live ``analyze()`` aborts loudly.
+        # See toml comment + docs/GOTCHAS.md (2026-05-21 outage). Replay bypasses.
+        self.max_bar_staleness_seconds: float = float(
+            self._cfg.get_float("signal.max_bar_staleness_seconds", 600.0) or 0.0
+        )
+        # Throttle the STALE DATA error log to 1× per ``_stale_log_throttle_seconds``
+        # so we don't flood the file when REST has been frozen for an hour.
+        self._stale_log_throttle_seconds: float = 60.0
+        self._stale_last_logged_at: Dict[str, float] = {}
 
         # BONGO §1B — live-only broker breakeven (``TopStepXTradingBot`` generic monitor).
         self.breakeven_enabled: bool = bool(
@@ -754,8 +875,8 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
         logger.info(
             "✅ morning_range_reversion init: tf=%s session=%s range=%s-%s flat_before=%s "
-            "sl=%.2f tp=%.2f reentry=%.2f require_reentry_close=%s max_fades_per_session=%s "
-            "high_atr=%s",
+            "sl=%.2f tp=%.2f reentry=%.2f reentry_threshold_pts=%.2f require_reentry_close=%s "
+            "max_fades_per_session=%s range_effectiveness_h=%s high_atr=%s partial_tp=%s",
             self.timeframe,
             self.session_zone,
             self.range_start,
@@ -764,10 +885,116 @@ class MorningRangeReversionStrategy(BaseStrategy):
             self.sl_mult,
             self.tp_mult,
             self.reentry_frac,
+            self.reentry_threshold_points,
             self.require_reentry_close,
             self.max_fades_per_session,
+            self.range_effectiveness_hours,
             "on" if self.require_high_atr else "off",
+            "on"
+            if bool(self._cfg.get_bool("signal.partial_tp_enabled", False))
+            else "off",
         )
+
+    def _tp_mult(self, symbol: str) -> float:
+        """Per-symbol ``signal.tp_mult`` (``[symbols.<SYM>.signal]`` override)."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.tp_mult", default=None)
+        if v is not None:
+            return max(0.1, float(v))
+        return max(0.1, float(self.tp_mult))
+
+    def _reentry_threshold_pts(self, symbol: str) -> float:
+        """Per-symbol ``signal.reentry_threshold_points`` (``[symbols.<SYM>.signal]`` override).
+
+        Returns 0 when explicitly set to <=0 so callers can disable the threshold without having
+        to also set ``require_reentry_close=false``. The base TOML default is **7**, calibrated
+        for MNQ; smaller-contract symbols (MES/MGC) need a finer trigger via override.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.reentry_threshold_points", default=None)
+        if v is not None:
+            return max(0.0, float(v))
+        return max(0.0, float(self.reentry_threshold_points))
+
+    def _sl_fixed_pts(self, symbol: str) -> float:
+        """Per-symbol ``signal.sl_fixed_pts`` override. 0 = use legacy half-range SL."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.sl_fixed_pts", default=None)
+        if v is not None:
+            return max(0.0, float(v))
+        return max(0.0, float(self.sl_fixed_pts))
+
+    def _min_range_width(self, symbol: str) -> float:
+        """Per-symbol ``signal.min_range_width_points`` override. 0 = no minimum."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.min_range_width_points", default=None)
+        if v is not None:
+            return max(0.0, float(v))
+        return max(0.0, float(self.min_range_width_points))
+
+    def _max_range_width(self, symbol: str) -> float:
+        """Per-symbol ``signal.max_range_width_points`` override. 0 = no cap."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.max_range_width_points", default=None)
+        if v is not None:
+            return max(0.0, float(v))
+        return max(0.0, float(self.max_range_width_points))
+
+    def _max_staleness_seconds(self, symbol: str) -> float:
+        """Per-symbol ``signal.max_bar_staleness_seconds`` override. 0 = guard disabled."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.max_bar_staleness_seconds", default=None)
+        if v is not None:
+            return max(0.0, float(v))
+        return max(0.0, float(self.max_bar_staleness_seconds))
+
+    def _bars_are_stale(self, symbol: str, bars: List[Dict[str, Any]]) -> bool:
+        """Return True if the most recent bar is older than the configured guard.
+
+        Skipped automatically during replay/backtest where ``_is_strategy_replay`` is set
+        on the bot or ``_current_bar_timestamp`` anchors the clock. Logs a throttled
+        ``⛔ STALE DATA`` error on the first hit (per-symbol, once per minute).
+        """
+        threshold = self._max_staleness_seconds(symbol)
+        if threshold <= 0:
+            return False
+        bot = self.trading_bot
+        if getattr(bot, "_is_strategy_replay", False):
+            return False
+        if getattr(bot, "_current_bar_timestamp", None) is not None:
+            return False
+        if not bars:
+            return False
+        last = bars[-1]
+        ts = last.get("timestamp") or last.get("time") or last.get("t")
+        if ts is None:
+            return False
+        try:
+            if isinstance(ts, datetime):
+                last_dt = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            else:
+                last_dt = pd.to_datetime(ts, utc=True).to_pydatetime()
+        except Exception:
+            return False
+        now_utc = datetime.now(timezone.utc)
+        age_s = (now_utc - last_dt).total_seconds()
+        if age_s <= threshold:
+            return False
+
+        import time as _time
+
+        now_mono = _time.monotonic()
+        last_logged = self._stale_last_logged_at.get(symbol, 0.0)
+        if now_mono - last_logged >= self._stale_log_throttle_seconds:
+            logger.error(
+                "⛔ STALE DATA for %s: last bar %s is %.0fs old (threshold %.0fs) — "
+                "skipping analyze. Both REST historical feed AND Market Hub live cache are "
+                "stale; verify Market Hub log line '📡 Market Hub wired …' on startup, "
+                "check SignalR connectivity, and inspect broker /api/History/retrieveBars "
+                "(see docs/GOTCHAS.md → 'Live data freshness').",
+                symbol, last_dt.isoformat(), age_s, threshold,
+            )
+            self._stale_last_logged_at[symbol] = now_mono
+        else:
+            logger.debug(
+                "stale data continues for %s: %.0fs old (next log in %.0fs)",
+                symbol, age_s, self._stale_log_throttle_seconds - (now_mono - last_logged),
+            )
+        return True
 
     def _tick_size(self, symbol: str) -> float:
         return float(self.tick_sizes.get(symbol.upper(), 0.25))
@@ -775,6 +1002,11 @@ class MorningRangeReversionStrategy(BaseStrategy):
     def _round_px(self, symbol: str, x: float) -> float:
         t = self._tick_size(symbol)
         return round(round(x / t) * t, 6)
+
+    def _fade_deadline_et(self, anchor_et_date: date) -> datetime:
+        return _et_datetime_combine(self._tz, anchor_et_date, self.range_end_open) + timedelta(
+            hours=float(self.range_effectiveness_hours or 0.0)
+        )
 
     def _bar_timestamp_eastern(self, bar: Dict[str, Any]) -> Optional[datetime]:
         ts = bar.get("timestamp") or bar.get("time") or bar.get("t")
@@ -977,8 +1209,16 @@ class MorningRangeReversionStrategy(BaseStrategy):
         width: float,
         reason_tag: str,
         bars: Optional[List[Dict[str, Any]]] = None,
+        *,
+        entry_depth_pts: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
-        """Build fade signal (SHORT on high sweep, LONG on low sweep) at range extreme."""
+        """Build fade signal (SHORT on high sweep, LONG on low sweep).
+
+        With ``entry_depth_pts > 0`` the entry is shifted *inside* the range by that many points
+        (used by the points-threshold re-entry mode so the stop-entry is placed at the trigger
+        level, which guarantees a valid stop direction). The stop loss stays anchored to the
+        range extreme so risk geometry vs the range is preserved.
+        """
         if self.require_high_atr:
             if not bars:
                 return None
@@ -989,21 +1229,50 @@ class MorningRangeReversionStrategy(BaseStrategy):
         if mf > 0 and int(st.get("fades_this_session", 0) or 0) >= mf:
             return None
         half = width / 2.0
+
+        # Range-width guards: skip if range is too narrow (near-zero TP) or too wide (oversized risk).
+        min_w = self._min_range_width(symbol)
+        max_w = self._max_range_width(symbol)
+        if min_w > 0 and width < min_w:
+            logger.debug(
+                "morning_range_reversion %s: skip fade — range %.2f pts narrower than min %.2f",
+                symbol, width, min_w,
+            )
+            return None
+        if max_w > 0 and width > max_w:
+            logger.debug(
+                "morning_range_reversion %s: skip fade — range %.2f pts wider than max %.2f",
+                symbol, width, max_w,
+            )
+            return None
+
         sl_mult = max(0.1, float(getattr(self, "sl_mult", 1.0) or 1.0))
-        tp_mult = max(0.1, float(getattr(self, "tp_mult", 1.0) or 1.0))
+        tp_mult = self._tp_mult(symbol)
+        sl_fp = self._sl_fixed_pts(symbol)
+        depth = max(0.0, float(entry_depth_pts or 0.0))
+        # Cap depth so the entry never crosses to the wrong side of the range midpoint.
+        max_depth = max(0.0, half - 1e-6)
+        if depth > max_depth:
+            depth = max_depth
         if sweep == "high":
             if not self.allow_short:
                 return None
             action = "SHORT"
-            entry = self._round_px(symbol, H)
-            stop = self._round_px(symbol, H + half * sl_mult)
+            entry = self._round_px(symbol, H - depth)
+            if sl_fp > 0:
+                stop = self._round_px(symbol, entry + sl_fp)
+            else:
+                stop = self._round_px(symbol, H + half * sl_mult)
             tp = self._round_px(symbol, H - half * tp_mult)
         else:
             if not self.allow_long:
                 return None
             action = "LONG"
-            entry = self._round_px(symbol, L)
-            stop = self._round_px(symbol, L - half * sl_mult)
+            entry = self._round_px(symbol, L + depth)
+            if sl_fp > 0:
+                stop = self._round_px(symbol, entry - sl_fp)
+            else:
+                stop = self._round_px(symbol, L - half * sl_mult)
             tp = self._round_px(symbol, L + half * tp_mult)
 
         self._last_signal_bar[symbol] = bar_et
@@ -1034,6 +1303,9 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 limit=self.lookback_bars,
             )
             if not bars or len(bars) < 10:
+                return None
+
+            if self._bars_are_stale(symbol, bars):
                 return None
 
             last = bars[-1]
@@ -1101,6 +1373,11 @@ class MorningRangeReversionStrategy(BaseStrategy):
             mid = float(st["mid"])
             width = float(st["width"])
 
+            if float(self.range_effectiveness_hours or 0.0) > 0 and bar_et >= self._fade_deadline_et(d):
+                st["phase"] = "idle"
+                st["sweep_side"] = None
+                return None
+
             # Reset immediate-streak guard when price trades back through the range (incl. edges).
             if L <= c <= H:
                 st["immediate_block_until_inside"] = False
@@ -1112,10 +1389,32 @@ class MorningRangeReversionStrategy(BaseStrategy):
             if not flat:
                 return None
 
-            # sweep: either arm immediately (stop-entry + brackets) or wait for re-entry close
+            # sweep: advance stop-entry at trigger (threshold mode), wait for re-entry, or immediate at extreme
             if st["phase"] == "scan" and st["sweep_side"] is None:
+                threshold_pts = self._reentry_threshold_pts(symbol)
                 if c > H:
-                    st["sweep_side"] = "high"
+                    sweep = "high"
+                    if threshold_pts > 0.0:
+                        # Overnight-range style: on first close outside the box, place stop-entry
+                        # ``threshold`` pts back inside (SHORT at H − threshold).
+                        if st.get("immediate_block_until_inside"):
+                            return None
+                        sig = self._fade_signal_after_sweep(
+                            symbol,
+                            bar_et,
+                            sweep,
+                            H,
+                            L,
+                            mid,
+                            width,
+                            "sweep_advance_stop",
+                            bars,
+                            entry_depth_pts=threshold_pts,
+                        )
+                        if sig:
+                            st["immediate_block_until_inside"] = True
+                        return sig
+                    st["sweep_side"] = sweep
                     if self.require_reentry_close:
                         st["phase"] = "wait_re"
                         return None
@@ -1124,13 +1423,32 @@ class MorningRangeReversionStrategy(BaseStrategy):
                         return None
                     st["sweep_side"] = None
                     sig = self._fade_signal_after_sweep(
-                        symbol, bar_et, "high", H, L, mid, width, "immediate_stop", bars
+                        symbol, bar_et, sweep, H, L, mid, width, "immediate_stop", bars
                     )
                     if sig:
                         st["immediate_block_until_inside"] = True
                     return sig
                 if c < L:
-                    st["sweep_side"] = "low"
+                    sweep = "low"
+                    if threshold_pts > 0.0:
+                        if st.get("immediate_block_until_inside"):
+                            return None
+                        sig = self._fade_signal_after_sweep(
+                            symbol,
+                            bar_et,
+                            sweep,
+                            H,
+                            L,
+                            mid,
+                            width,
+                            "sweep_advance_stop",
+                            bars,
+                            entry_depth_pts=threshold_pts,
+                        )
+                        if sig:
+                            st["immediate_block_until_inside"] = True
+                        return sig
+                    st["sweep_side"] = sweep
                     if self.require_reentry_close:
                         st["phase"] = "wait_re"
                         return None
@@ -1139,7 +1457,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
                         return None
                     st["sweep_side"] = None
                     sig = self._fade_signal_after_sweep(
-                        symbol, bar_et, "low", H, L, mid, width, "immediate_stop", bars
+                        symbol, bar_et, sweep, H, L, mid, width, "immediate_stop", bars
                     )
                     if sig:
                         st["immediate_block_until_inside"] = True
@@ -1147,12 +1465,41 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 return None
 
             if st["phase"] == "wait_re" and st["sweep_side"] is not None:
+                threshold_pts = self._reentry_threshold_pts(symbol)
+                sweep = st["sweep_side"]
+                if threshold_pts > 0.0:
+                    # Points-threshold trigger: arm the moment price physically retraces
+                    # ``threshold_pts`` into the range from the sweep side. Entry is the trigger
+                    # level itself so the stop-entry has a valid direction (price must traverse
+                    # back to fire — no more imaginary fills at the range extreme).
+                    if sweep == "high":
+                        trigger_px = H - threshold_pts
+                        crossed = lo <= trigger_px
+                    else:
+                        trigger_px = L + threshold_pts
+                        crossed = hi >= trigger_px
+                    if not crossed:
+                        return None
+                    st["sweep_side"] = None
+                    st["phase"] = "scan"
+                    return self._fade_signal_after_sweep(
+                        symbol,
+                        bar_et,
+                        sweep,
+                        H,
+                        L,
+                        mid,
+                        width,
+                        "reentry_threshold_pts",
+                        bars,
+                        entry_depth_pts=threshold_pts,
+                    )
+                # Legacy candle-close path: wait for a 5m close back inside the inner band.
                 frac = max(0.0, min(0.49, float(getattr(self, "reentry_frac", 0.0) or 0.0)))
                 inner_lo = L + frac * width
                 inner_hi = H - frac * width
                 if not (inner_lo <= c <= inner_hi):
                     return None
-                sweep = st["sweep_side"]
                 st["sweep_side"] = None
                 st["phase"] = "scan"
                 return self._fade_signal_after_sweep(
@@ -1174,6 +1521,8 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 if self.breakeven_enabled and r0 > 0
                 else None
             )
+            partial_on = bool(self._cfg.get_bool("signal.partial_tp_enabled", False))
+            partial_r = float(self._cfg.get_float("signal.partial_tp_scalp_r", 1.0) or 1.0)
             result = await self.place_bracket_order(
                 symbol=signal["symbol"],
                 side=side,
@@ -1183,6 +1532,8 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 take_profit_price=signal["take_profit"],
                 enable_breakeven=False,
                 breakeven_profit_threshold=be_thr,
+                partial_tp_enabled=partial_on and qty >= 2,
+                partial_tp_scalp_r=partial_r,
             )
             if result and result.get("error"):
                 logger.warning(

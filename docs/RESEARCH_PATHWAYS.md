@@ -170,7 +170,7 @@ Same CSV contract: **1m (or 5m) OHLCV**, same `--start` / `--end`, then:
 | **VWAP Z-score reversion** (new) | [`config/strategies/vwap_zscore_reversion.toml`](../config/strategies/vwap_zscore_reversion.toml) | `--strategy=vwap_zscore_reversion --replay` |
 | **Body reversion** (new, big-body 5m fade) | [`config/strategies/body_reversion.toml`](../config/strategies/body_reversion.toml) | `--strategy=body_reversion --timeframe=5m --replay` |
 | Trend | [`config/strategies/trend_following.toml`](../config/strategies/trend_following.toml), [`trend_scalping.toml`](../config/strategies/trend_scalping.toml) | matching `--strategy=` |
-| Candle pattern + EMA filter | [`config/strategies/simple_candle.toml`](../config/strategies/simple_candle.toml) | `--strategy=simple_candle` |
+| Candle pattern + EMA filter (testing-only live) | [`config/strategies/simple_candle.toml`](../config/strategies/simple_candle.toml) | `--strategy=simple_candle` (replay / `ALLOW_TESTING_STRATEGIES=1` for executor) |
 | Momentum | [`config/strategies/simple_momentum.toml`](../config/strategies/simple_momentum.toml) | `--strategy=simple_momentum` |
 | Research grid + OOS + MC | — | `python -m core.research.runner --help` (CSV flags in [BACKTEST_RESEARCH.md](BACKTEST_RESEARCH.md)) |
 

@@ -23,7 +23,9 @@ overnight_end   = "18:15"            # legacy env: OVERNIGHT_END_TIME
 market_open     = "18:15"            # legacy env: MARKET_OPEN_TIME
 zone_anchor     = "18:15"            # legacy env: ZONE_ANCHOR_TIME
 session_timezone = "US/Eastern"      # legacy env: STRATEGY_TIMEZONE
-replay_order_window_minutes = 8    # CSV strategy replay: minutes after market_open (ET) in which analyze() may run
+replay_order_window_minutes = 0    # CSV replay: 0 = no minute cap after market_open (still never before open); >0 = cap minutes after open (legacy 8)
+replay_force_flat_et = "16:00"     # US/Eastern: class replay market-flats + cancels pendings from first bar at/after this clock; ``off`` disables
+# OHLC bad-tick wick clip (replay + LWC) is ``core.backtest.ohlcv.DEFAULT_MAX_BODY_WICK_PT`` (not a TOML key).
 
 [risk]
 position_size       = 1              # default contracts per fill
@@ -60,12 +62,14 @@ range_size       = false             # legacy env: OVERNIGHT_FILTER_RANGE_SIZE
 gap              = false             # legacy env: OVERNIGHT_FILTER_GAP
 volatility       = false             # legacy env: OVERNIGHT_FILTER_VOLATILITY
 dll_proximity    = false             # legacy env: OVERNIGHT_FILTER_DLL_PROXIMITY
-range_min_pts    = 50.0              # legacy env: OVERNIGHT_RANGE_MIN_POINTS
-range_max_pts    = 500.0             # legacy env: OVERNIGHT_RANGE_MAX_POINTS
-gap_max_pts      = 200.0             # legacy env: OVERNIGHT_GAP_MAX_POINTS
-atr_min          = 20.0              # legacy env: OVERNIGHT_ATR_MIN
-atr_max          = 200.0             # legacy env: OVERNIGHT_ATR_MAX
-dll_threshold_pct = 0.75             # legacy env: OVERNIGHT_DLL_THRESHOLD_PERCENT
+# Overnight range / gap / ATR filters: **percent of (H+L)/2** (``overnight_range`` only). Legacy
+# ``*_pts`` keys still load: pts / 21000 × 100 (MNQ reference). Prefer explicit ``*_pct``.
+range_min_pct    = 0.2380952380952381   # ≈ 50 pts @ 21k ref (schema default; tune in strategy TOML)
+range_max_pct    = 2.380952380952381    # ≈ 500 pts @ 21k
+gap_max_pct      = 0.9523809523809523   # ≈ 200 pts @ 21k
+atr_min_pct      = 0.09523809523809523  # ≈ 20 pts @ 21k
+atr_max_pct      = 0.9523809523809523   # ≈ 200 pts @ 21k
+dll_threshold_pct = 0.75             # legacy env: OVERNIGHT_DLL_THRESHOLD_PERCENT (ratio 0–1)
 skip_weekdays    = []                # e.g. [0, 4] = skip Mon/Fri (Python weekday); live + replay
 
 # =====================================================================
@@ -75,11 +79,26 @@ skip_weekdays    = []                # e.g. [0, 4] = skip Mon/Fri (Python weekda
 # =====================================================================
 
 [symbols.MNQ]
-# Example: trade larger size on MNQ
-# position_size = 3
+# Per-symbol overrides live under nested tables (``cfg.symbol_override`` walks the tree).
+# Example — ``overnight_range`` bracket qty + stop ATR mult:
+# [symbols.MNQ.risk]
+# position_size = 2
+# [symbols.MNQ.signal]
+# stop_atr_multiplier = 1.25
 
 [symbols.MES]
-# position_size = 3
+# Same pattern as MNQ (risk / signal / filters).
 
 [symbols.MGC]
-# position_size = 2
+# MGC often needs tighter stops than MNQ/MES (``$``/pt). Example:
+# [symbols.MGC.risk]
+# position_size = 1
+# [symbols.MGC.signal]
+# stop_atr_multiplier = 1.0
+
+# Nested ``[symbols.<SYM>.filters]`` overrides **numeric / boolean filter keys** from ``[filters]``
+# for that symbol only (``overnight_range`` ``check_market_conditions``). Use ``*_pct`` or legacy ``*_pts``.
+#
+# [symbols.MES.filters]
+# range_min_pct = 0.05
+# atr_min_pct = 0.03

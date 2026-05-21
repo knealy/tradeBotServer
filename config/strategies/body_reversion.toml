@@ -42,6 +42,14 @@
 #       > /tmp/body_rev_MNQ.json 2> /tmp/body_rev_MNQ.log
 #
 # All knobs honour env overrides (e.g. BODY_REVERSION_SIGNAL_BODY_PCT_MIN=0.85).
+#
+# Executor ``should_trade`` window: US/Eastern (``BodyReversionStrategy._in_trading_window``).
+# Wide 24h so ``signal.rth_only = false`` can use ETH bars; when ``rth_only = true``, RTH is
+# still enforced inside ``analyze()`` via ``signal.rth_start`` / ``rth_end``.
+start_time       = "00:00"
+end_time         = "23:59"
+no_trade_start   = ""
+no_trade_end     = ""
 
 [meta]
 # Live / PRAC: set false if you only want replay or to avoid auto-select picking this up.
@@ -91,6 +99,10 @@ min_bars_between_signals   = 6
 # Time-based exit: close any open position after this many bars if it has
 # not hit stop or TP. Discovery showed 3-6 bars is the sweet spot.
 max_hold_bars              = 6
+
+# BONGO §1A — dual native stop-entry OCO (scalp @ scalp_r × risk + runner); needs qty ≥ 2 live.
+partial_tp_enabled         = false
+partial_tp_scalp_r        = 1.0
 
 # v3 co-trigger gates (see docs/alpha/body_reversion_combos.md).
 #

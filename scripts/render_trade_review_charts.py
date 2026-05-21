@@ -32,13 +32,19 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+ROOT = _repo_root()
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from core.backtest.ohlcv import dataframe_to_chart_bars_unix, snap_trade_unix_to_chart_bar_open
 
 
 def _parse_iso_utc(s: str) -> datetime:
@@ -63,44 +69,6 @@ def _load_trades(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     )
 
 
-def _snap_bar_time(target_unix: int, bar_times: List[int]) -> int:
-    if not bar_times:
-        return target_unix
-    import bisect
-
-    i = bisect.bisect_left(bar_times, target_unix)
-    if i <= 0:
-        return bar_times[0]
-    if i >= len(bar_times):
-        return bar_times[-1]
-    before, after = bar_times[i - 1], bar_times[i]
-    return before if (target_unix - before) <= (after - target_unix) else after
-
-
-def _df_slice_to_bars(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], List[int]]:
-    """Bars for ``generate_chart_html`` + sorted unix bar open times."""
-    rows: List[Dict[str, Any]] = []
-    times: List[int] = []
-    for ts, row in df.iterrows():
-        if hasattr(ts, "to_pydatetime"):
-            ts = ts.to_pydatetime()
-        if getattr(ts, "tzinfo", None) is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        u = int(ts.timestamp())
-        times.append(u)
-        rows.append(
-            {
-                "timestamp": u,
-                "open": float(row.get("open", 0)),
-                "high": float(row.get("high", 0)),
-                "low": float(row.get("low", 0)),
-                "close": float(row.get("close", 0)),
-                "volume": int(row.get("volume", 0) or 0),
-            }
-        )
-    return rows, times
-
-
 def _overlay_for_trade(
     trade: Dict[str, Any], bar_times: List[int]
 ) -> Dict[str, Any]:
@@ -111,10 +79,11 @@ def _overlay_for_trade(
     return {
         "trade_id": trade.get("trade_id", ""),
         "side": str(trade.get("side", "")).upper(),
-        "entry_time": _snap_bar_time(eu, bar_times),
-        "exit_time": _snap_bar_time(xu, bar_times),
+        "entry_time": snap_trade_unix_to_chart_bar_open(eu, bar_times),
+        "exit_time": snap_trade_unix_to_chart_bar_open(xu, bar_times),
         "entry_price": float(trade.get("entry_price", 0)),
         "exit_price": float(trade.get("exit_price", 0)),
+        "exit_reason": str(trade.get("exit_reason") or ""),
     }
 
 
@@ -248,7 +217,7 @@ def main() -> int:
             print(f"skip {tid}: no bars in CSV window", file=sys.stderr)
             continue
 
-        bars, bar_times = _df_slice_to_bars(sub)
+        bars, bar_times = dataframe_to_chart_bars_unix(sub)
         overlay = _overlay_for_trade(trade, bar_times)
         slug = tid.replace(" ", "_")
         if chunk:
@@ -267,6 +236,7 @@ def main() -> int:
             realtime=False,
             backtest=False,
             trade_overlays=[overlay],
+            axis_time_zone="America/New_York",
         )
         print(f"wrote {html_path.relative_to(root)}", flush=True)
 

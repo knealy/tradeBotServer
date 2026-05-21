@@ -218,6 +218,10 @@ class HistoricalDataLoader:
         # Set index
         df.set_index('timestamp', inplace=True)
         df.sort_index(inplace=True)
+        # Match canonical Databento-style frames: naive UTC index. TopStepX / ISO exports
+        # often arrive tz-aware; ``backtest_executor`` date slices use naive ``pd.Timestamp``.
+        if getattr(df.index, "tz", None) is not None:
+            df.index = df.index.tz_convert("UTC").tz_localize(None)
         
         # Validate required columns
         required_cols = ['open', 'high', 'low', 'close', 'volume']
@@ -292,12 +296,12 @@ class HistoricalDataLoader:
         Returns:
             Resampled DataFrame
         """
-        # Parse timeframe
+        # Parse timeframe (pandas 2.2+ prefers ``min``/``h`` over ``T``/``H`` offset aliases).
         freq_map = {
-            's': 'S',
-            'm': 'T',
-            'h': 'H',
-            'd': 'D'
+            "s": "s",
+            "m": "min",
+            "h": "h",
+            "d": "D",
         }
         
         # Extract number and unit

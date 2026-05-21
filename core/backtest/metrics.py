@@ -373,6 +373,7 @@ PERFORMANCE SUMMARY
 Total Return: ${result.total_pnl:,.2f} ({result.total_return_pct:.2f}%)
 Total Trades: {result.total_trades}
 Win Rate: {result.win_rate:.1f}%
+Avg Reward/Risk: {result.avg_reward_risk:.3f}  (mean PnL / initial bracket risk $; 0 if unknown)
 Profit Factor: {result.profit_factor:.2f}
 Expectancy: ${result.expectancy:.2f}
 

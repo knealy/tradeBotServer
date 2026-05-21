@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from core.backtest.strategy_replay import (
+    bar_minutes_since_midnight_et,
     intrabar_series_iter,
+    parse_replay_force_flat_et_minutes,
     replay_timeframe_to_minutes,
     sort_bars_1m_for_replay,
 )
@@ -19,6 +21,32 @@ def test_replay_timeframe_to_minutes():
     assert replay_timeframe_to_minutes("5m") == 5
     assert replay_timeframe_to_minutes("1h") == 60
     assert replay_timeframe_to_minutes(None) == 1
+
+
+def test_parse_replay_force_flat_et_minutes():
+    assert parse_replay_force_flat_et_minutes("16:00") == 16 * 60
+    assert parse_replay_force_flat_et_minutes(" 15:59 ") == 15 * 60 + 59
+    assert parse_replay_force_flat_et_minutes("off") is None
+    assert parse_replay_force_flat_et_minutes("") is None
+
+
+def test_bar_minutes_since_midnight_et():
+    ts = pd.Timestamp("2024-07-01 20:00:00", tz="UTC")  # 16:00 US/Eastern (EDT)
+    assert bar_minutes_since_midnight_et(ts) == 16 * 60
+
+
+def test_replay_force_flat_reads_toml_cfg_not_dataclass_config():
+    from types import SimpleNamespace
+    from core.strategy_config import load_strategy_config
+
+    from core.backtest.strategy_replay import StrategyReplayEngine
+
+    class _Bot:
+        pass
+
+    eng = StrategyReplayEngine(SimpleNamespace(), _Bot())
+    eng.strategy = SimpleNamespace(_cfg=load_strategy_config("overnight_reversion"))
+    assert eng._replay_force_flat_cutoff_minutes_et() == 16 * 60
 
 
 def test_intrabar_falls_back_to_aggregate_when_no_1m():

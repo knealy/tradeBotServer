@@ -1,0 +1,47 @@
+# 15m EMA support/resistance + 5m RSI extremes (mean-reversion at structure).
+#
+# LONG: 5m RSI < rsi_long_max AND 15m bar tags an EMA from above and reclaims (bounce).
+# SHORT: 5m RSI > rsi_short_min AND 15m bar tags EMA resistance and rejects.
+#
+# Replay (5m CSV; 15m EMAs resampled in mock bot):
+#   ENABLE_SIGNALR=false .venv/bin/python core/backtest_executor.py \
+#     --strategy=ema_stack_trend_15m --symbol=MNQ --timeframe=5m \
+#     --csv=historical_data/price/MNQ_5m_databento.csv \
+#     --start=2025-01-01 --end=2026-05-01 --replay --format=json
+
+start_time = "00:00"
+end_time = "23:59"
+no_trade_start = ""
+no_trade_end = ""
+
+[meta]
+enabled = false
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 1
+max_daily_trades = 20
+risk_per_trade_pct = 0.5
+
+[signal]
+timeframe = "15m"
+rsi_timeframe = "5m"
+lookback_bars = 500
+ema_periods = [8, 21, 50, 100, 200]
+atr_period = 14
+stop_atr_multiplier = 2.0
+tp_r_multiple = 2.5
+allow_long = true
+allow_short = true
+min_bars_between_signals = 3
+entry_offset_ticks = 0.0
+
+# 5m RSI extremes (Wilder period 14)
+rsi_period = 14
+rsi_long_max = 35.0
+rsi_short_min = 65.0
+
+# EMA touch tolerance = reaction_tol_atr × ATR(15m); bar must reclaim/reject EMA
+reaction_tol_atr = 0.50
+reaction_require_reclaim_bar = false

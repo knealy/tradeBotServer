@@ -26,8 +26,9 @@ try:
 except ImportError:
     jwt = None
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Iterable
 from datetime import datetime, timedelta, timezone
+import threading
 from threading import Lock
 import time
 # Import from new organized structure
@@ -180,6 +181,20 @@ class TopStepXTradingBot:
         from core.bar_aggregator import BarAggregator
         self.bar_aggregator = BarAggregator(broadcast_callback=None)  # Will be set by webhook server
         logger.debug("Bar aggregator initialized")
+
+        # Live bar cache (filled by the bar aggregator's completed-bar callback). Used by
+        # ``get_historical_data`` to merge fresh SignalR-derived bars on top of REST results
+        # so strategies see new data even when ``/api/History/retrieveBars`` stalls. Keyed
+        # by ``symbol → normalized_timeframe → deque[bar_dict]`` (capped per series).
+        from collections import deque as _deque
+        self._live_bars: Dict[str, Dict[str, _deque]] = {}
+        self._live_bars_lock = threading.RLock()
+        self._live_bars_maxlen = int(os.getenv("LIVE_BAR_CACHE_MAXLEN", "240") or 240)
+        try:
+            self.bar_aggregator.register_completed_bar_callback(self._on_live_bar_close)
+            logger.debug("Wired live-bar cache callback into bar aggregator")
+        except Exception as exc:
+            logger.debug("Could not wire live-bar cache callback: %s", exc)
         
         # Initialize centralized state cache (reduces API calls by ~95%)
         from core.state_cache import StateCache
@@ -437,6 +452,128 @@ class TopStepXTradingBot:
         except Exception as e:
             logger.debug(f"Failed processing quote message: {e}")
     
+    # ── Live bar cache (Market Hub → bar aggregator → strategies) ────────────────
+
+    @staticmethod
+    def _normalize_timeframe_key(tf: Any) -> str:
+        """Normalize timeframe spelling so cache keys match across REST and live paths.
+
+        Accepts '5m', '5M', '5min', '5 minutes' → '5m'; '1h', '60m' → '1h'; defaults to
+        lower-case stripped string.
+        """
+        if not tf:
+            return ""
+        s = str(tf).strip().lower().replace(" ", "")
+        s = s.replace("minutes", "m").replace("minute", "m").replace("min", "m")
+        s = s.replace("hours", "h").replace("hour", "h").replace("hr", "h")
+        s = s.replace("seconds", "s").replace("second", "s").replace("sec", "s")
+        return s
+
+    def _on_live_bar_close(self, bar: Any) -> None:
+        """Bar aggregator callback: append the closed bar to the per-symbol/tf live cache.
+
+        Bar is the dataclass from ``core.bar_aggregator``. We store dicts shaped like the
+        REST response so :meth:`get_historical_data` can merge them without conversions.
+        """
+        try:
+            from collections import deque as _deque
+
+            sym = str(getattr(bar, "symbol", "") or "").upper()
+            tf = self._normalize_timeframe_key(getattr(bar, "timeframe", ""))
+            ts = getattr(bar, "timestamp", None)
+            if not sym or not tf or ts is None:
+                return
+            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            bar_dict = {
+                "timestamp": ts_iso,
+                "time": ts_iso,
+                "open": float(getattr(bar, "open", 0.0)),
+                "high": float(getattr(bar, "high", 0.0)),
+                "low": float(getattr(bar, "low", 0.0)),
+                "close": float(getattr(bar, "close", 0.0)),
+                "volume": int(getattr(bar, "volume", 0) or 0),
+                "symbol": sym,
+            }
+            with self._live_bars_lock:
+                by_sym = self._live_bars.setdefault(sym, {})
+                series = by_sym.get(tf)
+                if series is None:
+                    series = _deque(maxlen=self._live_bars_maxlen)
+                    by_sym[tf] = series
+                # Avoid duplicate timestamps (replace tail if same minute closes twice)
+                if series and series[-1].get("timestamp") == ts_iso:
+                    series[-1] = bar_dict
+                else:
+                    series.append(bar_dict)
+        except Exception as exc:
+            logger.debug("Error updating live bar cache: %s", exc)
+
+    def _get_live_bars(self, symbol: str, timeframe: str) -> List[Dict]:
+        """Return a copy of the cached live bars for (symbol, timeframe), oldest → newest."""
+        sym = str(symbol or "").upper()
+        tf = self._normalize_timeframe_key(timeframe)
+        if not sym or not tf:
+            return []
+        with self._live_bars_lock:
+            by_sym = self._live_bars.get(sym)
+            if not by_sym:
+                return []
+            series = by_sym.get(tf)
+            if not series:
+                return []
+            return list(series)
+
+    def _merge_live_bars(self, rest_bars: List[Dict], symbol: str, timeframe: str) -> List[Dict]:
+        """Append any live cache bars newer than the REST tail. Returns the (possibly extended) list.
+
+        Strategy: parse the last REST bar's timestamp; iterate live cache; append bars whose
+        timestamp is strictly greater. If REST is empty, return the live cache as-is.
+        """
+        live = self._get_live_bars(symbol, timeframe)
+        if not live:
+            return rest_bars
+
+        def _parse(ts: Any) -> Optional[datetime]:
+            if ts is None:
+                return None
+            if isinstance(ts, datetime):
+                return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            try:
+                return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        if not rest_bars:
+            logger.debug(
+                "get_historical_data: REST returned empty; serving %d live bars from cache (%s %s)",
+                len(live), symbol, timeframe,
+            )
+            return list(live)
+
+        last_rest_ts = _parse(rest_bars[-1].get("timestamp") or rest_bars[-1].get("time"))
+        if last_rest_ts is None:
+            return rest_bars
+
+        extras: List[Dict] = []
+        for b in live:
+            live_ts = _parse(b.get("timestamp") or b.get("time"))
+            if live_ts is None:
+                continue
+            if live_ts > last_rest_ts:
+                extras.append(b)
+
+        if not extras:
+            return rest_bars
+
+        logger.info(
+            "📡 get_historical_data: merged %d live bar(s) onto REST tail for %s %s "
+            "(rest_tail=%s, live_tail=%s)",
+            len(extras), symbol, timeframe,
+            last_rest_ts.isoformat(),
+            (_parse(extras[-1].get("timestamp")) or last_rest_ts).isoformat(),
+        )
+        return list(rest_bars) + extras
+
     def _on_websocket_depth(self, symbol: str, data: Dict):
         """
         Callback for WebSocket depth events.
@@ -502,6 +639,65 @@ class TopStepXTradingBot:
             logger.error("WebSocketManager is required for depth subscription but is missing")
             return
         await wm.subscribe_depth(symbol)
+
+    async def start_market_hub_for_strategies(
+        self,
+        symbols: Iterable[str],
+        timeframes: Optional[Iterable[str]] = None,
+    ) -> bool:
+        """Open Market Hub + bar aggregator and subscribe quote feeds for strategy symbols.
+
+        Idempotent: safe to call multiple times. Returns True on best-effort success
+        (Market Hub connected and at least one quote subscription attempted). Failure
+        is logged as a warning, not raised, because REST polling remains the fallback.
+
+        Args:
+            symbols: Symbols whose live ticks should drive the bar aggregator.
+            timeframes: Optional iterable of timeframes (e.g. ``["5m", "15m"]``) to
+                register on the aggregator so strategy lookups find pre-built series.
+                Default: rely on the aggregator's built-in default frames.
+        """
+        try:
+            await self._ensure_market_socket_started()
+        except Exception as exc:
+            logger.warning("Market Hub failed to start (REST-only mode): %s", exc)
+            return False
+
+        if not getattr(self, "_market_hub_connected", False):
+            logger.warning("Market Hub did not connect — strategies will continue on REST polling only")
+            return False
+
+        # Ensure the bar aggregator's start() ran so completed-bar callbacks fire.
+        agg = getattr(self, "bar_aggregator", None)
+        if agg is not None and not getattr(agg, "_running", False):
+            try:
+                await agg.start()
+            except Exception as exc:
+                logger.debug("bar_aggregator.start() raised: %s", exc)
+
+        tfs = [str(tf).strip() for tf in (timeframes or []) if tf and str(tf).strip()]
+        attempted = 0
+        for sym in symbols:
+            if not sym:
+                continue
+            sym_norm = str(sym).strip().upper()
+            try:
+                await self._ensure_quote_subscription(sym_norm)
+                attempted += 1
+            except Exception as exc:
+                logger.warning("Quote subscription failed for %s: %s", sym_norm, exc)
+                continue
+            if agg is not None and tfs:
+                try:
+                    agg.register_timeframes(sym_norm, tfs)
+                except Exception as exc:
+                    logger.debug("register_timeframes(%s, %s) raised: %s", sym_norm, tfs, exc)
+
+        logger.info(
+            "📡 Market Hub wired for %d symbol(s); timeframes registered: %s",
+            attempted, ", ".join(tfs) or "(aggregator defaults)",
+        )
+        return attempted > 0
     
     async def _make_http_request(
         self,
@@ -3443,6 +3639,83 @@ class TopStepXTradingBot:
             import traceback
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
+
+    async def place_oco_bracket_with_stop_entry_partial_tp(
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_full_price: float,
+        account_id: str = None,
+        *,
+        scalp_r_multiple: float = 1.0,
+        enable_breakeven: bool = False,
+        strategy_name: str = None,
+    ) -> Dict:
+        """BONGO §1A — stop entry + partial take-profit at ``scalp_r_multiple`` R + runner TP.
+
+        ``StrategyReplayEngine`` intercepts this on the mock bot and simulates a two-stage
+        OCO. Live placement uses ``TopStepXAdapter.place_oco_bracket_stop_entry_partial_tp_v1``
+        (dual native stop-entry brackets; composite ``orderId``).
+        """
+        try:
+            from core.bracket_orders import build_partial_tp_stop_entry_plan
+
+            if int(quantity) < 2:
+                return {"success": False, "error": "partial_tp_requires_quantity_ge_2", "orderId": None}
+            target_account = account_id or (self.selected_account["id"] if self.selected_account else None)
+            if not target_account:
+                return {"error": "No account selected"}
+            if side.upper() not in ("BUY", "SELL"):
+                return {"error": "Side must be 'BUY' or 'SELL'"}
+
+            plan = build_partial_tp_stop_entry_plan(
+                symbol=symbol,
+                side=side,
+                quantity=int(quantity),
+                entry_stop_price=float(entry_price),
+                stop_loss_price=float(stop_loss_price),
+                take_profit_full_price=float(take_profit_full_price),
+                scalp_r_multiple=float(scalp_r_multiple or 1.0),
+            )
+            result = await self.broker_adapter.place_oco_bracket_stop_entry_partial_tp_v1(
+                symbol=symbol,
+                side=side,
+                quantity=int(quantity),
+                entry_price=float(entry_price),
+                stop_loss_price=float(stop_loss_price),
+                take_profit_full_price=float(take_profit_full_price),
+                scalp_r_multiple=float(scalp_r_multiple or 1.0),
+                account_id=target_account,
+                enable_breakeven=enable_breakeven,
+                strategy_name=strategy_name,
+            )
+            if result.success:
+                method = "unknown"
+                if isinstance(result.raw_response, dict) and result.raw_response.get("_execution_path"):
+                    method = str(result.raw_response.get("_execution_path"))
+                return {
+                    "success": True,
+                    "orderId": result.order_id,
+                    "message": result.message,
+                    "method": method,
+                    **({"raw_response": result.raw_response} if result.raw_response else {}),
+                }
+            return {
+                "success": False,
+                "error": result.error or "partial_tp_adapter_failed",
+                "orderId": None,
+                **(
+                    {"raw_response": result.raw_response}
+                    if getattr(result, "raw_response", None)
+                    else {}
+                ),
+            }
+        except Exception as e:
+            logger.error("place_oco_bracket_with_stop_entry_partial_tp failed: %s", e, exc_info=True)
+            return {"success": False, "error": str(e), "orderId": None}
     
     async def _stop_bracket_hybrid(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float,
@@ -4237,6 +4510,13 @@ class TopStepXTradingBot:
             else:
                 logger.warning("get_historical_data: adapter returned no bars")
 
+            # Merge fresh bars from the live SignalR cache so strategies don't go blind when
+            # the historical REST endpoint stalls (see docs/GOTCHAS.md, 2026-05-21 outage).
+            try:
+                result = self._merge_live_bars(result, symbol, timeframe)
+            except Exception as exc:
+                logger.debug("Live-bar merge failed (continuing with REST-only result): %s", exc)
+
             return result
 
         except Exception as e:
@@ -4968,6 +5248,16 @@ class TopStepXTradingBot:
             print(f"❌ Execution failed: {str(e)}")
             import traceback
             traceback.print_exc()
+        finally:
+            # Avoid aiohttp "Unclosed client session" after one-shot CLI commands (e.g. history … --csv).
+            try:
+                await self.auth_manager.close()
+            except Exception:
+                logger.debug("auth_manager.close in run_non_interactive finally failed", exc_info=True)
+            try:
+                await self.discord_notifier.close()
+            except Exception:
+                logger.debug("discord_notifier.close in run_non_interactive finally failed", exc_info=True)
     
     def _setup_readline(self):
         from core.trading_interactive_ui import setup_readline_for_bot

@@ -17,14 +17,31 @@ from strategies.strategy_base import StrategyConfig, BaseStrategy
 
 
 class MockStrategy(BaseStrategy):
-    """Mock strategy for testing"""
-    
+    """Mock strategy for testing.
+
+    Implements the four abstract methods on :class:`BaseStrategy` as no-ops so
+    pytest can instantiate this class directly. Exists only for assertions
+    against ``_serialize_config`` / ``_apply_config_settings`` etc.
+    """
+
     def __init__(self, trading_bot, config: StrategyConfig = None):
         super().__init__(trading_bot, config)
         self.overnight_start = '18:00'
         self.overnight_end = '09:30'
         self.atr_period = 14
         self.stop_atr_multiplier = 1.25
+
+    async def analyze(self, symbol):  # pragma: no cover - no-op stub
+        return None
+
+    async def execute(self, signal):  # pragma: no cover - no-op stub
+        return False
+
+    async def manage_positions(self):  # pragma: no cover - no-op stub
+        return None
+
+    async def cleanup(self):  # pragma: no cover - no-op stub
+        return None
 
 
 @pytest.fixture
@@ -208,6 +225,89 @@ class TestStrategyPersistence:
         assert strategy.atr_period == 20
         assert strategy.config.symbols == ['MNQ']
         assert strategy.config.position_size == 3
+
+
+class TestTomlAuthoritativeTimeWindow:
+    """TOML wins for ``trading_start_time`` / ``trading_end_time`` / ``no_trade_*``.
+
+    Regression coverage for the 2026-05-19 morning_range_reversion outage: TOML said
+    06:55 ET but a stale row in ``strategy_states.settings`` said 09:30 ET, so the
+    executor sat idle until 09:30 and missed the 07:00–08:00 anchor build.
+    """
+
+    def test_serialize_config_excludes_time_window_keys(self, strategy_manager):
+        """_serialize_config must NOT echo TOML-authoritative time keys back to DB."""
+        config = StrategyConfig.from_env("test_strategy")
+        config.trading_start_time = "06:55"
+        config.trading_end_time = "16:00"
+        config.no_trade_start = ""
+        config.no_trade_end = ""
+
+        strategy = MockStrategy(MagicMock(), config)
+        serialized = strategy_manager._serialize_config(config, strategy)
+
+        for key in (
+            "trading_start_time",
+            "trading_end_time",
+            "no_trade_start",
+            "no_trade_end",
+        ):
+            assert key not in serialized, (
+                f"{key} leaked into persisted settings; it would override TOML "
+                f"on the next executor restart."
+            )
+        # Sanity: other operator-tunable keys still get persisted normally.
+        assert "position_size" in serialized
+        assert "max_positions" in serialized
+        assert "max_daily_trades" in serialized
+
+    def test_apply_config_settings_ignores_stale_time_keys(self, strategy_manager, caplog):
+        """A row that still has 09:30/15:45 must NOT clobber TOML's 06:55/16:00."""
+        config = StrategyConfig.from_env("test_strategy")
+        config.trading_start_time = "06:55"
+        config.trading_end_time = "16:00"
+        config.no_trade_start = ""
+        config.no_trade_end = ""
+        strategy = MockStrategy(MagicMock(), config)
+
+        stale_settings = {
+            "position_size": 3,
+            "trading_start_time": "09:30",
+            "trading_end_time": "15:45",
+            "no_trade_start": "15:30",
+            "no_trade_end": "16:00",
+        }
+        with caplog.at_level("INFO", logger="strategies.strategy_manager"):
+            strategy_manager._apply_config_settings(strategy, stale_settings)
+
+        assert config.trading_start_time == "06:55", "TOML start_time was overwritten"
+        assert config.trading_end_time == "16:00", "TOML end_time was overwritten"
+        assert config.no_trade_start == "", "TOML no_trade_start was overwritten"
+        assert config.no_trade_end == "", "TOML no_trade_end was overwritten"
+        assert config.position_size == 3, "non-time persisted keys should still apply"
+        assert any(
+            "Ignoring stale persisted time-window settings" in rec.message
+            for rec in caplog.records
+        ), "operator-facing log entry should fire when DB disagrees with TOML"
+
+    def test_apply_config_settings_quiet_when_db_matches_toml(self, strategy_manager, caplog):
+        """If DB happens to match TOML, the operator-facing INFO log stays quiet."""
+        config = StrategyConfig.from_env("test_strategy")
+        config.trading_start_time = "06:55"
+        config.trading_end_time = "16:00"
+        strategy = MockStrategy(MagicMock(), config)
+
+        matching_settings = {
+            "trading_start_time": "06:55",
+            "trading_end_time": "16:00",
+        }
+        with caplog.at_level("INFO", logger="strategies.strategy_manager"):
+            strategy_manager._apply_config_settings(strategy, matching_settings)
+
+        assert not any(
+            "Ignoring stale persisted time-window settings" in rec.message
+            for rec in caplog.records
+        ), "log should only fire when DB disagrees with TOML"
 
 
 if __name__ == '__main__':

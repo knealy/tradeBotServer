@@ -371,3 +371,39 @@ def test_generic_breakeven_position_symbol_matches():
     assert m("MNQM5", "MNQ")
     assert m("MNQ", "MNQ")
     assert not m("MES", "MNQ")
+
+
+def test_in_trading_window_uses_session_timezone(monkeypatch):
+    """Executor gate uses ``signal.session_timezone``, not naive local wall clock."""
+    from zoneinfo import ZoneInfo
+
+    from strategies.body_reversion_strategy import BodyReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    z = ZoneInfo("America/New_York")
+    cfg = StrategyConfig(
+        name="body_reversion",
+        enabled=True,
+        symbols=["MNQ"],
+        max_positions=1,
+        position_size=1,
+        risk_per_trade_percent=0.5,
+        max_daily_trades=12,
+        preferred_conditions=[],
+        avoid_conditions=[],
+        trading_start_time="09:30",
+        trading_end_time="16:00",
+        no_trade_start="",
+        no_trade_end="",
+    )
+    bot = _MockBot([])
+    bot._is_strategy_replay = False
+    strat = BodyReversionStrategy(bot, cfg)
+
+    monkeypatch.setattr(strat, "_session_tz_wall_now", lambda: datetime(2026, 5, 12, 10, 0, tzinfo=z))
+    assert strat._in_trading_window() is True
+    monkeypatch.setattr(strat, "_session_tz_wall_now", lambda: datetime(2026, 5, 12, 9, 0, tzinfo=z))
+    assert strat._in_trading_window() is False
+
+    bot._is_strategy_replay = True
+    assert strat._in_trading_window() is True

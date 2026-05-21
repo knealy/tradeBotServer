@@ -59,10 +59,44 @@ allow_long        = true
 allow_short       = true
 
 # Execution geometry (multipliers vs half-range). Defaults preserve 1:1 vs midpoint.
-# stop_distance = (width/2) * sl_mult
+# stop_distance = (width/2) * sl_mult   (when sl_fixed_pts == 0)
 # target_distance = (width/2) * tp_mult  (tp_mult=1.0 -> midpoint target)
 sl_mult          = 1.0
 tp_mult          = 1.0
+
+# ── R-ratio geometry fix ──────────────────────────────────────────────────────
+# With entry at L+threshold and SL anchored at L - half * sl_mult, the risk is
+# always (half + threshold) while the reward is only (half - threshold).  This
+# gives a breakeven WR of 67.7% on the 700d dataset — above the actual 65.5% WR,
+# explaining the negative profit factor.
+#
+# sl_fixed_pts > 0 overrides the range-anchored SL and places the stop a fixed
+# number of points from entry instead:
+#   LONG  → stop = entry - sl_fixed_pts
+#   SHORT → stop = entry + sl_fixed_pts
+# This anchors risk to the trade itself rather than the range size, so the R
+# ratio can be ≥ 1:1 on typical-range days.
+#
+# Recommended starting point: sl_fixed_pts = 2 * reentry_threshold_points
+# (for MNQ that is 14 pts).  Walk-forward the exact value before going live.
+# 0 = legacy half-range SL (backward-compatible default).
+sl_fixed_pts     = 0.0
+
+# ── Narrow / wide range filters ───────────────────────────────────────────────
+# When the morning range is very narrow the entry depth (reentry_threshold_points)
+# is capped to half-1e-6, making entry ≈ midpoint ≈ TP. A TP fill then earns
+# near-zero gross and pays commission → net loss.  This filter skips those days.
+#
+# Rule of thumb: set to at least 2 * reentry_threshold_points (14 for MNQ) to
+# ensure the TP is at least 1 pt above entry after depth-capping.
+# 0 = no minimum (default; no change to existing behaviour).
+min_range_width_points = 0.0
+
+# Wide morning ranges create outsized per-trade risk.  Setting this to a non-zero
+# value skips fade signals on sessions where the 7–8am range exceeds the cap.
+# Example: 150 caps MNQ risk to ~(75+7)*$2 = ~$164/trade on 1 contract.
+# 0 = no cap (default).
+max_range_width_points = 0.0
 # Validated default: legacy literature path (wait for close back inside range
 # after a sweep) is the only mode with positive expectancy on Databento data.
 # Override with MORNING_RANGE_REVERSION_SIGNAL_REQUIRE_REENTRY_CLOSE=false to
@@ -74,9 +108,34 @@ require_reentry_close = true
 # BONGO §4.4: raising to 2 only after replay with tighter re-entry (e.g.
 # ``reentry_frac = 0.15``) — do not pair uncapped re-entry with max_fades>1.
 max_fades_per_session = 1
-# Inner-band for legacy re-entry (0.0 = arm on first close inside [L, H]).
-# BONGO §4.2: try 0.15 for deeper re-entry (sieve + live use the same band).
+# Inner-band for legacy candle-close re-entry (0.0 = arm on first close inside [L, H]).
+# Only used when ``reentry_threshold_points`` <= 0. BONGO §4.2: try 0.15 for deeper re-entry.
 reentry_frac          = 0.0
+# Advance stop-entry offset (overnight_range style). When > 0, the **first 5m close**
+# outside the 7–8am anchor immediately places a resting stop-entry ``threshold`` points
+# back inside the box (low sweep → BUY STOP at L + threshold; high sweep → SELL STOP
+# at H − threshold) with bracket SL/TP — no wait for a later re-entry bar. Example:
+# May 19 2026 MNQ low sweep on the 9:15–9:20 ET bar → place BUY STOP at 28860.75
+# (28853.75 + 7) at the 9:20 close; fill on the 9:30 open rip, TP at midpoint.
+# Set to 0 to use legacy candle-close re-entry (``reentry_frac`` inner band) instead.
+# Default 7 pts is MNQ-calibrated; MES/MGC overrides use 0 until per-symbol sweep.
+reentry_threshold_points = 7.0
+# No new fade arms (sweep / re-entry) after ``range_end_open`` + N hours on the anchor ET date (0 = off).
+range_effectiveness_hours = 4
+
+# ── Live data-freshness guard ─────────────────────────────────────────────────
+# Maximum age (seconds) of the most recent bar before ``analyze()`` aborts with
+# a loud ``⛔ STALE DATA`` error. Live executor pulls bars via REST polling; on
+# 2026-05-21 the TopStepX historical endpoint silently froze at 08:30 ET for
+# >70 minutes, so the strategy polled forever without seeing the sweep. This
+# threshold turns that into a screaming alert instead of a silent no-op.
+#
+# Replay / backtest bypass this guard automatically (``_is_strategy_replay``
+# flag on the bot or ``_current_bar_timestamp`` anchor set).
+#
+# Recommended: 600 (10 min) for 5m bars; raise on slower timeframes.
+# 0 = disable the guard entirely (legacy behaviour, not recommended live).
+max_bar_staleness_seconds = 600
 
 # BONGO §4.1: closer TP (e.g. 0.7) — replay before live; default stays 1.0 (midpoint).
 # tp_mult = 0.7
@@ -86,3 +145,24 @@ require_high_atr       = false
 atr_period             = 14
 atr_regime_lookback    = 500
 atr_regime_quantile    = 0.75
+
+# BONGO §1A — partial TP at ``partial_tp_scalp_r`` × initial R + runner to full ``tp_mult`` target.
+# Replay simulates two-stage OCO; live still depends on broker ``place_oco_bracket_stop_entry_partial_tp_v1``.
+partial_tp_enabled = false
+partial_tp_scalp_r   = 1.0
+
+[symbols.MES.signal]
+# Walk-forward follow-up: tighter TP on MES only (MNQ/MGC stay root ``tp_mult``).
+tp_mult = 0.7
+# MES typically builds a ~2–6 pt morning range. A 7pt MNQ-calibrated threshold
+# would exceed half-width and clamp every session. Tighter thresholds (1.5–2)
+# trigger on most retraces and lose on slippage/commission friction at MES's
+# small per-point value. Fall back to legacy candle-close re-entry (now honest
+# thanks to the stop-direction guard in BacktestEngine); revisit after a
+# dedicated MES walk-forward sweep across {1.0, 2.0, 3.0} pts.
+reentry_threshold_points = 0.0
+
+[symbols.MGC.signal]
+# MGC range similarly compact; legacy candle-close mode is the safer default
+# until a per-symbol threshold sweep produces a positive-expectancy value.
+reentry_threshold_points = 0.0

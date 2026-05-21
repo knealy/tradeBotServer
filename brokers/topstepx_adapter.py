@@ -4920,28 +4920,112 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         enable_breakeven: bool = False,
         strategy_name: Optional[str] = None,
     ) -> OrderResponse:
-        """Design stub for BONGO §1A — partial TP at ``scalp_r_multiple`` R + runner.
+        """BONGO §1A — two native stop-entry OCO brackets (scalp qty + runner qty).
 
-        Implementation plan: build :class:`core.bracket_orders.PartialTpStopEntryPlan`
-        via :func:`core.bracket_orders.build_partial_tp_stop_entry_plan`, place two
-        stop-entry OCO brackets (or extend ``/api/Order/place`` payload once API
-        semantics are confirmed), then arm a fill listener to trail the runner stop
-        to breakeven when the scalp leg fills.
+        Uses :func:`core.bracket_orders.build_partial_tp_stop_entry_plan` then calls
+        :meth:`place_oco_bracket_with_stop_entry` twice (same entry/stop, different TP
+        and contract counts). Returned ``order_id`` is ``scalp_id|runner_id`` for
+        strategy bookkeeping.
 
-        ``enable_breakeven`` is reserved for runner SL → entry after scalp fill.
+        **Caveats**
+        - Both legs share the same protective stop price; the venue sees two
+          independent stop entries at the same level — confirm account limits.
+        - Runner stop is **not** auto-moved to breakeven after the scalp fills on
+          this path; that behaviour is modeled in replay. ``enable_breakeven`` is
+          reserved for a future fill-driven tighten on the runner leg.
         """
         _ = enable_breakeven
-        logger.warning(
-            "place_oco_bracket_stop_entry_partial_tp_v1 not implemented (symbol=%s side=%s qty=%s strat=%s)",
-            symbol,
-            side,
-            quantity,
-            strategy_name,
-        )
-        return OrderResponse(
-            success=False,
-            error="partial_tp_v1_not_implemented_see_core_bracket_orders",
-        )
+        try:
+            from core.bracket_orders import build_partial_tp_stop_entry_plan
+
+            if int(quantity) < 2:
+                return OrderResponse(success=False, error="partial_tp_requires_quantity_ge_2")
+            if not account_id:
+                return OrderResponse(success=False, error="Account ID is required")
+            su = side.upper()
+            if su not in ("BUY", "SELL"):
+                return OrderResponse(success=False, error="Side must be 'BUY' or 'SELL'")
+
+            plan = build_partial_tp_stop_entry_plan(
+                symbol=symbol,
+                side=side,
+                quantity=int(quantity),
+                entry_stop_price=float(entry_price),
+                stop_loss_price=float(stop_loss_price),
+                take_profit_full_price=float(take_profit_full_price),
+                scalp_r_multiple=float(scalp_r_multiple or 1.0),
+            )
+
+            base_tag = (strategy_name or "partial_tp").strip() or "partial_tp"
+            scalp_tag = f"{base_tag}_ptp_scalp"
+            runner_tag = f"{base_tag}_ptp_runner"
+
+            scalp_resp = await self.place_oco_bracket_with_stop_entry(
+                symbol,
+                side,
+                plan.scalp.quantity,
+                entry_price,
+                stop_loss_price,
+                plan.scalp.take_profit_price,
+                account_id,
+                enable_breakeven=False,
+                strategy_name=scalp_tag,
+            )
+            if not scalp_resp or not getattr(scalp_resp, "success", False):
+                err = getattr(scalp_resp, "error", None) if scalp_resp else None
+                return OrderResponse(
+                    success=False,
+                    error=f"partial_tp_scalp_leg_failed: {err or 'unknown'}",
+                    raw_response=getattr(scalp_resp, "raw_response", None) if scalp_resp else None,
+                )
+
+            await asyncio.sleep(0.2)
+
+            runner_resp = await self.place_oco_bracket_with_stop_entry(
+                symbol,
+                side,
+                plan.runner.quantity,
+                entry_price,
+                stop_loss_price,
+                plan.runner.take_profit_price,
+                account_id,
+                enable_breakeven=False,
+                strategy_name=runner_tag,
+            )
+            if not runner_resp or not getattr(runner_resp, "success", False):
+                rerr = getattr(runner_resp, "error", None) if runner_resp else None
+                raw_out: Dict[str, Any] = {
+                    "partial_tp_scalp_order_id": scalp_resp.order_id,
+                    "runner_error": rerr,
+                    "runner_raw": getattr(runner_resp, "raw_response", None) if runner_resp else None,
+                }
+                return OrderResponse(
+                    success=False,
+                    error=f"partial_tp_runner_leg_failed: {rerr or 'unknown'}",
+                    raw_response=raw_out,
+                )
+
+            s_id = str(scalp_resp.order_id or "")
+            r_id = str(runner_resp.order_id or "")
+            raw_out = {
+                "scalp_order_id": s_id,
+                "runner_order_id": r_id,
+                "_execution_path": "python_partial_tp_v1_dual_oco",
+            }
+            if isinstance(scalp_resp.raw_response, dict):
+                raw_out["scalp_raw"] = dict(scalp_resp.raw_response)
+            if isinstance(runner_resp.raw_response, dict):
+                raw_out["runner_raw"] = dict(runner_resp.raw_response)
+
+            return OrderResponse(
+                success=True,
+                order_id=f"{s_id}|{r_id}",
+                message="partial_tp_dual_oco_stop_entry_v1",
+                raw_response=raw_out,
+            )
+        except Exception as e:
+            logger.error("place_oco_bracket_stop_entry_partial_tp_v1 failed: %s", e, exc_info=True)
+            return OrderResponse(success=False, error=str(e))
 
     async def _place_oco_bracket_rust(
         self,

@@ -34,7 +34,7 @@ bash scripts/run_morning_reversion.sh 3
 
 ### Start a different strategy on account 1
 
-Pass `--strategy` and `--account_select` directly to [core/strategy_executor.py](core/strategy_executor.py). Supported strategy names: `overnight_range`, `mean_reversion`, `trend_following`, `simple_candle`, `simple_momentum`, `trend_scalping`.
+Pass `--strategy` and `--account_select` directly to [core/strategy_executor.py](core/strategy_executor.py). Supported strategy names include `overnight_range`, `overnight_reversion`, `mean_reversion`, `trend_following`, `simple_momentum`, `trend_scalping`, and other ids in `strategies/strategy_manager.py` (testing-only strategies require `ALLOW_TESTING_STRATEGIES=1`).
 
 ```bash
 nohup caffeinate -dimsu python3 core/strategy_executor.py \

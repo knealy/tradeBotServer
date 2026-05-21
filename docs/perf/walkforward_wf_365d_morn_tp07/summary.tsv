@@ -1,0 +1,16 @@
+strategy	symbol	fold	start	end	total_pnl	total_trades	win_rate	sharpe_ratio	max_drawdown
+morning_range_reversion	MNQ	0	2025-05-01	2025-07-12	271.50	48	66.6667	1.1212	605.25
+morning_range_reversion	MNQ	1	2025-07-13	2025-09-23	477.25	49	73.4694	3.4121	319.50
+morning_range_reversion	MNQ	2	2025-09-24	2025-12-05	426.25	49	69.3878	2.0211	362.25
+morning_range_reversion	MNQ	3	2025-12-06	2026-02-16	525.00	40	70.0000	3.0697	440.75
+morning_range_reversion	MNQ	4	2026-02-17	2026-05-01	756.75	47	70.2128	3.3427	413.25
+morning_range_reversion	MES	0	2025-05-01	2025-07-12	394.38	49	73.4694	3.2679	190.62
+morning_range_reversion	MES	1	2025-07-13	2025-09-23	-45.62	47	72.3404	-0.4411	241.88
+morning_range_reversion	MES	2	2025-09-24	2025-12-05	105.62	45	71.1111	1.1312	187.50
+morning_range_reversion	MES	3	2025-12-06	2026-02-16	195.00	42	69.0476	2.3088	296.25
+morning_range_reversion	MES	4	2026-02-17	2026-05-01	408.75	46	69.5652	3.2011	220.62
+morning_range_reversion	MGC	0	2025-05-01	2025-07-12	-24.50	45	62.2222	-0.1603	413.50
+morning_range_reversion	MGC	1	2025-07-13	2025-09-23	230.00	38	68.4211	1.9122	189.50
+morning_range_reversion	MGC	2	2025-09-24	2025-12-05	91.00	44	65.9091	0.4217	535.50
+morning_range_reversion	MGC	3	2025-12-06	2026-02-16	1073.50	43	60.4651	3.6744	331.50
+morning_range_reversion	MGC	4	2026-02-17	2026-05-01	1751.00	44	75.0000	3.9323	948.00

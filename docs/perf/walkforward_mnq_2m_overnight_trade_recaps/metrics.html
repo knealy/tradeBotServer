@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward metrics — overnight_range / MNQ</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+</style>
+</head>
+<body>
+  <p><a href="index.html">← Back to report hub</a></p>
+  <h1>Walk-forward performance (replay)</h1>
+  <p class="muted">Fold × strategy × symbol from <code>backtest_executor.py --replay --include-trades</code>.
+    <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
+    <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
+    <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
+  <div class="banner">
+    <strong>All folds pooled:</strong> 37 trades · PnL <strong>-946.05</strong>
+    · expectancy <strong>-25.569</strong> / trade · σ <strong>148.168</strong>
+    · PF <strong>0.70</strong> · max consecutive losses <strong>3</strong>
+    · max DD (sequential) <strong>1233.15</strong>
+  </div>
+  <div class="callout">
+    <strong>Survivability read:</strong> high <em>max consecutive losses</em> inside a fold with negative expectancy
+    usually means the edge is not stable across that window. Compare the <em>rollup</em> table (all folds merged
+    per strategy×symbol) to per-fold rows — widening σ or falling PF in later folds is a simple walk-forward stress signal.
+  </div>
+  <h2>Per fold</h2>
+  <table>
+    <thead><tr><th>fold</th><th>start</th><th>end</th><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th>
+    <th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>win</th><th>loss</th><th>max win str</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td>0</td><td>2026-03-15</td><td>2026-03-24</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>5</td><td class='num'>-481.05</td><td class='num'>20.0%</td><td class='num'>-96.210</td><td class='num'>171.717</td><td class='num'>0.30</td><td class='num'>493.65</td><td>1</td><td>4</td><td>1</td><td>3</td><td class='num'>19.4</td><td class='num'>-2.84</td></tr><tr><td>1</td><td>2026-03-25</td><td>2026-04-03</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>4</td><td class='num'>-293.10</td><td class='num'>25.0%</td><td class='num'>-73.275</td><td class='num'>177.659</td><td class='num'>0.39</td><td class='num'>296.50</td><td>1</td><td>3</td><td>1</td><td>2</td><td class='num'>12.0</td><td class='num'>-1.82</td></tr><tr><td>2</td><td>2026-04-04</td><td>2026-04-13</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>5</td><td class='num'>-94.75</td><td class='num'>40.0%</td><td class='num'>-18.950</td><td class='num'>151.565</td><td class='num'>0.72</td><td class='num'>205.90</td><td>2</td><td>3</td><td>2</td><td>2</td><td class='num'>1.8</td><td class='num'>-1.79</td></tr><tr><td>3</td><td>2026-04-14</td><td>2026-04-23</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>8</td><td class='num'>-204.50</td><td class='num'>37.5%</td><td class='num'>-25.562</td><td class='num'>125.122</td><td class='num'>0.64</td><td class='num'>355.85</td><td>3</td><td>5</td><td>1</td><td>3</td><td class='num'>6.6</td><td class='num'>-1.44</td></tr><tr><td>4</td><td>2026-04-24</td><td>2026-05-03</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>6</td><td class='num'>-0.60</td><td class='num'>50.0%</td><td class='num'>-0.100</td><td class='num'>166.433</td><td class='num'>1.00</td><td class='num'>448.85</td><td>3</td><td>3</td><td>2</td><td>3</td><td class='num'>7.5</td><td class='num'>0.73</td></tr><tr><td>5</td><td>2026-05-04</td><td>2026-05-14</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>9</td><td class='num'>127.95</td><td class='num'>55.6%</td><td class='num'>14.217</td><td class='num'>152.196</td><td class='num'>1.22</td><td class='num'>272.10</td><td>5</td><td>4</td><td>4</td><td>2</td><td class='num'>8.9</td><td class='num'>1.81</td></tr></tbody>
+  </table>
+  <h2>Rollup — all folds merged (per strategy × symbol)</h2>
+  <table>
+    <thead><tr><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th><th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>37</td><td class='num'>-946.05</td><td class='num'>40.5%</td><td class='num'>-25.569</td><td class='num'>148.168</td><td class='num'>0.70</td><td class='num'>1233.15</td><td>3</td><td class='num'>9.0</td><td class='num'>-5.34</td></tr></tbody>
+  </table>
+</body>
+</html>

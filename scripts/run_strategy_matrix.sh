@@ -7,7 +7,7 @@
 #   START=2025-12-24
 #   END=2026-04-30
 #   SYMBOLS="MNQ MES MGC"
-#   STRATS="overnight_range mean_reversion trend_following trend_scalping simple_momentum simple_candle simple_rth"
+#   STRATS="overnight_range mean_reversion trend_following trend_scalping simple_momentum simple_rth"
 #   CSV_DIR=historical_data/price
 #   OUT_DIR=docs/perf/sweeps
 #   TIMEFRAME=1m
@@ -23,7 +23,7 @@ PY="${ROOT}/.venv/bin/python"
 START="${START:-2025-12-24}"
 END="${END:-2026-04-30}"
 SYMBOLS="${SYMBOLS:-MNQ}"
-STRATS="${STRATS:-overnight_range mean_reversion trend_following trend_scalping simple_momentum simple_candle simple_rth}"
+STRATS="${STRATS:-overnight_range mean_reversion trend_following trend_scalping simple_momentum simple_rth}"
 CSV_DIR="${CSV_DIR:-historical_data/price}"
 OUT_DIR="${OUT_DIR:-docs/perf/sweeps}"
 TIMEFRAME="${TIMEFRAME:-1m}"

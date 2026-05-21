@@ -8,6 +8,40 @@
 | **No `--sample`, no `--csv`** | **TopStepX REST**: executor authenticates and loads history through the adapter (same family of calls as live). Needs API credentials. |
 | **`--csv path`** | **File**: usually produced by `python scripts/export_history.py` or `bash scripts/fetch_history_csv.sh` (wrapper). |
 
+For **ad-hoc TopStepX 1m exports** (e.g. ``MNQ_1m_20260514_132946.csv`` at repo root), replay ``morning_range_reversion`` and build per-trade LWC pages in one step:
+
+```bash
+ENABLE_SIGNALR=false .venv/bin/python scripts/replay_morning_reversion_trade_charts_from_1m_csv.py \\
+  --csv MNQ_1m_20260514_132946.csv \\
+  --out-dir docs/perf/morning_reversion_mnq_export_review
+```
+
+Use ``--full-span`` for the file’s entire calendar range (slow on ~20k bars). After a long run, regenerate charts only with ``--reuse-json``.
+
+### TopStepX broker tail → canonical `*_5m_databento.csv`
+
+To **extend** the repo’s Databento-resampled 5m files with the **latest** bars from the **same** TopStepX REST history used by the CLI (`history <sym> 5m … csv` / `export_history.py`), run:
+
+```bash
+ENABLE_SIGNALR=false .venv/bin/python scripts/stitch_broker_history_to_databento_5m.py --dry-run
+.venv/bin/python scripts/stitch_broker_history_to_databento_5m.py
+```
+
+Requires `PROJECT_X_API_KEY` / `PROJECT_X_USERNAME`. Merges via `historical_data/csv_merger.py` with **canonical first, broker tail second** (duplicate timestamps keep the **newer** row).
+
+### TopStepX broker tail → canonical `*_1m_databento.csv`
+
+Same adapter pathway as ``history <sym> 1m … csv``, chunked to stay under the ~20k bar cap:
+
+```bash
+ENABLE_SIGNALR=false .venv/bin/python scripts/stitch_broker_history_to_databento_1m.py --symbols MGC --dry-run
+.venv/bin/python scripts/stitch_broker_history_to_databento_1m.py
+```
+
+For **manual** merges from a broker export file, pass inputs to `csv_merger.py` in the same order (**canonical first, newest export last**) so overlapping minutes keep the fresh pull.
+
+**Databento batches:** use `scripts/databento_stitch_canonical.py` for large GLBX drops; use the stitch scripts above for regular TopStepX tails.
+
 ### Databento GLBX batch (`split_symbols` → many CSVs)
 
 If you downloaded **GLBX.MDP3** `ohlcv-1m` with **separate files per instrument**, you get one CSV per outright or per roll-range (filename suffix like `MNQM5` vs `MNQM5-MNQU5`). For a **single continuous outright series** per root (`MNQ`, `MES`, `MGC`):
@@ -58,9 +92,9 @@ Exported CSV timestamps are usually **naive wall times that match UTC** (no `+00
 
 So backtests and replay are **consistent with live** as long as each bar’s clock instant really is UTC (normal for TopStepX exports and for files normalized by `historical_data/csv_merger.py`). If a file were mislabeled (e.g. Eastern values saved without a zone and read as UTC), session windows would shift by several hours.
 
-### `overnight_range` replay — expect a small trade count
+### `overnight_range` replay — trade count vs filters
 
-Replay places at most **one** breakout attempt per symbol per **session** (near `timing.market_open`), then **`[filters]`** and **`skip_weekdays`** remove most sessions before orders exist. A handful of trades over multi‑month CSV windows is often **by design**, not a broken backtest. To interpret frequency and relax knobs, see [OVERNIGHT_RANGE_RESEARCH.md](OVERNIGHT_RANGE_RESEARCH.md) §0 and `config/strategies/overnight_range.toml` comments under `[filters]`.
+Replay places at most **one** breakout attempt per symbol per **session** (on/after `timing.market_open`), then **`[filters]`** (with **`[symbols.<SYM>.filters]`** overrides for MES/MGC point scales) and **`skip_weekdays`** remove sessions before orders exist. **`timing.replay_order_window_minutes`** caps how many minutes after open CSV replay considers bars (**`0` = no minute cap after open, still never before open**). A handful of trades over multi‑month CSV windows can still be normal when filters are tight — see [OVERNIGHT_RANGE_RESEARCH.md](OVERNIGHT_RANGE_RESEARCH.md) §0 and `config/strategies/overnight_range.toml`.
 
 ## Entrypoints
 
@@ -69,6 +103,8 @@ Replay places at most **one** breakout attempt per symbol per **session** (near 
 | **`python core/backtest_executor.py`** | Single run: sample, CSV, or API-loaded bars; optional `--optimize`, `--monte-carlo`. |
 | **`python -m core.research.runner`** | Grid search + **mandatory OOS** split + **Monte Carlo gate**; optional Postgres row; walk-forward / slippage table flags. See [BACKTEST_RESEARCH.md](BACKTEST_RESEARCH.md). |
 | **`scripts/run_backtest_manifest.py`** | Parallel **JSONL** matrix of `backtest_executor` replay jobs (`config/backtest_matrices/*.jsonl`). |
+| **`scripts/walkforward_strategy_competition.py`** | Same **N-day** calendar folds (default **100** / **5** folds) across **body_reversion**, **morning_range_reversion**, **overnight_range** on **MNQ/MES/MGC** **5m** CSVs → `docs/perf/walkforward_competition/leaderboard.md`. See [walkforward_competition/README.md](perf/walkforward_competition/README.md). |
+| **`scripts/strategy_parameter_sweep.py`** | **Wave** sweeps: one JSON manifest (`config/perf_sweep/default_wave_manifest.json`) groups runs that each change a focused knob via **env overrides** (e.g. `OVERNIGHT_RANGE_SIGNAL_STOP_ATR_MULTIPLIER`). Writes `summary.tsv` + `by_wave.md` + `results.jsonl` under `docs/perf/parameter_sweeps/<run-id>/` with **win_rate** and **avg_reward_risk** (mean PnL / initial bracket risk $). Use `--waves id1,id2` to run a subset. |
 | **`scripts/pattern_conditional_scan.py`** | Research-only: 1m CSV → 5m NY bars; Fisher + FDR on short-horizon conditionals + RTH prior-day level re-touch stats → [`docs/alpha/pattern_scan_INDEX.md`](alpha/pattern_scan_INDEX.md). |
 | **`scripts/strategy_litmus.py`** | Fast **preset** checks on a **short tail** of CSV (default `--last-days 90`); e.g. `morning_range` runs the same sieve as `validate_morning_range_reversion.py` without loading the full history. Optional **`--1m-csv`** aligns with **`scripts/validate_morning_range_reversion.py --1m-csv`** for **1m-resolved** TP vs SL inside a 5m bar. `--why` explains common gaps vs vendor headlines. |
 | **`scripts/batch_backtest.py`** | Scripted batch comparisons (legacy suite style). |

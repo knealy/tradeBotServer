@@ -508,7 +508,10 @@ class BaseStrategy(ABC):
     async def place_bracket_order(self, symbol: str, side: str, quantity: int,
                                   entry_price: float, stop_loss_price: float, 
                                   take_profit_price: float, enable_breakeven: bool = False,
-                                  breakeven_profit_threshold: Optional[float] = None) -> Dict:
+                                  breakeven_profit_threshold: Optional[float] = None,
+                                  *,
+                                  partial_tp_enabled: bool = False,
+                                  partial_tp_scalp_r: float = 1.0) -> Dict:
         """
         Place a bracket order using the verified working method (same as CLI stop_bracket command).
         
@@ -594,18 +597,37 @@ class BaseStrategy(ABC):
                 "orderId": None
             }
         
-        # IMPORTANT: pass `strategy_name` so downstream (adapter/Rust/Python)
-        # can attribute orders and send Discord notifications for strategy orders.
-        result = await self.trading_bot.place_oco_bracket_with_stop_entry(
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            entry_price=entry_price,
-            stop_loss_price=stop_loss_price,
-            take_profit_price=take_profit_price,
-            enable_breakeven=enable_breakeven,
-            strategy_name=self.config.name
-        )
+        # BONGO §1A — partial TP at scalp R + runner (replay simulates two-stage OCO; live
+        # broker path is adapter-specific (dual native OCO legs; runner BE-after-scalp is replay-only).
+        if (
+            partial_tp_enabled
+            and int(quantity) >= 2
+            and hasattr(bot, "place_oco_bracket_with_stop_entry_partial_tp")
+        ):
+            result = await bot.place_oco_bracket_with_stop_entry_partial_tp(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_full_price=take_profit_price,
+                enable_breakeven=enable_breakeven,
+                strategy_name=self.config.name,
+                scalp_r_multiple=float(partial_tp_scalp_r or 1.0),
+            )
+        else:
+            # IMPORTANT: pass `strategy_name` so downstream (adapter/Rust/Python)
+            # can attribute orders and send Discord notifications for strategy orders.
+            result = await bot.place_oco_bracket_with_stop_entry(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                enable_breakeven=enable_breakeven,
+                strategy_name=self.config.name
+            )
         
         if result.get("error"):
             logger.error(f"❌ {self.config.name}: Bracket order failed - {result.get('error')}")

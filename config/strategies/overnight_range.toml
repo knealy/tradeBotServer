@@ -10,13 +10,19 @@ enabled = true
 symbols = ["MNQ", "MES", "MGC"]
 
 [timing]
-overnight_start  = "18:00"
+# Default 18:00–9:29 ET. Sweep `docs/perf/parameter_sweeps/overnight_timing_mnq` (2026-04-11..2026-05-01, MNQ, ATR 1.5/2.5):
+#   start 19:00 → +PnL vs 17:00/18:00; end 7:00 → higher WR (~61%) but slightly lower PnL than 9:29; open 9:25/9:29/9:30 tied.
+overnight_start  = "19:00"
 overnight_end    = "9:29"
 market_open      = "9:29"
 zone_anchor      = "9:29"
 session_timezone = "US/Eastern"
-# Strategy CSV replay only: analyze() runs in this many minutes after market_open (ET).
-replay_order_window_minutes = 8
+# CSV replay only: minutes after ``market_open`` (ET) in which ``analyze()`` may place brackets.
+# **0 = no cap** (full session after open; still at most one attempt per symbol/session via
+# ``_replay_sessions_signaled``). Live uses breakout monitor + full day — unchanged by this.
+replay_order_window_minutes = 0
+# CSV / walk-forward replay: US/Eastern clock to market-flat + cancel pendings (prop day cap).
+replay_force_flat_et = "16:00"
 
 [risk]
 position_size      = 1
@@ -30,8 +36,12 @@ max_dll_usage_pct  = 0.75
 [signal]
 atr_period          = 14
 atr_timeframe       = "15m"
-stop_atr_multiplier = 1.25
-tp_atr_multiplier   = 2.0
+# Sweep `docs/perf/parameter_sweeps/smoke_atr_test`: best win-rate was sl1p5_tp2p5 (64.77% vs ~61% base on 2026-04-11..2026-05-01 MNQ).
+stop_atr_multiplier = 1.5
+tp_atr_multiplier   = 2.5
+# BONGO §1A — dual native stop-entry when qty ≥ 2 (see docs/BONGO.md).
+partial_tp_enabled  = false
+partial_tp_scalp_r  = 1.0
 use_range_pct_sltp  = false
 stop_range_pct      = 50.0
 tp_range_pct        = 100.0
@@ -58,25 +68,36 @@ discord_after_zero_trade_sessions = 0
 # At most ~1 bracket attempt / symbol / session near open. ``skip_weekdays`` removes listed
 # weekdays (Mon=0 … Sun=6). With range+gap+volatility all true, narrow bands still skip many sessions.
 #
+# **Range / gap / ATR** use **percent of overnight midpoint** ``(H+L)/2`` — same bands on MNQ,
+# MES, MGC. Values below match the prior MNQ point globals at reference price 21_000
+# (e.g. 15 pts → 15/21000×100). Legacy ``*_pts`` keys in ``[filters]`` still load and convert
+# the same way.
+#
+# Optional per-symbol tuning: ``[symbols.<SYM>.filters]`` with ``range_min_pct`` / legacy ``range_min_pts``.
+#
 # **Live (2026-05): Pathway 1 research P5** — same knobs as ``scripts/run_overnight_range_sweep.sh``
-# step P5 (filters **on**, widened bands, Mon/Fri included): ``skip_weekdays = []``,
-# ``range_min/max`` 30..600, ``gap_max_pts`` 250, ``atr_min/max`` 15..220.
-# To revert toward the prior Phase 1.1 preset: ``skip_weekdays = [0, 4]``, range 60..400,
-# gap 150, ATR 25..180.
+# step P5 (filters **on**, widened bands, Mon/Fri included): ``skip_weekdays = []``.
 range_size        = true
 gap               = true
 volatility        = true
 dll_proximity     = false
-# BONGO: allow slightly narrower overnight boxes (replay / pathway 1 follow-up).
-range_min_pts     = 20.0
-range_max_pts     = 600.0
-gap_max_pts       = 250.0
-atr_min           = 15.0
-atr_max           = 220.0
+range_min_pct     = 0.07142857142857142
+range_max_pct     = 2.857142857142857
+gap_max_pct       = 1.1904761904761905
+atr_min_pct       = 0.047619047619047616
+atr_max_pct       = 1.0476190476190477
 dll_threshold_pct = 0.75
 # Python weekday: 0=Mon … 6=Sun — empty = trade all weekdays (P5 research).
 skip_weekdays     = []
 
 [symbols.MNQ]
-[symbols.MES]
-[symbols.MGC]
+# Inherits ``[filters]``.
+
+# One executor: MGC-specific bracket size + stop (nested ``[symbols.MGC.risk]`` /
+# ``[symbols.MGC.signal]`` — flat keys under ``[symbols.MGC]`` are not read for these).
+# Tighter stop vs MNQ/MES; validate in replay / walk-forward before widening.
+[symbols.MGC.risk]
+position_size = 1
+
+[symbols.MGC.signal]
+stop_atr_multiplier = 1.0

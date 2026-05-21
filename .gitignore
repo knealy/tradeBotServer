@@ -132,3 +132,12 @@ rust/target/
 # Alpha discovery — machine-readable outputs (markdown reports are committed; JSON and sensitivity grids are not)
 docs/alpha/*.json
 docs/alpha/sensitivity/
+
+# Walk-forward competition — per-fold JSON outputs (regenerate with scripts/walkforward_strategy_competition.py)
+docs/perf/walkforward_competition/runs/
+
+# Parameter sweep outputs (regenerate with scripts/strategy_parameter_sweep.py)
+docs/perf/parameter_sweeps/
+
+# Walk-forward trade recap bundle (191+ HTML charts; regenerate with scripts/walkforward_trade_recap_report.py)
+docs/perf/walkforward_mnq_mgc_3m_overnight_morning_trade_recaps/

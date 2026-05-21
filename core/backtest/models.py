@@ -64,6 +64,12 @@ class BacktestOrder:
     price: Optional[float] = None  # Entry price
     stop_price: Optional[float] = None  # For stop orders
     limit_price: Optional[float] = None  # For limit orders
+    # Market price at the moment this order was created. Used by ``BacktestEngine._check_order_fill``
+    # to validate STOP direction (a real broker rejects a BUY STOP placed below the current bid or
+    # a SELL STOP placed above the current ask — they're degenerate "fills at market" disguised as
+    # stop-entries, and the old simulator filled them at the stop price regardless of whether the
+    # bar physically traversed it).
+    placement_price: Optional[float] = None
     filled_price: Optional[float] = None  # Actual fill price
     filled_timestamp: Optional[datetime] = None
     status: OrderStatus = OrderStatus.PENDING
@@ -90,6 +96,8 @@ class BacktestTrade:
     exit_reason: str  # "stop_loss", "take_profit", "signal", "timeout"
     max_favorable_excursion: float = 0.0  # MFE
     max_adverse_excursion: float = 0.0  # MAE
+    # Dollar risk at entry (|entry − initial stop| × qty × point_value) when bracket SL known; else 0.
+    initial_risk_dollars: float = 0.0
 
     def to_json_dict(self) -> Dict[str, Any]:
         side_val = self.side.value if isinstance(self.side, OrderSide) else str(self.side)
@@ -110,6 +118,7 @@ class BacktestTrade:
             "exit_reason": self.exit_reason,
             "max_favorable_excursion": self.max_favorable_excursion,
             "max_adverse_excursion": self.max_adverse_excursion,
+            "initial_risk_dollars": self.initial_risk_dollars,
         }
 
 
@@ -158,6 +167,8 @@ class BacktestResult:
     # Risk metrics
     max_drawdown: float = 0.0
     max_drawdown_pct: float = 0.0
+    # Mean realized PnL / initial_risk_dollars over trades with initial_risk_dollars > 0 (replay brackets).
+    avg_reward_risk: float = 0.0
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
     profit_factor: float = 0.0
@@ -185,6 +196,7 @@ class BacktestResult:
             'total_return_pct': self.total_return_pct,
             'total_trades': self.total_trades,
             'win_rate': self.win_rate,
+            'avg_reward_risk': self.avg_reward_risk,
             'profit_factor': self.profit_factor,
             'sharpe_ratio': self.sharpe_ratio,
             'max_drawdown': self.max_drawdown,
