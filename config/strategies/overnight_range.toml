@@ -27,7 +27,8 @@ replay_force_flat_et = "16:00"
 [risk]
 position_size      = 1
 max_positions      = 2
-max_daily_trades   = 4
+max_daily_trades   = 3
+
 risk_per_trade_pct = 0.5
 respect_dll        = true
 respect_mll        = true
@@ -35,10 +36,11 @@ max_dll_usage_pct  = 0.75
 
 [signal]
 atr_period          = 14
-atr_timeframe       = "15m"
-# Sweep `docs/perf/parameter_sweeps/smoke_atr_test`: best win-rate was sl1p5_tp2p5 (64.77% vs ~61% base on 2026-04-11..2026-05-01 MNQ).
-stop_atr_multiplier = 1.5
-tp_atr_multiplier   = 2.5
+atr_timeframe       = "5m"
+stop_atr_multiplier = 1
+tp_atr_multiplier   = 3
+
+
 # BONGO §1A — dual native stop-entry when qty ≥ 2 (see docs/BONGO.md).
 partial_tp_enabled  = false
 partial_tp_scalp_r  = 1.0
@@ -47,17 +49,17 @@ stop_range_pct      = 50.0
 tp_range_pct        = 100.0
 
 [position_management]
-breakeven_enabled          = true
-# BONGO: tighter BE arm (validate vs slip); was 15.
+breakeven_enabled          = false
 breakeven_profit_points    = 8.0
 range_break_offset         = 0.25
+
 use_dynamic_atr_for_orders = true
 
 [breakout_monitor]
 enabled              = true
-proximity_pct        = 10.0
-min_proximity_points = 5.0
-interval_seconds     = 15.0
+proximity_pct        = 15.0
+min_proximity_points = 15.0
+interval_seconds     = 10.0
 
 [alerts]
 # Discord when this many consecutive sessions end with zero completed trades (0 = off).
@@ -78,8 +80,8 @@ discord_after_zero_trade_sessions = 0
 # **Live (2026-05): Pathway 1 research P5** — same knobs as ``scripts/run_overnight_range_sweep.sh``
 # step P5 (filters **on**, widened bands, Mon/Fri included): ``skip_weekdays = []``.
 range_size        = true
-gap               = true
-volatility        = true
+gap               = false
+volatility        = false
 dll_proximity     = false
 range_min_pct     = 0.07142857142857142
 range_max_pct     = 2.857142857142857
@@ -87,8 +89,9 @@ gap_max_pct       = 1.1904761904761905
 atr_min_pct       = 0.047619047619047616
 atr_max_pct       = 1.0476190476190477
 dll_threshold_pct = 0.75
+
 # Python weekday: 0=Mon … 6=Sun — empty = trade all weekdays (P5 research).
-skip_weekdays     = []
+skip_weekdays     = [1,2,3,5,6]
 
 [symbols.MNQ]
 # Inherits ``[filters]``.

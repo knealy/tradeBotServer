@@ -1,0 +1,143 @@
+{
+  "round_label": "round14_slmax_3m",
+  "window_days": 90,
+  "folds": 6,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-29T22:48:20.581504+00:00",
+  "total_elapsed_s": 126.82625008304603,
+  "ranked": [
+    {
+      "label": "rootcap_35pts",
+      "score": 186826.46,
+      "n_trades": 139,
+      "final_equity": 14164.25,
+      "total_return_pct": 608.212,
+      "max_dd_pct": 26.277,
+      "recovery_factor": 13.19,
+      "actual_win_rate": 0.7698,
+      "duration_s": 63.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "35"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_35pts"
+    },
+    {
+      "label": "rootcap_25pts",
+      "score": 185971.22,
+      "n_trades": 139,
+      "final_equity": 13780.75,
+      "total_return_pct": 589.037,
+      "max_dd_pct": 19.248,
+      "recovery_factor": 13.495,
+      "actual_win_rate": 0.7338,
+      "duration_s": 63.6,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "25"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_25pts"
+    },
+    {
+      "label": "rootcap_50pts",
+      "score": 155318.49,
+      "n_trades": 139,
+      "final_equity": 14564.75,
+      "total_return_pct": 628.237,
+      "max_dd_pct": 27.929,
+      "recovery_factor": 10.664,
+      "actual_win_rate": 0.7986,
+      "duration_s": 63.1,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "50"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_50pts"
+    },
+    {
+      "label": "rootcap_40pts",
+      "score": 153791.74,
+      "n_trades": 139,
+      "final_equity": 13820.25,
+      "total_return_pct": 591.012,
+      "max_dd_pct": 30.266,
+      "recovery_factor": 11.128,
+      "actual_win_rate": 0.777,
+      "duration_s": 63.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "40"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_40pts"
+    },
+    {
+      "label": "rootcap_30pts",
+      "score": 145018.01,
+      "n_trades": 139,
+      "final_equity": 13456.25,
+      "total_return_pct": 572.812,
+      "max_dd_pct": 22.979,
+      "recovery_factor": 10.777,
+      "actual_win_rate": 0.7482,
+      "duration_s": 63.4,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_30pts"
+    },
+    {
+      "label": "rootcap_60pts",
+      "score": 128866.17,
+      "n_trades": 139,
+      "final_equity": 14364.75,
+      "total_return_pct": 618.237,
+      "max_dd_pct": 27.929,
+      "recovery_factor": 8.971,
+      "actual_win_rate": 0.7986,
+      "duration_s": 63.3,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "60"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_60pts"
+    },
+    {
+      "label": "baseline_nocap",
+      "score": 108497.33,
+      "n_trades": 139,
+      "final_equity": 14156.75,
+      "total_return_pct": 607.837,
+      "max_dd_pct": 31.431,
+      "recovery_factor": 7.664,
+      "actual_win_rate": 0.7986,
+      "duration_s": 63.5,
+      "env": {},
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/baseline_nocap"
+    },
+    {
+      "label": "rootcap_75pts",
+      "score": 108497.33,
+      "n_trades": 139,
+      "final_equity": 14156.75,
+      "total_return_pct": 607.837,
+      "max_dd_pct": 31.431,
+      "recovery_factor": 7.664,
+      "actual_win_rate": 0.7986,
+      "duration_s": 62.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "75"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_75pts"
+    }
+  ],
+  "winner": {
+    "label": "rootcap_35pts",
+    "score": 186826.46,
+    "n_trades": 139,
+    "final_equity": 14164.25,
+    "total_return_pct": 608.212,
+    "max_dd_pct": 26.277,
+    "recovery_factor": 13.19,
+    "actual_win_rate": 0.7698,
+    "duration_s": 63.7,
+    "env": {
+      "MORNING_RANGE_REVERSION_SIGNAL_SL_MAX_PTS": "35"
+    },
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round14_slmax_3m/rootcap_35pts"
+  }
+}

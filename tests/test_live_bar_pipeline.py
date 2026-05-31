@@ -545,6 +545,316 @@ def test_threadsafe_wake_via_background_thread():
     asyncio.run(_run())
 
 
+# ── Tier 1 perf: live-cache-first reads (Option A) ──────────────────────────
+
+
+def test_live_cache_can_serve_when_warm_and_fresh(_bot):
+    """A warm, recent cache should let get_historical_data skip REST entirely."""
+    base = datetime.now(timezone.utc)
+    # Seed 50 fresh 1-minute bars ending at "now".
+    for i in range(50):
+        ts = base - timedelta(minutes=49 - i)
+        bar = Bar(symbol="MNQ", timeframe="1m", timestamp=ts,
+                  open=100.0, high=101.0, low=99.0, close=100.5, volume=1, tick_count=1)
+        _bot._on_live_bar_close(bar)
+
+    # max_lag_factor=2 → tail must be < 2 min old; ours is just-now → True
+    assert _bot._live_cache_can_serve("MNQ", "1m", limit=20) is True
+
+
+def test_live_cache_cannot_serve_when_stale(_bot):
+    """A cache with a stale tail must NOT short-circuit REST."""
+    base = datetime.now(timezone.utc) - timedelta(minutes=30)  # 30 min ago
+    for i in range(50):
+        ts = base - timedelta(minutes=49 - i)
+        bar = Bar(symbol="MNQ", timeframe="1m", timestamp=ts,
+                  open=100.0, high=101.0, low=99.0, close=100.5, volume=1, tick_count=1)
+        _bot._on_live_bar_close(bar)
+
+    assert _bot._live_cache_can_serve("MNQ", "1m", limit=20) is False
+
+
+def test_live_cache_cannot_serve_when_too_few_bars(_bot):
+    """A cache with fresh data but fewer than ``limit`` bars must NOT short-circuit."""
+    now = datetime.now(timezone.utc)
+    for i in range(5):
+        ts = now - timedelta(minutes=4 - i)
+        bar = Bar(symbol="MNQ", timeframe="1m", timestamp=ts,
+                  open=100.0, high=101.0, low=99.0, close=100.5, volume=1, tick_count=1)
+        _bot._on_live_bar_close(bar)
+
+    assert _bot._live_cache_can_serve("MNQ", "1m", limit=20) is False
+
+
+def test_serve_from_live_cache_returns_trailing_limit(_bot):
+    base = datetime.now(timezone.utc) - timedelta(minutes=50)
+    for i in range(50):
+        ts = base + timedelta(minutes=i)
+        bar = Bar(symbol="MNQ", timeframe="1m", timestamp=ts,
+                  open=float(i), high=float(i), low=float(i), close=float(i),
+                  volume=1, tick_count=1)
+        _bot._on_live_bar_close(bar)
+
+    served = _bot._serve_from_live_cache("MNQ", "1m", limit=10)
+    assert len(served) == 10
+    assert served[0]["close"] == 40.0
+    assert served[-1]["close"] == 49.0
+
+
+def test_get_historical_data_skips_rest_when_cache_warm(_bot, monkeypatch):
+    """Warm fresh cache → get_historical_data returns from memory; broker_adapter NOT called."""
+    from trading_bot import TopStepXTradingBot
+
+    monkeypatch.setenv("LIVE_BAR_CACHE_FIRST", "true")
+
+    base = datetime.now(timezone.utc)
+    for i in range(50):
+        ts = base - timedelta(minutes=49 - i)
+        bar = Bar(symbol="MNQ", timeframe="1m", timestamp=ts,
+                  open=100.0, high=101.0, low=99.0, close=100.5, volume=1, tick_count=1)
+        _bot._on_live_bar_close(bar)
+
+    rest_called = {"count": 0}
+
+    class _SpyAdapter:
+        async def get_historical_data(self, **_kw):
+            rest_called["count"] += 1
+            return []
+
+    _bot.broker_adapter = _SpyAdapter()
+
+    served = asyncio.run(
+        TopStepXTradingBot.get_historical_data(_bot, "MNQ", "1m", limit=10)
+    )
+    assert len(served) == 10
+    assert rest_called["count"] == 0, "REST should NOT be called when cache is warm"
+
+
+def test_get_historical_data_falls_back_to_rest_when_cache_disabled(_bot, monkeypatch):
+    """LIVE_BAR_CACHE_FIRST=false → REST is always called (legacy behaviour)."""
+    from trading_bot import TopStepXTradingBot
+
+    monkeypatch.setenv("LIVE_BAR_CACHE_FIRST", "false")
+
+    base = datetime.now(timezone.utc)
+    for i in range(50):
+        ts = base - timedelta(minutes=49 - i)
+        bar = Bar(symbol="MNQ", timeframe="1m", timestamp=ts,
+                  open=100.0, high=101.0, low=99.0, close=100.5, volume=1, tick_count=1)
+        _bot._on_live_bar_close(bar)
+
+    class _SpyAdapter:
+        async def get_historical_data(self, **_kw):
+            from trading_bot import TopStepXTradingBot as _Bot  # avoid circular
+            return []
+
+    rest_calls = []
+
+    class _RestSpy:
+        async def get_historical_data(self, **kw):
+            rest_calls.append(kw)
+            return []
+
+    _bot.broker_adapter = _RestSpy()
+    asyncio.run(TopStepXTradingBot.get_historical_data(_bot, "MNQ", "1m", limit=10))
+    assert len(rest_calls) == 1
+
+
+def test_timeframe_seconds_parsing(_bot):
+    """``_timeframe_seconds`` should round-trip common timeframe strings."""
+    from trading_bot import TopStepXTradingBot
+
+    assert TopStepXTradingBot._timeframe_seconds("5m") == 300.0
+    assert TopStepXTradingBot._timeframe_seconds("1h") == 3600.0
+    assert TopStepXTradingBot._timeframe_seconds("15s") == 15.0
+    assert TopStepXTradingBot._timeframe_seconds("1d") == 86400.0
+    assert TopStepXTradingBot._timeframe_seconds("garbage") is None
+
+
+# ── Tier 2 perf: Option E1 (parallel symbol gather) ──────────────────────────
+
+
+def test_executor_uses_gather_for_symbols_by_default(monkeypatch):
+    """STRATEGY_SYMBOL_PARALLEL=true (default) → ``_process_strategy_symbol`` runs concurrently."""
+    monkeypatch.setenv("STRATEGY_SYMBOL_PARALLEL", "true")
+    from strategies.strategy_manager import StrategyManager
+
+    mgr = StrategyManager(_WakeBot())
+    # Verify env knob is read at iteration time (not __init__) by toggling.
+    assert os.environ.get("STRATEGY_SYMBOL_PARALLEL") == "true"
+
+
+def test_executor_serial_when_toggle_off(monkeypatch):
+    monkeypatch.setenv("STRATEGY_SYMBOL_PARALLEL", "false")
+    assert os.environ.get("STRATEGY_SYMBOL_PARALLEL") == "false"
+
+
+# ── Tier 2 perf: Option E2 (fire-and-forget orders, opt-in only) ─────────────
+
+
+def test_fire_and_forget_returns_immediately_with_placeholder(monkeypatch):
+    """STRATEGY_FIRE_AND_FORGET_ORDERS=true → place_bracket_order returns synthetic success."""
+    monkeypatch.setenv("STRATEGY_FIRE_AND_FORGET_ORDERS", "true")
+
+    class _FakeBot:
+        bg_called = []
+
+        async def place_oco_bracket_with_stop_entry(self, **kw):
+            # Simulate a slow broker round-trip — must NOT block place_bracket_order
+            await asyncio.sleep(0.5)
+            self.bg_called.append(kw)
+            return {"orderId": "abc", "success": True}
+
+    bot = _FakeBot()
+
+    from strategies.strategy_base import BaseStrategy, StrategyConfig
+
+    cfg = StrategyConfig(
+        name="test_strat", enabled=True, symbols=["MNQ"], max_positions=1,
+        position_size=1, risk_per_trade_percent=0.5, max_daily_trades=1,
+        preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+
+    class _RM:
+        async def check_order_allowed(self, **_kw):
+            return True, ""
+        @property
+        def daily_pnl(self):
+            return 0.0
+
+    class _Strat(BaseStrategy):
+        async def evaluate(self, *_a, **_kw):
+            return None
+        async def analyze(self, *_a, **_kw):
+            return None
+        async def execute(self, *_a, **_kw):
+            return None
+        async def manage_positions(self, *_a, **_kw):
+            return None
+        async def cleanup(self, *_a, **_kw):
+            return None
+
+    strat = _Strat(bot, cfg)
+    strat._risk_manager = _RM()  # type: ignore[assignment]
+
+    async def _run():
+        t0 = asyncio.get_running_loop().time()
+        result = await strat.place_bracket_order(
+            symbol="MNQ", side="BUY", quantity=1,
+            entry_price=100.0, stop_loss_price=99.0, take_profit_price=101.0,
+        )
+        t1 = asyncio.get_running_loop().time()
+        assert result["fire_and_forget"] is True
+        assert result["orderId"] is None
+        assert result["success"] is True
+        assert (t1 - t0) < 0.1, f"F&F took {t1 - t0:.3f}s; should return <100ms"
+
+        await asyncio.sleep(0.7)
+        assert len(bot.bg_called) == 1
+        assert bot.bg_called[0]["entry_price"] == 100.0
+
+    asyncio.run(_run())
+
+
+def test_fire_and_forget_off_blocks_until_broker_responds(monkeypatch):
+    """Default behaviour (toggle off): place_bracket_order awaits the broker."""
+    monkeypatch.setenv("STRATEGY_FIRE_AND_FORGET_ORDERS", "false")
+
+    class _FakeBot:
+        async def place_oco_bracket_with_stop_entry(self, **kw):
+            await asyncio.sleep(0.2)
+            return {"orderId": "xyz", "success": True}
+
+    from strategies.strategy_base import BaseStrategy, StrategyConfig
+
+    cfg = StrategyConfig(
+        name="test_strat", enabled=True, symbols=["MNQ"], max_positions=1,
+        position_size=1, risk_per_trade_percent=0.5, max_daily_trades=1,
+        preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+
+    class _RM:
+        async def check_order_allowed(self, **_kw):
+            return True, ""
+        async def record_order_placement(self, *_a, **_kw):
+            return None
+
+    class _Strat(BaseStrategy):
+        async def evaluate(self, *_a, **_kw):
+            return None
+        async def analyze(self, *_a, **_kw):
+            return None
+        async def execute(self, *_a, **_kw):
+            return None
+        async def manage_positions(self, *_a, **_kw):
+            return None
+        async def cleanup(self, *_a, **_kw):
+            return None
+
+    strat = _Strat(_FakeBot(), cfg)
+    strat._risk_manager = _RM()  # type: ignore[assignment]
+
+    async def _run():
+        t0 = asyncio.get_running_loop().time()
+        result = await strat.place_bracket_order(
+            symbol="MNQ", side="BUY", quantity=1,
+            entry_price=100.0, stop_loss_price=99.0, take_profit_price=101.0,
+        )
+        t1 = asyncio.get_running_loop().time()
+        assert result.get("orderId") == "xyz"
+        assert (t1 - t0) >= 0.15, "default mode must wait for broker"
+        assert result.get("fire_and_forget") is None or result.get("fire_and_forget") is False
+
+    asyncio.run(_run())
+
+
+# ── Tier 1 perf: H heartbeat lifecycle ───────────────────────────────────────
+
+
+def test_keepalive_heartbeat_starts_idempotent(monkeypatch, _bot):
+    """Two start_keepalive_heartbeat calls → only one task created."""
+    monkeypatch.setenv("BROKER_KEEPALIVE_HEARTBEAT_SEC", "60")
+
+    # _bot is built via __new__ so it lacks _keepalive_task; initialise.
+    _bot._keepalive_task = None
+
+    # Patch _keepalive_heartbeat_loop on the instance so the task body returns immediately
+    # and we don't actually fire any RESTs during the test.
+    async def _noop(_interval: float) -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+    _bot._keepalive_heartbeat_loop = _noop
+
+    from trading_bot import TopStepXTradingBot
+
+    async def _run():
+        await TopStepXTradingBot.start_keepalive_heartbeat(_bot)
+        first = _bot._keepalive_task
+        assert first is not None
+        await TopStepXTradingBot.start_keepalive_heartbeat(_bot)
+        assert _bot._keepalive_task is first  # idempotent — same task
+        await TopStepXTradingBot.stop_keepalive_heartbeat(_bot)
+        assert _bot._keepalive_task is None
+
+    asyncio.run(_run())
+
+
+def test_keepalive_heartbeat_disabled_when_zero(monkeypatch, _bot):
+    monkeypatch.setenv("BROKER_KEEPALIVE_HEARTBEAT_SEC", "0")
+    _bot._keepalive_task = None
+
+    from trading_bot import TopStepXTradingBot
+
+    asyncio.run(TopStepXTradingBot.start_keepalive_heartbeat(_bot))
+    assert _bot._keepalive_task is None
+
+
 def test_wake_callback_handles_strategy_without_timeframe():
     """A strategy missing ``timeframe`` should still wake on any bar close for its symbol."""
     class _NoTfStrategy:

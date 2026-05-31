@@ -1,0 +1,202 @@
+{
+  "round_label": "round5_slfix_combo",
+  "window_days": 90,
+  "folds": 6,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-29T20:24:42.337191+00:00",
+  "total_elapsed_s": 114.92039470910095,
+  "ranked": [
+    {
+      "label": "slfix35",
+      "score": 66038.44,
+      "n_trades": 173,
+      "final_equity": 12366.75,
+      "total_return_pct": 518.337,
+      "max_dd_pct": 27.807,
+      "recovery_factor": 5.34,
+      "actual_win_rate": 0.7168,
+      "duration_s": 58.0,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "35"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix35"
+    },
+    {
+      "label": "slfix25",
+      "score": 50311.49,
+      "n_trades": 173,
+      "final_equity": 10453.25,
+      "total_return_pct": 422.662,
+      "max_dd_pct": 33.226,
+      "recovery_factor": 4.813,
+      "actual_win_rate": 0.6416,
+      "duration_s": 57.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "25"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix25"
+    },
+    {
+      "label": "slfix30_minw30_maxw100",
+      "score": 48973.28,
+      "n_trades": 152,
+      "final_equity": 10101.75,
+      "total_return_pct": 405.087,
+      "max_dd_pct": 29.413,
+      "recovery_factor": 4.848,
+      "actual_win_rate": 0.7171,
+      "duration_s": 56.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30",
+        "MORNING_RANGE_REVERSION_SIGNAL_MIN_RANGE_WIDTH_POINTS": "30",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "100"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix30_minw30_maxw100"
+    },
+    {
+      "label": "slfix30_maxw100",
+      "score": 48192.95,
+      "n_trades": 154,
+      "final_equity": 10029.75,
+      "total_return_pct": 401.487,
+      "max_dd_pct": 29.413,
+      "recovery_factor": 4.805,
+      "actual_win_rate": 0.7143,
+      "duration_s": 58.1,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "100"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix30_maxw100"
+    },
+    {
+      "label": "slfix30_maxw120",
+      "score": 48126.42,
+      "n_trades": 161,
+      "final_equity": 10024.25,
+      "total_return_pct": 401.212,
+      "max_dd_pct": 31.992,
+      "recovery_factor": 4.801,
+      "actual_win_rate": 0.6957,
+      "duration_s": 57.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "120"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix30_maxw120"
+    },
+    {
+      "label": "slfix30_maxw80",
+      "score": 47655.69,
+      "n_trades": 143,
+      "final_equity": 9980.25,
+      "total_return_pct": 399.012,
+      "max_dd_pct": 29.743,
+      "recovery_factor": 4.775,
+      "actual_win_rate": 0.7413,
+      "duration_s": 56.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "80"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix30_maxw80"
+    },
+    {
+      "label": "winner_r4_slfix30",
+      "score": 44135.04,
+      "n_trades": 173,
+      "final_equity": 10051.25,
+      "total_return_pct": 402.562,
+      "max_dd_pct": 36.357,
+      "recovery_factor": 4.391,
+      "actual_win_rate": 0.6647,
+      "duration_s": 58.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/winner_r4_slfix30"
+    },
+    {
+      "label": "slfix40",
+      "score": 43814.29,
+      "n_trades": 173,
+      "final_equity": 11442.75,
+      "total_return_pct": 472.137,
+      "max_dd_pct": 32.694,
+      "recovery_factor": 3.829,
+      "actual_win_rate": 0.7283,
+      "duration_s": 58.0,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "40"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix40"
+    },
+    {
+      "label": "slfix30_tp2.0",
+      "score": 37940.0,
+      "n_trades": 173,
+      "final_equity": 11856.25,
+      "total_return_pct": 492.812,
+      "max_dd_pct": 30.248,
+      "recovery_factor": 3.2,
+      "actual_win_rate": 0.6301,
+      "duration_s": 56.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "2.00",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix30_tp2.0"
+    },
+    {
+      "label": "slfix30_tp1.0",
+      "score": 34252.77,
+      "n_trades": 173,
+      "final_equity": 8632.25,
+      "total_return_pct": 331.612,
+      "max_dd_pct": 29.183,
+      "recovery_factor": 3.968,
+      "actual_win_rate": 0.7283,
+      "duration_s": 56.6,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.00",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix30_tp1.0"
+    }
+  ],
+  "winner": {
+    "label": "slfix35",
+    "score": 66038.44,
+    "n_trades": 173,
+    "final_equity": 12366.75,
+    "total_return_pct": 518.337,
+    "max_dd_pct": 27.807,
+    "recovery_factor": 5.34,
+    "actual_win_rate": 0.7168,
+    "duration_s": 58.0,
+    "env": {
+      "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+      "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+      "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "35"
+    },
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round5_slfix_combo/slfix35"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "round_label": "round10_friday_9m",
+  "window_days": 270,
+  "folds": 9,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-29T21:47:51.920344+00:00",
+  "total_elapsed_s": 257.709281250136,
+  "ranked": [
+    {
+      "label": "with_fri_skip",
+      "score": 40810.67,
+      "n_trades": 412,
+      "final_equity": 15371.25,
+      "total_return_pct": 668.562,
+      "max_dd_pct": 88.472,
+      "recovery_factor": 2.655,
+      "actual_win_rate": 0.7694,
+      "duration_s": 257.2,
+      "env": {},
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round10_friday_9m/with_fri_skip"
+    },
+    {
+      "label": "without_fri_skip",
+      "score": 16495.92,
+      "n_trades": 509,
+      "final_equity": 11056.25,
+      "total_return_pct": 452.812,
+      "max_dd_pct": 145.441,
+      "recovery_factor": 1.492,
+      "actual_win_rate": 0.7525,
+      "duration_s": 257.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SKIP_WEEKDAYS": ""
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round10_friday_9m/without_fri_skip"
+    }
+  ],
+  "winner": {
+    "label": "with_fri_skip",
+    "score": 40810.67,
+    "n_trades": 412,
+    "final_equity": 15371.25,
+    "total_return_pct": 668.562,
+    "max_dd_pct": 88.472,
+    "recovery_factor": 2.655,
+    "actual_win_rate": 0.7694,
+    "duration_s": 257.2,
+    "env": {},
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round10_friday_9m/with_fri_skip"
+  }
+}

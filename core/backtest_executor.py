@@ -1128,6 +1128,30 @@ class BacktestExecutor:
                     "message": "Partial-TP order simulated in backtest (replay intercept)",
                     "method": "backtest_mock_partial_tp",
                 }
+
+            def register_generic_breakeven_watch(
+                self,
+                order_id: str,
+                *,
+                symbol: str,
+                side: str,
+                entry_price: float,
+                profit_threshold: float,
+                strategy_name: str = "",
+            ) -> None:
+                """Stub so ``hasattr(bot, 'register_generic_breakeven_watch')`` is True
+                in replay mode.
+
+                ``BaseStrategy.place_bracket_order`` checks the attribute before calling
+                — without this stub the call is silently skipped and BONGO §1B watches
+                are never armed during backtests. ``StrategyReplayEngine._intercept_trading_bot_methods``
+                replaces this stub with the simulated tracking path before any strategy
+                runs, so this body never actually executes during a real replay. It exists
+                solely as a sentinel for the ``hasattr`` gate.
+                """
+                _ = (order_id, symbol, side, entry_price, profit_threshold, strategy_name)
+                # No-op: the live monitor would start a polling task here, but the replay
+                # engine handles the watch deterministically via _evaluate_breakeven_watches.
             
             async def place_stop_order(
                 self,

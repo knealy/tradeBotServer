@@ -523,6 +523,83 @@ class TopStepXTradingBot:
                 return []
             return list(series)
 
+    @staticmethod
+    def _parse_bar_ts(ts: Any) -> Optional[datetime]:
+        """Common parser for bar timestamp fields (ISO string, datetime, or epoch)."""
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        try:
+            return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _timeframe_seconds(tf: str) -> Optional[float]:
+        """Convert a normalized timeframe like '5m', '1h', '15s' to seconds (or None)."""
+        if not tf:
+            return None
+        s = str(tf).strip().lower()
+        if s.endswith("ms"):
+            try:
+                return float(s[:-2]) / 1000.0
+            except ValueError:
+                return None
+        unit = s[-1]
+        try:
+            n = float(s[:-1])
+        except ValueError:
+            return None
+        return {
+            "s": n,
+            "m": n * 60.0,
+            "h": n * 3600.0,
+            "d": n * 86400.0,
+        }.get(unit)
+
+    def _live_cache_can_serve(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        max_lag_factor: float = 2.0,
+    ) -> bool:
+        """Return True iff the live cache can fully satisfy a ``get_historical_data`` call.
+
+        Conditions:
+          1. The cache holds at least ``limit`` bars for (symbol, timeframe).
+          2. The newest cached bar is no older than ``max_lag_factor × tf_seconds``
+             (e.g. for a 5m timeframe with factor=2.0, the tail must be < 10 min old).
+
+        Used to short-circuit the REST round-trip on the strategy hot path. The
+        2026-05-21 outage proved REST can stall for >70 min; once SignalR has been
+        feeding the cache through ``_on_live_bar_close``, every subsequent call
+        should return from memory in microseconds.
+        """
+        live = self._get_live_bars(symbol, timeframe)
+        if len(live) < int(max(1, limit)):
+            return False
+        tf_secs = self._timeframe_seconds(self._normalize_timeframe_key(timeframe))
+        if tf_secs is None or tf_secs <= 0:
+            return False
+        tail_ts = self._parse_bar_ts(live[-1].get("timestamp") or live[-1].get("time"))
+        if tail_ts is None:
+            return False
+        age_s = (datetime.now(timezone.utc) - tail_ts).total_seconds()
+        if age_s > (max_lag_factor * tf_secs):
+            return False
+        return True
+
+    def _serve_from_live_cache(self, symbol: str, timeframe: str, limit: int) -> List[Dict]:
+        """Return the trailing ``limit`` bars from the live cache (ascending)."""
+        live = self._get_live_bars(symbol, timeframe)
+        if not live:
+            return []
+        if limit and limit > 0 and len(live) > limit:
+            return list(live[-limit:])
+        return list(live)
+
     def _merge_live_bars(self, rest_bars: List[Dict], symbol: str, timeframe: str) -> List[Dict]:
         """Append any live cache bars newer than the REST tail. Returns the (possibly extended) list.
 
@@ -533,16 +610,6 @@ class TopStepXTradingBot:
         if not live:
             return rest_bars
 
-        def _parse(ts: Any) -> Optional[datetime]:
-            if ts is None:
-                return None
-            if isinstance(ts, datetime):
-                return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-            try:
-                return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-            except Exception:
-                return None
-
         if not rest_bars:
             logger.debug(
                 "get_historical_data: REST returned empty; serving %d live bars from cache (%s %s)",
@@ -550,13 +617,13 @@ class TopStepXTradingBot:
             )
             return list(live)
 
-        last_rest_ts = _parse(rest_bars[-1].get("timestamp") or rest_bars[-1].get("time"))
+        last_rest_ts = self._parse_bar_ts(rest_bars[-1].get("timestamp") or rest_bars[-1].get("time"))
         if last_rest_ts is None:
             return rest_bars
 
         extras: List[Dict] = []
         for b in live:
-            live_ts = _parse(b.get("timestamp") or b.get("time"))
+            live_ts = self._parse_bar_ts(b.get("timestamp") or b.get("time"))
             if live_ts is None:
                 continue
             if live_ts > last_rest_ts:
@@ -565,14 +632,244 @@ class TopStepXTradingBot:
         if not extras:
             return rest_bars
 
-        logger.info(
+        # Demoted from INFO to DEBUG (2026-05-29). At one symbol × one timeframe
+        # per ~5s poll, three symbols generate 36+ of these per minute and
+        # they're useless in steady state — the bar count merging is identical
+        # every cycle. Operators care about the merge-rate, not every merge;
+        # keep DEBUG so the data is still grep-able from the file when needed.
+        logger.debug(
             "📡 get_historical_data: merged %d live bar(s) onto REST tail for %s %s "
             "(rest_tail=%s, live_tail=%s)",
             len(extras), symbol, timeframe,
             last_rest_ts.isoformat(),
-            (_parse(extras[-1].get("timestamp")) or last_rest_ts).isoformat(),
+            (self._parse_bar_ts(extras[-1].get("timestamp")) or last_rest_ts).isoformat(),
         )
         return list(rest_bars) + extras
+
+    async def _detect_and_handle_stuck_rest(
+        self,
+        symbol: str,
+        timeframe: str,
+        rest_last_ts: Optional[str],
+    ) -> bool:
+        """Detect when ``/api/History/retrieveBars`` is pinned to a stale cached
+        response and force a route reset when so.
+
+        2026-05-27 outage: the broker's edge / CDN cache served the same
+        ``last_bar_ts = 2026-05-27T12:05:00+00:00`` payload for **1,077
+        consecutive fetches over 60 minutes** while wall-clock time advanced
+        and live-cache SignalR continued delivering bars (live_tail reached
+        ``T13:00:00`` while REST tail stayed pinned at ``T12:05:00``). The
+        moment an unrelated ``/api/Auth/...`` call forced a fresh TCP
+        connection, REST advanced to ``T13:05:00`` on the very next fetch.
+        Conclusion: keepalive route is being served stale, and the fix is to
+        rotate the underlying ``aiohttp`` session.
+
+        Detection rule (per ``(symbol, timeframe)``):
+          * Same REST ``last_ts`` returned **N ≥ 3** consecutive calls, AND
+          * That timestamp has been pinned for ``> 2 × timeframe_seconds`` of
+            wall-clock time (so a quiet weekend session with no new bars
+            doesn't fire the alarm — only a stuck route does).
+
+        On trip: closes the broker's HTTP session via
+        ``auth.force_session_reset(...)``. The bearer token is preserved; the
+        next request creates a fresh TCP+TLS connection that bypasses any
+        per-route cache. Tracker resets so a subsequent advance returns to
+        normal pool reuse.
+
+        Returns ``True`` iff a reset was actually triggered.
+        """
+        if not rest_last_ts:
+            return False
+        if not hasattr(self, "_rest_freshness_track"):
+            self._rest_freshness_track: Dict[str, Dict[str, Any]] = {}
+        tf_key = self._normalize_timeframe_key(timeframe)
+        tf_secs = self._timeframe_seconds(tf_key)
+        if tf_secs is None or tf_secs <= 0:
+            return False
+        key = f"{str(symbol).upper()}|{tf_key}"
+        now = time.monotonic()
+        rec = self._rest_freshness_track.get(key)
+
+        # ── Cross-symbol coalescing window (2026-05-29 fix) ─────────────────────
+        # If the bot just woke up and the broker route is pinned to a stale CDN
+        # entry, all three symbols (MNQ/MES/MGC) hit ``_detect_and_handle_stuck_rest``
+        # within a few hundred ms of each other and EACH triggers its own
+        # ``force_session_reset``. The first rotation alone is enough to recover
+        # the route — the 2nd and 3rd are wasted work AND they catch the in-flight
+        # ``/api/Position/searchOpen`` calls mid-rotation, surfacing extra
+        # ``ServerDisconnectedError`` ERRORs that have nothing to do with the
+        # actual problem.
+        #
+        # Coalesce: if any cold-start reset has fired in the last ``_session_reset_cooldown_s``
+        # seconds, skip the actual rotation call but still log + rearm the tracker
+        # (so the strategy's stale-data check can still observe "we're recovering"
+        # and downgrade its severity).
+        # _last_session_reset_at_mono uses ``None`` (no rotation yet) as the sentinel
+        # rather than 0.0 — under a monkeypatched ``time.monotonic`` (used in tests)
+        # the very first call would have ``now == 0.0 == default`` and the cooldown
+        # guard ``> 0.0`` would incorrectly treat the first rotation as "no previous
+        # rotation". A None sentinel is unambiguous: ``None == no rotation ever``.
+        if not hasattr(self, "_last_session_reset_at_mono"):
+            self._last_session_reset_at_mono: Optional[float] = None
+        if not hasattr(self, "_session_reset_cooldown_s"):
+            # 10s window: enough for a fresh TCP+TLS handshake + 2-3 follow-up
+            # requests on the new pool but short enough that a stuck route that
+            # comes back stuck doesn't get a "free" 60s of pinned response.
+            self._session_reset_cooldown_s: float = 10.0
+
+        async def _trip_reset(reason: str, log_msg: str, *log_args) -> bool:
+            """Local helper: log + force the broker session reset + arm tracker.
+
+            Used by both the cold-start fast path and the steady-state slow path so
+            both branches log/trip identically (and only the trigger differs).
+
+            The tracker is rearmed with ``cold_tripped=True`` so that subsequent
+            polls returning the SAME stale timestamp won't re-trip the cold-start
+            fast path — the flag clears only when a new bar timestamp arrives.
+            Steady-state path is also throttled because we reset
+            ``first_seen_at_mono = now``, restarting the 2× tf dwell counter.
+            """
+            last_reset = self._last_session_reset_at_mono
+            in_cooldown = (
+                last_reset is not None
+                and (now - float(last_reset)) < float(self._session_reset_cooldown_s)
+            )
+            elapsed_since_last = 0.0 if last_reset is None else (now - float(last_reset))
+            if in_cooldown:
+                # Another symbol already rotated the session ${elapsed:.1f}s ago.
+                # Skip the actual reset but still mark the tracker and surface a
+                # softer DEBUG line so a careful operator can see we suppressed
+                # the duplicate.
+                logger.debug(
+                    "REST stuck detector: skipping duplicate session reset for %s (last reset %.1fs ago, "
+                    "inside %.0fs coalesce window)",
+                    reason, elapsed_since_last, float(self._session_reset_cooldown_s),
+                )
+                self._rest_freshness_track[key] = {
+                    "last_ts": rest_last_ts,
+                    "first_seen_at_mono": now,
+                    "consecutive": 1,
+                    "cold_tripped": True,
+                }
+                # We didn't *call* force_session_reset, but downstream code wants
+                # to know "the route is being rotated" — and it IS being rotated
+                # by whichever sibling tripped first. Return True so the strategy
+                # can downgrade its STALE DATA log to WARNING.
+                return True
+
+            # ── Claim the cooldown window BEFORE awaiting force_session_reset.
+            # 2026-05-29 race fix: when two symbols (e.g. MES + MNQ) tripped within
+            # microseconds of each other, both tasks read ``_last_session_reset_at_mono``
+            # as ``None`` (or the OLD value), saw ``in_cooldown=False``, and both
+            # proceeded into the ``await auth.force_session_reset(...)`` branch —
+            # firing two real HTTP session rotations 5ms apart. The 2026-05-29
+            # 14:00:21 log captured this exactly:
+            #   ``rest-stuck:MES:5m → reset @ 14:00:21.326``
+            #   ``rest-stuck:MNQ:5m → reset @ 14:00:21.331``
+            # By stamping ``_last_session_reset_at_mono`` *before* the await yields,
+            # any task that re-enters ``_trip_reset`` while the first rotation is
+            # still in flight will see the cooldown window already claimed and
+            # take the coalesce-fast-path return above.
+            self._last_session_reset_at_mono = now
+            logger.warning(log_msg, *log_args)
+            try:
+                auth = getattr(getattr(self, "broker_adapter", None), "auth", None)
+                if auth is not None and hasattr(auth, "force_session_reset"):
+                    did_reset = await auth.force_session_reset(reason=reason)
+                else:
+                    logger.debug("REST stuck detector: broker_adapter.auth.force_session_reset unavailable")
+                    did_reset = False
+            except Exception as exc:
+                logger.error("REST stuck detector: session reset raised %s: %s", type(exc).__name__, exc)
+                did_reset = False
+            self._rest_freshness_track[key] = {
+                "last_ts": rest_last_ts,
+                "first_seen_at_mono": now,
+                "consecutive": 1,
+                "cold_tripped": True,
+            }
+            return bool(did_reset)
+
+        # ── COLD-START fast path (2026-05-29 fix) ────────────────────────────────
+        # The original steady-state rule (≥ 3 same-ts polls AND > 2× timeframe of
+        # wall-clock dwell) needs ~10 minutes of polling on a 5m bar before it
+        # trips. That works when the route goes stale mid-session, but it's too
+        # slow at COLD START: the bot wakes up, the broker's first REST response
+        # is already a bar that's hours old (route pinned to a stale CDN entry
+        # since the last keepalive close), and the strategy bleeds 10 minutes of
+        # ``⛔ STALE DATA`` errors before recovery — long enough to miss the
+        # entire fade window. The 2026-05-29 log shows this exact pattern:
+        # 08:35:30 bot start → 08:35:32 first stale ERROR (bar 1233s old) →
+        # 08:45:33 first stuck-REST trip → recovery only at 08:45.
+        #
+        # The fix is to look at the BAR'S ABSOLUTE AGE (now − bar_ts in real
+        # seconds) on every fetch and trip immediately when it's already past
+        # the steady-state threshold. Independent of how long we've been
+        # polling, a bar that's already 2× its own timeframe old at first sight
+        # means the route is stuck and we should rotate right now.
+        bar_age_s: Optional[float] = None
+        bar_dt = self._parse_bar_ts(rest_last_ts)
+        if bar_dt is not None:
+            try:
+                bar_age_s = (datetime.now(timezone.utc) - bar_dt).total_seconds()
+            except Exception:
+                bar_age_s = None
+        cold_threshold_s = 2.0 * tf_secs
+        if bar_age_s is not None and bar_age_s > cold_threshold_s:
+            # Trip only ONCE per pinned timestamp (don't fire every poll while the
+            # route is still mid-rotate). Two cases qualify as "fire-worthy":
+            #
+            #   1. ``rec is None`` — never observed this (symbol, tf) before. Most
+            #      common at cold start: bot just woke up, first REST response is
+            #      already a 20-min-old bar → rotate now.
+            #   2. ``rec.last_ts != rest_last_ts`` — tracker exists but for an
+            #      older bar, and the broker has now advanced to a NEW but still
+            #      stale bar. Rotate before we accept the new staleness.
+            #
+            # ``cold_tripped=True`` on the existing record means "we already
+            # rotated for THIS exact ts; let the steady-state path take over from
+            # here". This prevents the reset-storm we saw in
+            # test_coldstart_does_not_double_trip_on_same_stuck_timestamp.
+            already_tripped_this_ts = (
+                rec is not None
+                and rec.get("last_ts") == rest_last_ts
+                and bool(rec.get("cold_tripped", False))
+            )
+            if not already_tripped_this_ts:
+                return await _trip_reset(
+                    f"rest-coldstart:{symbol}:{tf_key}",
+                    "🧊 REST feed cold-start stale for %s %s: last_ts=%s is %.0fs old "
+                    "(threshold %.0fs = 2× timeframe). Rotating HTTP session immediately "
+                    "to bypass route-pinned stale cache — recovers in seconds instead of "
+                    "waiting for the steady-state %.0fs dwell trigger.",
+                    symbol, timeframe, rest_last_ts, bar_age_s, cold_threshold_s, cold_threshold_s,
+                )
+
+        if rec is None or rec.get("last_ts") != rest_last_ts:
+            self._rest_freshness_track[key] = {
+                "last_ts": rest_last_ts,
+                "first_seen_at_mono": now,
+                "consecutive": 1,
+            }
+            return False
+        # Same timestamp as before — advance counters.
+        rec["consecutive"] = int(rec.get("consecutive", 0)) + 1
+        stuck_for = now - float(rec.get("first_seen_at_mono", now))
+        # Stuck threshold: at least 3 repeats AND wall-clock dwell > 2 × timeframe.
+        # The ``2 ×`` matches the live-cache freshness threshold so the two layers
+        # speak the same language: if the live cache would consider its own tail
+        # stale, the REST route is definitely overdue too.
+        if rec["consecutive"] < 3 or stuck_for <= 2.0 * tf_secs:
+            return False
+        # Steady-state trip — same shape as cold-start so logs look uniform.
+        return await _trip_reset(
+            f"rest-stuck:{symbol}:{tf_key}",
+            "🧊 REST feed pinned for %s %s: last_ts=%s repeated %d× over %.0fs "
+            "(threshold %.0fs = 2× timeframe). Rotating HTTP session so the next "
+            "/api/History/retrieveBars call hits a fresh route.",
+            symbol, timeframe, rest_last_ts, rec["consecutive"], stuck_for, 2.0 * tf_secs,
+        )
 
     def _on_websocket_depth(self, symbol: str, data: Dict):
         """
@@ -677,10 +974,12 @@ class TopStepXTradingBot:
 
         tfs = [str(tf).strip() for tf in (timeframes or []) if tf and str(tf).strip()]
         attempted = 0
+        symbols_norm: List[str] = []
         for sym in symbols:
             if not sym:
                 continue
             sym_norm = str(sym).strip().upper()
+            symbols_norm.append(sym_norm)
             try:
                 await self._ensure_quote_subscription(sym_norm)
                 attempted += 1
@@ -693,11 +992,149 @@ class TopStepXTradingBot:
                 except Exception as exc:
                     logger.debug("register_timeframes(%s, %s) raised: %s", sym_norm, tfs, exc)
 
+        # ── A: Warm up the live bar cache with one REST fetch per (symbol, timeframe) so
+        # the first analyze() call after startup is a cache hit, not a REST round-trip. ──
+        warmup_bars = int(os.getenv("LIVE_BAR_CACHE_WARMUP_BARS", "200") or 200)
+        if warmup_bars > 0 and symbols_norm and tfs:
+            try:
+                await self._warmup_live_bar_cache(symbols_norm, tfs, warmup_bars)
+            except Exception as exc:
+                logger.warning("Live bar cache warmup raised (non-fatal): %s", exc)
+
         logger.info(
             "📡 Market Hub wired for %d symbol(s); timeframes registered: %s",
             attempted, ", ".join(tfs) or "(aggregator defaults)",
         )
         return attempted > 0
+
+    async def _warmup_live_bar_cache(
+        self,
+        symbols: Iterable[str],
+        timeframes: Iterable[str],
+        bars: int,
+    ) -> None:
+        """Prime ``_live_bars`` with one REST fetch per (symbol, timeframe).
+
+        Run concurrently so total wait ≈ slowest single REST call (~300 ms) rather than
+        N × 300 ms serial. Failures are logged and swallowed so a single endpoint hiccup
+        doesn't prevent the executor from coming up.
+        """
+        tasks = []
+        for sym in symbols:
+            for tf in timeframes:
+                tasks.append(self._warmup_one_series(sym, tf, bars))
+        if not tasks:
+            return
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        ok = sum(1 for r in results if r is True)
+        logger.info(
+            "🔥 Live bar cache warmup complete: %d/%d series filled (%d bars target)",
+            ok, len(tasks), bars,
+        )
+
+    # ── H: Idle TLS keep-alive heartbeat ──────────────────────────────────────────
+    # Without traffic for ~60 s the broker (or any intermediary) may close the TCP/TLS
+    # session, forcing a 100–250 ms handshake on the next REST call. A periodic cheap
+    # POST keeps the connection warm. We use ``/api/Account/search`` because it always
+    # returns a small JSON, exercises the bearer token, and matches the live order path
+    # exactly (same host, same headers, same JSON serializer).
+
+    async def start_keepalive_heartbeat(self) -> None:
+        """Start the idle keep-alive task once. Idempotent. Skips if interval <= 0."""
+        if getattr(self, "_keepalive_task", None) is not None:
+            return
+        try:
+            interval = float(os.getenv("BROKER_KEEPALIVE_HEARTBEAT_SEC", "120") or 0.0)
+        except ValueError:
+            interval = 120.0
+        if interval <= 0:
+            logger.debug("Broker keep-alive heartbeat disabled (BROKER_KEEPALIVE_HEARTBEAT_SEC=0)")
+            return
+        self._keepalive_task = asyncio.create_task(self._keepalive_heartbeat_loop(interval))
+        logger.info("💓 Broker keep-alive heartbeat started (every %.0fs)", interval)
+
+    async def _keepalive_heartbeat_loop(self, interval: float) -> None:
+        """Periodic cheap REST call to keep TCP+TLS session warm."""
+        # Tiny jitter so multiple bots in the same process don't synchronize calls.
+        import random as _rand
+
+        while True:
+            try:
+                await asyncio.sleep(interval + _rand.uniform(0.0, 5.0))
+            except asyncio.CancelledError:
+                logger.info("💓 Broker keep-alive heartbeat stopped")
+                raise
+
+            try:
+                if hasattr(self, "auth_manager") and getattr(self.auth_manager, "session_token", None):
+                    # ``list_accounts`` already retries on 401/403, so it doubles as a
+                    # cheap token-validity probe. Result is discarded.
+                    accounts = await self.auth_manager.list_accounts()
+                    logger.debug(
+                        "💓 keep-alive ping ok (%d account(s) returned)",
+                        len(accounts) if accounts else 0,
+                    )
+                else:
+                    logger.debug("💓 keep-alive skipped — no session token yet")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("💓 keep-alive ping error (continuing): %s", exc)
+
+    async def stop_keepalive_heartbeat(self) -> None:
+        """Cancel the heartbeat task on shutdown (idempotent)."""
+        task = getattr(self, "_keepalive_task", None)
+        if task is None or task.done():
+            self._keepalive_task = None
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        self._keepalive_task = None
+
+    async def _warmup_one_series(self, symbol: str, timeframe: str, bars: int) -> bool:
+        """Fetch ``bars`` historical bars and copy them into ``_live_bars`` for fast reads."""
+        try:
+            adapter_bars = await self.broker_adapter.get_historical_data(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=bars,
+            )
+            if not adapter_bars:
+                return False
+            sym_key = str(symbol).upper()
+            tf_key = self._normalize_timeframe_key(timeframe)
+            from collections import deque as _deque
+
+            with self._live_bars_lock:
+                by_sym = self._live_bars.setdefault(sym_key, {})
+                series = by_sym.get(tf_key)
+                if series is None:
+                    series = _deque(maxlen=self._live_bars_maxlen)
+                    by_sym[tf_key] = series
+                else:
+                    series.clear()
+                for b in adapter_bars:
+                    ts = getattr(b, "timestamp", None)
+                    if ts is None:
+                        continue
+                    ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    series.append({
+                        "timestamp": ts_iso,
+                        "time": ts_iso,
+                        "open": float(getattr(b, "open", 0.0)),
+                        "high": float(getattr(b, "high", 0.0)),
+                        "low": float(getattr(b, "low", 0.0)),
+                        "close": float(getattr(b, "close", 0.0)),
+                        "volume": int(getattr(b, "volume", 0) or 0),
+                        "symbol": sym_key,
+                    })
+            return True
+        except Exception as exc:
+            logger.debug("Warmup failed for %s %s: %s", symbol, timeframe, exc)
+            return False
     
     async def _make_http_request(
         self,
@@ -2404,16 +2841,27 @@ class TopStepXTradingBot:
         entry_price: float,
         profit_threshold: float,
         strategy_name: str,
+        breakeven_offset: float = 0.0,
     ) -> None:
-        """Arm broker stop → entry after ``profit_threshold`` price move in favour (BONGO §1B)."""
+        """Arm broker stop → entry+offset after ``profit_threshold`` price move in favour (BONGO §1B).
+
+        ``breakeven_offset`` (price pts, clamped ≥ 0) shifts the moved stop in the
+        trade's favour so a triggered breakeven exit can end slightly green instead
+        of flat (covers commission + slippage). Default 0 = snap exactly to entry.
+        """
         if not order_id or profit_threshold is None or float(profit_threshold) <= 0:
             return
+        try:
+            be_offset = max(0.0, float(breakeven_offset or 0.0))
+        except (TypeError, ValueError):
+            be_offset = 0.0
         su = str(side).upper()
         row = {
             "symbol": str(symbol).upper().strip(),
             "side": "LONG" if su in ("BUY", "LONG") else "SHORT",
             "entry_price": float(entry_price),
             "profit_threshold": float(profit_threshold),
+            "breakeven_offset": be_offset,
             "breakeven_triggered": False,
             "position_filled": False,
             "strategy_name": str(strategy_name),
@@ -2421,11 +2869,12 @@ class TopStepXTradingBot:
         self._generic_breakeven_monitoring[str(order_id)] = row
         self._start_generic_breakeven_monitor_if_needed()
         logger.info(
-            "generic breakeven: armed order=%s sym=%s strat=%s thr=%.4f (entry=%.4f)",
+            "generic breakeven: armed order=%s sym=%s strat=%s thr=%.4f offset=%.4f (entry=%.4f)",
             order_id,
             row["symbol"],
             strategy_name,
             float(profit_threshold),
+            be_offset,
             float(entry_price),
         )
 
@@ -2451,6 +2900,7 @@ class TopStepXTradingBot:
                     side = monitor_data["side"]
                     entry_price = float(monitor_data["entry_price"])
                     thr = float(monitor_data["profit_threshold"])
+                    be_offset = max(0.0, float(monitor_data.get("breakeven_offset") or 0.0))
 
                     position = None
                     if positions:
@@ -2501,20 +2951,27 @@ class TopStepXTradingBot:
                         continue
 
                     monitor_data["breakeven_triggered"] = True
+                    # New stop snaps to entry ± offset (offset is in the trade's favour).
+                    if side == "LONG":
+                        new_stop = entry_price + be_offset
+                    else:
+                        new_stop = entry_price - be_offset
                     logger.info(
-                        "generic breakeven: %s %s move=%.4f ≥ thr=%.4f — moving stop toward entry %.4f",
+                        "generic breakeven: %s %s move=%.4f ≥ thr=%.4f — moving stop to %.4f (entry=%.4f offset=%.4f)",
                         sym_want,
                         side,
                         profit_move,
                         thr,
+                        new_stop,
                         entry_price,
+                        be_offset,
                     )
                     position_id = position.get("id") or position.get("positionId") or position.get("position_id")
                     if account_id and position_id:
                         try:
                             res = await self.modify_stop_loss(
                                 str(position_id),
-                                float(entry_price),
+                                float(new_stop),
                                 account_id=str(account_id),
                             )
                             if isinstance(res, dict) and res.get("error"):
@@ -4468,7 +4925,38 @@ class TopStepXTradingBot:
             **kwargs: Additional arguments (e.g., continuous_daily, include_partial_daily)
         """
         try:
-            logger.info(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
+            # ── A: Live-cache-first read (skip REST when SignalR has fed enough fresh bars) ──
+            # Only short-circuits in the steady-state hot path:
+            #   - no explicit start_time/end_time (we don't try to satisfy historical ranges)
+            #   - kwargs that imply special semantics (continuous_daily, include_partial_daily)
+            #     are not present
+            #   - the live cache already holds ``limit`` bars and the tail is fresh
+            if (
+                start_time is None
+                and end_time is None
+                and not kwargs
+                and self._live_cache_can_serve(symbol, timeframe, int(limit))
+                and os.getenv("LIVE_BAR_CACHE_FIRST", "true").strip().lower() not in {"0", "false", "no", "off"}
+            ):
+                served = self._serve_from_live_cache(symbol, timeframe, int(limit))
+                if not hasattr(self, "_live_cache_hit_count"):
+                    self._live_cache_hit_count: Dict[str, int] = {}
+                key = f"{str(symbol).upper()}|{self._normalize_timeframe_key(timeframe)}"
+                self._live_cache_hit_count[key] = self._live_cache_hit_count.get(key, 0) + 1
+                # Log once per (symbol, tf) at INFO so operators see the cache is doing its job;
+                # subsequent hits go to DEBUG to avoid log spam.
+                first_hit = self._live_cache_hit_count[key] == 1
+                logger.log(
+                    logging.INFO if first_hit else logging.DEBUG,
+                    "⚡ get_historical_data live-cache hit %s %s (%d bars, tail=%s) — REST skipped",
+                    symbol, timeframe, len(served),
+                    served[-1].get("timestamp") if served else "?",
+                )
+                return served
+
+            # DEBUG: fires for every symbol on every strategy poll (3 symbols × 12 polls/min = 36 lines/min).
+            # The stuck-REST detector below logs a WARNING when things go wrong; this is breadcrumbs only.
+            logger.debug(f"Fetching historical data for {symbol} ({timeframe}, {limit} bars)")
 
             # Delegate to adapter (canonical implementation)
             bars = await self.broker_adapter.get_historical_data(
@@ -4499,16 +4987,36 @@ class TopStepXTradingBot:
                 )
 
             if result:
-                # Debug: log last bar vs current time to help diagnose stale data
+                # Demoted from INFO to DEBUG (2026-05-29): these two lines fire
+                # for EVERY symbol on EVERY poll (~36 lines/min for the typical
+                # 3-symbol setup) and only matter when actively diagnosing stale
+                # data. The stuck-REST detector ABOVE produces a WARNING when
+                # things actually go wrong; this is purely a debug breadcrumb.
                 from datetime import datetime, timezone as _tz
 
                 last_ts = result[-1].get("timestamp") or result[-1].get("time")
-                logger.info(f"📊 get_historical_data last bar timestamp (ISO) = {last_ts}")
-                logger.info(f"📊 get_historical_data now UTC                    = {datetime.now(_tz.utc)}")
+                logger.debug(f"📊 get_historical_data last bar timestamp (ISO) = {last_ts}")
+                logger.debug(f"📊 get_historical_data now UTC                    = {datetime.now(_tz.utc)}")
 
-                logger.info(f"✅ Retrieved {len(result)} bars from adapter (canonical implementation)")
+                logger.debug(f"✅ Retrieved {len(result)} bars from adapter (canonical implementation)")
             else:
                 logger.warning("get_historical_data: adapter returned no bars")
+
+            # ── Stuck-REST detector (2026-05-27 fix) ────────────────────────────────────
+            # ONLY for live polling — calls with an explicit ``start_time``/``end_time``
+            # or special kwargs are backfills/backtests that legitimately request fixed
+            # historical windows and shouldn't trip the detector.
+            if (
+                result
+                and start_time is None
+                and end_time is None
+                and not kwargs
+            ):
+                rest_last_ts = result[-1].get("timestamp") or result[-1].get("time")
+                try:
+                    await self._detect_and_handle_stuck_rest(symbol, timeframe, rest_last_ts)
+                except Exception as exc:
+                    logger.debug("Stuck-REST detector raised (continuing): %s", exc)
 
             # Merge fresh bars from the live SignalR cache so strategies don't go blind when
             # the historical REST endpoint stalls (see docs/GOTCHAS.md, 2026-05-21 outage).

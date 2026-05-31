@@ -1,0 +1,183 @@
+{
+  "round_label": "round19_breaker_9m",
+  "window_days": 270,
+  "folds": 9,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-30T14:50:33.702824+00:00",
+  "total_elapsed_s": 788.4462796249427,
+  "ranked": [
+    {
+      "label": "mcl2_cd10",
+      "score": 89634.27,
+      "n_trades": 294,
+      "final_equity": 13075.75,
+      "total_return_pct": 553.787,
+      "max_dd_pct": 27.061,
+      "recovery_factor": 6.855,
+      "actual_win_rate": 0.7347,
+      "duration_s": 253.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "2",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "10"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl2_cd10"
+    },
+    {
+      "label": "mcl3_cd7",
+      "score": 70546.57,
+      "n_trades": 384,
+      "final_equity": 15145.25,
+      "total_return_pct": 657.262,
+      "max_dd_pct": 54.479,
+      "recovery_factor": 4.658,
+      "actual_win_rate": 0.7083,
+      "duration_s": 273.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "3",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "7"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl3_cd7"
+    },
+    {
+      "label": "baseline_no_breaker",
+      "score": 58825.8,
+      "n_trades": 412,
+      "final_equity": 14851.25,
+      "total_return_pct": 642.562,
+      "max_dd_pct": 62.347,
+      "recovery_factor": 3.961,
+      "actual_win_rate": 0.6942,
+      "duration_s": 275.0,
+      "env": {},
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/baseline_no_breaker"
+    },
+    {
+      "label": "mcl2_cd5",
+      "score": 55688.58,
+      "n_trades": 349,
+      "final_equity": 12116.75,
+      "total_return_pct": 505.837,
+      "max_dd_pct": 46.412,
+      "recovery_factor": 4.596,
+      "actual_win_rate": 0.702,
+      "duration_s": 253.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "2",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "5"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl2_cd5"
+    },
+    {
+      "label": "mcl3_cd14",
+      "score": 55126.55,
+      "n_trades": 370,
+      "final_equity": 14329.75,
+      "total_return_pct": 616.487,
+      "max_dd_pct": 60.341,
+      "recovery_factor": 3.847,
+      "actual_win_rate": 0.7108,
+      "duration_s": 261.4,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "3",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "14"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl3_cd14"
+    },
+    {
+      "label": "mcl3_cd3",
+      "score": 55091.66,
+      "n_trades": 392,
+      "final_equity": 14239.25,
+      "total_return_pct": 611.962,
+      "max_dd_pct": 59.739,
+      "recovery_factor": 3.869,
+      "actual_win_rate": 0.6964,
+      "duration_s": 274.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "3",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "3"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl3_cd3"
+    },
+    {
+      "label": "mcl4_cd5",
+      "score": 51925.14,
+      "n_trades": 402,
+      "final_equity": 14451.75,
+      "total_return_pct": 622.587,
+      "max_dd_pct": 67.104,
+      "recovery_factor": 3.593,
+      "actual_win_rate": 0.694,
+      "duration_s": 259.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "5"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl4_cd5"
+    },
+    {
+      "label": "mcl3_cd10",
+      "score": 50917.48,
+      "n_trades": 368,
+      "final_equity": 13813.75,
+      "total_return_pct": 590.687,
+      "max_dd_pct": 59.895,
+      "recovery_factor": 3.686,
+      "actual_win_rate": 0.7092,
+      "duration_s": 260.1,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "3",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "10"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl3_cd10"
+    },
+    {
+      "label": "mcl4_cd10",
+      "score": 50319.56,
+      "n_trades": 385,
+      "final_equity": 13336.75,
+      "total_return_pct": 566.837,
+      "max_dd_pct": 58.186,
+      "recovery_factor": 3.773,
+      "actual_win_rate": 0.6961,
+      "duration_s": 259.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "10"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl4_cd10"
+    },
+    {
+      "label": "mcl3_cd5",
+      "score": 46347.78,
+      "n_trades": 385,
+      "final_equity": 13528.25,
+      "total_return_pct": 576.412,
+      "max_dd_pct": 64.528,
+      "recovery_factor": 3.426,
+      "actual_win_rate": 0.6935,
+      "duration_s": 273.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "3",
+        "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "5"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl3_cd5"
+    }
+  ],
+  "winner": {
+    "label": "mcl2_cd10",
+    "score": 89634.27,
+    "n_trades": 294,
+    "final_equity": 13075.75,
+    "total_return_pct": 553.787,
+    "max_dd_pct": 27.061,
+    "recovery_factor": 6.855,
+    "actual_win_rate": 0.7347,
+    "duration_s": 253.8,
+    "env": {
+      "MORNING_RANGE_REVERSION_SIGNAL_MAX_CONSECUTIVE_LOSSES": "2",
+      "MORNING_RANGE_REVERSION_SIGNAL_LOSS_STREAK_COOLDOWN_SESSIONS": "10"
+    },
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round19_breaker_9m/mcl2_cd10"
+  }
+}

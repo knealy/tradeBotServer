@@ -23,7 +23,35 @@ from datetime import datetime, timezone
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.logging_setup import configure_logging
-configure_logging()
+
+# ── Lifecycle logger pre-detection (2026-05-29) ────────────────────────────────
+# ``configure_logging()`` is invoked at module load time (before argparse), so to
+# get strategy-specific console output Just Working when this script is invoked
+# directly (without the ``scripts/run_*.sh`` wrapper that exports
+# ``LIFECYCLE_LOGGERS``), we peek at ``sys.argv`` for ``--strategy`` and map it
+# to the matching strategies.* logger. The wrapper script's env var still wins
+# via the merge inside ``configure_logging`` — this is the belt-and-suspenders
+# fallback for ``python core/strategy_executor.py --strategy=...`` invocations.
+def _detect_lifecycle_loggers_from_argv() -> List[str]:
+    raw_args = sys.argv[1:]
+    requested: List[str] = []
+    for i, arg in enumerate(raw_args):
+        if arg.startswith("--strategy="):
+            requested.append(arg.split("=", 1)[1].strip())
+        elif arg == "--strategy" and i + 1 < len(raw_args):
+            requested.append(raw_args[i + 1].strip())
+    out: List[str] = []
+    for name in requested:
+        if not name:
+            continue
+        # Conventional mapping: ``foo`` strategy -> ``strategies.foo_strategy`` module
+        # logger. Both ``morning_range_reversion`` and ``overnight_range`` follow
+        # this pattern, as do all current and planned strategies.
+        out.append(f"strategies.{name}_strategy")
+    return out
+
+
+configure_logging(lifecycle_logger_names=_detect_lifecycle_loggers_from_argv())
 logger = logging.getLogger(__name__)
 
 # Now import trading_bot (it will override logging config with force=True, but will use same LOG_FILE)
@@ -216,6 +244,15 @@ class StrategyExecutor:
         for strategy_name in strategies:
             await self.start_strategy(strategy_name, symbols=symbols, account_id=account_id, risk_config=risk_config)
 
+        # H: Idle keep-alive ping every BROKER_KEEPALIVE_HEARTBEAT_SEC (default 120 s) so the
+        # TCP+TLS session stays warm during dead-air. Without this, the next live order eats
+        # a 100–250 ms handshake. Idempotent + cheap.
+        try:
+            if hasattr(self.trading_bot, "start_keepalive_heartbeat"):
+                await self.trading_bot.start_keepalive_heartbeat()
+        except Exception as exc:
+            logger.debug("Could not start broker keep-alive heartbeat: %s", exc)
+
         # Open Market Hub + live tick feed so strategies stop being single-pointed on REST polling.
         # The 2026-05-21 outage (REST historical endpoint frozen for 75+ min) caused
         # MorningRangeReversionStrategy.analyze() to poll stale bars forever. With the live feed
@@ -295,6 +332,12 @@ class StrategyExecutor:
 
             for strategy_name in list(self.running_strategies.keys()):
                 await self.stop_strategy(strategy_name)
+
+            try:
+                if hasattr(self.trading_bot, "stop_keepalive_heartbeat"):
+                    await self.trading_bot.stop_keepalive_heartbeat()
+            except Exception as exc:
+                logger.debug("Keep-alive heartbeat stop error: %s", exc)
 
             await self._disconnect_from_gui_websocket()
 

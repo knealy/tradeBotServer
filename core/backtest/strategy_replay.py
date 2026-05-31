@@ -173,7 +173,14 @@ class StrategyReplayEngine:
         self._original_trading_bot_place_oco_partial = None
         self._original_trading_bot_place_stop = None
         self._original_trading_bot_place_limit = None
-        
+        self._original_register_breakeven = None
+
+        # ── BONGO §1B: simulated breakeven watches (replay equivalent of the live
+        # ``_generic_breakeven_monitor_loop`` in trading_bot). Keyed by entry order id.
+        # Each row: {symbol, side ("LONG"|"SHORT"), entry_price, profit_threshold,
+        # entry_bar_index, sl_order_id, triggered, position_filled}.
+        self._breakeven_watches: Dict[str, Dict[str, Any]] = {}
+
         # Track current bar data for strategy
         self._current_bars: List[Dict] = []
         self._current_symbol: Optional[str] = None
@@ -181,6 +188,24 @@ class StrategyReplayEngine:
         # Cache passthrough historical requests that are stable within a trading day (e.g., 1d)
         # Keyed by (symbol, timeframe, limit, start_iso, end_day_iso)
         self._passthrough_cache: Dict[Tuple[str, str, int, str, str], List[Dict]] = {}
+        # Trade-outcome hook dispatch hand-off counter (see note below).
+        self._dispatched_trade_count: int = 0
+        # ── 2026-05-29 NOTE ──────────────────────────────────────────────
+        # An earlier iteration of this engine dispatched closed trades to
+        # ``strategy.record_trade_outcome(symbol, pnl)`` for per-symbol
+        # circuit-breaker bookkeeping (consec-loss-streak etc.).  A 9m MNQ
+        # walk-forward (270d / 9 folds) showed that even with the hook
+        # short-circuiting on ``max_consecutive_losses <= 0``, MNQ trade
+        # count drifted +4 (140 → 144) versus a no-hook run, dropping ret
+        # 143% → 113% and RF 1.74 → 1.29.  Root cause not yet identified
+        # (no in-strategy state writes, no cfg mutation observed); the
+        # most likely culprit is some shared / cached attribute access on
+        # the strategy that subtly changes evaluation order.  Until the
+        # exact source is bisected, the hook is intentionally *NOT* wired
+        # here — keeping replay strictly engine→fill→analyze.  Strategies
+        # that need consec-loss bookkeeping can be fed via the live
+        # bot's fill handler in production.
+        # ─────────────────────────────────────────────────────────────────
     
     def _process_subbar_fills(self, bar: Any, tick_size: float) -> None:
         """Pending-order simulation for one OHLC row (1m sub-bar or full aggregate bar)."""
@@ -191,6 +216,14 @@ class StrategyReplayEngine:
             self.backtest_engine.set_last_close(float(bar["close"]))
         except (KeyError, TypeError, ValueError):
             pass
+
+        # ── BONGO §1B: evaluate breakeven watches BEFORE the per-bar fill check so that
+        # any moved stop is in effect for the same bar's fill loop. We deliberately skip
+        # the entry bar itself: on the bar that filled the entry the SL order didn't
+        # exist yet (it's created at the END of this method's previous invocation), so
+        # there's no order to move and no look-ahead risk. From the next bar onward we
+        # use OHLC-conservative MFE: bar.high for LONG, bar.low for SHORT. ──
+        self._evaluate_breakeven_watches(bar)
 
         # Process pending orders (check fills)
         filled_this_bar: List[Any] = []
@@ -309,6 +342,12 @@ class StrategyReplayEngine:
                     setattr(pos, "_partial_tp_runner_price", tp_runner)
                     setattr(pos, "_partial_tp_stage2_armed", False)
 
+                # See "Bracket-exit placement_price anchor" rationale below in the
+                # standard-bracket branch: anchor the SL's placement_price to the
+                # SL stop_price itself so the engine's STOP direction guard doesn't
+                # silently reject a same-bar bracket child whose stop level happens
+                # to be on the "wrong side" of bar.close. Same anchor on the TP
+                # scalp limit for symmetry.
                 sl_order_id = self.backtest_engine.place_order(
                     symbol=filled.symbol,
                     side=exit_side,
@@ -316,6 +355,7 @@ class StrategyReplayEngine:
                     order_type=OrderType.STOP,
                     stop_price=float(stop_loss_price),
                     price=float(stop_loss_price),
+                    placement_price=float(stop_loss_price),
                 )
                 for o in self.backtest_engine.pending_orders:
                     if o.order_id == sl_order_id:
@@ -330,6 +370,7 @@ class StrategyReplayEngine:
                     order_type=OrderType.LIMIT,
                     limit_price=float(tp_scalp),
                     price=float(tp_scalp),
+                    placement_price=float(tp_scalp),
                 )
                 for o in self.backtest_engine.pending_orders:
                     if o.order_id == tp_scalp_id:
@@ -341,7 +382,32 @@ class StrategyReplayEngine:
             # Standard single-target bracket
             oco_group = f"{filled.order_id}_BRACKET"
 
-            # Stop-loss exit (STOP)
+            # ── Bracket-exit placement_price anchor ───────────────────────────────────
+            # These exit orders are *contingent* — they come into existence only after
+            # the entry has filled, as part of an OCO bracket. The engine's STOP
+            # direction guard (``_check_order_fill``) rejects a BUY STOP whose
+            # ``placement_price > stop_price`` (treats it as a "wrong-side BUY STOP,
+            # below market"). That guard exists to stop a strategy from posting a
+            # naked BUY STOP below the current bid, where a real broker would reject
+            # it. But bracket exits are NOT naked: the entry just filled at
+            # ``filled.filled_price``, the bracket SL is on the other side of that
+            # fill, and there's no scenario in which the broker would refuse it.
+            #
+            # If we let ``place_order`` fall back to ``self.last_close`` (= the
+            # current bar's close), a SHORT entry whose retracement bar closes back
+            # above the new SL — exactly the 2026-03-04 MNQ scenario the user
+            # flagged — gets its bracket SL silently rejected. Symptom: the SL
+            # never fires, the trade rides ``max_hold_bars`` to the timeout exit
+            # hundreds of points later (−$1,839.75 on 3 contracts vs the ~−$130
+            # / contract a clean SL exit would have produced).
+            #
+            # Fix: anchor ``placement_price`` to the bracket level itself. For the
+            # SL that's ``stop_loss_price``; for the TP it's ``take_profit_price``.
+            # With ``pp == stop_price`` the strict-inequality direction-guard check
+            # is false → no rejection, the engine fills the order normally as soon
+            # as ``bar.high`` / ``bar.low`` touches the level. The TP (LIMIT) has
+            # no direction guard today but we anchor it symmetrically anyway so a
+            # future LIMIT-side guard wouldn't reintroduce the same bug. ──
             sl_order_id = self.backtest_engine.place_order(
                 symbol=filled.symbol,
                 side=exit_side,
@@ -349,6 +415,7 @@ class StrategyReplayEngine:
                 order_type=OrderType.STOP,
                 stop_price=float(stop_loss_price),
                 price=float(stop_loss_price),
+                placement_price=float(stop_loss_price),
             )
             for o in self.backtest_engine.pending_orders:
                 if o.order_id == sl_order_id:
@@ -364,12 +431,23 @@ class StrategyReplayEngine:
                 order_type=OrderType.LIMIT,
                 limit_price=float(take_profit_price),
                 price=float(take_profit_price),
+                placement_price=float(take_profit_price),
             )
             for o in self.backtest_engine.pending_orders:
                 if o.order_id == tp_order_id:
                     o.oco_group = oco_group
                     o.exit_reason = "take_profit"
                     break
+
+            # ── BONGO §1B: link this freshly-placed SL exit to its breakeven watch ──
+            # The watch was registered against the *entry* order id (``filled.order_id``)
+            # before the entry filled. Now that the SL exit order exists, we can move
+            # its stop_price on subsequent bars when MFE crosses the threshold.
+            watch = self._breakeven_watches.get(str(filled.order_id))
+            if watch is not None:
+                watch["sl_order_id"] = str(sl_order_id)
+                watch["entry_bar_index"] = self.backtest_engine.current_bar_index
+                watch["position_filled"] = True
 
         self._maybe_arm_partial_tp_stage2(filled_this_bar, bar)
 
@@ -394,6 +472,11 @@ class StrategyReplayEngine:
             if qty <= 0:
                 continue
 
+            # Partial-TP stage-2 ("runner") siblings — same placement_price anchor
+            # rationale as the standard bracket below: SL stop_price for the STOP,
+            # TP limit_price for the LIMIT, so the engine's STOP direction guard
+            # never silently rejects these contingent OCO children when bar.close
+            # has run past the breakeven level by the time stage 2 arms.
             oco2 = f"{filled.order_id}_PTP2_{sym}"
             if pos.side == OrderSide.BUY:
                 ex = OrderSide.SELL
@@ -404,6 +487,7 @@ class StrategyReplayEngine:
                     order_type=OrderType.STOP,
                     stop_price=entry_px,
                     price=entry_px,
+                    placement_price=entry_px,
                 )
                 for o in self.backtest_engine.pending_orders:
                     if o.order_id == sl_id:
@@ -417,6 +501,7 @@ class StrategyReplayEngine:
                     order_type=OrderType.LIMIT,
                     limit_price=float(runner_px),
                     price=float(runner_px),
+                    placement_price=float(runner_px),
                 )
                 for o in self.backtest_engine.pending_orders:
                     if o.order_id == tp_id:
@@ -432,6 +517,7 @@ class StrategyReplayEngine:
                     order_type=OrderType.STOP,
                     stop_price=entry_px,
                     price=entry_px,
+                    placement_price=entry_px,
                 )
                 for o in self.backtest_engine.pending_orders:
                     if o.order_id == sl_id:
@@ -445,6 +531,7 @@ class StrategyReplayEngine:
                     order_type=OrderType.LIMIT,
                     limit_price=float(runner_px),
                     price=float(runner_px),
+                    placement_price=float(runner_px),
                 )
                 for o in self.backtest_engine.pending_orders:
                     if o.order_id == tp_id:
@@ -569,7 +656,11 @@ class StrategyReplayEngine:
         self._current_symbol = symbol
         self._current_bars = bars
         self._replay_timeframe = replay_timeframe
-        
+
+        # Reset breakeven-watch state so back-to-back replays (e.g. walk-forward folds
+        # sharing a StrategyReplayEngine) don't carry watches across runs.
+        self._breakeven_watches.clear()
+
         # Convert bars to DataFrame for BacktestEngine
         df = self._bars_to_dataframe(bars)
         
@@ -798,6 +889,13 @@ class StrategyReplayEngine:
         if hasattr(self.trading_bot, 'place_limit_order'):
             self._original_trading_bot_place_limit = self.trading_bot.place_limit_order
             self.trading_bot.place_limit_order = self._simulate_place_limit_order
+
+        # ── BONGO §1B: intercept the live breakeven-watch registration so the
+        # replay engine handles it deterministically instead of letting the live
+        # ``_generic_breakeven_monitor_loop`` make REST calls against the broker. ──
+        if hasattr(self.trading_bot, "register_generic_breakeven_watch"):
+            self._original_register_breakeven = self.trading_bot.register_generic_breakeven_watch
+            self.trading_bot.register_generic_breakeven_watch = self._simulate_register_breakeven_watch
     
     def _restore_trading_bot_methods(self):
         """Restore original trading bot methods."""
@@ -811,6 +909,8 @@ class StrategyReplayEngine:
             self.trading_bot.place_stop_order = self._original_trading_bot_place_stop
         if self._original_trading_bot_place_limit:
             self.trading_bot.place_limit_order = self._original_trading_bot_place_limit
+        if self._original_register_breakeven:
+            self.trading_bot.register_generic_breakeven_watch = self._original_register_breakeven
     
     async def _simulate_place_bracket_order(
         self,
@@ -822,6 +922,7 @@ class StrategyReplayEngine:
         take_profit_price: float,
         enable_breakeven: bool = False,
         breakeven_profit_threshold: Optional[float] = None,
+        breakeven_offset: float = 0.0,
         *,
         partial_tp_enabled: bool = False,
         partial_tp_scalp_r: float = 1.0,
@@ -876,7 +977,36 @@ class StrategyReplayEngine:
                 sn = str(kwargs.get("strategy_name") or "").strip().lower() or "unknown"
                 entry_order.custom_tag = f"TB-stop_bracket-{sn}-replay"
                 break
-        
+
+        # ── BONGO §1B: register the breakeven watch in replay ─────────────────────────
+        # The live ``BaseStrategy.place_bracket_order`` calls
+        # ``bot.register_generic_breakeven_watch`` after a successful order_id is
+        # returned. We bypass that whole method via the ``self.strategy.place_bracket_order``
+        # intercept, so we have to mirror the registration here. Without this block,
+        # ``self._breakeven_watches`` stays empty and ``_evaluate_breakeven_watches``
+        # never fires — which is exactly why no backtest trades ever exited at
+        # ``breakeven`` despite ``breakeven_trigger_r=0.2`` in the TOML.
+        if (
+            entry_order_id
+            and breakeven_profit_threshold is not None
+            and float(breakeven_profit_threshold) > 0
+        ):
+            try:
+                self._simulate_register_breakeven_watch(
+                    str(entry_order_id),
+                    symbol=symbol,
+                    side=side,
+                    entry_price=float(entry_price),
+                    profit_threshold=float(breakeven_profit_threshold),
+                    breakeven_offset=float(breakeven_offset or 0.0),
+                    strategy_name=str(strategy_name or kwargs.get("strategy_name") or ""),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "replay: could not register breakeven watch for %s: %s",
+                    entry_order_id, exc,
+                )
+
         return {
             'success': True,
             'orderId': entry_order_id,
@@ -916,6 +1046,207 @@ class StrategyReplayEngine:
             'method': 'backtest_simulation'
         }
     
+    def _simulate_register_breakeven_watch(
+        self,
+        order_id: str,
+        *,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        profit_threshold: float,
+        strategy_name: str = "",
+        breakeven_offset: float = 0.0,
+    ) -> None:
+        """Replay-mode equivalent of ``trading_bot.register_generic_breakeven_watch``.
+
+        ``BaseStrategy.place_bracket_order`` calls this *after* the simulated entry
+        order is placed, so we already have the entry order id. We can't link the SL
+        order id yet (it doesn't exist until the entry fills and ``_handle_filled_orders``
+        creates the bracket exits) — that linkage happens in ``_process_subbar_fills``
+        after the entry fills.
+
+        ``breakeven_offset`` (price pts, clamped ≥ 0) is applied **in the trade's
+        favour** when the watch eventually triggers: LONG snaps the SL to
+        ``entry + offset``, SHORT to ``entry − offset``. Default 0 preserves the
+        legacy "snap exactly to entry" behaviour.
+        """
+        if not order_id:
+            return
+        try:
+            thr = float(profit_threshold)
+        except (TypeError, ValueError):
+            return
+        if thr <= 0:
+            return
+        try:
+            be_offset = max(0.0, float(breakeven_offset or 0.0))
+        except (TypeError, ValueError):
+            be_offset = 0.0
+        su = str(side).upper()
+        normalized_side = "LONG" if su in ("BUY", "LONG") else "SHORT"
+        self._breakeven_watches[str(order_id)] = {
+            "symbol": str(symbol).upper().strip(),
+            "side": normalized_side,
+            "entry_price": float(entry_price),
+            "profit_threshold": thr,
+            "breakeven_offset": be_offset,
+            "entry_bar_index": None,    # set when the entry fills
+            "sl_order_id": None,        # linked after _handle_filled_orders creates SL/TP
+            "triggered": False,
+            "position_filled": False,
+            "strategy_name": str(strategy_name or ""),
+        }
+        logger.debug(
+            "replay breakeven watch armed: order=%s sym=%s side=%s thr=%.4f offset=%.4f entry=%.4f",
+            order_id, symbol, normalized_side, thr, be_offset, float(entry_price),
+        )
+
+    def _evaluate_breakeven_watches(self, bar: Any) -> None:
+        """Check all active breakeven watches against this bar; move SL to entry on trigger.
+
+        Mirrors the live ``trading_bot._generic_breakeven_monitor_loop`` semantics:
+          • Skip the entry bar itself (``current_bar_index <= entry_bar_index``).
+          • For LONG: trigger when ``bar.high - entry_price >= profit_threshold``.
+          • For SHORT: trigger when ``entry_price - bar.low >= profit_threshold``.
+          • On trigger: locate the linked SL pending order, snap ``stop_price`` (and
+            ``placement_price`` to keep the BUY/SELL stop direction-validation in
+            ``BacktestEngine._check_order_fill`` happy) to ``entry_price``.
+          • If the position is gone (already closed by SL/TP earlier this run), drop
+            the watch silently.
+        """
+        if not self._breakeven_watches:
+            return
+        try:
+            bar_high = float(bar["high"])
+            bar_low = float(bar["low"])
+            bar_close = float(bar["close"])
+        except (KeyError, TypeError, ValueError):
+            return
+
+        for oid, watch in list(self._breakeven_watches.items()):
+            if watch.get("triggered"):
+                # Already moved on a previous bar; let the engine handle the rest.
+                continue
+            sl_oid = watch.get("sl_order_id")
+            if not sl_oid:
+                # Entry hasn't filled yet — nothing to move.
+                continue
+            entry_bar = watch.get("entry_bar_index")
+            if entry_bar is not None and self.backtest_engine.current_bar_index <= int(entry_bar):
+                # Skip the entry bar itself to avoid look-ahead on the high/low ordering.
+                continue
+
+            sym = watch["symbol"]
+            if sym not in self.backtest_engine.positions:
+                # Position already closed — drop the watch.
+                self._breakeven_watches.pop(oid, None)
+                continue
+
+            entry_price = float(watch["entry_price"])
+            thr = float(watch["profit_threshold"])
+            side = watch["side"]
+            be_offset = max(0.0, float(watch.get("breakeven_offset") or 0.0))
+
+            if side == "LONG":
+                profit_move = bar_high - entry_price
+            else:
+                profit_move = entry_price - bar_low
+
+            if profit_move < thr:
+                continue
+
+            new_stop = entry_price + be_offset if side == "LONG" else entry_price - be_offset
+
+            # ── Same-bar ambiguity guard (replay-only) ────────────────────────────────
+            # A single OHLC bar tells us nothing about the *order* of the high and the
+            # low within it. If the bar's range covers BOTH the BE-trigger level (high
+            # for LONG / low for SHORT) AND the proposed moved-SL level (low for LONG /
+            # high for SHORT), the previous code unconditionally snapped the SL to
+            # ``new_stop`` and then let the per-bar fill loop fill it — producing a
+            # "breakeven" exit on what was visibly a large directional bar that more
+            # likely punched straight through both levels without any breakeven
+            # protection ever existing.
+            #
+            # Conservative policy: DEFER the snap when we can't disambiguate the
+            # intra-bar ordering. The watch stays armed (``triggered=False``) so the
+            # next bar gets a fresh evaluation. The original SL stays in place — if
+            # that level is *also* touched this bar, the engine's normal fill loop
+            # fires it as a regular ``stop_loss`` exit at the original SL price.
+            #
+            # LONG  → ambiguous when ``bar.low  <= new_stop`` (= entry + offset).
+            # SHORT → ambiguous when ``bar.high >= new_stop`` (= entry - offset).
+            if side == "LONG":
+                ambiguous = bar_low <= new_stop
+            else:
+                ambiguous = bar_high >= new_stop
+            if ambiguous:
+                logger.info(
+                    "↪ replay breakeven deferred (same-bar ambiguity): %s %s bar=[h=%.4f l=%.4f] "
+                    "trigger=%.4f new_stop=%.4f — watch stays armed for next bar",
+                    sym, side, bar_high, bar_low, thr, new_stop,
+                )
+                continue
+
+            # Trigger: find the SL pending order and snap its trigger to entry ± offset
+            # (offset shifts the stop in the trade's favour: LONG above entry, SHORT below).
+            sl_order = None
+            for pending in self.backtest_engine.pending_orders:
+                if pending.order_id == sl_oid:
+                    sl_order = pending
+                    break
+            if sl_order is None:
+                # SL exit already filled or cancelled — nothing to do.
+                self._breakeven_watches.pop(oid, None)
+                continue
+
+            try:
+                sl_order.stop_price = float(new_stop)
+                # Anchor placement_price to the new stop_price itself so the engine's
+                # STOP-direction guard in ``BacktestEngine._check_order_fill`` neither
+                # rejects nor short-circuits the fill:
+                #   • SELL STOP rejects when ``pp < stop_price`` (would-be wrong-side).
+                #     With pp == stop_price the strict inequality is false → pass.
+                #   • BUY STOP rejects when ``pp > stop_price`` — same logic.
+                # Using ``bar_close`` here was the prior (buggy) behaviour: after a
+                # profitable LONG move, bar_close is typically *below* the new stop
+                # (price retraced through entry on the same bar), which made the SELL
+                # STOP look "wrong-side" and the engine silently refused to fill it.
+                # Result: the breakeven SL stayed pending forever and the trade only
+                # exited when ``manage_positions`` finally tripped ``max_hold_bars``,
+                # exactly the symptom the user observed on 2026-03-30 MNQ — moved
+                # SL was at 23407, low went all the way to 23117, but exit_reason
+                # was logged as ``timeout``.
+                sl_order.placement_price = float(new_stop)
+                # Keep the synthetic ``price`` field in sync (used by some helpers
+                # for slippage / post-fill bookkeeping).
+                sl_order.price = float(new_stop)
+                # Retag the exit reason so the recap pipeline can distinguish a moved-stop
+                # ("breakeven") fill from a real stop_loss hit. ``BacktestEngine._update_position``
+                # copies ``filled_order.exit_reason`` straight onto ``BacktestTrade.exit_reason``,
+                # which is what walk-forward recaps render in the trade table. Without this
+                # retag, every breakeven exit would show as ``stop_loss`` with PnL ≈ 0,
+                # visually indistinguishable from a real loss.
+                sl_order.exit_reason = "breakeven"
+            except Exception as exc:
+                logger.warning("replay breakeven: could not modify SL %s: %s", sl_oid, exc)
+                continue
+
+            # Also reflect the moved stop on the open position so MFE/MAE bookkeeping
+            # and any downstream consumers (recap metrics, trade-chart shading) see
+            # the new value.
+            pos = self.backtest_engine.positions.get(sym)
+            if pos is not None:
+                try:
+                    pos.stop_loss = float(new_stop)
+                except Exception:
+                    pass
+
+            watch["triggered"] = True
+            logger.info(
+                "🔒 replay breakeven triggered: %s %s move=%.4f ≥ thr=%.4f — SL moved to %.4f (entry=%.4f offset=%.4f order=%s)",
+                sym, side, profit_move, thr, new_stop, entry_price, be_offset, sl_oid,
+            )
+
     async def _simulate_place_oco_bracket(
         self,
         symbol: str,

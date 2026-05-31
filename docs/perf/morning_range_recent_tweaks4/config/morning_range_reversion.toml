@@ -1,0 +1,133 @@
+# Morning range reversion (7:00–7:55 US/Eastern anchor range → fade vs breakout).
+#
+
+# Executor ``should_trade`` window: US/Eastern wall clock (see ``MorningRangeReversionStrategy._in_trading_window``).
+# Start before ``signal.range_start`` so the 07:00–08:00 ET anchor can build on live bars.
+start_time       = "06:55"
+end_time         = "16:00"
+# Disable generic RTH no-trade clip (``flat_before`` still manages end-of-day intent).
+no_trade_start   = ""
+no_trade_end     = ""
+
+[meta]
+enabled = true
+symbols = ["MNQ","MES","MGC"]
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 4
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = "5m"
+session_timezone  = "America/New_York"
+
+# Bar opens in [range_start, range_end_open) define the pre-market range (5m bars).
+range_start       = "07:00"
+range_end_open    = "08:00"
+
+# Force-flat any managed position at or after this US/Eastern clock time (live).
+flat_before       = "16:00"
+
+# Replay safety: market-close stale brackets (5m bars ≈ 8h session cap).
+max_hold_bars     = 46
+allow_long        = true
+allow_short       = true
+
+# Execution geometry (multipliers vs half-range). Defaults preserve 1:1 vs midpoint.
+# stop_distance = (width/2) * sl_mult   (when sl_fixed_pts == 0)
+# target_distance = (width/2) * tp_mult  (tp_mult=1.0 -> midpoint target)
+sl_mult          = 1
+tp_mult          = 1.8
+
+# ── Narrow / wide range filters ───────────────────────────────────────────────
+# When the morning range is very narrow the entry depth (reentry_threshold_points)
+# is capped to half-1e-6, making entry ≈ midpoint ≈ TP. A TP fill then earns
+# near-zero gross and pays commission → net loss.  This filter skips those days.
+#
+# Rule of thumb: set to at least 2 * reentry_threshold_points (14 for MNQ) to
+# ensure the TP is at least 1 pt above entry after depth-capping.
+# 0 = no minimum (default; no change to existing behaviour).
+min_range_width_points = 60
+
+# Wide morning ranges create outsized per-trade risk.
+# Example: 150 caps MNQ risk to ~(75+7)*$2 = ~$164/trade on 1 contract.
+# 0 = no cap (default).
+max_range_width_points = 300
+
+# Only acknowledge trades that have 5m candle close back into the price range.
+require_reentry_close = false
+
+# sl_fixed_pts > 0 overrides the range-anchored SL and places the stop a fixed
+# number of points from entry instead:
+sl_fixed_pts     = 0
+
+# Max trades set to 1 for now.
+max_fades_per_session = 1
+
+# Inner-band for legacy candle-close re-entry (0.0 = arm on first close inside [L, H]).
+# Only used when ``reentry_threshold_points`` <= 0. BONGO §4.2: try 0.15 for deeper re-entry.
+reentry_frac    = 0.0
+
+# Advance stop-entry offset (overnight_range style). 
+# MES/MGC overrides use 0 until per-symbol sweep.
+reentry_threshold_points = 1
+
+# No new fade arms (sweep / re-entry) after ``range_end_open`` + N hours on the anchor ET date (0 = off).
+range_effectiveness_hours = 4
+
+# ── Live data-freshness guard ─────────────────────────────────────────────────
+# Maximum age (seconds) of the most recent bar before ``analyze()`` aborts with
+# a loud ``⛔ STALE DATA`` error. 
+# Recommended: 600 (10 min) for 5m bars; raise on slower timeframes.
+# 0 = disable the guard entirely (legacy behaviour, not recommended live).
+max_bar_staleness_seconds = 600
+
+# atr regime settings (not done)
+require_high_atr       = false
+atr_period             = 14
+atr_regime_lookback    = 500
+atr_regime_quantile    = 0.75
+
+# BONGO §1A — partial TP at ``partial_tp_scalp_r`` × initial R + runner to full ``tp_mult`` target.
+# Replay simulates two-stage OCO; live still depends on broker ``place_oco_bracket_stop_entry_partial_tp_v1``.
+partial_tp_enabled = false
+partial_tp_scalp_r   = 1.0
+
+[position_management]
+# BONGO §1B: broker stop → entry after ``breakeven_trigger_r`` × |entry − stop| favourable move.
+breakeven_enabled   = false
+breakeven_trigger_r = 1.5
+breakeven_offset    = 5
+
+# ── Per-symbol overrides ──────────────────────────────────────────────────────
+# IMPORTANT (TOML structural footgun, fixed 2026-05-21): every section header
+# (``[symbols.X.Y]``, ``[position_management]``, etc.) ends ``[signal]``. Once a
+# new header appears, any subsequent key — including the ones the strategy reads
+# via ``signal.X`` — is routed to whatever section is currently open. The
+# 2026-05-21 walk-forward bug where ``max_fades_per_session=1`` produced 8 trades
+# on a single day was caused by exactly this: the keys had been moved below
+# ``[position_management]`` and the strategy's ``signal.max_fades_per_session``
+# lookup returned ``None`` → class default of 0 (unlimited). Keep all
+# ``signal.*`` knobs above ``[position_management]`` and put the per-symbol
+# overrides at the very bottom.
+
+[symbols.MES.signal]
+# Walk-forward follow-up: tighter TP on MES only (MNQ/MGC stay root ``tp_mult``).
+tp_mult = 0.7
+# MES typically builds a ~2–6 pt morning range. A 7pt MNQ-calibrated threshold
+# would exceed half-width and clamp every session. Tighter thresholds (1.5–2)
+# trigger on most retraces and lose on slippage/commission friction at MES's
+# small per-point value. Fall back to legacy candle-close re-entry (now honest
+# thanks to the stop-direction guard in BacktestEngine); revisit after a
+# dedicated MES walk-forward sweep across {1.0, 2.0, 3.0} pts.
+reentry_threshold_points = 0.0
+
+[symbols.MGC.signal]
+# MGC range similarly compact; legacy candle-close mode is the safer default
+# until a per-symbol threshold sweep produces a positive-expectancy value.
+reentry_threshold_points = 0.0

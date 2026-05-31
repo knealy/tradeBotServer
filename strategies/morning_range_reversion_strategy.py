@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from datetime import time as dt_time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -815,6 +816,26 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self.max_range_width_points: float = float(
             self._cfg.get_float("signal.max_range_width_points", 0.0) or 0.0
         )
+        # 2026-05-29 fix — far-sweep guard.
+        # The sweep detector ``c > H`` / ``c < L`` is direction-only; it never asked
+        # *how far* past the boundary the price drifted. On 2026-05-29 13:47 ET
+        # (5h45m after the 08:00 ET anchor close, with ``range_effectiveness_hours=8``)
+        # MGC was trading ~$43 above its 15.10pt anchor high. The strategy still
+        # signalled a SHORT stop-entry at H=4571.90; the broker rejected it with
+        # ``Invalid price. Price is outside allowed range.`` (Code 2) because the
+        # stop trigger was far below current market — a "catch a knife from above"
+        # entry that had essentially zero fill probability anyway.
+        #
+        # ``max_sweep_distance_widths`` caps the allowed close distance past the
+        # boundary as a multiple of the anchor range width.  Default 2.0: with an
+        # MGC width of 15.10pts the strategy will skip a fade once close > H + 30pts
+        # (~$300 over the anchor).  Symbol overrides let MES use a different value
+        # if its typical sweep amplitude differs.  Set to 0 to disable the guard
+        # (legacy behaviour).
+        self.max_sweep_distance_widths: float = max(
+            0.0,
+            float(self._cfg.get_float("signal.max_sweep_distance_widths", 2.0) or 0.0),
+        )
         self.reentry_frac: float = float(self._cfg.get_float("signal.reentry_frac", 0.0) or 0.0)
         # False: first close outside range → stop-entry + brackets at once (overnight-style OCO path).
         # True: wait for a close back inside the inner band (reentry_frac) before signaling (legacy).
@@ -836,6 +857,27 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self.atr_period: int = int(self._cfg.get_int("signal.atr_period", 14))
         self.atr_regime_lookback: int = int(self._cfg.get_int("signal.atr_regime_lookback", 500))
         self.atr_regime_quantile: float = float(self._cfg.get_float("signal.atr_regime_quantile", 0.75))
+        # Inverse ATR gate: skip entries when current ATR is *above* the
+        # ``skip_high_atr_quantile`` percentile of the prior ATR samples.
+        # Mutually exclusive with ``require_high_atr`` (the original gate
+        # filters TO the high-vol regime; this one filters AWAY from it).
+        # 0.0 = disabled; 0.90 = skip entries on days where today's ATR is
+        # in the top 10% of the lookback window (volatility spike days).
+        self.skip_high_atr_quantile: float = float(self._cfg.get_float("signal.skip_high_atr_quantile", 0.0))
+        # ── Kaufman Efficiency Ratio (KER) trend-regime gate ────────────
+        # KER = |close[t] - close[t-N]| / Σ |close[i] - close[i-1]| over N days.
+        # KER ≈ 1 → perfect trend (every step in same direction).
+        # KER ≈ 0 → perfect range (oscillation, no net movement).
+        # Set ``skip_above_efficiency_ratio > 0`` and ``efficiency_ratio_lookback_days
+        # > 0`` to skip entries when today's KER exceeds the threshold.
+        # Per-symbol override-able. Default off (=0.0) so existing configs
+        # are unaffected.
+        self.skip_above_efficiency_ratio: float = float(
+            self._cfg.get_float("signal.skip_above_efficiency_ratio", 0.0) or 0.0
+        )
+        self.efficiency_ratio_lookback_days: int = int(
+            self._cfg.get_int("signal.efficiency_ratio_lookback_days", 5) or 5
+        )
         # After range_end_open on the anchor ET date, ignore new sweeps / re-arms past this horizon (0 = off).
         self.range_effectiveness_hours: float = float(
             self._cfg.get_float("signal.range_effectiveness_hours", 4.0) or 4.0
@@ -857,6 +899,13 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self.breakeven_trigger_r: float = float(
             self._cfg.get_float("position_management.breakeven_trigger_r", 0.5) or 0.5
         )
+        # Optional price-pt offset applied to the breakeven stop in the trade's favour
+        # (LONG → entry+offset, SHORT → entry−offset). Clamped to >= 0 here so a sloppy
+        # negative TOML value can't accidentally tighten the stop into a loss zone.
+        self.breakeven_offset: float = max(
+            0.0,
+            float(self._cfg.get_float("position_management.breakeven_offset", 0.0) or 0.0),
+        )
 
         self.tick_sizes: Dict[str, float] = {
             "MNQ": 0.25,
@@ -873,26 +922,28 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self._state: Dict[str, Dict[str, Any]] = {}
         self._live_managed_symbols: set[str] = set()
 
+        # Compact init banner: groups related knobs on separate lines for terminal
+        # readability. The single-line summary used to overflow most terminals and
+        # made it hard to spot which knob you cared about; this stacks them into
+        # logical groups (timing, R-multiples, re-entry, session caps, filters).
         logger.info(
-            "✅ morning_range_reversion init: tf=%s session=%s range=%s-%s flat_before=%s "
-            "sl=%.2f tp=%.2f reentry=%.2f reentry_threshold_pts=%.2f require_reentry_close=%s "
-            "max_fades_per_session=%s range_effectiveness_h=%s high_atr=%s partial_tp=%s",
-            self.timeframe,
-            self.session_zone,
-            self.range_start,
-            self.range_end_open,
-            self.flat_before,
-            self.sl_mult,
-            self.tp_mult,
-            self.reentry_frac,
-            self.reentry_threshold_points,
-            self.require_reentry_close,
-            self.max_fades_per_session,
-            self.range_effectiveness_hours,
+            "✅ morning_range_reversion ready  |  tf=%s  session=%s  "
+            "build=%s→%s ET  flat_before=%s",
+            self.timeframe, self.session_zone,
+            self.range_start, self.range_end_open, self.flat_before,
+        )
+        logger.info(
+            "   R-multiples   :  sl=%.2f  tp=%.2f  reentry=%.2f  "
+            "reentry_threshold=%.2fpts  require_reentry_close=%s",
+            self.sl_mult, self.tp_mult, self.reentry_frac,
+            self.reentry_threshold_points, self.require_reentry_close,
+        )
+        logger.info(
+            "   session caps  :  max_fades_per_session=%s  range_effectiveness=%.1fh  "
+            "high_atr_filter=%s  partial_tp=%s",
+            self.max_fades_per_session, float(self.range_effectiveness_hours),
             "on" if self.require_high_atr else "off",
-            "on"
-            if bool(self._cfg.get_bool("signal.partial_tp_enabled", False))
-            else "off",
+            "on" if bool(self._cfg.get_bool("signal.partial_tp_enabled", False)) else "off",
         )
 
     def _tp_mult(self, symbol: str) -> float:
@@ -921,6 +972,357 @@ class MorningRangeReversionStrategy(BaseStrategy):
             return max(0.0, float(v))
         return max(0.0, float(self.sl_fixed_pts))
 
+    def _sl_mult(self, symbol: str) -> float:
+        """Per-symbol ``signal.sl_mult`` override.
+
+        Lets smaller-contract symbols (MES/MGC) use range-anchored stops while
+        MNQ runs a fixed-pts override — the smaller contracts have wildly
+        different per-point dollar values (MNQ $2 vs MES $5 vs MGC $10), so a
+        blanket fixed-pts stop scales their per-trade dollar risk unevenly.
+        Range-anchored ``sl_mult`` keeps the SL proportional to the day's
+        anchor range, which is the natural volatility regime for each symbol.
+
+        Walk-forward 9m sweep (2026-05-29): MGC ``sl_mult=3.0`` produced
+        composite 41850 / DD 62% vs slfix=35's composite 26905 / DD 105% —
+        same return with 40pp lower drawdown thanks to range-aware sizing.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.sl_mult", default=None)
+        if v is not None:
+            return max(0.1, float(v))
+        return max(0.1, float(getattr(self, "sl_mult", 1.0) or 1.0))
+
+    def _sl_max_pts(self, symbol: str) -> float:
+        """Per-symbol ``signal.sl_max_pts`` — safety CAP on the final SL distance.
+
+        Bounds the worst-case per-trade risk regardless of which SL mode is
+        active.  When non-zero, the computed SL distance (from either
+        ``sl_fixed_pts`` or ``sl_mult × half_width``) is clamped to at most
+        ``sl_max_pts``.  Zero / negative disables the cap.
+
+        Rationale: ``sl_mult`` makes stops proportional to range, which is
+        usually a feature — but extreme-range days (volatility spikes, news
+        flush) can produce outsized stops (e.g. MGC 50pt range × sl_mult=3 →
+        75pt SL = $750 risk per contract).  ``sl_max_pts`` caps that tail.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.sl_max_pts", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.sl_max_pts", 0.0)
+        try:
+            return max(0.0, float(v or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _sl_min_pts(self, symbol: str) -> float:
+        """Per-symbol ``signal.sl_min_pts`` — safety FLOOR on the final SL distance.
+
+        Mirror of ``_sl_max_pts``: enforces a minimum SL distance so the stop
+        never sits unrealistically close to entry on a compressed-range day
+        where ``sl_mult × half_width`` would otherwise be tiny.  Zero / negative
+        disables the floor.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.sl_min_pts", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.sl_min_pts", 0.0)
+        try:
+            return max(0.0, float(v or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _sl_max_pct_of_range(self, symbol: str) -> float:
+        """Per-symbol ``signal.sl_max_pct_of_range`` — *dynamic* cap on the SL
+        distance, expressed as a fraction of the anchor range width.
+
+        Operates *in addition to* the absolute ``sl_max_pts`` cap — the final
+        SL is clamped by *both* (whichever is tighter on a given day).  Lets
+        the SL scale with each day's volatility regime: on a compressed-range
+        day the cap also tightens, on a wide-range day it loosens.
+
+        Example: ``sl_max_pct_of_range = 1.5`` and a 12 pt anchor width →
+        the SL distance is capped at 18 pt that day.  ``0`` disables this cap.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.sl_max_pct_of_range", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.sl_max_pct_of_range", 0.0)
+        try:
+            return max(0.0, float(v or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _entry_window(self, symbol: str) -> tuple[Optional[dt_time], Optional[dt_time]]:
+        """Per-symbol entry-time window ``[entry_start_et, entry_end_et]``.
+
+        Returns a ``(start, end)`` tuple of ``datetime.time`` objects (both
+        inclusive). Either side ``None`` means "no bound on that side".
+        Times are interpreted in Eastern Time and compared against the bar
+        timestamp in ET.
+
+        Use case: skip entries during high-volatility regimes (e.g. first
+        15 min of the cash open is whipsaw; last 30 min sees position-
+        unwind tape) where the fade-after-sweep edge degrades.
+        """
+        start_raw = self._cfg.symbol_override(str(symbol).upper(), "signal.entry_start_et", default=None)
+        if start_raw is None:
+            start_raw = self._cfg.get("signal.entry_start_et", None)
+        end_raw = self._cfg.symbol_override(str(symbol).upper(), "signal.entry_end_et", default=None)
+        if end_raw is None:
+            end_raw = self._cfg.get("signal.entry_end_et", None)
+        start = self._parse_et_time(start_raw) if start_raw else None
+        end = self._parse_et_time(end_raw) if end_raw else None
+        return (start, end)
+
+    @staticmethod
+    def _parse_et_time(raw: Any) -> Optional[dt_time]:
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s:
+            return None
+        # Accept HH:MM (24h) or HH:MM:SS forms; tolerate stray quoting.
+        s = s.strip("'\"")
+        try:
+            parts = s.split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            sec = int(parts[2]) if len(parts) > 2 else 0
+            return dt_time(hour=h, minute=m, second=sec)
+        except (ValueError, IndexError):
+            return None
+
+    def _max_consecutive_losses(self, symbol: str) -> int:
+        """Per-symbol ``signal.max_consecutive_losses`` — cross-session circuit
+        breaker.  Once the *most-recent contiguous losing streak* on this
+        symbol reaches the threshold, entries are halted until either
+        (a) ``loss_streak_cooldown_sessions`` calendar days have elapsed
+        since the tripping loss, or (b) a winning trade resets the streak.
+        ``0`` disables the breaker.
+
+        The streak is read from ``self._replay_engine.trades`` (backtest)
+        or from the live bot's fill handler (production — wired separately).
+        No per-bar strategy state is mutated, so the breaker is a pure
+        function of engine state.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.max_consecutive_losses", default=None)
+        if v is None:
+            v = self._cfg.get_int("signal.max_consecutive_losses", 0)
+        try:
+            return max(0, int(v or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _breaker_min_efficiency_ratio(self, symbol: str) -> float:
+        """Per-symbol ``signal.breaker_min_efficiency_ratio`` — *regime* gate
+        ANDed with the count-based ``max_consecutive_losses`` breaker.
+
+        When > 0, the breaker only trips if today's Kaufman Efficiency Ratio
+        (over ``breaker_efficiency_ratio_lookback_days``) is *above* this
+        threshold.  Discriminates between:
+          - Profitable-fold 2-loss streaks (low KER, mean-revert regime
+            persists → breaker should NOT trip) → preserves recovery wins
+          - Trend-cluster 2-loss streaks (high KER, sustained-direction
+            regime → breaker SHOULD trip) → caps DD bleed
+
+        Empirically (MGC 2025-08 → 2026-05 daily-close inspection):
+          - Bad folds (1, 3): KER_10d mean 0.45-0.51
+          - Profitable folds (7, 8): KER_10d mean 0.31-0.33
+        A threshold ~0.35-0.40 cleanly separates the two regimes.
+        ``0`` (default) disables — breaker uses count + magnitude only.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.breaker_min_efficiency_ratio", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.breaker_min_efficiency_ratio", 0.0)
+        try:
+            return max(0.0, min(1.0, float(v or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _breaker_efficiency_ratio_lookback_days(self, symbol: str) -> int:
+        """Per-symbol ``signal.breaker_efficiency_ratio_lookback_days`` — KER
+        lookback used by the ``breaker_min_efficiency_ratio`` gate.
+        Default 10 days (gives cleaner regime separation than 5 in MGC
+        empirical inspection)."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.breaker_efficiency_ratio_lookback_days", default=None)
+        if v is None:
+            v = self._cfg.get_int("signal.breaker_efficiency_ratio_lookback_days", 10)
+        try:
+            return max(2, int(v or 10))
+        except (TypeError, ValueError):
+            return 10
+
+    def _rolling_loss_threshold_dollars(self, symbol: str) -> float:
+        """Per-symbol ``signal.rolling_pnl_loss_threshold_dollars`` — *magnitude*
+        filter that ANDs with the count-based ``max_consecutive_losses``
+        breaker.  When > 0, the breaker only trips if the *cumulative dollar
+        PnL* of the loss streak is also worse than ``-threshold``.
+
+        Designed to distinguish *shallow normal-market streaks* (recover
+        next day) from *deep regime-change streaks* (sustained bleed).
+        Using dollar units lets each symbol calibrate to its own
+        per-trade PnL geometry (MGC ≫ MNQ in $/trade).
+
+        ``0`` (default) disables the magnitude check — breaker becomes
+        count-only.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.rolling_pnl_loss_threshold_dollars", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.rolling_pnl_loss_threshold_dollars", 0.0)
+        try:
+            return max(0.0, float(v or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _loss_streak_cooldown_sessions(self, symbol: str) -> int:
+        """Per-symbol ``signal.loss_streak_cooldown_sessions`` — number of
+        *calendar days* to skip entries on this symbol once the
+        ``max_consecutive_losses`` breaker has tripped.  ``0`` means "halt
+        permanently until a winning trade resets the streak" — useful in
+        live trading where the operator manually resumes, less so for
+        backtesting where the breaker would never release.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.loss_streak_cooldown_sessions", default=None)
+        if v is None:
+            v = self._cfg.get_int("signal.loss_streak_cooldown_sessions", 0)
+        try:
+            return max(0, int(v or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _consec_loss_breaker_status(self, symbol: str, bar_session_date: date,
+                                     bars: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Inspect the engine's closed-trade history for ``symbol`` and return
+        the breaker status as a dict::
+
+            {
+              "blocked": bool,
+              "streak": int,               # current contiguous loss streak
+              "trip_session_date": date|None,  # session of the Nth (tripping) loss
+              "days_since_trip": int|None,     # calendar days since trip_session_date
+              "cooldown": int,                  # configured cooldown window
+              "reason": "ok" | "trip_active" | "trip_cooldown_elapsed" | "no_engine",
+            }
+
+        Reads ``self._replay_engine.trades`` (set by ``StrategyReplayEngine``
+        at startup) — a pure read, no state writes, so this is safe to call
+        on every bar.  Live mode falls through with ``blocked=False`` since
+        the live bot tracks fills via its own ``brokers/topstepx_adapter``
+        pipeline (live wiring is a follow-up).
+        """
+        mcl = self._max_consecutive_losses(symbol)
+        if mcl <= 0:
+            return {"blocked": False, "streak": 0, "reason": "ok"}
+        engine = getattr(self, "_replay_engine", None)
+        if engine is None or not hasattr(engine, "trades"):
+            return {"blocked": False, "streak": 0, "reason": "no_engine"}
+        sym_upper = str(symbol).upper()
+        streak = 0
+        streak_pnl_sum = 0.0
+        latest_loss_date: Optional[date] = None
+        for trade in reversed(getattr(engine, "trades", [])):
+            t_sym = str(getattr(trade, "symbol", "") or "").upper()
+            if t_sym != sym_upper:
+                continue
+            try:
+                pnl = float(getattr(trade, "pnl", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pnl = 0.0
+            if pnl >= 0:
+                break  # winner ends the contiguous-loss walk
+            # First losing trade we encounter walking backward = the most-recent
+            # loss; record its date once and keep walking to grow the streak.
+            if latest_loss_date is None:
+                exit_ts = getattr(trade, "exit_time", None) or getattr(trade, "entry_time", None)
+                latest_loss_date = self._normalize_to_date(exit_ts) or bar_session_date
+            streak += 1
+            streak_pnl_sum += pnl
+        # Cooldown is measured from the MOST-RECENT loss (latest data point)
+        # so a fresh loss in an existing streak re-arms the cooldown timer.
+        trip_session_date = latest_loss_date
+        if streak < mcl:
+            return {"blocked": False, "streak": streak, "reason": "ok"}
+        # Optional magnitude filter (ANDed with count).  Skip the trip
+        # when the streak's cumulative PnL is shallower than the per-symbol
+        # threshold — protects "normal-market 2-loss recoveries" while
+        # still catching deeper "regime-change" streaks.
+        loss_thr = self._rolling_loss_threshold_dollars(symbol)
+        if loss_thr > 0.0 and streak_pnl_sum > -loss_thr:
+            return {
+                "blocked": False,
+                "streak": streak,
+                "streak_pnl": streak_pnl_sum,
+                "magnitude_threshold": -loss_thr,
+                "reason": "shallow_streak_skipped",
+            }
+        # Optional KER regime gate (ANDed with count + magnitude).  Skip
+        # the trip when the recent regime is *not* trending — even after
+        # an N-loss streak.  Designed to discriminate normal-market noise
+        # streaks (low KER, mean-revert) from trend-cluster streaks
+        # (high KER) without losing the DD protection on the latter.
+        ker_min = self._breaker_min_efficiency_ratio(symbol)
+        if ker_min > 0.0 and bars:
+            ker_lookback = self._breaker_efficiency_ratio_lookback_days(symbol)
+            ker_val = self._compute_efficiency_ratio(bars, bar_session_date, ker_lookback)
+            if ker_val is not None and ker_val < ker_min:
+                return {
+                    "blocked": False,
+                    "streak": streak,
+                    "streak_pnl": streak_pnl_sum,
+                    "ker_value": ker_val,
+                    "ker_threshold": ker_min,
+                    "reason": "low_ker_skipped_trip",
+                }
+        cooldown = self._loss_streak_cooldown_sessions(symbol)
+        if cooldown <= 0:
+            return {
+                "blocked": True,
+                "streak": streak,
+                "streak_pnl": streak_pnl_sum,
+                "trip_session_date": trip_session_date,
+                "days_since_trip": None,
+                "cooldown": 0,
+                "reason": "trip_active",
+            }
+        days_elapsed = (bar_session_date - trip_session_date).days if trip_session_date else 0
+        if days_elapsed < cooldown:
+            return {
+                "blocked": True,
+                "streak": streak,
+                "streak_pnl": streak_pnl_sum,
+                "trip_session_date": trip_session_date,
+                "days_since_trip": days_elapsed,
+                "cooldown": cooldown,
+                "reason": "trip_active",
+            }
+        return {
+            "blocked": False,
+            "streak": streak,
+            "streak_pnl": streak_pnl_sum,
+            "trip_session_date": trip_session_date,
+            "days_since_trip": days_elapsed,
+            "cooldown": cooldown,
+            "reason": "trip_cooldown_elapsed",
+        }
+
+    @staticmethod
+    def _normalize_to_date(ts: Any) -> Optional[date]:
+        """Coerce engine timestamp (datetime / pandas.Timestamp / str) → ``date``."""
+        if ts is None:
+            return None
+        if isinstance(ts, date) and not isinstance(ts, datetime):
+            return ts
+        if isinstance(ts, datetime):
+            return ts.date()
+        # pandas.Timestamp has a .to_pydatetime()
+        if hasattr(ts, "to_pydatetime"):
+            try:
+                return ts.to_pydatetime().date()
+            except Exception:  # noqa: BLE001
+                pass
+        if hasattr(ts, "date") and callable(getattr(ts, "date", None)):
+            try:
+                return ts.date()
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
     def _min_range_width(self, symbol: str) -> float:
         """Per-symbol ``signal.min_range_width_points`` override. 0 = no minimum."""
         v = self._cfg.symbol_override(str(symbol).upper(), "signal.min_range_width_points", default=None)
@@ -935,12 +1337,66 @@ class MorningRangeReversionStrategy(BaseStrategy):
             return max(0.0, float(v))
         return max(0.0, float(self.max_range_width_points))
 
+    def _max_sweep_distance_widths(self, symbol: str) -> float:
+        """Per-symbol ``signal.max_sweep_distance_widths`` override. 0 = no cap."""
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.max_sweep_distance_widths", default=None)
+        if v is not None:
+            return max(0.0, float(v))
+        return max(0.0, float(self.max_sweep_distance_widths))
+
     def _max_staleness_seconds(self, symbol: str) -> float:
         """Per-symbol ``signal.max_bar_staleness_seconds`` override. 0 = guard disabled."""
         v = self._cfg.symbol_override(str(symbol).upper(), "signal.max_bar_staleness_seconds", default=None)
         if v is not None:
             return max(0.0, float(v))
         return max(0.0, float(self.max_bar_staleness_seconds))
+
+    # Mon=0 .. Sun=6 (matches ``datetime.date.weekday()``).
+    _WEEKDAY_ALIASES = {
+        "mon": 0, "monday": 0, "0": 0,
+        "tue": 1, "tues": 1, "tuesday": 1, "1": 1,
+        "wed": 2, "weds": 2, "wednesday": 2, "2": 2,
+        "thu": 3, "thur": 3, "thurs": 3, "thursday": 3, "3": 3,
+        "fri": 4, "friday": 4, "4": 4,
+        "sat": 5, "saturday": 5, "5": 5,
+        "sun": 6, "sunday": 6, "6": 6,
+    }
+    _WEEKDAY_ALIASES_INV = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+
+    def _skip_weekdays(self, symbol: str) -> frozenset[int]:
+        """Set of weekday ints (Mon=0..Sun=6) for which to suppress all anchor sessions.
+
+        Reads ``signal.skip_weekdays`` (per-symbol override supported).  Accepts a
+        list of names (``["Fri"]``) or ints (``[4]``) in TOML, OR a comma/space
+        separated string (``"Fri, Mon"``) when supplied via env var. Unknown
+        tokens are logged once and ignored. Empty / missing = no weekday gate.
+        """
+        raw = self._cfg.symbol_override(str(symbol).upper(), "signal.skip_weekdays", default=None)
+        if raw is None:
+            raw = self._cfg.get("signal.skip_weekdays", default=None)
+        if raw is None or raw == "" or raw == []:
+            return frozenset()
+        tokens: List[str]
+        if isinstance(raw, (list, tuple)):
+            tokens = [str(x).strip() for x in raw]
+        else:
+            tokens = [t.strip() for t in str(raw).replace(",", " ").split() if t.strip()]
+        out: set[int] = set()
+        bad: list[str] = []
+        for tok in tokens:
+            key = tok.lower()
+            if key in self._WEEKDAY_ALIASES:
+                out.add(self._WEEKDAY_ALIASES[key])
+            else:
+                bad.append(tok)
+        if bad and not getattr(self, "_warned_bad_skip_weekday", False):
+            logger.warning(
+                "morning_range_reversion: ignoring unknown skip_weekdays token(s) %r "
+                "(accepts: Mon/Tue/.../Sun or 0..6)",
+                bad,
+            )
+            self._warned_bad_skip_weekday = True
+        return frozenset(out)
 
     def _bars_are_stale(self, symbol: str, bars: List[Dict[str, Any]]) -> bool:
         """Return True if the most recent bar is older than the configured guard.
@@ -979,15 +1435,43 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
         now_mono = _time.monotonic()
         last_logged = self._stale_last_logged_at.get(symbol, 0.0)
+
+        # ── Downgrade severity when stuck-REST detector just rotated the session
+        #    (2026-05-29 fix). If ``trading_bot._last_session_reset_at_mono`` is
+        #    within the cooldown window, the operator already saw a ``🧊 REST
+        #    feed cold-start stale`` WARNING + ``🔁 HTTP session reset`` line —
+        #    surfacing the same situation as ERROR right after is misleading.
+        #    Log at WARNING for the first 30s post-rotation so the operator can
+        #    see "this is the SAME outage, still recovering" without an ERROR
+        #    storm. Steady-state stale data (no recent rotation) keeps logging
+        #    ERROR because that's a real broker outage.
+        last_reset_mono = getattr(bot, "_last_session_reset_at_mono", None)
+        reset_cooldown_s = float(getattr(bot, "_session_reset_cooldown_s", 10.0))
+        # 3× cooldown gives the bot 30s post-reset to actually pull fresh bars
+        # before we go back to ERROR severity.
+        in_active_recovery = (
+            last_reset_mono is not None
+            and (now_mono - float(last_reset_mono)) < (reset_cooldown_s * 3.0)
+        )
+
         if now_mono - last_logged >= self._stale_log_throttle_seconds:
-            logger.error(
-                "⛔ STALE DATA for %s: last bar %s is %.0fs old (threshold %.0fs) — "
-                "skipping analyze. Both REST historical feed AND Market Hub live cache are "
-                "stale; verify Market Hub log line '📡 Market Hub wired …' on startup, "
-                "check SignalR connectivity, and inspect broker /api/History/retrieveBars "
-                "(see docs/GOTCHAS.md → 'Live data freshness').",
-                symbol, last_dt.isoformat(), age_s, threshold,
-            )
+            if in_active_recovery:
+                logger.warning(
+                    "⛔ STALE DATA for %s: last bar %s is %.0fs old (threshold %.0fs) — "
+                    "skipping analyze. Session was just rotated %.1fs ago — waiting for fresh "
+                    "REST/SignalR data to flow in.",
+                    symbol, last_dt.isoformat(), age_s, threshold,
+                    now_mono - last_reset_mono,
+                )
+            else:
+                logger.error(
+                    "⛔ STALE DATA for %s: last bar %s is %.0fs old (threshold %.0fs) — "
+                    "skipping analyze. Both REST historical feed AND Market Hub live cache are "
+                    "stale; verify Market Hub log line '📡 Market Hub wired …' on startup, "
+                    "check SignalR connectivity, and inspect broker /api/History/retrieveBars "
+                    "(see docs/GOTCHAS.md → 'Live data freshness').",
+                    symbol, last_dt.isoformat(), age_s, threshold,
+                )
             self._stale_last_logged_at[symbol] = now_mono
         else:
             logger.debug(
@@ -1146,6 +1630,75 @@ class MorningRangeReversionStrategy(BaseStrategy):
             }
         return self._state[sym]
 
+    def record_trade_outcome(self, symbol: str, pnl: float) -> None:
+        """Legacy live-mode hook for the consec-loss breaker.
+
+        **No longer used in backtest** — the breaker now reads
+        ``self._replay_engine.trades`` directly in
+        ``_consec_loss_breaker_status`` (a pure read, no state writes),
+        which avoids the per-bar non-determinism a hook-based dispatch
+        caused (2026-05-29 9m walk-forward: +4 MNQ trades vs no-hook run
+        even when the hook body was a no-op).
+
+        Kept as a no-op stub for forward compatibility — if live trading
+        later wants to drive the breaker from the bot's fill handler, the
+        live path can build its own per-symbol trade-history list and
+        adapt ``_consec_loss_breaker_status`` to read from that source.
+        """
+        return
+
+    def _seed_range_from_history(
+        self,
+        bars: List[Dict[str, Any]],
+        session_date,
+    ) -> tuple:
+        """Scan ``bars`` for completed bars whose ET timestamp falls inside the
+        ``[range_start, range_end_open)`` window for ``session_date`` and return
+        ``(range_hi, range_lo, bars_used)``.
+
+        Used by ``analyze()`` to **backfill** the anchor range when the executor
+        is started mid-session (i.e. after ``range_end_open`` ET has already
+        passed). Without this, the per-symbol state machine — which expects to
+        be alive through every build-window bar via the wake-driven loop —
+        finalises from an empty state on the very first invocation, marks the
+        session ``idle``, and emits no signals for the rest of the day. That's
+        exactly what happened on 2026-05-27: the bot started at 08:07:30 ET,
+        ~8 minutes past the 08:00 ET anchor close, ran for 60 minutes burning
+        REST budget, and never traded.
+
+        Returns ``(None, None, 0)`` if no completed bars fall inside the window
+        (caller treats that as "still pre-anchor" or "no data for today").
+        """
+        if not bars:
+            return (None, None, 0)
+        hi: Optional[float] = None
+        lo: Optional[float] = None
+        n = 0
+        rs = self.range_start
+        re_open = self.range_end_open
+        for b in bars:
+            bt = self._bar_timestamp_eastern(b)
+            if bt is None:
+                continue
+            if bt.date() != session_date:
+                continue
+            t_open = bt.time()
+            if t_open < rs or t_open >= re_open:
+                continue
+            try:
+                b_hi = self._val(b, "high", "h")
+                b_lo = self._val(b, "low", "l")
+            except Exception:
+                continue
+            if hi is None:
+                hi = b_hi
+                lo = b_lo
+            else:
+                hi = max(hi, b_hi)
+                lo = min(lo, b_lo)
+            n += 1
+        return (hi, lo, n)
+
     @staticmethod
     def _morning_bar_val(bar: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
         for k in keys:
@@ -1177,8 +1730,82 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 out[i] = sum(trs[-period:]) / period
         return out
 
+    def _skip_above_efficiency_ratio(self, symbol: str) -> float:
+        """Per-symbol ``signal.skip_above_efficiency_ratio`` (default 0 = off).
+
+        When > 0, skip entries on days where the Kaufman Efficiency Ratio
+        computed over the last ``efficiency_ratio_lookback_days`` daily
+        closes exceeds this threshold.  Catches sustained-trend regimes
+        (e.g. late-2025 MGC) BEFORE the strategy takes its first losing
+        fade — a *proactive* counterpart to the *reactive*
+        ``max_consecutive_losses`` breaker.
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.skip_above_efficiency_ratio", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.skip_above_efficiency_ratio", 0.0)
+        try:
+            return max(0.0, min(1.0, float(v or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _efficiency_ratio_lookback_days(self, symbol: str) -> int:
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.efficiency_ratio_lookback_days", default=None)
+        if v is None:
+            v = self._cfg.get_int("signal.efficiency_ratio_lookback_days", 5)
+        try:
+            return max(2, int(v or 5))
+        except (TypeError, ValueError):
+            return 5
+
+    def _compute_efficiency_ratio(self, bars: List[Dict[str, Any]], session_date: date,
+                                    lookback_days: int) -> Optional[float]:
+        """Kaufman Efficiency Ratio over the last ``lookback_days`` *daily*
+        closes (one per session-date strictly before ``session_date``).
+
+        Returns the ER in [0, 1] or ``None`` if there isn't enough history.
+        Reduces 5-min bars to daily closes by taking the *last* completed
+        bar for each calendar date in the ET-aware session-zone.
+
+        ER = |close[t] - close[t-N]| / Σ |close[i] - close[i-1]|.
+        A value of 1.0 means every step was in the same direction (perfect
+        trend); 0.0 means perfect mean-reversion / sideways.
+        """
+        if not bars or lookback_days < 2:
+            return None
+        # Walk bars in reverse, taking the *last* bar of each distinct
+        # session-date strictly before ``session_date``. Stop once we have
+        # ``lookback_days + 1`` daily closes (one extra for the leading diff).
+        seen: Dict[date, float] = {}
+        for b in reversed(bars):
+            bt = self._bar_timestamp_eastern(b)
+            if bt is None:
+                continue
+            d = bt.date()
+            if d >= session_date:
+                continue
+            if d in seen:
+                continue  # already have the latest bar for this date
+            try:
+                seen[d] = float(self._val(b, "close", "c"))
+            except Exception:  # noqa: BLE001
+                continue
+            if len(seen) >= lookback_days + 1:
+                break
+        if len(seen) < lookback_days + 1:
+            return None
+        # Sort ascending so we walk chronologically.
+        closes = [seen[d] for d in sorted(seen.keys())]
+        # Keep the last (lookback + 1) closes (ascending).
+        closes = closes[-(lookback_days + 1):]
+        net = abs(closes[-1] - closes[0])
+        gross = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+        if gross <= 0.0:
+            return None
+        return min(1.0, max(0.0, net / gross))
+
     def _morning_regime_atr_allows(self, bars: List[Dict[str, Any]]) -> bool:
-        if not self.require_high_atr:
+        # Both gates off → always allow.
+        if not self.require_high_atr and float(self.skip_high_atr_quantile or 0.0) <= 0.0:
             return True
         look = max(60, int(self.atr_regime_lookback))
         if len(bars) < max(self.atr_period + 20, 30):
@@ -1191,12 +1818,25 @@ class MorningRangeReversionStrategy(BaseStrategy):
         if not (cur == cur) or len(finite) < min_need:
             return False
         sf = sorted(finite)
-        q = max(0.0, min(1.0, float(self.atr_regime_quantile)))
-        cut_idx = int(len(sf) * q)
-        if cut_idx >= len(sf):
-            cut_idx = len(sf) - 1
-        thr = sf[cut_idx]
-        return cur > thr
+        # Require-high gate: today's ATR must be above the require quantile.
+        if self.require_high_atr:
+            q = max(0.0, min(1.0, float(self.atr_regime_quantile)))
+            cut_idx = int(len(sf) * q)
+            if cut_idx >= len(sf):
+                cut_idx = len(sf) - 1
+            thr = sf[cut_idx]
+            if cur <= thr:
+                return False
+        # Skip-high gate: today's ATR must be at or below the skip quantile.
+        skip_q = max(0.0, min(1.0, float(self.skip_high_atr_quantile or 0.0)))
+        if skip_q > 0.0:
+            cut_idx = int(len(sf) * skip_q)
+            if cut_idx >= len(sf):
+                cut_idx = len(sf) - 1
+            thr_skip = sf[cut_idx]
+            if cur > thr_skip:
+                return False
+        return True
 
     def _fade_signal_after_sweep(
         self,
@@ -1219,7 +1859,11 @@ class MorningRangeReversionStrategy(BaseStrategy):
         level, which guarantees a valid stop direction). The stop loss stays anchored to the
         range extreme so risk geometry vs the range is preserved.
         """
-        if self.require_high_atr:
+        # Consult the ATR regime gate whenever either side is configured —
+        # ``require_high_atr`` filters TO the high-vol regime, while
+        # ``skip_high_atr_quantile`` (mutually compatible) filters AWAY from
+        # it. Both off → ``_morning_regime_atr_allows`` returns True early.
+        if self.require_high_atr or float(self.skip_high_atr_quantile or 0.0) > 0.0:
             if not bars:
                 return None
             if not self._morning_regime_atr_allows(bars):
@@ -1227,7 +1871,89 @@ class MorningRangeReversionStrategy(BaseStrategy):
         st = self._get_state(symbol)
         mf = int(getattr(self, "max_fades_per_session", 0) or 0)
         if mf > 0 and int(st.get("fades_this_session", 0) or 0) >= mf:
+            if not st.get("_logged_max_fades"):
+                logger.info(
+                    "🛑 %-3s max_fades_per_session=%d reached — idle for the day "
+                    "(no more sweep entries this session)",
+                    symbol, mf,
+                )
+                st["_logged_max_fades"] = True
             return None
+
+        # Time-of-day entry window — skip entries outside [entry_start_et, entry_end_et]
+        # so we can clip first-N-minutes / last-N-minutes regimes that
+        # systematically underperform.  Both bounds inclusive; either ``None`` =
+        # unbounded on that side.
+        win_start, win_end = self._entry_window(symbol)
+        if win_start is not None or win_end is not None:
+            bar_time = bar_et.time()
+            if (win_start is not None and bar_time < win_start) or \
+               (win_end is not None and bar_time > win_end):
+                if not st.get("_logged_entry_window_skip"):
+                    logger.info(
+                        "⏰ %-3s entry skipped @ %s ET — outside window [%s, %s]",
+                        symbol, bar_time.strftime("%H:%M"),
+                        win_start.strftime("%H:%M") if win_start else "—",
+                        win_end.strftime("%H:%M") if win_end else "—",
+                    )
+                    st["_logged_entry_window_skip"] = True
+                return None
+
+        # Kaufman Efficiency Ratio regime gate — proactive trend-day
+        # detector.  Computes net-movement / sum-of-step-movements over the
+        # last N daily closes; if today's KER exceeds the per-symbol
+        # threshold, the underlying has been *trending* recently and a
+        # mean-reversion fade is unlikely to mean-revert.  Off by default.
+        ker_thr = self._skip_above_efficiency_ratio(symbol)
+        if ker_thr > 0.0:
+            lookback = self._efficiency_ratio_lookback_days(symbol)
+            if bars:
+                ker_val = self._compute_efficiency_ratio(bars, bar_et.date(), lookback)
+                if ker_val is not None and ker_val > ker_thr:
+                    cur_session = bar_et.date()
+                    if st.get("_logged_ker_skip_session") != cur_session:
+                        logger.info(
+                            "📈 %-3s KER=%.2f > %.2f (lookback=%dd) — recent regime is "
+                            "trending; skipping morning fade",
+                            symbol, ker_val, ker_thr, lookback,
+                        )
+                        st["_logged_ker_skip_session"] = cur_session
+                    return None
+
+        # Cross-session consecutive-loss circuit breaker — inspects the
+        # backtest engine's closed-trade list (or live broker's fill
+        # history) to detect a contiguous losing streak that crosses
+        # session boundaries.  When the streak ≥ ``max_consecutive_losses``,
+        # entries are halted on this symbol for
+        # ``loss_streak_cooldown_sessions`` calendar days from the tripping
+        # loss.  Resets implicitly when a winning trade enters the history
+        # OR the cooldown elapses.  Pure read of engine state — no
+        # per-bar strategy mutations (the unguarded ``record_trade_outcome``
+        # hook approach from a previous iteration caused a +4 MNQ trade
+        # drift on 9m for unbisected reasons; this design avoids that
+        # path entirely).
+        breaker = self._consec_loss_breaker_status(symbol, bar_et.date(), bars=bars)
+        if breaker.get("blocked"):
+            cur_session = bar_et.date()
+            if st.get("_logged_breaker_session") != cur_session:
+                trip_d = breaker.get("trip_session_date")
+                cooldown = breaker.get("cooldown") or 0
+                days_since = breaker.get("days_since_trip")
+                if cooldown > 0 and days_since is not None:
+                    logger.info(
+                        "🚨 %-3s consec-loss breaker active — streak=%d, tripped on %s, "
+                        "day %d of %d-day cooldown (skipping entries)",
+                        symbol, breaker.get("streak", 0), trip_d, days_since, cooldown,
+                    )
+                else:
+                    logger.info(
+                        "🚨 %-3s consec-loss breaker active — streak=%d (cooldown=0, halt "
+                        "until winning trade resets the streak)",
+                        symbol, breaker.get("streak", 0),
+                    )
+                st["_logged_breaker_session"] = cur_session
+            return None
+
         half = width / 2.0
 
         # Range-width guards: skip if range is too narrow (near-zero TP) or too wide (oversized risk).
@@ -1246,9 +1972,14 @@ class MorningRangeReversionStrategy(BaseStrategy):
             )
             return None
 
-        sl_mult = max(0.1, float(getattr(self, "sl_mult", 1.0) or 1.0))
+        sl_mult = self._sl_mult(symbol)
         tp_mult = self._tp_mult(symbol)
         sl_fp = self._sl_fixed_pts(symbol)
+        sl_cap = self._sl_max_pts(symbol)
+        sl_floor = self._sl_min_pts(symbol)
+        sl_pct_cap = self._sl_max_pct_of_range(symbol)
+        # Dynamic cap = X * width. Combined with absolute sl_max_pts via min().
+        sl_pct_cap_abs = sl_pct_cap * width if sl_pct_cap > 0 else 0.0
         depth = max(0.0, float(entry_depth_pts or 0.0))
         # Cap depth so the entry never crosses to the wrong side of the range midpoint.
         max_depth = max(0.0, half - 1e-6)
@@ -1259,10 +1990,22 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 return None
             action = "SHORT"
             entry = self._round_px(symbol, H - depth)
+            # Compute raw SL distance (from entry) — apply ``sl_max_pts`` /
+            # ``sl_min_pts`` safety bounds before placing the stop. The fixed-
+            # vs range-anchored geometry differs by which side the stop sits
+            # on relative to the high; bound the *entry→stop distance* so the
+            # cap/floor semantics are symmetrical across modes.
             if sl_fp > 0:
-                stop = self._round_px(symbol, entry + sl_fp)
+                sl_dist = sl_fp
             else:
-                stop = self._round_px(symbol, H + half * sl_mult)
+                sl_dist = (H + half * sl_mult) - entry
+            if sl_cap > 0:
+                sl_dist = min(sl_dist, sl_cap)
+            if sl_pct_cap_abs > 0:
+                sl_dist = min(sl_dist, sl_pct_cap_abs)
+            if sl_floor > 0:
+                sl_dist = max(sl_dist, sl_floor)
+            stop = self._round_px(symbol, entry + sl_dist)
             tp = self._round_px(symbol, H - half * tp_mult)
         else:
             if not self.allow_long:
@@ -1270,9 +2013,16 @@ class MorningRangeReversionStrategy(BaseStrategy):
             action = "LONG"
             entry = self._round_px(symbol, L + depth)
             if sl_fp > 0:
-                stop = self._round_px(symbol, entry - sl_fp)
+                sl_dist = sl_fp
             else:
-                stop = self._round_px(symbol, L - half * sl_mult)
+                sl_dist = entry - (L - half * sl_mult)
+            if sl_cap > 0:
+                sl_dist = min(sl_dist, sl_cap)
+            if sl_pct_cap_abs > 0:
+                sl_dist = min(sl_dist, sl_pct_cap_abs)
+            if sl_floor > 0:
+                sl_dist = max(sl_dist, sl_floor)
+            stop = self._round_px(symbol, entry - sl_dist)
             tp = self._round_px(symbol, L + half * tp_mult)
 
         self._last_signal_bar[symbol] = bar_et
@@ -1281,7 +2031,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
             f"morning_range_reversion sweep={sweep} {reason_tag} H={H:.2f} L={L:.2f} "
             f"mid={mid:.2f} W={width:.2f}"
         )
-        logger.info("🎯 morning_range_reversion %s on %s @ %.2f (%s)", action, symbol, entry, reason)
+        logger.info("🎯 %-5s %-3s @ %9.2f  (%s)", action, symbol, entry, reason)
         st["fades_this_session"] = int(st.get("fades_this_session", 0) or 0) + 1
         return {
             "action": action,
@@ -1316,7 +2066,51 @@ class MorningRangeReversionStrategy(BaseStrategy):
             st = self._get_state(symbol)
             self._bar_seq += 1
             d = bar_et.date()
+
+            # ── Weekday skip-gate (durable across all bars of the day) ─────────
+            # Check BEFORE the new-session block: a skipped day never gets the
+            # range-build / finalize path which would reset ``phase`` to
+            # ``scan``. The check runs on EVERY bar so the gate stays active
+            # even after ``session_date`` has been pinned to a skipped day —
+            # putting it inside the ``if session_date != d`` block lets
+            # subsequent bars of the same skipped day reach the range-build
+            # branch and finalize-into-``scan`` happens at line ~1705.
+            if d.weekday() in self._skip_weekdays(symbol):
+                if st["session_date"] != d:
+                    if not st.get("_logged_skip_weekday"):
+                        logger.info(
+                            "🚫 %-3s session skipped %s (%s in skip_weekdays=%s)",
+                            symbol, d, d.strftime("%a"),
+                            sorted(self._WEEKDAY_ALIASES_INV[i] for i in self._skip_weekdays(symbol)),
+                        )
+                        st["_logged_skip_weekday"] = True
+                    st["session_date"] = d
+                    st["phase"] = "idle"
+                    st["range_ready"] = False
+                    st["range_hi"] = st["range_lo"] = None
+                    st["sweep_side"] = None
+                    st["H"] = st["L"] = st["mid"] = st["width"] = None
+                    st["immediate_block_until_inside"] = False
+                    st["fades_this_session"] = 0
+                    st["_logged_range_ready"] = False
+                    st["_logged_range_degenerate"] = False
+                    st["_logged_deadline"] = False
+                    st["_logged_max_fades"] = False
+                    st["_logged_entry_window_skip"] = False
+                    st["_logged_breaker_session"] = None
+                    st["_logged_ker_skip_session"] = None
+                return None
+
             if st["session_date"] != d:
+                # ── Lifecycle log: new session starting. Fires once per (symbol, date)
+                # so the operator can confirm the strategy is rolling cleanly over to a
+                # new day. Matches the verbosity overnight_range emits at its own
+                # session boundaries (see strategies/overnight_range_strategy.py:936).
+                if st["session_date"] is not None:
+                    logger.info(
+                        "🌅 %-3s new session %s  (anchor build %s → %s ET, fade window through %s ET)",
+                        symbol, d, self.range_start, self.range_end_open, self.flat_before,
+                    )
                 st["session_date"] = d
                 st["range_hi"] = st["range_lo"] = None
                 st["range_ready"] = False
@@ -1325,6 +2119,50 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 st["H"] = st["L"] = st["mid"] = st["width"] = None
                 st["immediate_block_until_inside"] = False
                 st["fades_this_session"] = 0
+                # Per-session "already-logged" guards so the deadline / max-fades /
+                # degenerate-range INFO lines fire at most once per (symbol, date).
+                st["_logged_range_ready"] = False
+                st["_logged_range_degenerate"] = False
+                st["_logged_deadline"] = False
+                st["_logged_max_fades"] = False
+                st["_logged_entry_window_skip"] = False
+                st["_logged_breaker_session"] = None
+                st["_logged_ker_skip_session"] = None
+
+                # NOTE: the ``skip_weekdays`` gate is checked above this block, so
+                # by the time we reach here the current ``d`` is a traded weekday.
+                st["_logged_skip_weekday"] = False
+
+                # ── Mid-session start backfill (2026-05-27 fix) ───────────────────────
+                # The per-bar build branch below only triggers when ``bars[-1]`` has
+                # ``range_start <= t_open < range_end_open``. If the executor is
+                # started **after** ``range_end_open`` ET, that branch never fires for
+                # this session — the very first invocation falls through to the
+                # finalize block with ``range_hi/range_lo == None`` and the symbol
+                # goes idle for the whole day (no signals, no trades).
+                #
+                # The fix: scan the already-fetched 400-bar history for *completed*
+                # bars whose ET timestamp lies inside the anchor window for the
+                # current session date, and seed ``range_hi``/``range_lo`` from them.
+                # This lets the executor recover the range whether it was started:
+                #   • before 07:00 ET → no completed build bars yet, seed returns
+                #     ``(None, None, 0)``; the per-bar branch builds the range live.
+                #   • during 07:00-08:00 ET → seed captures completed build bars; the
+                #     per-bar branch keeps extending H/L as the remaining bars close.
+                #   • after 08:00 ET (the bug case) → seed captures the full window;
+                #     finalisation below promotes ``range_ready=True`` and arms the
+                #     fade scanner immediately on the very first invocation.
+                seed_hi, seed_lo, seeded_n = self._seed_range_from_history(bars, d)
+                if seeded_n > 0:
+                    st["range_hi"] = seed_hi
+                    st["range_lo"] = seed_lo
+                    logger.info(
+                        "🔁 %-3s anchor backfill from history for %s:  "
+                        "seeded H=%9.2f  L=%9.2f  from %d build-window bar(s) "
+                        "(executor started %s anchor close)",
+                        symbol, d, float(seed_hi), float(seed_lo), seeded_n,
+                        "past" if bar_et.time() >= self.range_end_open else "during",
+                    )
 
             flat = not await self._has_open_position_or_pending_entry_async(symbol)
 
@@ -1352,17 +2190,113 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 if st["range_hi"] is None or st["range_lo"] is None:
                     st["range_ready"] = True
                     st["phase"] = "idle"
+                    if not st.get("_logged_range_degenerate"):
+                        logger.warning(
+                            "⚠️  morning_range_reversion %s anchor range invalid for %s "
+                            "— no bars covered %s-%s ET, idle for the day",
+                            symbol, d, self.range_start, self.range_end_open,
+                        )
+                        st["_logged_range_degenerate"] = True
                     return None
                 H = float(st["range_hi"])
                 L = float(st["range_lo"])
                 if H <= L:
                     st["range_ready"] = True
                     st["phase"] = "idle"
+                    if not st.get("_logged_range_degenerate"):
+                        logger.warning(
+                            "⚠️  morning_range_reversion %s anchor range degenerate for %s "
+                            "(H=%.2f ≤ L=%.2f) — idle for the day",
+                            symbol, d, H, L,
+                        )
+                        st["_logged_range_degenerate"] = True
                     return None
                 st["H"], st["L"] = H, L
                 st["width"] = H - L
                 st["mid"] = (H + L) / 2.0
                 st["range_ready"] = True
+
+                # ── Range-width pre-filter (2026-05-29 fix) ─────────────────────────────
+                # Previously the per-symbol ``min_range_width_points`` /
+                # ``max_range_width_points`` guards lived inside
+                # ``_fade_signal_after_sweep`` and rejected matches at ``logger.debug``
+                # — invisible at INFO. Net effect: the strategy printed
+                # ``📐 fade scanner armed`` for symbols whose range could never produce a
+                # signal (e.g. MES width=11.75 vs root min=20), burned analyze cycles all
+                # day, and left operators wondering why MES/MGC never traded.
+                #
+                # The fix: evaluate the filter here, at range-finalisation, and idle the
+                # symbol immediately with a one-shot WARNING log. This mirrors the
+                # ``range_invalid`` / ``range_degenerate`` UX so all "no-trade-today"
+                # outcomes converge on the same log shape. The per-sweep filter inside
+                # ``_fade_signal_after_sweep`` is kept as a defence-in-depth guard.
+                min_w = self._min_range_width(symbol)
+                max_w = self._max_range_width(symbol)
+                width = H - L
+
+                # ── Unified "anchor range built" lifecycle log (2026-05-29) ────────────
+                # Emit ONE line per symbol/day that shows the operator the full filter
+                # math at a glance: width, the bounds, and a ✓/✗ verdict. The terminal
+                # sees this at INFO (via the lifecycle filter+formatter — the timestamp
+                # and logger-name prefix are stripped so all three symbol lines align
+                # visually). The file always sees it with full context.
+                #
+                # Fixed-width formatting (``{H:>9.2f}`` = 9 chars right-aligned with 2
+                # decimals) keeps the H=/L=/width=/filter= columns vertically aligned
+                # across symbols even when their magnitudes differ wildly (MNQ ~30000,
+                # MGC ~4500, MES ~7500). Width=10 chars padding fits up to 9999999.99.
+                # Symbol gets a 3-char right-pad so "MNQ"/"MES"/"MGC" line up.
+                filter_desc = "" if min_w <= 0 and max_w <= 0 else (
+                    f" filter={min_w:g}≤w≤{max_w:g}"
+                    if max_w > 0 else f" filter≥{min_w:g}"
+                )
+                if min_w > 0 and width < min_w:
+                    verdict = f"IDLED              ← {width:>6.2f} < {min_w:<3g} ✗"
+                elif max_w > 0 and width > max_w:
+                    verdict = f"IDLED              ← {width:>6.2f} > {max_w:<3g} ✗"
+                else:
+                    if min_w > 0 and max_w > 0:
+                        verdict = f"fade scanner armed ← {min_w:>3g} ≤ {width:.2f} ≤ {max_w:<3g} ✓"
+                    elif min_w > 0:
+                        verdict = f"fade scanner armed ← {width:>6.2f} ≥ {min_w:<3g} ✓"
+                    elif max_w > 0:
+                        verdict = f"fade scanner armed ← {width:>6.2f} ≤ {max_w:<3g} ✓"
+                    else:
+                        verdict = "fade scanner armed"
+
+                if not st.get("_logged_range_ready"):
+                    logger.info(
+                        "📐 %-3s anchor range built for %s:  H=%9.2f  L=%9.2f  width=%6.2fpts  mid=%9.2f%s  —  %s",
+                        symbol, d, H, L, width, (H + L) / 2.0, filter_desc, verdict,
+                    )
+                    st["_logged_range_ready"] = True
+
+                if min_w > 0 and width < min_w:
+                    st["phase"] = "idle"
+                    st["sweep_side"] = None
+                    if not st.get("_logged_range_degenerate"):
+                        logger.warning(
+                            "📏 morning_range_reversion %s anchor range too narrow for %s "
+                            "(width=%.2fpts < min=%.2fpts) — idle for the day. "
+                            "Add a per-symbol override in [symbols.%s.signal] if this "
+                            "range is normal for this contract.",
+                            symbol, d, width, min_w, str(symbol).upper(),
+                        )
+                        st["_logged_range_degenerate"] = True
+                    return None
+                if max_w > 0 and width > max_w:
+                    st["phase"] = "idle"
+                    st["sweep_side"] = None
+                    if not st.get("_logged_range_degenerate"):
+                        logger.warning(
+                            "📏 morning_range_reversion %s anchor range too wide for %s "
+                            "(width=%.2fpts > max=%.2fpts) — idle for the day "
+                            "(per-trade risk would exceed configured cap).",
+                            symbol, d, width, max_w,
+                        )
+                        st["_logged_range_degenerate"] = True
+                    return None
+
                 st["phase"] = "scan"
                 st["sweep_side"] = None
 
@@ -1374,6 +2308,15 @@ class MorningRangeReversionStrategy(BaseStrategy):
             width = float(st["width"])
 
             if float(self.range_effectiveness_hours or 0.0) > 0 and bar_et >= self._fade_deadline_et(d):
+                if st["phase"] != "idle" and not st.get("_logged_deadline"):
+                    fades_used = int(st.get("fades_this_session", 0) or 0)
+                    logger.info(
+                        "⏰ %-3s fade deadline reached (%.1fh after anchor close = %s ET) "
+                        "— idle for the day, fades_used=%d",
+                        symbol, float(self.range_effectiveness_hours),
+                        self._fade_deadline_et(d).time(), fades_used,
+                    )
+                    st["_logged_deadline"] = True
                 st["phase"] = "idle"
                 st["sweep_side"] = None
                 return None
@@ -1392,6 +2335,53 @@ class MorningRangeReversionStrategy(BaseStrategy):
             # sweep: advance stop-entry at trigger (threshold mode), wait for re-entry, or immediate at extreme
             if st["phase"] == "scan" and st["sweep_side"] is None:
                 threshold_pts = self._reentry_threshold_pts(symbol)
+                # ── Far-sweep guard (2026-05-29 fix) ────────────────────────────────
+                # ``c > H`` / ``c < L`` is direction-only — it never asked HOW FAR
+                # past the boundary price has drifted. Without this guard the
+                # strategy will happily place a stop-entry at the anchor extreme
+                # even when current market is double-digit widths away (e.g. 2026-05-29
+                # MGC: 43pt sweep over a 15.10pt range while the entry was pinned
+                # to H=4571.90 → broker rejected as ``Invalid price. Price is
+                # outside allowed range.``). When the close is > N × width past
+                # the boundary, skip the signal with a one-shot lifecycle log and
+                # keep the symbol in ``scan`` so it can still arm if price
+                # eventually retraces back into striking range.
+                far_widths = self._max_sweep_distance_widths(symbol)
+                if far_widths > 0 and width > 0:
+                    if c > H:
+                        sweep_distance = c - H
+                        sweep_side_dbg = "high"
+                    elif c < L:
+                        sweep_distance = L - c
+                        sweep_side_dbg = "low"
+                    else:
+                        sweep_distance = 0.0
+                        sweep_side_dbg = ""
+                    if sweep_side_dbg and sweep_distance > far_widths * width:
+                        log_key = f"_logged_far_sweep_{sweep_side_dbg}"
+                        if not st.get(log_key):
+                            logger.warning(
+                                "🛰️  %-3s sweep too far for fade — close=%.2f is %.2fpts past "
+                                "%s=%.2f (%.2f× width=%.2f, cap=%.2f×). Skipping signal until "
+                                "price retraces inside cap. (signal.max_sweep_distance_widths=%.2f)",
+                                symbol, c, sweep_distance,
+                                "H" if sweep_side_dbg == "high" else "L",
+                                H if sweep_side_dbg == "high" else L,
+                                sweep_distance / width, width,
+                                far_widths, far_widths,
+                            )
+                            st[log_key] = True
+                        return None
+                    # Re-arm the one-shot log if price has retraced back into the cap
+                    # so a *fresh* far-sweep on the same side gets a new warning.
+                    if sweep_side_dbg:
+                        opposite_key = (
+                            "_logged_far_sweep_low" if sweep_side_dbg == "high"
+                            else "_logged_far_sweep_high"
+                        )
+                        if sweep_distance <= far_widths * width:
+                            st.pop("_logged_far_sweep_" + sweep_side_dbg, None)
+                            st.pop(opposite_key, None)
                 if c > H:
                     sweep = "high"
                     if threshold_pts > 0.0:
@@ -1511,10 +2501,34 @@ class MorningRangeReversionStrategy(BaseStrategy):
             logger.error("morning_range_reversion.analyze error for %s: %s", symbol, exc, exc_info=True)
             return None
 
+    def _position_size(self, symbol: str) -> int:
+        """Resolve effective contract count for ``symbol``.
+
+        Precedence: ``[symbols.<SYM>.risk].position_size`` (TOML) →
+        ``self.config.position_size`` (strategy-base / root TOML) → 1.
+
+        Round-24 weighting sweep showed MNQ benefits from 2× sizing on every
+        window (DD modest, RF improves) while MES/MGC stay at 1×; keeping the
+        knob per-symbol-overridable lets future regimes re-tune without code.
+        """
+        override = self._cfg.symbol_override(
+            str(symbol).upper(), "risk.position_size", default=None
+        )
+        if override is not None:
+            try:
+                return max(int(override), 1)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "morning_range_reversion: invalid [symbols.%s.risk].position_size=%r, "
+                    "falling back to root",
+                    symbol, override,
+                )
+        return max(int(self.config.position_size or 1), 1)
+
     async def execute(self, signal: Dict[str, Any]) -> bool:
         try:
             side = "BUY" if signal["action"] == "LONG" else "SELL"
-            qty = max(int(self.config.position_size or 1), 1)
+            qty = self._position_size(signal["symbol"])
             r0 = abs(float(signal["entry_price"]) - float(signal["stop_loss"]))
             be_thr = (
                 float(self.breakeven_trigger_r) * r0
@@ -1532,6 +2546,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 take_profit_price=signal["take_profit"],
                 enable_breakeven=False,
                 breakeven_profit_threshold=be_thr,
+                breakeven_offset=(self.breakeven_offset if be_thr else 0.0),
                 partial_tp_enabled=partial_on and qty >= 2,
                 partial_tp_scalp_r=partial_r,
             )
@@ -1582,17 +2597,35 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     pass
 
         for sym, pos in list(positions.items()):
-            entry_seq = self._entry_bar_seq.get(sym)
-            if entry_seq is None:
-                continue
-            held = self._bar_seq - entry_seq
+            # ── max_hold_bars is "bars since the entry FILLED", not "bars since
+            # the signal was emitted". For threshold/advance-stop mode the
+            # entry order can sit pending for an hour or more before price
+            # retraces back to the trigger; counting from the signal bar made
+            # the trade time out *prematurely* relative to the user's intent.
+            # Example: 2026-03-30 MNQ — sweep at 09:25 ET, entry filled at
+            # 11:00 ET, ``max_hold_bars=46`` (3h50m). Old code counted from
+            # 09:25 → timed out at 13:15 ET after only 2h15m of actual hold,
+            # *before* price would have hit either the SL or TP. The
+            # ``BacktestPosition`` records ``entry_bar_index`` at the actual
+            # fill, so prefer that. Falls back to the legacy ``_entry_bar_seq``
+            # (which is what live mode still uses, since it has no engine).
+            entry_bar_idx = getattr(pos, "entry_bar_index", None)
+            if entry_bar_idx is not None and hasattr(engine, "current_bar_index"):
+                held = int(engine.current_bar_index) - int(entry_bar_idx)
+            else:
+                entry_seq = self._entry_bar_seq.get(sym)
+                if entry_seq is None:
+                    continue
+                held = self._bar_seq - entry_seq
             if held < self.max_hold_bars:
                 continue
             logger.debug(
-                "morning_range_reversion timeout-close %s after %d bars (max=%d)",
+                "morning_range_reversion timeout-close %s after %d bars (max=%d, "
+                "entry_bar_idx=%s)",
                 sym,
                 held,
                 self.max_hold_bars,
+                entry_bar_idx,
             )
             pending = getattr(engine, "pending_orders", None) or []
             for o in list(pending):

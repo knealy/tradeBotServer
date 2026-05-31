@@ -1,0 +1,225 @@
+{
+  "round_label": "round4_filters",
+  "window_days": 90,
+  "folds": 6,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-29T20:22:18.494760+00:00",
+  "total_elapsed_s": 115.77211675001308,
+  "ranked": [
+    {
+      "label": "slfix30",
+      "score": 44135.04,
+      "n_trades": 173,
+      "final_equity": 10051.25,
+      "total_return_pct": 402.562,
+      "max_dd_pct": 36.357,
+      "recovery_factor": 4.391,
+      "actual_win_rate": 0.6647,
+      "duration_s": 57.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/slfix30"
+    },
+    {
+      "label": "maxw100",
+      "score": 41194.26,
+      "n_trades": 154,
+      "final_equity": 8518.25,
+      "total_return_pct": 325.912,
+      "max_dd_pct": 35.64,
+      "recovery_factor": 4.836,
+      "actual_win_rate": 0.6558,
+      "duration_s": 58.3,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "100"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/maxw100"
+    },
+    {
+      "label": "minw40",
+      "score": 33730.3,
+      "n_trades": 167,
+      "final_equity": 10047.75,
+      "total_return_pct": 402.387,
+      "max_dd_pct": 49.656,
+      "recovery_factor": 3.357,
+      "actual_win_rate": 0.6527,
+      "duration_s": 58.1,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_MIN_RANGE_WIDTH_POINTS": "40"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/minw40"
+    },
+    {
+      "label": "minw30",
+      "score": 31787.36,
+      "n_trades": 171,
+      "final_equity": 9786.75,
+      "total_return_pct": 389.337,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.248,
+      "actual_win_rate": 0.6433,
+      "duration_s": 58.1,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_MIN_RANGE_WIDTH_POINTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/minw30"
+    },
+    {
+      "label": "winner_r3",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 58.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/winner_r3"
+    },
+    {
+      "label": "minw10",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 58.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_MIN_RANGE_WIDTH_POINTS": "10"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/minw10"
+    },
+    {
+      "label": "minw30_maxw150",
+      "score": 30010.44,
+      "n_trades": 166,
+      "final_equity": 8540.25,
+      "total_return_pct": 327.012,
+      "max_dd_pct": 47.028,
+      "recovery_factor": 3.514,
+      "actual_win_rate": 0.6446,
+      "duration_s": 57.3,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_MIN_RANGE_WIDTH_POINTS": "30",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "150"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/minw30_maxw150"
+    },
+    {
+      "label": "maxw150",
+      "score": 29737.85,
+      "n_trades": 168,
+      "final_equity": 8506.25,
+      "total_return_pct": 325.312,
+      "max_dd_pct": 47.028,
+      "recovery_factor": 3.496,
+      "actual_win_rate": 0.6429,
+      "duration_s": 58.0,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_RANGE_WIDTH_POINTS": "150"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/maxw150"
+    },
+    {
+      "label": "slfix20",
+      "score": 10833.66,
+      "n_trades": 173,
+      "final_equity": 6028.75,
+      "total_return_pct": 201.437,
+      "max_dd_pct": 51.091,
+      "recovery_factor": 1.797,
+      "actual_win_rate": 0.5723,
+      "duration_s": 57.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "20"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/slfix20"
+    },
+    {
+      "label": "ptp_on_1.0R",
+      "score": -Infinity,
+      "n_trades": 0,
+      "final_equity": 2000.0,
+      "total_return_pct": 0.0,
+      "max_dd_pct": 0.0,
+      "recovery_factor": 0,
+      "actual_win_rate": 0,
+      "duration_s": 55.0,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_PARTIAL_TP_ENABLED": "true",
+        "MORNING_RANGE_REVERSION_SIGNAL_PARTIAL_TP_SCALP_R": "1.0"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/ptp_on_1.0R"
+    },
+    {
+      "label": "ptp_on_0.5R",
+      "score": -Infinity,
+      "n_trades": 0,
+      "final_equity": 2000.0,
+      "total_return_pct": 0.0,
+      "max_dd_pct": 0.0,
+      "recovery_factor": 0,
+      "actual_win_rate": 0,
+      "duration_s": 54.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_PARTIAL_TP_ENABLED": "true",
+        "MORNING_RANGE_REVERSION_SIGNAL_PARTIAL_TP_SCALP_R": "0.5"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/ptp_on_0.5R"
+    }
+  ],
+  "winner": {
+    "label": "slfix30",
+    "score": 44135.04,
+    "n_trades": 173,
+    "final_equity": 10051.25,
+    "total_return_pct": 402.562,
+    "max_dd_pct": 36.357,
+    "recovery_factor": 4.391,
+    "actual_win_rate": 0.6647,
+    "duration_s": 57.5,
+    "env": {
+      "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+      "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+      "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "30"
+    },
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round4_filters/slfix30"
+  }
+}

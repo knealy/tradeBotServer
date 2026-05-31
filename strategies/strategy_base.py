@@ -5,7 +5,9 @@ This module provides the foundation for creating pluggable trading strategies
 that can be dynamically loaded and managed based on market conditions.
 """
 
+import asyncio
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -509,6 +511,7 @@ class BaseStrategy(ABC):
                                   entry_price: float, stop_loss_price: float, 
                                   take_profit_price: float, enable_breakeven: bool = False,
                                   breakeven_profit_threshold: Optional[float] = None,
+                                  breakeven_offset: float = 0.0,
                                   *,
                                   partial_tp_enabled: bool = False,
                                   partial_tp_scalp_r: float = 1.0) -> Dict:
@@ -535,6 +538,11 @@ class BaseStrategy(ABC):
             breakeven_profit_threshold: When > 0, registers bot-level generic breakeven
                 (BONGO §1B): after this much favourable **price** move, SL is tightened
                 toward ``entry_price``. Typically ``breakeven_trigger_r * |entry - stop|``.
+            breakeven_offset: Optional offset (price points, ≥ 0) applied to the moved
+                breakeven stop **in the trade's favour** — LONG snaps to ``entry +
+                breakeven_offset``, SHORT to ``entry − breakeven_offset``. Used to
+                lock in a couple of ticks above commission + slippage. Default 0
+                preserves legacy snap-to-entry behaviour.
         
         Returns:
             Dict with 'success' bool, 'orderId', 'method', and optional 'error'
@@ -597,28 +605,42 @@ class BaseStrategy(ABC):
                 "orderId": None
             }
         
-        # BONGO §1A — partial TP at scalp R + runner (replay simulates two-stage OCO; live
-        # broker path is adapter-specific (dual native OCO legs; runner BE-after-scalp is replay-only).
-        if (
-            partial_tp_enabled
-            and int(quantity) >= 2
-            and hasattr(bot, "place_oco_bracket_with_stop_entry_partial_tp")
-        ):
-            result = await bot.place_oco_bracket_with_stop_entry_partial_tp(
-                symbol=symbol,
-                side=side,
-                quantity=quantity,
-                entry_price=entry_price,
-                stop_loss_price=stop_loss_price,
-                take_profit_full_price=take_profit_price,
-                enable_breakeven=enable_breakeven,
-                strategy_name=self.config.name,
-                scalp_r_multiple=float(partial_tp_scalp_r or 1.0),
-            )
-        else:
-            # IMPORTANT: pass `strategy_name` so downstream (adapter/Rust/Python)
-            # can attribute orders and send Discord notifications for strategy orders.
-            result = await bot.place_oco_bracket_with_stop_entry(
+        # ── E2: Fire-and-forget order POST (opt-in) ──────────────────────────────────
+        # When ``STRATEGY_FIRE_AND_FORGET_ORDERS=true``, dispatch the broker call as a
+        # background task and return immediately with ``{"success": True, "orderId": None,
+        # "fire_and_forget": True}``. The strategy's loop can iterate while the broker
+        # round-trip completes in parallel. Tradeoffs:
+        #   • The order ID is unavailable to the synchronous caller. Downstream features
+        #     that need it (breakeven monitor, BONGO §1B, breakout_active_orders cache)
+        #     skip registration when the result has ``fire_and_forget=True``. They still
+        #     work normally when the toggle is off (default).
+        #   • Order rejections arrive asynchronously via the User Hub instead of through
+        #     the synchronous ``error`` field. The background task logs them.
+        #   • The risk manager has already approved the size synchronously above; F&F
+        #     does not bypass risk checks.
+        # This is EXPERIMENTAL — keep off until you've validated the live path.
+        ff_enabled = os.environ.get("STRATEGY_FIRE_AND_FORGET_ORDERS", "false").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+
+        async def _do_place() -> Dict:
+            if (
+                partial_tp_enabled
+                and int(quantity) >= 2
+                and hasattr(bot, "place_oco_bracket_with_stop_entry_partial_tp")
+            ):
+                return await bot.place_oco_bracket_with_stop_entry_partial_tp(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_full_price=take_profit_price,
+                    enable_breakeven=enable_breakeven,
+                    strategy_name=self.config.name,
+                    scalp_r_multiple=float(partial_tp_scalp_r or 1.0),
+                )
+            return await bot.place_oco_bracket_with_stop_entry(
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
@@ -626,8 +648,39 @@ class BaseStrategy(ABC):
                 stop_loss_price=stop_loss_price,
                 take_profit_price=take_profit_price,
                 enable_breakeven=enable_breakeven,
-                strategy_name=self.config.name
+                strategy_name=self.config.name,
             )
+
+        if ff_enabled:
+            async def _bg_place() -> None:
+                try:
+                    res = await _do_place()
+                    if res and res.get("error"):
+                        logger.error(
+                            "❌ %s: F&F bracket POST failed asynchronously - %s",
+                            self.config.name, res.get("error"),
+                        )
+                    else:
+                        logger.info(
+                            "✅ %s: F&F bracket POST resolved - ID: %s",
+                            self.config.name, (res or {}).get("orderId"),
+                        )
+                except Exception as exc:
+                    logger.error("❌ %s: F&F bracket POST raised: %s", self.config.name, exc)
+
+            asyncio.create_task(_bg_place())
+            logger.info(
+                "📨 %s: F&F bracket dispatched (orderId resolves async via User Hub)",
+                self.config.name,
+            )
+            return {
+                "success": True,
+                "orderId": None,
+                "method": "fire_and_forget",
+                "fire_and_forget": True,
+            }
+
+        result = await _do_place()
         
         if result.get("error"):
             logger.error(f"❌ {self.config.name}: Bracket order failed - {result.get('error')}")
@@ -646,6 +699,10 @@ class BaseStrategy(ABC):
                         thr = float(breakeven_profit_threshold)
                     except (TypeError, ValueError):
                         thr = 0.0
+                    try:
+                        be_offset = max(0.0, float(breakeven_offset or 0.0))
+                    except (TypeError, ValueError):
+                        be_offset = 0.0
                     if thr > 0:
                         bot.register_generic_breakeven_watch(
                             str(order_id),
@@ -653,6 +710,7 @@ class BaseStrategy(ABC):
                             side=side,
                             entry_price=float(entry_price),
                             profit_threshold=thr,
+                            breakeven_offset=be_offset,
                             strategy_name=self.config.name,
                         )
         

@@ -10,6 +10,10 @@ Also writes:
 
 - ``metrics_insights.json`` — simulated equity (default **$2,000** start), pooled + per strategy×symbol
   loss-pattern diagnostics (exit reason, side, weekday ET, exploratory Pearson vs loss indicator)
+- ``strategy_configs.json`` + ``config/<strategy>.toml`` — verbatim snapshot of each strategy's
+  ``config/strategies/<name>.toml`` plus any matching env-var overrides from ``--env``. Lets a reader
+  reproduce the run by dropping the snapshot back into ``config/strategies/`` and replaying the env
+  vars (mirrors ``StrategyConfig`` precedence: CLI &gt; env &gt; TOML &gt; default).
 
 **Shading:** ``morning_range_reversion`` charts get the 7–8am ET anchor box; ``overnight_range`` /
 ``overnight_reversion`` charts get overnight session boxes from ``config/strategies/overnight_range.toml``
@@ -55,6 +59,11 @@ from core.backtest.recap_metrics import (
     format_insights_html,
     loss_pattern_analysis,
     sort_trades_by_exit_time,
+)
+from core.backtest.strategy_config_snapshot import (
+    snapshot_strategy_configs,
+    snapshots_to_html,
+    snapshots_to_json,
 )
 
 # Executor loads StrategyConfig from TOML; keep subprocess headless only.
@@ -128,6 +137,7 @@ def _find_morning_range_signal_bar(
     df_5m_utc_index: pd.DataFrame,
     *,
     require_reentry_close: bool,
+    reentry_threshold_points: float = 0.0,
     range_start_et: dtime = dtime(7, 0),
     range_end_et: dtime = dtime(8, 0),
     reentry_frac: float = 0.0,
@@ -135,10 +145,25 @@ def _find_morning_range_signal_bar(
 ) -> Optional[Tuple[int, float, str]]:
     """Return (unix_seconds, close_price, label) for the morning-range signal bar.
 
-    Mode A (``require_reentry_close=True``): last bar with close back inside the
-    inner band after a prior sweep (the ``reentry_close`` bar that arms the fade).
-    Mode B (``require_reentry_close=False``): last 5m bar to close outside the
-    anchor range before the entry fill (the ``sweep_close`` bar that arms it).
+    Mirrors the strategy's actual decision tree (see
+    ``MorningRangeReversionStrategy.analyze``):
+
+    - **Threshold mode** (``reentry_threshold_points > 0``): mark the **first**
+      5m close *outside* the anchor range — that's the bar where the strategy
+      arms the resting STOP entry at ``L + threshold`` / ``H − threshold``.
+      Label: ``"sweep_close (advance stop)"``. The entry fills later when price
+      retraces back to the trigger; gap between marker and entry is *expected*.
+    - **Mode A** (``require_reentry_close=True`` AND threshold == 0): mark the
+      first close *back inside* ``[L+frac*W, H−frac*W]`` after a prior sweep
+      (the literature ``reentry_close``). Label: ``"reentry_close"``.
+    - **Mode B / immediate** (``require_reentry_close=False`` AND threshold == 0):
+      mark the first close *outside* the anchor range — entry is at the range
+      extreme on that same bar. Label: ``"sweep_close (immediate)"``.
+
+    Prior to 2026-05-21 this helper hard-coded mode A logic regardless of the
+    actual TOML, used the *last* sweep close instead of the *first*, and never
+    annotated the trigger level — producing visibly wrong markers like a
+    ``reentry_close`` bar three hours before the real entry.
     """
     if ZoneInfo is None or df_5m_utc_index is None or df_5m_utc_index.empty:
         return None
@@ -182,18 +207,31 @@ def _find_morning_range_signal_bar(
     closes = after["close"].astype(float).to_numpy()
     bar_times = list(after.index)
 
-    if not require_reentry_close:
-        candidate_idx: Optional[int] = None
+    threshold_pts = max(0.0, float(reentry_threshold_points or 0.0))
+
+    # ── Threshold / advance-stop mode: arms on FIRST sweep close ──
+    if threshold_pts > 0.0:
         for i, c in enumerate(closes):
             if is_long and c < range_low:
-                candidate_idx = i
-            elif (not is_long) and c > range_high:
-                candidate_idx = i
-        if candidate_idx is None:
-            return None
-        ts = bar_times[candidate_idx]
-        return (int(pd.Timestamp(ts).tz_convert("UTC").timestamp()), float(closes[candidate_idx]), "sweep_close")
+                ts = bar_times[i]
+                return (int(pd.Timestamp(ts).tz_convert("UTC").timestamp()), float(c), "sweep_close (advance stop)")
+            if (not is_long) and c > range_high:
+                ts = bar_times[i]
+                return (int(pd.Timestamp(ts).tz_convert("UTC").timestamp()), float(c), "sweep_close (advance stop)")
+        return None
 
+    # ── Immediate mode (no threshold, no re-entry wait): first sweep close ──
+    if not require_reentry_close:
+        for i, c in enumerate(closes):
+            if is_long and c < range_low:
+                ts = bar_times[i]
+                return (int(pd.Timestamp(ts).tz_convert("UTC").timestamp()), float(c), "sweep_close (immediate)")
+            if (not is_long) and c > range_high:
+                ts = bar_times[i]
+                return (int(pd.Timestamp(ts).tz_convert("UTC").timestamp()), float(c), "sweep_close (immediate)")
+        return None
+
+    # ── Mode A: sweep then close back inside inner band ──
     sweep_seen = False
     chosen: Optional[int] = None
     for i, c in enumerate(closes):
@@ -426,6 +464,37 @@ def main() -> int:
     trades_dir = out_dir / "trades"
     trades_dir.mkdir(parents=True, exist_ok=True)
 
+    # Snapshot per-strategy TOMLs into ``<out_dir>/config/`` so this recap directory
+    # carries the exact knobs that produced the metrics. Captures matching env-var
+    # overrides too (filtered by ``<NAME_UPPER>_`` prefix, same scheme StrategyConfig uses).
+    config_snapshots = snapshot_strategy_configs(
+        strategies, out_dir=out_dir, env_overrides=extra_env
+    )
+    config_bundle = snapshots_to_json(
+        config_snapshots,
+        extra={
+            "replay_env_base": dict(_REPLAY_BASE_ENV),
+            "cli_extra_env": dict(extra_env),
+            "args": {
+                "days": args.days,
+                "folds": args.folds,
+                "strategies": strategies,
+                "symbols": symbols,
+                "timeframe": args.timeframe,
+                "csv_template": args.csv_template,
+                "last_trades": int(args.last_trades),
+                "padding_minutes": int(args.padding_minutes),
+                "sim_start_cash": float(args.sim_start_cash),
+            },
+        },
+    )
+    (out_dir / "strategy_configs.json").write_text(
+        json.dumps(config_bundle, indent=2, default=str), encoding="utf-8"
+    )
+    config_snapshot_html = snapshots_to_html(
+        config_snapshots, json_link="strategy_configs.json"
+    )
+
     csv_paths: Dict[str, Path] = {}
     anchor_dates: Dict[str, date] = {}
     for sym in symbols:
@@ -478,10 +547,32 @@ def main() -> int:
         df5["timestamp"] = pd.to_datetime(df5[ts5], utc=True, format="mixed")
         morning_5m_cache[sym] = df5.set_index("timestamp").sort_index()
 
-    morning_require_reentry_close = (
-        str(extra_env.get("MORNING_RANGE_REVERSION_SIGNAL_REQUIRE_REENTRY_CLOSE", "true")).strip().lower()
-        not in ("0", "false", "no", "off")
-    )
+    # ── Read morning_range_reversion knobs from the live TOML so the chart marker
+    # finder mirrors what the strategy actually does in replay. Env-var overrides
+    # still win (mirrors ``StrategyConfig.get`` precedence: CLI > env > TOML > default).
+    # Prior to 2026-05-21 this defaulted to ``require_reentry_close=true`` regardless
+    # of the TOML — a bug that produced "reentry_close" markers 3 hours before the
+    # actual stop-entry fill, even on TOMLs configured for threshold mode.
+    try:
+        from core.strategy_config import StrategyConfig as _StratCfg
+        _mr_cfg = _StratCfg.load("morning_range_reversion")
+        _toml_require_reentry = bool(_mr_cfg.get_bool("signal.require_reentry_close", True))
+        _toml_threshold = float(_mr_cfg.get_float("signal.reentry_threshold_points", 0.0) or 0.0)
+        _toml_reentry_frac = float(_mr_cfg.get_float("signal.reentry_frac", 0.0) or 0.0)
+    except Exception:
+        _toml_require_reentry = True
+        _toml_threshold = 0.0
+        _toml_reentry_frac = 0.0
+
+    _env_require = extra_env.get("MORNING_RANGE_REVERSION_SIGNAL_REQUIRE_REENTRY_CLOSE")
+    if _env_require is not None:
+        morning_require_reentry_close = str(_env_require).strip().lower() not in ("0", "false", "no", "off")
+    else:
+        morning_require_reentry_close = _toml_require_reentry
+
+    _env_threshold = extra_env.get("MORNING_RANGE_REVERSION_SIGNAL_REENTRY_THRESHOLD_POINTS")
+    morning_reentry_threshold_points = float(_env_threshold) if _env_threshold is not None else _toml_threshold
+    morning_reentry_frac = _toml_reentry_frac
 
     metrics_rows: List[Dict[str, Any]] = []
     chart_count = 0
@@ -567,6 +658,8 @@ def main() -> int:
                             trade,
                             morning_5m_cache.get(sym),
                             require_reentry_close=morning_require_reentry_close,
+                            reentry_threshold_points=morning_reentry_threshold_points,
+                            reentry_frac=morning_reentry_frac,
                         )
                     overlay = _overlay_for_trade(trade, bar_times, signal_info=signal_info)
                     tid = str(trade.get("trade_id", f"T{ti}"))
@@ -779,6 +872,12 @@ nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
 nav a { margin-right: 1.25rem; font-weight: 600; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .pos { color: var(--pos); } .neg { color: var(--neg); }
+pre { background: var(--panel2); padding: 0.75rem 1rem; border-radius: 6px; overflow: auto; font-size: 0.78rem; line-height: 1.45; color: #d8d8e0; }
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+details > summary { cursor: pointer; padding: 0.3rem 0; color: var(--link); font-weight: 500; user-select: none; }
+details[open] > summary { margin-bottom: 0.5rem; }
+h2#config-snapshot { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
 """
 
     g_pf = _pf_str(grand_deep.get("profit_factor"))
@@ -802,7 +901,7 @@ nav a { margin-right: 1.25rem; font-weight: 600; }
     <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
     <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
     <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
-  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a></nav>
+  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a> · <a href="strategy_configs.json">strategy_configs.json</a> · <a href="#config-snapshot">replay config ↓</a></nav>
   <div class="banner">
     <strong>All folds pooled:</strong> {grand_n} trades · PnL <strong>{grand_pnl:.2f}</strong>
     · expectancy <strong>{g_exp:.3f}</strong> / trade · σ <strong>{g_std:.3f}</strong>
@@ -840,6 +939,7 @@ nav a { margin-right: 1.25rem; font-weight: 600; }
   {grand_insights_html}
   <h2>Analysis — per strategy × symbol (merged folds)</h2>
   {(''.join(per_rollup_insight_html)) if per_rollup_insight_html else "<p class='muted'>—</p>"}
+  {config_snapshot_html}
 </body>
 </html>
 """
@@ -856,8 +956,10 @@ nav a { margin-right: 1.25rem; font-weight: 600; }
   <h1>Walk-forward trade recaps</h1>
   <nav>
     <a href="metrics.html">Metrics / survivability</a>
+    <a href="metrics.html#config-snapshot">Replay config (exact TOML)</a>
     <a href="metrics.json">metrics.json</a>
     <a href="metrics_insights.json">metrics_insights.json</a>
+    <a href="strategy_configs.json">strategy_configs.json</a>
   </nav>
   <p class="muted">Replay <code>{args.timeframe}</code> from <code>{args.csv_template}</code> · anchor end <strong>{anchor_end}</strong> ·
     <strong>{args.days}</strong> calendar days · <strong>{len(folds)}</strong> folds · last <strong>{n_keep}</strong> trades charted per fold.
@@ -877,6 +979,12 @@ nav a { margin-right: 1.25rem; font-weight: 600; }
     print(f"wrote {out_dir / 'index.html'}", file=sys.stderr)
     print(f"wrote {out_dir / 'metrics.html'}", file=sys.stderr)
     print(f"wrote {out_dir / 'metrics_insights.json'}", file=sys.stderr)
+    print(f"wrote {out_dir / 'strategy_configs.json'}", file=sys.stderr)
+    snapshot_count = sum(1 for s in config_snapshots if s.snapshot is not None)
+    print(
+        f"wrote {snapshot_count}/{len(config_snapshots)} strategy TOML snapshots under {out_dir / 'config'}",
+        file=sys.stderr,
+    )
     print(f"wrote {chart_count} charts under {trades_dir}", file=sys.stderr)
     return 0
 

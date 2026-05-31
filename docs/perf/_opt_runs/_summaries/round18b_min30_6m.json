@@ -1,0 +1,51 @@
+{
+  "round_label": "round18b_min30_6m",
+  "window_days": 180,
+  "folds": 8,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-30T03:24:43.186283+00:00",
+  "total_elapsed_s": 140.69098704098724,
+  "ranked": [
+    {
+      "label": "baseline",
+      "score": 28999.05,
+      "n_trades": 275,
+      "final_equity": 10906.0,
+      "total_return_pct": 445.3,
+      "max_dd_pct": 131.382,
+      "recovery_factor": 2.659,
+      "actual_win_rate": 0.6727,
+      "duration_s": 140.6,
+      "env": {},
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round18b_min30_6m/baseline"
+    },
+    {
+      "label": "mnq_min_30",
+      "score": 28398.51,
+      "n_trades": 271,
+      "final_equity": 10889.0,
+      "total_return_pct": 444.45,
+      "max_dd_pct": 135.943,
+      "recovery_factor": 2.608,
+      "actual_win_rate": 0.6716,
+      "duration_s": 140.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_MIN_RANGE_WIDTH_POINTS": "30"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round18b_min30_6m/mnq_min_30"
+    }
+  ],
+  "winner": {
+    "label": "baseline",
+    "score": 28999.05,
+    "n_trades": 275,
+    "final_equity": 10906.0,
+    "total_return_pct": 445.3,
+    "max_dd_pct": 131.382,
+    "recovery_factor": 2.659,
+    "actual_win_rate": 0.6727,
+    "duration_s": 140.6,
+    "env": {},
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round18b_min30_6m/baseline"
+  }
+}

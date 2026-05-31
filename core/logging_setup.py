@@ -11,6 +11,13 @@ logger.* calls. This guarantees:
 
 LOG_FILE env var picks the destination. LOG_LEVEL env var sets the file
 handler level (default INFO). Pass force=True only on first call.
+
+LIFECYCLE_LOGGERS env var (or the ``lifecycle_logger_names`` kwarg) names
+loggers whose **INFO** records should bypass the default console threshold and
+appear in the terminal. Used by the morning_range_reversion executor so its
+``📐 anchor range built`` / ``🌅 new session`` / ``🎯 SHORT/LONG`` lifecycle
+beacons show in the foreground while the per-poll chatter from other modules
+stays at file-only verbosity.
 """
 
 from __future__ import annotations
@@ -20,9 +27,78 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, List, Optional
 
 _CONFIGURED = False
+
+
+class _LifecycleConsoleFilter(logging.Filter):
+    """Console handler filter: allow INFO+ from named loggers, WARNING+ otherwise.
+
+    A logger name matches if it is the named logger OR a child of it
+    (``"strategies.foo"`` covers ``"strategies.foo.bar"``).
+    """
+
+    def __init__(self, names: Iterable[str], default_level: int) -> None:
+        super().__init__()
+        self._prefixes: tuple = tuple(sorted({str(n).strip() for n in names if n}))
+        self._default_level = int(default_level)
+
+    def _matches_lifecycle(self, logger_name: str) -> bool:
+        for pref in self._prefixes:
+            if logger_name == pref or logger_name.startswith(pref + "."):
+                return True
+        return False
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        if self._matches_lifecycle(record.name) and record.levelno >= logging.INFO:
+            return True
+        return record.levelno >= self._default_level
+
+
+class _LifecycleConsoleFormatter(logging.Formatter):
+    """Dual-format formatter for the lifecycle-aware console handler.
+
+    The 2026-05-29 ask: when the morning_range_reversion executor prints
+    ``📐 anchor range built`` to the terminal, the operator wants to see the
+    range data — not the timestamp / logger-name / level prefix that's already
+    in the file log. But the SAME console handler still has to print WARNING
+    and ERROR lines with full context (timestamp matters when diagnosing a
+    fault). So we format records based on origin + level:
+
+      * INFO from a lifecycle logger     → message only (``%(message)s``)
+      * everything else (WARN/ERROR/etc) → full format with timestamp+name+level
+
+    Falls back to the full format if no lifecycle names are configured (kept
+    for symmetry with the legacy single-formatter behaviour).
+    """
+
+    def __init__(self, lifecycle_names: Iterable[str], full_fmt: logging.Formatter) -> None:
+        super().__init__(fmt="%(message)s")
+        # Reuse the existing full-format Formatter so we don't drift from the
+        # rest of the logging config.
+        self._full_fmt = full_fmt
+        self._prefixes: tuple = tuple(sorted({str(n).strip() for n in lifecycle_names if n}))
+
+    def _is_lifecycle(self, logger_name: str) -> bool:
+        for pref in self._prefixes:
+            if logger_name == pref or logger_name.startswith(pref + "."):
+                return True
+        return False
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        if record.levelno == logging.INFO and self._is_lifecycle(record.name):
+            # Bare message for clean alignment of column-formatted lifecycle lines.
+            return record.getMessage()
+        return self._full_fmt.format(record)
+
+
+def _parse_lifecycle_env() -> List[str]:
+    """Read ``LIFECYCLE_LOGGERS`` env var (comma-separated names)."""
+    raw = os.getenv("LIFECYCLE_LOGGERS", "").strip()
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def configure_logging(
@@ -33,11 +109,16 @@ def configure_logging(
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
     install_uvloop: bool = True,
+    lifecycle_logger_names: Optional[Iterable[str]] = None,
 ) -> Path:
     """Configure logging once for the whole process.
 
     Returns the absolute Path of the resolved log file.
     Subsequent calls are no-ops unless ``force_reconfigure`` env is set.
+
+    ``lifecycle_logger_names`` (or the ``LIFECYCLE_LOGGERS`` env var, comma-sep)
+    names loggers whose **INFO** records should bypass the default console
+    threshold and appear in the terminal.
     """
     global _CONFIGURED
     if _CONFIGURED and not os.getenv("LOGGING_FORCE_RECONFIGURE"):
@@ -73,6 +154,28 @@ def configure_logging(
     console_handler.setLevel(console_level_value)
     console_handler.setFormatter(fmt)
 
+    # Merge explicit list + env so caller-passed names win without losing operator overrides.
+    merged_lifecycle = list(lifecycle_logger_names or []) + _parse_lifecycle_env()
+    seen: set = set()
+    lifecycle_names: List[str] = []
+    for name in merged_lifecycle:
+        if name and name not in seen:
+            lifecycle_names.append(name)
+            seen.add(name)
+
+    if lifecycle_names:
+        # Drop the console threshold so the filter alone gates records.
+        # Non-lifecycle records still need ``>= console_level_value`` (enforced by
+        # the filter), so non-strategy chatter stays quiet.
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.addFilter(_LifecycleConsoleFilter(lifecycle_names, console_level_value))
+        # Use the dual formatter so lifecycle INFO lines print bare (no
+        # timestamp/logger/level prefix) while WARNING/ERROR keep the full
+        # context. This lets the 📐 anchor-range-built lines align cleanly in
+        # the terminal — that's the explicit operator-experience ask in the
+        # 2026-05-29 follow-up.
+        console_handler.setFormatter(_LifecycleConsoleFormatter(lifecycle_names, fmt))
+
     logging.basicConfig(
         level=file_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -104,9 +207,16 @@ def configure_logging(
                 log.debug("uvloop.install skipped: %s", exc)
 
     _CONFIGURED = True
-    log.info(
-        "Logging configured: file=%s level=%s console=%s", log_path, file_level_name, console_level
-    )
+    if lifecycle_names:
+        log.info(
+            "Logging configured: file=%s level=%s console=%s (+ INFO console for: %s)",
+            log_path, file_level_name, console_level, ", ".join(lifecycle_names),
+        )
+    else:
+        log.info(
+            "Logging configured: file=%s level=%s console=%s",
+            log_path, file_level_name, console_level,
+        )
     return log_path
 
 

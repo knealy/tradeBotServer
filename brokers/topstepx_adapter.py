@@ -480,19 +480,25 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
         else:
             order_type_value = 2  # Market order
 
-        # Prepare order data for TopStepX API
+        # ── J: Build minimal order payload (skip null/default fields entirely) ──
+        # Smaller payload → faster orjson encode → faster TLS write. Auth's
+        # ``cleaned_data`` no-op-strips ``None`` fields anyway, but skipping them at
+        # source avoids an N-key dict comprehension on the hot path.
         order_data = {
             "accountId": int(account_id),
             "contractId": contract_id,
             "type": order_type_value,
             "side": side_value,
             "size": quantity,
-            "limitPrice": limit_price if order_type == "limit" else None,
-            "stopPrice": stop_price if order_type == "stop" else None,
-            "reduceOnly": reduce_only  # CRITICAL: When true, order auto-cancels if position closes
         }
-
-        # Add custom tag if provided
+        if order_type == "limit" and limit_price is not None:
+            order_data["limitPrice"] = limit_price
+        if order_type == "stop" and stop_price is not None:
+            order_data["stopPrice"] = stop_price
+        # Only emit reduceOnly when truthy — TopStepX defaults it to false server-side,
+        # so omitting it on entry orders is safe and saves payload bytes.
+        if reduce_only:
+            order_data["reduceOnly"] = True
         if custom_tag:
             order_data["customTag"] = custom_tag
         
@@ -1266,7 +1272,12 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             return orders
             
         except Exception as e:
-            logger.error(f"Failed to fetch orders: {str(e)}")
+            # str(e) is empty for many aiohttp transients (ServerDisconnectedError,
+            # ClientPayloadError, ConnectionResetError). Logging type(e).__name__
+            # turns "Failed to fetch orders: " into "Failed to fetch orders:
+            # ServerDisconnectedError" so a benign keepalive blip is distinguishable
+            # from a real error without grepping for a stack trace.
+            logger.error(f"Failed to fetch orders: {type(e).__name__}: {str(e) or repr(e)}")
             return []
     
     async def _get_open_orders_rust(self, account_id: Optional[str] = None) -> list:
@@ -1708,7 +1719,10 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             return positions
             
         except Exception as e:
-            logger.error(f"Failed to fetch positions: {str(e)}")
+            # See "Failed to fetch orders" rationale above for the type(e).__name__
+            # treatment — aiohttp transients have empty str(e) and the bare prefix
+            # makes blips look like fatal errors.
+            logger.error(f"Failed to fetch positions: {type(e).__name__}: {str(e) or repr(e)}")
             return []
     
     async def _get_positions_rust(self, account_id: Optional[str] = None) -> List[Position]:

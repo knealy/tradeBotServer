@@ -1,0 +1,122 @@
+{
+  "captured_at_utc": "2026-05-30T16:56:17+00:00",
+  "git_head": "b1d6144",
+  "strategies": {
+    "morning_range_reversion": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/morning_range_reversion.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/per_sym_combos_9m/baseline_no_breaker/config/morning_range_reversion.toml",
+      "data": {
+        "start_time": "06:55",
+        "end_time": "16:00",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "meta": {
+          "enabled": true,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 2,
+          "max_positions": 1,
+          "max_daily_trades": 4,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true,
+          "max_dll_usage_pct": 0.75
+        },
+        "signal": {
+          "timeframe": "5m",
+          "session_timezone": "America/New_York",
+          "range_start": "07:00",
+          "range_end_open": "08:00",
+          "flat_before": "16:00",
+          "max_hold_bars": 46,
+          "allow_long": true,
+          "allow_short": true,
+          "sl_mult": 1,
+          "tp_mult": 1.5,
+          "sl_max_pts": 30,
+          "sl_min_pts": 0,
+          "min_range_width_points": 20,
+          "max_range_width_points": 300,
+          "max_sweep_distance_widths": 2.0,
+          "require_reentry_close": false,
+          "sl_fixed_pts": 35,
+          "max_fades_per_session": 1,
+          "reentry_frac": 0.0,
+          "reentry_threshold_points": 1,
+          "range_effectiveness_hours": 8,
+          "skip_weekdays": [
+            "Fri"
+          ],
+          "max_bar_staleness_seconds": 600,
+          "require_high_atr": false,
+          "atr_period": 14,
+          "atr_regime_lookback": 500,
+          "atr_regime_quantile": 0.75,
+          "partial_tp_enabled": false,
+          "partial_tp_scalp_r": 1.0
+        },
+        "position_management": {
+          "breakeven_enabled": false,
+          "breakeven_trigger_r": 1.5,
+          "breakeven_offset": 5
+        },
+        "symbols": {
+          "MES": {
+            "signal": {
+              "sl_fixed_pts": 0,
+              "sl_mult": 3.0,
+              "tp_mult": 0.7,
+              "reentry_threshold_points": 0.0,
+              "min_range_width_points": 3,
+              "max_range_width_points": 50
+            }
+          },
+          "MGC": {
+            "signal": {
+              "sl_fixed_pts": 0,
+              "sl_mult": 3.0,
+              "reentry_threshold_points": 0.0,
+              "min_range_width_points": 4,
+              "max_range_width_points": 65
+            }
+          },
+          "MNQ": {
+            "signal": {
+              "sl_fixed_pts": 50,
+              "tp_mult": 1.25
+            }
+          }
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {},
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "morning_range_reversion"
+    ],
+    "symbols": [
+      "MNQ",
+      "MES",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 8,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

@@ -266,11 +266,24 @@ fi
 
 # ---------- launch headless executor ------------------------------------------
 export LOG_FILE
+
+# Surface morning_range_reversion lifecycle INFO logs (🌅 new session, 📐 anchor
+# range built, 🔁 backfill from history, 🎯 SHORT/LONG, ⏰ deadline reached,
+# 🛑 max_fades reached) to the terminal as well as the file. WARNING/ERROR from
+# every other module continue to print as before; INFO from anything ELSE stays
+# file-only. ``core.logging_setup`` picks this env var up automatically.
+export LIFECYCLE_LOGGERS="${LIFECYCLE_LOGGERS:-strategies.morning_range_reversion_strategy}"
+
 cd "$PROJECT_ROOT"
 
 # max_pending=2: room for hybrid stop-entry + OCO siblings (same tuning as body_reversion).
+# max_quantity mirrors the committed per-symbol position_size in
+# ``config/strategies/morning_range_reversion.toml``: MNQ=4 (Round-24 2× weighting),
+# MES/MGC=2 (root ``[risk] position_size = 2``).  Set higher than the TOML qty would
+# silently allow accidental over-sizing; setting lower would silently throttle the
+# strategy's committed sizing.  Keep these in sync when the TOML is re-tuned.
 exec caffeinate -dimsu "$PY" core/strategy_executor.py \
   --strategy=morning_range_reversion \
   --symbols="${SYMBOLS}" \
   --account_select="${ACCOUNT_NUM}" \
-  --risk-config '{"MNQ":{"max_quantity":1,"cooldown":60.0,"max_pending":2},"MES":{"max_quantity":1,"cooldown":60.0,"max_pending":2},"MGC":{"max_quantity":1,"cooldown":60.0,"max_pending":2}}'
+  --risk-config '{"MNQ":{"max_quantity":4,"cooldown":60.0,"max_pending":2},"MES":{"max_quantity":2,"cooldown":60.0,"max_pending":2},"MGC":{"max_quantity":2,"cooldown":60.0,"max_pending":2}}'

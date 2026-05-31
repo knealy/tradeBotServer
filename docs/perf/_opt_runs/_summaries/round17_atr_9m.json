@@ -1,0 +1,173 @@
+{
+  "round_label": "round17_atr_9m",
+  "window_days": 270,
+  "folds": 9,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-30T02:58:42.550700+00:00",
+  "total_elapsed_s": 779.0258348751813,
+  "ranked": [
+    {
+      "label": "baseline_no_atr",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 263.8,
+      "env": {},
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/baseline_no_atr"
+    },
+    {
+      "label": "skip_high_q90",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 263.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SKIP_HIGH_ATR_QUANTILE": "0.90"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/skip_high_q90"
+    },
+    {
+      "label": "skip_high_q80",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 263.3,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SKIP_HIGH_ATR_QUANTILE": "0.80"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/skip_high_q80"
+    },
+    {
+      "label": "skip_high_q70",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 263.4,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SKIP_HIGH_ATR_QUANTILE": "0.70"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/skip_high_q70"
+    },
+    {
+      "label": "skip_high_q60",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 264.6,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SKIP_HIGH_ATR_QUANTILE": "0.60"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/skip_high_q60"
+    },
+    {
+      "label": "range_eff_4h",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 264.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/range_eff_4h"
+    },
+    {
+      "label": "range_eff_6h",
+      "score": 55635.3,
+      "n_trades": 417,
+      "final_equity": 14687.25,
+      "total_return_pct": 634.362,
+      "max_dd_pct": 52.907,
+      "recovery_factor": 3.788,
+      "actual_win_rate": 0.6906,
+      "duration_s": 250.4,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "6"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/range_eff_6h"
+    },
+    {
+      "label": "range_eff_2h",
+      "score": 53890.94,
+      "n_trades": 409,
+      "final_equity": 14471.25,
+      "total_return_pct": 623.562,
+      "max_dd_pct": 52.08,
+      "recovery_factor": 3.724,
+      "actual_win_rate": 0.6968,
+      "duration_s": 250.6,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "2"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/range_eff_2h"
+    },
+    {
+      "label": "require_high_q30",
+      "score": 40254.2,
+      "n_trades": 406,
+      "final_equity": 12931.0,
+      "total_return_pct": 546.55,
+      "max_dd_pct": 51.828,
+      "recovery_factor": 3.113,
+      "actual_win_rate": 0.697,
+      "duration_s": 268.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_REQUIRE_HIGH_ATR": "true",
+        "MORNING_RANGE_REVERSION_SIGNAL_ATR_REGIME_QUANTILE": "0.3"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/require_high_q30"
+    },
+    {
+      "label": "require_high_q50",
+      "score": 37145.6,
+      "n_trades": 397,
+      "final_equity": 11747.5,
+      "total_return_pct": 487.375,
+      "max_dd_pct": 48.414,
+      "recovery_factor": 3.162,
+      "actual_win_rate": 0.6675,
+      "duration_s": 268.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_REQUIRE_HIGH_ATR": "true",
+        "MORNING_RANGE_REVERSION_SIGNAL_ATR_REGIME_QUANTILE": "0.5"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/require_high_q50"
+    }
+  ],
+  "winner": {
+    "label": "baseline_no_atr",
+    "score": 55635.3,
+    "n_trades": 417,
+    "final_equity": 14687.25,
+    "total_return_pct": 634.362,
+    "max_dd_pct": 52.907,
+    "recovery_factor": 3.788,
+    "actual_win_rate": 0.6906,
+    "duration_s": 263.8,
+    "env": {},
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round17_atr_9m/baseline_no_atr"
+  }
+}

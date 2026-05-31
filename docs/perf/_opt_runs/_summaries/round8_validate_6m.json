@@ -1,0 +1,36 @@
+{
+  "round_label": "round8_validate_6m",
+  "window_days": 180,
+  "folds": 9,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-29T20:33:39.022223+00:00",
+  "total_elapsed_s": 122.87704558297992,
+  "ranked": [
+    {
+      "label": "combined_winner",
+      "score": 13165.72,
+      "n_trades": 340,
+      "final_equity": 9996.75,
+      "total_return_pct": 399.837,
+      "max_dd_pct": 194.926,
+      "recovery_factor": 1.317,
+      "actual_win_rate": 0.75,
+      "duration_s": 122.9,
+      "env": {},
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round8_validate_6m/combined_winner"
+    }
+  ],
+  "winner": {
+    "label": "combined_winner",
+    "score": 13165.72,
+    "n_trades": 340,
+    "final_equity": 9996.75,
+    "total_return_pct": 399.837,
+    "max_dd_pct": 194.926,
+    "recovery_factor": 1.317,
+    "actual_win_rate": 0.75,
+    "duration_s": 122.9,
+    "env": {},
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round8_validate_6m/combined_winner"
+  }
+}

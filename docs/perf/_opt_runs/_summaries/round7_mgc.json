@@ -1,0 +1,197 @@
+{
+  "round_label": "round7_mgc",
+  "window_days": 90,
+  "folds": 6,
+  "symbols": "MGC",
+  "started_iso": "2026-05-29T20:29:57.997372+00:00",
+  "total_elapsed_s": 57.61862699990161,
+  "ranked": [
+    {
+      "label": "MGC_winner_r5",
+      "score": 54956.21,
+      "n_trades": 54,
+      "final_equity": 10334.0,
+      "total_return_pct": 416.7,
+      "max_dd_pct": 29.405,
+      "recovery_factor": 5.318,
+      "actual_win_rate": 0.8148,
+      "duration_s": 27.9,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "35"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_winner_r5"
+    },
+    {
+      "label": "MGC_slmult2.0",
+      "score": 34640.09,
+      "n_trades": 54,
+      "final_equity": 8830.0,
+      "total_return_pct": 341.5,
+      "max_dd_pct": 40.668,
+      "recovery_factor": 3.923,
+      "actual_win_rate": 0.7222,
+      "duration_s": 29.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "2.00"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slmult2.0"
+    },
+    {
+      "label": "MGC_slmult1.5",
+      "score": 25577.69,
+      "n_trades": 54,
+      "final_equity": 6828.0,
+      "total_return_pct": 241.4,
+      "max_dd_pct": 34.328,
+      "recovery_factor": 3.746,
+      "actual_win_rate": 0.6111,
+      "duration_s": 29.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slmult1.5"
+    },
+    {
+      "label": "MGC_slfix20",
+      "score": 14840.74,
+      "n_trades": 54,
+      "final_equity": 6254.0,
+      "total_return_pct": 212.7,
+      "max_dd_pct": 40.538,
+      "recovery_factor": 2.373,
+      "actual_win_rate": 0.6481,
+      "duration_s": 27.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "20"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slfix20"
+    },
+    {
+      "label": "MGC_slfix10",
+      "score": 2575.65,
+      "n_trades": 54,
+      "final_equity": 3122.0,
+      "total_return_pct": 56.1,
+      "max_dd_pct": 50.936,
+      "recovery_factor": 0.825,
+      "actual_win_rate": 0.463,
+      "duration_s": 27.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "10"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slfix10"
+    },
+    {
+      "label": "MGC_slmult1.0",
+      "score": 1786.75,
+      "n_trades": 54,
+      "final_equity": 3102.0,
+      "total_return_pct": 55.1,
+      "max_dd_pct": 84.243,
+      "recovery_factor": 0.576,
+      "actual_win_rate": 0.4444,
+      "duration_s": 29.5,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.00"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slmult1.0"
+    },
+    {
+      "label": "MGC_slfix15_tp2.0",
+      "score": 191.4,
+      "n_trades": 54,
+      "final_equity": 1938.0,
+      "total_return_pct": -3.1,
+      "max_dd_pct": 89.36,
+      "recovery_factor": -0.024,
+      "actual_win_rate": 0.4259,
+      "duration_s": 29.3,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "2.00",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "15"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slfix15_tp2.0"
+    },
+    {
+      "label": "MGC_slfix15",
+      "score": 166.3,
+      "n_trades": 54,
+      "final_equity": 1772.0,
+      "total_return_pct": -11.4,
+      "max_dd_pct": 88.101,
+      "recovery_factor": -0.109,
+      "actual_win_rate": 0.5,
+      "duration_s": 27.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "15"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slfix15"
+    },
+    {
+      "label": "MGC_slfix5",
+      "score": 166.2,
+      "n_trades": 54,
+      "final_equity": 1808.0,
+      "total_return_pct": -9.6,
+      "max_dd_pct": 55.527,
+      "recovery_factor": -0.146,
+      "actual_win_rate": 0.2593,
+      "duration_s": 27.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "5"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slfix5"
+    },
+    {
+      "label": "MGC_slfix15_tp1.0",
+      "score": 135.6,
+      "n_trades": 54,
+      "final_equity": 1552.0,
+      "total_return_pct": -22.4,
+      "max_dd_pct": 81.669,
+      "recovery_factor": -0.196,
+      "actual_win_rate": 0.5741,
+      "duration_s": 29.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.00",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "15"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_slfix15_tp1.0"
+    }
+  ],
+  "winner": {
+    "label": "MGC_winner_r5",
+    "score": 54956.21,
+    "n_trades": 54,
+    "final_equity": 10334.0,
+    "total_return_pct": 416.7,
+    "max_dd_pct": 29.405,
+    "recovery_factor": 5.318,
+    "actual_win_rate": 0.8148,
+    "duration_s": 27.9,
+    "env": {
+      "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+      "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1",
+      "MORNING_RANGE_REVERSION_SIGNAL_SL_FIXED_PTS": "35"
+    },
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round7_mgc/MGC_winner_r5"
+  }
+}

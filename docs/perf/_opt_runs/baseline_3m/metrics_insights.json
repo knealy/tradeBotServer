@@ -1,0 +1,2383 @@
+{
+  "sim_start_equity": 2000.0,
+  "grand": {
+    "equity_curve": [
+      {
+        "time": 1772112600,
+        "equity": 2000.0,
+        "trade_pnl": 0.0,
+        "cumulative_pnl": 0.0
+      },
+      {
+        "time": 1772113500,
+        "equity": 1923.5,
+        "trade_pnl": -76.5,
+        "cumulative_pnl": -76.5
+      },
+      {
+        "time": 1772113501,
+        "equity": 1867.25,
+        "trade_pnl": -56.25,
+        "cumulative_pnl": -132.75
+      },
+      {
+        "time": 1772115000,
+        "equity": 1943.75,
+        "trade_pnl": 76.5,
+        "cumulative_pnl": -56.25
+      },
+      {
+        "time": 1772115900,
+        "equity": 1962.5,
+        "trade_pnl": 18.75,
+        "cumulative_pnl": -37.5
+      },
+      {
+        "time": 1772119800,
+        "equity": 1639.5,
+        "trade_pnl": -323.0,
+        "cumulative_pnl": -360.5
+      },
+      {
+        "time": 1772128500,
+        "equity": 2094.5,
+        "trade_pnl": 455.0,
+        "cumulative_pnl": 94.5
+      },
+      {
+        "time": 1772199000,
+        "equity": 1884.0,
+        "trade_pnl": -210.5,
+        "cumulative_pnl": -116.0
+      },
+      {
+        "time": 1772199001,
+        "equity": 1770.25,
+        "trade_pnl": -113.75,
+        "cumulative_pnl": -229.75
+      },
+      {
+        "time": 1772204700,
+        "equity": 2047.75,
+        "trade_pnl": 277.5,
+        "cumulative_pnl": 47.75
+      },
+      {
+        "time": 1772208000,
+        "equity": 2106.5,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": 106.5
+      },
+      {
+        "time": 1772457000,
+        "equity": 2397.5,
+        "trade_pnl": 291.0,
+        "cumulative_pnl": 397.5
+      },
+      {
+        "time": 1772458200,
+        "equity": 2453.75,
+        "trade_pnl": 56.25,
+        "cumulative_pnl": 453.75
+      },
+      {
+        "time": 1772458201,
+        "equity": 2238.75,
+        "trade_pnl": -215.0,
+        "cumulative_pnl": 238.75
+      },
+      {
+        "time": 1772459700,
+        "equity": 2513.25,
+        "trade_pnl": 274.5,
+        "cumulative_pnl": 513.25
+      },
+      {
+        "time": 1772548200,
+        "equity": 2887.75,
+        "trade_pnl": 374.5,
+        "cumulative_pnl": 887.75
+      },
+      {
+        "time": 1772548201,
+        "equity": 2979.0,
+        "trade_pnl": 91.25,
+        "cumulative_pnl": 979.0
+      },
+      {
+        "time": 1772548800,
+        "equity": 2817.75,
+        "trade_pnl": -161.25,
+        "cumulative_pnl": 817.75
+      },
+      {
+        "time": 1772553900,
+        "equity": 3192.25,
+        "trade_pnl": 374.5,
+        "cumulative_pnl": 1192.25
+      },
+      {
+        "time": 1772634600,
+        "equity": 3028.5,
+        "trade_pnl": -163.75,
+        "cumulative_pnl": 1028.5
+      },
+      {
+        "time": 1772634900,
+        "equity": 2764.0,
+        "trade_pnl": -264.5,
+        "cumulative_pnl": 764.0
+      },
+      {
+        "time": 1772635200,
+        "equity": 2857.75,
+        "trade_pnl": 93.75,
+        "cumulative_pnl": 857.75
+      },
+      {
+        "time": 1772637000,
+        "equity": 2342.75,
+        "trade_pnl": -515.0,
+        "cumulative_pnl": 342.75
+      },
+      {
+        "time": 1772639100,
+        "equity": 1827.75,
+        "trade_pnl": -515.0,
+        "cumulative_pnl": -172.25
+      },
+      {
+        "time": 1772718900,
+        "equity": 1694.0,
+        "trade_pnl": -133.75,
+        "cumulative_pnl": -306.0
+      },
+      {
+        "time": 1772719200,
+        "equity": 1440.5,
+        "trade_pnl": -253.5,
+        "cumulative_pnl": -559.5
+      },
+      {
+        "time": 1772721300,
+        "equity": 1514.25,
+        "trade_pnl": 73.75,
+        "cumulative_pnl": -485.75
+      },
+      {
+        "time": 1772721900,
+        "equity": 1857.75,
+        "trade_pnl": 343.5,
+        "cumulative_pnl": -142.25
+      },
+      {
+        "time": 1772803800,
+        "equity": 2162.75,
+        "trade_pnl": 305.0,
+        "cumulative_pnl": 162.75
+      },
+      {
+        "time": 1772805600,
+        "equity": 2467.75,
+        "trade_pnl": 305.0,
+        "cumulative_pnl": 467.75
+      },
+      {
+        "time": 1772811300,
+        "equity": 2691.25,
+        "trade_pnl": 223.5,
+        "cumulative_pnl": 691.25
+      },
+      {
+        "time": 1772812500,
+        "equity": 2914.75,
+        "trade_pnl": 223.5,
+        "cumulative_pnl": 914.75
+      },
+      {
+        "time": 1773058800,
+        "equity": 2715.75,
+        "trade_pnl": -199.0,
+        "cumulative_pnl": 715.75
+      },
+      {
+        "time": 1773060000,
+        "equity": 2921.25,
+        "trade_pnl": 205.5,
+        "cumulative_pnl": 921.25
+      },
+      {
+        "time": 1773060001,
+        "equity": 2970.0,
+        "trade_pnl": 48.75,
+        "cumulative_pnl": 970.0
+      },
+      {
+        "time": 1773063000,
+        "equity": 2807.5,
+        "trade_pnl": -162.5,
+        "cumulative_pnl": 807.5
+      },
+      {
+        "time": 1773063001,
+        "equity": 2708.75,
+        "trade_pnl": -98.75,
+        "cumulative_pnl": 708.75
+      },
+      {
+        "time": 1773063002,
+        "equity": 2509.75,
+        "trade_pnl": -199.0,
+        "cumulative_pnl": 509.75
+      },
+      {
+        "time": 1773146700,
+        "equity": 2806.75,
+        "trade_pnl": 297.0,
+        "cumulative_pnl": 806.75
+      },
+      {
+        "time": 1773149400,
+        "equity": 3240.25,
+        "trade_pnl": 433.5,
+        "cumulative_pnl": 1240.25
+      },
+      {
+        "time": 1773149401,
+        "equity": 3359.0,
+        "trade_pnl": 118.75,
+        "cumulative_pnl": 1359.0
+      },
+      {
+        "time": 1773151800,
+        "equity": 3160.25,
+        "trade_pnl": -198.75,
+        "cumulative_pnl": 1160.25
+      },
+      {
+        "time": 1773152100,
+        "equity": 2941.25,
+        "trade_pnl": -219.0,
+        "cumulative_pnl": 941.25
+      },
+      {
+        "time": 1773153300,
+        "equity": 3374.75,
+        "trade_pnl": 433.5,
+        "cumulative_pnl": 1374.75
+      },
+      {
+        "time": 1773232200,
+        "equity": 3637.75,
+        "trade_pnl": 263.0,
+        "cumulative_pnl": 1637.75
+      },
+      {
+        "time": 1773234300,
+        "equity": 3741.5,
+        "trade_pnl": 103.75,
+        "cumulative_pnl": 1741.5
+      },
+      {
+        "time": 1773236400,
+        "equity": 3544.5,
+        "trade_pnl": -197.0,
+        "cumulative_pnl": 1544.5
+      },
+      {
+        "time": 1773237300,
+        "equity": 3299.0,
+        "trade_pnl": -245.5,
+        "cumulative_pnl": 1299.0
+      },
+      {
+        "time": 1773240000,
+        "equity": 3402.75,
+        "trade_pnl": 103.75,
+        "cumulative_pnl": 1402.75
+      },
+      {
+        "time": 1773241800,
+        "equity": 3733.25,
+        "trade_pnl": 330.5,
+        "cumulative_pnl": 1733.25
+      },
+      {
+        "time": 1773319500,
+        "equity": 3886.25,
+        "trade_pnl": 153.0,
+        "cumulative_pnl": 1886.25
+      },
+      {
+        "time": 1773321000,
+        "equity": 3706.75,
+        "trade_pnl": -179.5,
+        "cumulative_pnl": 1706.75
+      },
+      {
+        "time": 1773321001,
+        "equity": 3595.5,
+        "trade_pnl": -111.25,
+        "cumulative_pnl": 1595.5
+      },
+      {
+        "time": 1773321300,
+        "equity": 3748.5,
+        "trade_pnl": 153.0,
+        "cumulative_pnl": 1748.5
+      },
+      {
+        "time": 1773405900,
+        "equity": 3513.5,
+        "trade_pnl": -235.0,
+        "cumulative_pnl": 1513.5
+      },
+      {
+        "time": 1773408600,
+        "equity": 3372.0,
+        "trade_pnl": -141.5,
+        "cumulative_pnl": 1372.0
+      },
+      {
+        "time": 1773408601,
+        "equity": 3275.75,
+        "trade_pnl": -96.25,
+        "cumulative_pnl": 1275.75
+      },
+      {
+        "time": 1773409200,
+        "equity": 3179.5,
+        "trade_pnl": -96.25,
+        "cumulative_pnl": 1179.5
+      },
+      {
+        "time": 1773411000,
+        "equity": 3502.5,
+        "trade_pnl": 323.0,
+        "cumulative_pnl": 1502.5
+      },
+      {
+        "time": 1773411900,
+        "equity": 3361.0,
+        "trade_pnl": -141.5,
+        "cumulative_pnl": 1361.0
+      },
+      {
+        "time": 1773666900,
+        "equity": 4125.5,
+        "trade_pnl": 764.5,
+        "cumulative_pnl": 2125.5
+      },
+      {
+        "time": 1773669900,
+        "equity": 3802.5,
+        "trade_pnl": -323.0,
+        "cumulative_pnl": 1802.5
+      },
+      {
+        "time": 1773672300,
+        "equity": 4257.5,
+        "trade_pnl": 455.0,
+        "cumulative_pnl": 2257.5
+      },
+      {
+        "time": 1773687900,
+        "equity": 3723.0,
+        "trade_pnl": -534.5,
+        "cumulative_pnl": 1723.0
+      },
+      {
+        "time": 1773753300,
+        "equity": 3558.0,
+        "trade_pnl": -165.0,
+        "cumulative_pnl": 1558.0
+      },
+      {
+        "time": 1773761100,
+        "equity": 3775.0,
+        "trade_pnl": 217.0,
+        "cumulative_pnl": 1775.0
+      },
+      {
+        "time": 1773922200,
+        "equity": 3846.25,
+        "trade_pnl": 71.25,
+        "cumulative_pnl": 1846.25
+      },
+      {
+        "time": 1773923400,
+        "equity": 3621.75,
+        "trade_pnl": -224.5,
+        "cumulative_pnl": 1621.75
+      },
+      {
+        "time": 1773924300,
+        "equity": 3397.25,
+        "trade_pnl": -224.5,
+        "cumulative_pnl": 1397.25
+      },
+      {
+        "time": 1773929700,
+        "equity": 3263.5,
+        "trade_pnl": -133.75,
+        "cumulative_pnl": 1263.5
+      },
+      {
+        "time": 1773950400,
+        "equity": 3144.5,
+        "trade_pnl": -119.0,
+        "cumulative_pnl": 1144.5
+      },
+      {
+        "time": 1774008900,
+        "equity": 3195.75,
+        "trade_pnl": 51.25,
+        "cumulative_pnl": 1195.75
+      },
+      {
+        "time": 1774010400,
+        "equity": 3247.0,
+        "trade_pnl": 51.25,
+        "cumulative_pnl": 1247.0
+      },
+      {
+        "time": 1774011600,
+        "equity": 3090.5,
+        "trade_pnl": -156.5,
+        "cumulative_pnl": 1090.5
+      },
+      {
+        "time": 1774012800,
+        "equity": 2934.0,
+        "trade_pnl": -156.5,
+        "cumulative_pnl": 934.0
+      },
+      {
+        "time": 1774013400,
+        "equity": 3491.0,
+        "trade_pnl": 557.0,
+        "cumulative_pnl": 1491.0
+      },
+      {
+        "time": 1774357500,
+        "equity": 3219.5,
+        "trade_pnl": -271.5,
+        "cumulative_pnl": 1219.5
+      },
+      {
+        "time": 1774357501,
+        "equity": 3058.25,
+        "trade_pnl": -161.25,
+        "cumulative_pnl": 1058.25
+      },
+      {
+        "time": 1774359300,
+        "equity": 2786.75,
+        "trade_pnl": -271.5,
+        "cumulative_pnl": 786.75
+      },
+      {
+        "time": 1774359301,
+        "equity": 2625.5,
+        "trade_pnl": -161.25,
+        "cumulative_pnl": 625.5
+      },
+      {
+        "time": 1774440900,
+        "equity": 2855.0,
+        "trade_pnl": 229.5,
+        "cumulative_pnl": 855.0
+      },
+      {
+        "time": 1774440901,
+        "equity": 2911.25,
+        "trade_pnl": 56.25,
+        "cumulative_pnl": 911.25
+      },
+      {
+        "time": 1774441800,
+        "equity": 2800.0,
+        "trade_pnl": -111.25,
+        "cumulative_pnl": 800.0
+      },
+      {
+        "time": 1774445700,
+        "equity": 3029.5,
+        "trade_pnl": 229.5,
+        "cumulative_pnl": 1029.5
+      },
+      {
+        "time": 1774447200,
+        "equity": 2704.5,
+        "trade_pnl": -325.0,
+        "cumulative_pnl": 704.5
+      },
+      {
+        "time": 1774451700,
+        "equity": 2379.5,
+        "trade_pnl": -325.0,
+        "cumulative_pnl": 379.5
+      },
+      {
+        "time": 1774527000,
+        "equity": 2438.25,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": 438.25
+      },
+      {
+        "time": 1774532700,
+        "equity": 2696.75,
+        "trade_pnl": 258.5,
+        "cumulative_pnl": 696.75
+      },
+      {
+        "time": 1774533900,
+        "equity": 2499.25,
+        "trade_pnl": -197.5,
+        "cumulative_pnl": 499.25
+      },
+      {
+        "time": 1774535400,
+        "equity": 2108.25,
+        "trade_pnl": -391.0,
+        "cumulative_pnl": 108.25
+      },
+      {
+        "time": 1774536600,
+        "equity": 2167.0,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": 167.0
+      },
+      {
+        "time": 1774540800,
+        "equity": 2724.0,
+        "trade_pnl": 557.0,
+        "cumulative_pnl": 724.0
+      },
+      {
+        "time": 1774615200,
+        "equity": 2493.0,
+        "trade_pnl": -231.0,
+        "cumulative_pnl": 493.0
+      },
+      {
+        "time": 1774616700,
+        "equity": 2379.25,
+        "trade_pnl": -113.75,
+        "cumulative_pnl": 379.25
+      },
+      {
+        "time": 1774617300,
+        "equity": 2148.25,
+        "trade_pnl": -231.0,
+        "cumulative_pnl": 148.25
+      },
+      {
+        "time": 1774617900,
+        "equity": 2207.0,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": 207.0
+      },
+      {
+        "time": 1774618200,
+        "equity": 2032.5,
+        "trade_pnl": -174.5,
+        "cumulative_pnl": 32.5
+      },
+      {
+        "time": 1774619400,
+        "equity": 1858.0,
+        "trade_pnl": -174.5,
+        "cumulative_pnl": -142.0
+      },
+      {
+        "time": 1774878900,
+        "equity": 1641.75,
+        "trade_pnl": -216.25,
+        "cumulative_pnl": -358.25
+      },
+      {
+        "time": 1774883400,
+        "equity": 1279.25,
+        "trade_pnl": -362.5,
+        "cumulative_pnl": -720.75
+      },
+      {
+        "time": 1774886700,
+        "equity": 916.75,
+        "trade_pnl": -362.5,
+        "cumulative_pnl": -1083.25
+      },
+      {
+        "time": 1774887900,
+        "equity": 700.5,
+        "trade_pnl": -216.25,
+        "cumulative_pnl": -1299.5
+      },
+      {
+        "time": 1774893300,
+        "equity": 559.5,
+        "trade_pnl": -141.0,
+        "cumulative_pnl": -1440.5
+      },
+      {
+        "time": 1774961700,
+        "equity": 673.25,
+        "trade_pnl": 113.75,
+        "cumulative_pnl": -1326.75
+      },
+      {
+        "time": 1774964400,
+        "equity": 385.75,
+        "trade_pnl": -287.5,
+        "cumulative_pnl": -1614.25
+      },
+      {
+        "time": 1774965600,
+        "equity": -155.25,
+        "trade_pnl": -541.0,
+        "cumulative_pnl": -2155.25
+      },
+      {
+        "time": 1774968600,
+        "equity": -41.5,
+        "trade_pnl": 113.75,
+        "cumulative_pnl": -2041.5
+      },
+      {
+        "time": 1774969200,
+        "equity": -329.0,
+        "trade_pnl": -287.5,
+        "cumulative_pnl": -2329.0
+      },
+      {
+        "time": 1775047200,
+        "equity": -422.75,
+        "trade_pnl": -93.75,
+        "cumulative_pnl": -2422.75
+      },
+      {
+        "time": 1775047500,
+        "equity": -603.25,
+        "trade_pnl": -180.5,
+        "cumulative_pnl": -2603.25
+      },
+      {
+        "time": 1775050500,
+        "equity": -369.75,
+        "trade_pnl": 233.5,
+        "cumulative_pnl": -2369.75
+      },
+      {
+        "time": 1775050501,
+        "equity": -323.5,
+        "trade_pnl": 46.25,
+        "cumulative_pnl": -2323.5
+      },
+      {
+        "time": 1775053200,
+        "equity": 205.5,
+        "trade_pnl": 529.0,
+        "cumulative_pnl": -1794.5
+      },
+      {
+        "time": 1775057700,
+        "equity": -167.5,
+        "trade_pnl": -373.0,
+        "cumulative_pnl": -2167.5
+      },
+      {
+        "time": 1775132400,
+        "equity": -73.75,
+        "trade_pnl": 93.75,
+        "cumulative_pnl": -2073.75
+      },
+      {
+        "time": 1775136600,
+        "equity": 328.75,
+        "trade_pnl": 402.5,
+        "cumulative_pnl": -1671.25
+      },
+      {
+        "time": 1775137500,
+        "equity": 887.75,
+        "trade_pnl": 559.0,
+        "cumulative_pnl": -1112.25
+      },
+      {
+        "time": 1775138100,
+        "equity": 494.75,
+        "trade_pnl": -393.0,
+        "cumulative_pnl": -1505.25
+      },
+      {
+        "time": 1775218500,
+        "equity": 528.5,
+        "trade_pnl": 33.75,
+        "cumulative_pnl": -1471.5
+      },
+      {
+        "time": 1775219400,
+        "equity": 421.0,
+        "trade_pnl": -107.5,
+        "cumulative_pnl": -1579.0
+      },
+      {
+        "time": 1775220600,
+        "equity": 544.5,
+        "trade_pnl": 123.5,
+        "cumulative_pnl": -1455.5
+      },
+      {
+        "time": 1775479200,
+        "equity": 558.25,
+        "trade_pnl": 13.75,
+        "cumulative_pnl": -1441.75
+      },
+      {
+        "time": 1775479500,
+        "equity": 473.75,
+        "trade_pnl": -84.5,
+        "cumulative_pnl": -1526.25
+      },
+      {
+        "time": 1775480700,
+        "equity": 260.75,
+        "trade_pnl": -213.0,
+        "cumulative_pnl": -1739.25
+      },
+      {
+        "time": 1775481000,
+        "equity": 274.5,
+        "trade_pnl": 13.75,
+        "cumulative_pnl": -1725.5
+      },
+      {
+        "time": 1775482500,
+        "equity": 191.0,
+        "trade_pnl": -83.5,
+        "cumulative_pnl": -1809.0
+      },
+      {
+        "time": 1775483100,
+        "equity": -22.0,
+        "trade_pnl": -213.0,
+        "cumulative_pnl": -2022.0
+      },
+      {
+        "time": 1775564400,
+        "equity": 204.5,
+        "trade_pnl": 226.5,
+        "cumulative_pnl": -1795.5
+      },
+      {
+        "time": 1775564401,
+        "equity": 263.25,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": -1736.75
+      },
+      {
+        "time": 1775569200,
+        "equity": 784.25,
+        "trade_pnl": 521.0,
+        "cumulative_pnl": -1215.75
+      },
+      {
+        "time": 1775570100,
+        "equity": 607.75,
+        "trade_pnl": -176.5,
+        "cumulative_pnl": -1392.25
+      },
+      {
+        "time": 1775570101,
+        "equity": 666.5,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": -1333.5
+      },
+      {
+        "time": 1775572200,
+        "equity": 1187.5,
+        "trade_pnl": 521.0,
+        "cumulative_pnl": -812.5
+      },
+      {
+        "time": 1775650800,
+        "equity": 1339.0,
+        "trade_pnl": 151.5,
+        "cumulative_pnl": -661.0
+      },
+      {
+        "time": 1775650801,
+        "equity": 1690.0,
+        "trade_pnl": 351.0,
+        "cumulative_pnl": -310.0
+      },
+      {
+        "time": 1775651700,
+        "equity": 2041.0,
+        "trade_pnl": 351.0,
+        "cumulative_pnl": 41.0
+      },
+      {
+        "time": 1775652600,
+        "equity": 2192.5,
+        "trade_pnl": 151.5,
+        "cumulative_pnl": 192.5
+      },
+      {
+        "time": 1775652601,
+        "equity": 2246.25,
+        "trade_pnl": 53.75,
+        "cumulative_pnl": 246.25
+      },
+      {
+        "time": 1775655600,
+        "equity": 2140.0,
+        "trade_pnl": -106.25,
+        "cumulative_pnl": 140.0
+      },
+      {
+        "time": 1775740200,
+        "equity": 2427.0,
+        "trade_pnl": 287.0,
+        "cumulative_pnl": 427.0
+      },
+      {
+        "time": 1775741100,
+        "equity": 2287.5,
+        "trade_pnl": -139.5,
+        "cumulative_pnl": 287.5
+      },
+      {
+        "time": 1775741400,
+        "equity": 2206.25,
+        "trade_pnl": -81.25,
+        "cumulative_pnl": 206.25
+      },
+      {
+        "time": 1775741700,
+        "equity": 2066.75,
+        "trade_pnl": -139.5,
+        "cumulative_pnl": 66.75
+      },
+      {
+        "time": 1775744700,
+        "equity": 2103.0,
+        "trade_pnl": 36.25,
+        "cumulative_pnl": 103.0
+      },
+      {
+        "time": 1775746500,
+        "equity": 1892.0,
+        "trade_pnl": -211.0,
+        "cumulative_pnl": -108.0
+      },
+      {
+        "time": 1775825400,
+        "equity": 1795.5,
+        "trade_pnl": -96.5,
+        "cumulative_pnl": -204.5
+      },
+      {
+        "time": 1775826300,
+        "equity": 1624.5,
+        "trade_pnl": -171.0,
+        "cumulative_pnl": -375.5
+      },
+      {
+        "time": 1775827200,
+        "equity": 1453.5,
+        "trade_pnl": -171.0,
+        "cumulative_pnl": -546.5
+      },
+      {
+        "time": 1775827800,
+        "equity": 1394.75,
+        "trade_pnl": -58.75,
+        "cumulative_pnl": -605.25
+      },
+      {
+        "time": 1775832300,
+        "equity": 1336.0,
+        "trade_pnl": -58.75,
+        "cumulative_pnl": -664.0
+      },
+      {
+        "time": 1775836500,
+        "equity": 1443.5,
+        "trade_pnl": 107.5,
+        "cumulative_pnl": -556.5
+      },
+      {
+        "time": 1776087900,
+        "equity": 1207.0,
+        "trade_pnl": -236.5,
+        "cumulative_pnl": -793.0
+      },
+      {
+        "time": 1776087901,
+        "equity": 1055.75,
+        "trade_pnl": -151.25,
+        "cumulative_pnl": -944.25
+      },
+      {
+        "time": 1776088200,
+        "equity": 778.75,
+        "trade_pnl": -277.0,
+        "cumulative_pnl": -1221.25
+      },
+      {
+        "time": 1776090000,
+        "equity": 1161.75,
+        "trade_pnl": 383.0,
+        "cumulative_pnl": -838.25
+      },
+      {
+        "time": 1776172200,
+        "equity": 1400.75,
+        "trade_pnl": 239.0,
+        "cumulative_pnl": -599.25
+      },
+      {
+        "time": 1776173400,
+        "equity": 1221.75,
+        "trade_pnl": -179.0,
+        "cumulative_pnl": -778.25
+      },
+      {
+        "time": 1776173700,
+        "equity": 1053.25,
+        "trade_pnl": -168.5,
+        "cumulative_pnl": -946.75
+      },
+      {
+        "time": 1776174000,
+        "equity": 952.0,
+        "trade_pnl": -101.25,
+        "cumulative_pnl": -1048.0
+      },
+      {
+        "time": 1776259500,
+        "equity": 1153.5,
+        "trade_pnl": 201.5,
+        "cumulative_pnl": -846.5
+      },
+      {
+        "time": 1776260400,
+        "equity": 1202.25,
+        "trade_pnl": 48.75,
+        "cumulative_pnl": -797.75
+      },
+      {
+        "time": 1776260700,
+        "equity": 1403.75,
+        "trade_pnl": 201.5,
+        "cumulative_pnl": -596.25
+      },
+      {
+        "time": 1776265500,
+        "equity": 1684.75,
+        "trade_pnl": 281.0,
+        "cumulative_pnl": -315.25
+      },
+      {
+        "time": 1776269700,
+        "equity": 1965.75,
+        "trade_pnl": 281.0,
+        "cumulative_pnl": -34.25
+      },
+      {
+        "time": 1776343800,
+        "equity": 2079.25,
+        "trade_pnl": 113.5,
+        "cumulative_pnl": 79.25
+      },
+      {
+        "time": 1776343801,
+        "equity": 2093.0,
+        "trade_pnl": 13.75,
+        "cumulative_pnl": 93.0
+      },
+      {
+        "time": 1776346200,
+        "equity": 2041.75,
+        "trade_pnl": -51.25,
+        "cumulative_pnl": 41.75
+      },
+      {
+        "time": 1776346500,
+        "equity": 2155.25,
+        "trade_pnl": 113.5,
+        "cumulative_pnl": 155.25
+      },
+      {
+        "time": 1776347700,
+        "equity": 2058.25,
+        "trade_pnl": -97.0,
+        "cumulative_pnl": 58.25
+      },
+      {
+        "time": 1776428700,
+        "equity": 1989.5,
+        "trade_pnl": -68.75,
+        "cumulative_pnl": -10.5
+      },
+      {
+        "time": 1776429900,
+        "equity": 1688.5,
+        "trade_pnl": -301.0,
+        "cumulative_pnl": -311.5
+      },
+      {
+        "time": 1776688800,
+        "equity": 1627.25,
+        "trade_pnl": -61.25,
+        "cumulative_pnl": -372.75
+      },
+      {
+        "time": 1776689100,
+        "equity": 1526.75,
+        "trade_pnl": -100.5,
+        "cumulative_pnl": -473.25
+      },
+      {
+        "time": 1776691500,
+        "equity": 1259.75,
+        "trade_pnl": -267.0,
+        "cumulative_pnl": -740.25
+      },
+      {
+        "time": 1776693000,
+        "equity": 1159.25,
+        "trade_pnl": -100.5,
+        "cumulative_pnl": -840.75
+      },
+      {
+        "time": 1776694800,
+        "equity": 892.25,
+        "trade_pnl": -267.0,
+        "cumulative_pnl": -1107.75
+      },
+      {
+        "time": 1776696900,
+        "equity": 831.0,
+        "trade_pnl": -61.25,
+        "cumulative_pnl": -1169.0
+      },
+      {
+        "time": 1776774300,
+        "equity": 867.25,
+        "trade_pnl": 36.25,
+        "cumulative_pnl": -1132.75
+      },
+      {
+        "time": 1776776700,
+        "equity": 726.75,
+        "trade_pnl": -140.5,
+        "cumulative_pnl": -1273.25
+      },
+      {
+        "time": 1776779100,
+        "equity": 1067.75,
+        "trade_pnl": 341.0,
+        "cumulative_pnl": -932.25
+      },
+      {
+        "time": 1776781200,
+        "equity": 986.5,
+        "trade_pnl": -81.25,
+        "cumulative_pnl": -1013.5
+      },
+      {
+        "time": 1776782700,
+        "equity": 846.0,
+        "trade_pnl": -140.5,
+        "cumulative_pnl": -1154.0
+      },
+      {
+        "time": 1776861600,
+        "equity": 794.75,
+        "trade_pnl": -51.25,
+        "cumulative_pnl": -1205.25
+      },
+      {
+        "time": 1776862800,
+        "equity": 645.75,
+        "trade_pnl": -149.0,
+        "cumulative_pnl": -1354.25
+      },
+      {
+        "time": 1776863100,
+        "equity": 564.25,
+        "trade_pnl": -81.5,
+        "cumulative_pnl": -1435.75
+      },
+      {
+        "time": 1776863700,
+        "equity": 482.75,
+        "trade_pnl": -81.5,
+        "cumulative_pnl": -1517.25
+      },
+      {
+        "time": 1776863701,
+        "equity": 431.5,
+        "trade_pnl": -51.25,
+        "cumulative_pnl": -1568.5
+      },
+      {
+        "time": 1776865500,
+        "equity": 624.5,
+        "trade_pnl": 193.0,
+        "cumulative_pnl": -1375.5
+      },
+      {
+        "time": 1776948300,
+        "equity": 931.0,
+        "trade_pnl": 306.5,
+        "cumulative_pnl": -1069.0
+      },
+      {
+        "time": 1776948301,
+        "equity": 1012.25,
+        "trade_pnl": 81.25,
+        "cumulative_pnl": -987.75
+      },
+      {
+        "time": 1776952800,
+        "equity": 1318.75,
+        "trade_pnl": 306.5,
+        "cumulative_pnl": -681.25
+      },
+      {
+        "time": 1776952801,
+        "equity": 1400.0,
+        "trade_pnl": 81.25,
+        "cumulative_pnl": -600.0
+      },
+      {
+        "time": 1776954300,
+        "equity": 1125.0,
+        "trade_pnl": -275.0,
+        "cumulative_pnl": -875.0
+      },
+      {
+        "time": 1776965400,
+        "equity": 1508.0,
+        "trade_pnl": 383.0,
+        "cumulative_pnl": -492.0
+      },
+      {
+        "time": 1777041300,
+        "equity": 1631.75,
+        "trade_pnl": 123.75,
+        "cumulative_pnl": -368.25
+      },
+      {
+        "time": 1777059000,
+        "equity": 1592.75,
+        "trade_pnl": -39.0,
+        "cumulative_pnl": -407.25
+      },
+      {
+        "time": 1777059600,
+        "equity": 1395.25,
+        "trade_pnl": -197.5,
+        "cumulative_pnl": -604.75
+      },
+      {
+        "time": 1777059601,
+        "equity": 1354.0,
+        "trade_pnl": -41.25,
+        "cumulative_pnl": -646.0
+      },
+      {
+        "time": 1777060800,
+        "equity": 1379.0,
+        "trade_pnl": 25.0,
+        "cumulative_pnl": -621.0
+      },
+      {
+        "time": 1777292100,
+        "equity": 1311.5,
+        "trade_pnl": -67.5,
+        "cumulative_pnl": -688.5
+      },
+      {
+        "time": 1777292700,
+        "equity": 1448.5,
+        "trade_pnl": 137.0,
+        "cumulative_pnl": -551.5
+      },
+      {
+        "time": 1777294800,
+        "equity": 1337.5,
+        "trade_pnl": -111.0,
+        "cumulative_pnl": -662.5
+      },
+      {
+        "time": 1777296900,
+        "equity": 1298.75,
+        "trade_pnl": -38.75,
+        "cumulative_pnl": -701.25
+      },
+      {
+        "time": 1777298100,
+        "equity": 1305.0,
+        "trade_pnl": 6.25,
+        "cumulative_pnl": -695.0
+      },
+      {
+        "time": 1777380900,
+        "equity": 1421.25,
+        "trade_pnl": 116.25,
+        "cumulative_pnl": -578.75
+      },
+      {
+        "time": 1777383600,
+        "equity": 1974.75,
+        "trade_pnl": 553.5,
+        "cumulative_pnl": -25.25
+      },
+      {
+        "time": 1777400100,
+        "equity": 2091.0,
+        "trade_pnl": 116.25,
+        "cumulative_pnl": 91.0
+      },
+      {
+        "time": 1777401300,
+        "equity": 2383.5,
+        "trade_pnl": 292.5,
+        "cumulative_pnl": 383.5
+      },
+      {
+        "time": 1777465800,
+        "equity": 2266.0,
+        "trade_pnl": -117.5,
+        "cumulative_pnl": 266.0
+      },
+      {
+        "time": 1777467000,
+        "equity": 2117.0,
+        "trade_pnl": -149.0,
+        "cumulative_pnl": 117.0
+      },
+      {
+        "time": 1777467600,
+        "equity": 2140.75,
+        "trade_pnl": 23.75,
+        "cumulative_pnl": 140.75
+      },
+      {
+        "time": 1777468800,
+        "equity": 2023.25,
+        "trade_pnl": -117.5,
+        "cumulative_pnl": 23.25
+      },
+      {
+        "time": 1777473300,
+        "equity": 2047.0,
+        "trade_pnl": 23.75,
+        "cumulative_pnl": 47.0
+      },
+      {
+        "time": 1777554000,
+        "equity": 2316.0,
+        "trade_pnl": 269.0,
+        "cumulative_pnl": 316.0
+      },
+      {
+        "time": 1777555800,
+        "equity": 2670.5,
+        "trade_pnl": 354.5,
+        "cumulative_pnl": 670.5
+      },
+      {
+        "time": 1777555801,
+        "equity": 2729.25,
+        "trade_pnl": 58.75,
+        "cumulative_pnl": 729.25
+      },
+      {
+        "time": 1777556400,
+        "equity": 2467.75,
+        "trade_pnl": -261.5,
+        "cumulative_pnl": 467.75
+      },
+      {
+        "time": 1777557000,
+        "equity": 2351.5,
+        "trade_pnl": -116.25,
+        "cumulative_pnl": 351.5
+      },
+      {
+        "time": 1777577100,
+        "equity": 2150.5,
+        "trade_pnl": -201.0,
+        "cumulative_pnl": 150.5
+      },
+      {
+        "time": 1777637400,
+        "equity": 2099.25,
+        "trade_pnl": -51.25,
+        "cumulative_pnl": 99.25
+      },
+      {
+        "time": 1777640700,
+        "equity": 2007.75,
+        "trade_pnl": -91.5,
+        "cumulative_pnl": 7.75
+      },
+      {
+        "time": 1777665600,
+        "equity": 1986.5,
+        "trade_pnl": -21.25,
+        "cumulative_pnl": -13.5
+      },
+      {
+        "time": 1777896900,
+        "equity": 1836.0,
+        "trade_pnl": -150.5,
+        "cumulative_pnl": -164.0
+      },
+      {
+        "time": 1777901400,
+        "equity": 2115.0,
+        "trade_pnl": 279.0,
+        "cumulative_pnl": 115.0
+      },
+      {
+        "time": 1777902000,
+        "equity": 1964.5,
+        "trade_pnl": -150.5,
+        "cumulative_pnl": -35.5
+      },
+      {
+        "time": 1777904100,
+        "equity": 1863.25,
+        "trade_pnl": -101.25,
+        "cumulative_pnl": -136.75
+      },
+      {
+        "time": 1777905300,
+        "equity": 1656.25,
+        "trade_pnl": -207.0,
+        "cumulative_pnl": -343.75
+      },
+      {
+        "time": 1777907700,
+        "equity": 1707.5,
+        "trade_pnl": 51.25,
+        "cumulative_pnl": -292.5
+      },
+      {
+        "time": 1777986300,
+        "equity": 1438.5,
+        "trade_pnl": -269.0,
+        "cumulative_pnl": -561.5
+      },
+      {
+        "time": 1778010900,
+        "equity": 1621.5,
+        "trade_pnl": 183.0,
+        "cumulative_pnl": -378.5
+      },
+      {
+        "time": 1778069700,
+        "equity": 1502.75,
+        "trade_pnl": -118.75,
+        "cumulative_pnl": -497.25
+      },
+      {
+        "time": 1778072700,
+        "equity": 1181.75,
+        "trade_pnl": -321.0,
+        "cumulative_pnl": -818.25
+      },
+      {
+        "time": 1778076900,
+        "equity": 1245.5,
+        "trade_pnl": 63.75,
+        "cumulative_pnl": -754.5
+      },
+      {
+        "time": 1778088900,
+        "equity": 1591.0,
+        "trade_pnl": 345.5,
+        "cumulative_pnl": -409.0
+      },
+      {
+        "time": 1778095200,
+        "equity": 1335.5,
+        "trade_pnl": -255.5,
+        "cumulative_pnl": -664.5
+      },
+      {
+        "time": 1778097600,
+        "equity": 1342.5,
+        "trade_pnl": 7.0,
+        "cumulative_pnl": -657.5
+      },
+      {
+        "time": 1778156400,
+        "equity": 1353.75,
+        "trade_pnl": 11.25,
+        "cumulative_pnl": -646.25
+      },
+      {
+        "time": 1778157300,
+        "equity": 1307.5,
+        "trade_pnl": -46.25,
+        "cumulative_pnl": -692.5
+      },
+      {
+        "time": 1778157600,
+        "equity": 1130.5,
+        "trade_pnl": -177.0,
+        "cumulative_pnl": -869.5
+      },
+      {
+        "time": 1778160600,
+        "equity": 953.5,
+        "trade_pnl": -177.0,
+        "cumulative_pnl": -1046.5
+      },
+      {
+        "time": 1778160900,
+        "equity": 845.0,
+        "trade_pnl": -108.5,
+        "cumulative_pnl": -1155.0
+      },
+      {
+        "time": 1778161500,
+        "equity": 969.5,
+        "trade_pnl": 124.5,
+        "cumulative_pnl": -1030.5
+      },
+      {
+        "time": 1778243700,
+        "equity": 1168.5,
+        "trade_pnl": 199.0,
+        "cumulative_pnl": -831.5
+      },
+      {
+        "time": 1778244900,
+        "equity": 1174.75,
+        "trade_pnl": 6.25,
+        "cumulative_pnl": -825.25
+      },
+      {
+        "time": 1778245800,
+        "equity": 1314.25,
+        "trade_pnl": 139.5,
+        "cumulative_pnl": -685.75
+      },
+      {
+        "time": 1778245801,
+        "equity": 1513.25,
+        "trade_pnl": 199.0,
+        "cumulative_pnl": -486.75
+      },
+      {
+        "time": 1778247000,
+        "equity": 1474.5,
+        "trade_pnl": -38.75,
+        "cumulative_pnl": -525.5
+      },
+      {
+        "time": 1778502600,
+        "equity": 1498.25,
+        "trade_pnl": 23.75,
+        "cumulative_pnl": -501.75
+      },
+      {
+        "time": 1778505600,
+        "equity": 1522.0,
+        "trade_pnl": 23.75,
+        "cumulative_pnl": -478.0
+      },
+      {
+        "time": 1778506200,
+        "equity": 1770.5,
+        "trade_pnl": 248.5,
+        "cumulative_pnl": -229.5
+      },
+      {
+        "time": 1778507400,
+        "equity": 2019.0,
+        "trade_pnl": 248.5,
+        "cumulative_pnl": 19.0
+      },
+      {
+        "time": 1778589000,
+        "equity": 2258.5,
+        "trade_pnl": 239.5,
+        "cumulative_pnl": 258.5
+      },
+      {
+        "time": 1778590200,
+        "equity": 2187.25,
+        "trade_pnl": -71.25,
+        "cumulative_pnl": 187.25
+      },
+      {
+        "time": 1778591100,
+        "equity": 2512.25,
+        "trade_pnl": 325.0,
+        "cumulative_pnl": 512.25
+      },
+      {
+        "time": 1778592600,
+        "equity": 2751.75,
+        "trade_pnl": 239.5,
+        "cumulative_pnl": 751.75
+      },
+      {
+        "time": 1778594400,
+        "equity": 2514.75,
+        "trade_pnl": -237.0,
+        "cumulative_pnl": 514.75
+      },
+      {
+        "time": 1778595300,
+        "equity": 2543.5,
+        "trade_pnl": 28.75,
+        "cumulative_pnl": 543.5
+      },
+      {
+        "time": 1778674200,
+        "equity": 2554.75,
+        "trade_pnl": 11.25,
+        "cumulative_pnl": 554.75
+      },
+      {
+        "time": 1778674500,
+        "equity": 2681.25,
+        "trade_pnl": 126.5,
+        "cumulative_pnl": 681.25
+      },
+      {
+        "time": 1778675400,
+        "equity": 2571.75,
+        "trade_pnl": -109.5,
+        "cumulative_pnl": 571.75
+      },
+      {
+        "time": 1778675401,
+        "equity": 2525.5,
+        "trade_pnl": -46.25,
+        "cumulative_pnl": 525.5
+      },
+      {
+        "time": 1778679000,
+        "equity": 2360.5,
+        "trade_pnl": -165.0,
+        "cumulative_pnl": 360.5
+      },
+      {
+        "time": 1778688600,
+        "equity": 2575.5,
+        "trade_pnl": 215.0,
+        "cumulative_pnl": 575.5
+      },
+      {
+        "time": 1778762700,
+        "equity": 2599.25,
+        "trade_pnl": 23.75,
+        "cumulative_pnl": 599.25
+      },
+      {
+        "time": 1778764500,
+        "equity": 2826.25,
+        "trade_pnl": 227.0,
+        "cumulative_pnl": 826.25
+      },
+      {
+        "time": 1778765100,
+        "equity": 2765.0,
+        "trade_pnl": -61.25,
+        "cumulative_pnl": 765.0
+      },
+      {
+        "time": 1778765700,
+        "equity": 2959.5,
+        "trade_pnl": 194.5,
+        "cumulative_pnl": 959.5
+      },
+      {
+        "time": 1778765701,
+        "equity": 2788.5,
+        "trade_pnl": -171.0,
+        "cumulative_pnl": 788.5
+      },
+      {
+        "time": 1778766300,
+        "equity": 2634.0,
+        "trade_pnl": -154.5,
+        "cumulative_pnl": 634.0
+      },
+      {
+        "time": 1778850000,
+        "equity": 2415.0,
+        "trade_pnl": -219.0,
+        "cumulative_pnl": 415.0
+      },
+      {
+        "time": 1778851500,
+        "equity": 2481.25,
+        "trade_pnl": 66.25,
+        "cumulative_pnl": 481.25
+      },
+      {
+        "time": 1778851800,
+        "equity": 2261.75,
+        "trade_pnl": -219.5,
+        "cumulative_pnl": 261.75
+      },
+      {
+        "time": 1778852100,
+        "equity": 2042.75,
+        "trade_pnl": -219.0,
+        "cumulative_pnl": 42.75
+      },
+      {
+        "time": 1778853300,
+        "equity": 1823.25,
+        "trade_pnl": -219.5,
+        "cumulative_pnl": -176.75
+      },
+      {
+        "time": 1778853301,
+        "equity": 1697.0,
+        "trade_pnl": -126.25,
+        "cumulative_pnl": -303.0
+      },
+      {
+        "time": 1779111900,
+        "equity": 1848.25,
+        "trade_pnl": 151.25,
+        "cumulative_pnl": -151.75
+      },
+      {
+        "time": 1779114600,
+        "equity": 2510.75,
+        "trade_pnl": 662.5,
+        "cumulative_pnl": 510.75
+      },
+      {
+        "time": 1779114601,
+        "equity": 2662.0,
+        "trade_pnl": 151.25,
+        "cumulative_pnl": 662.0
+      },
+      {
+        "time": 1779115200,
+        "equity": 3227.0,
+        "trade_pnl": 565.0,
+        "cumulative_pnl": 1227.0
+      },
+      {
+        "time": 1779121500,
+        "equity": 2759.5,
+        "trade_pnl": -467.5,
+        "cumulative_pnl": 759.5
+      },
+      {
+        "time": 1779197100,
+        "equity": 2549.0,
+        "trade_pnl": -210.5,
+        "cumulative_pnl": 549.0
+      },
+      {
+        "time": 1779197700,
+        "equity": 2452.75,
+        "trade_pnl": -96.25,
+        "cumulative_pnl": 452.75
+      },
+      {
+        "time": 1779198600,
+        "equity": 2499.0,
+        "trade_pnl": 46.25,
+        "cumulative_pnl": 499.0
+      },
+      {
+        "time": 1779199200,
+        "equity": 2776.5,
+        "trade_pnl": 277.5,
+        "cumulative_pnl": 776.5
+      },
+      {
+        "time": 1779280200,
+        "equity": 2700.25,
+        "trade_pnl": -76.25,
+        "cumulative_pnl": 700.25
+      },
+      {
+        "time": 1779281700,
+        "equity": 2734.0,
+        "trade_pnl": 33.75,
+        "cumulative_pnl": 734.0
+      },
+      {
+        "time": 1779282600,
+        "equity": 2617.0,
+        "trade_pnl": -117.0,
+        "cumulative_pnl": 617.0
+      },
+      {
+        "time": 1779283500,
+        "equity": 2807.5,
+        "trade_pnl": 190.5,
+        "cumulative_pnl": 807.5
+      },
+      {
+        "time": 1779283501,
+        "equity": 2952.5,
+        "trade_pnl": 145.0,
+        "cumulative_pnl": 952.5
+      },
+      {
+        "time": 1779284400,
+        "equity": 3143.0,
+        "trade_pnl": 190.5,
+        "cumulative_pnl": 1143.0
+      },
+      {
+        "time": 1779366600,
+        "equity": 3332.0,
+        "trade_pnl": 189.0,
+        "cumulative_pnl": 1332.0
+      },
+      {
+        "time": 1779368400,
+        "equity": 3185.0,
+        "trade_pnl": -147.0,
+        "cumulative_pnl": 1185.0
+      },
+      {
+        "time": 1779371400,
+        "equity": 3439.5,
+        "trade_pnl": 254.5,
+        "cumulative_pnl": 1439.5
+      },
+      {
+        "time": 1779371401,
+        "equity": 3495.75,
+        "trade_pnl": 56.25,
+        "cumulative_pnl": 1495.75
+      },
+      {
+        "time": 1779372000,
+        "equity": 3301.25,
+        "trade_pnl": -194.5,
+        "cumulative_pnl": 1301.25
+      },
+      {
+        "time": 1779372600,
+        "equity": 3357.5,
+        "trade_pnl": 56.25,
+        "cumulative_pnl": 1357.5
+      },
+      {
+        "time": 1779452400,
+        "equity": 3276.25,
+        "trade_pnl": -81.25,
+        "cumulative_pnl": 1276.25
+      },
+      {
+        "time": 1779455100,
+        "equity": 3125.25,
+        "trade_pnl": -151.0,
+        "cumulative_pnl": 1125.25
+      },
+      {
+        "time": 1779457200,
+        "equity": 3322.25,
+        "trade_pnl": 197.0,
+        "cumulative_pnl": 1322.25
+      },
+      {
+        "time": 1779459000,
+        "equity": 3154.75,
+        "trade_pnl": -167.5,
+        "cumulative_pnl": 1154.75
+      },
+      {
+        "time": 1779479700,
+        "equity": 2987.25,
+        "trade_pnl": -167.5,
+        "cumulative_pnl": 987.25
+      },
+      {
+        "time": 1779479701,
+        "equity": 2906.0,
+        "trade_pnl": -81.25,
+        "cumulative_pnl": 906.0
+      },
+      {
+        "time": 1779711600,
+        "equity": 2965.5,
+        "trade_pnl": 59.5,
+        "cumulative_pnl": 965.5
+      },
+      {
+        "time": 1779712500,
+        "equity": 2901.0,
+        "trade_pnl": -64.5,
+        "cumulative_pnl": 901.0
+      },
+      {
+        "time": 1779714000,
+        "equity": 2788.0,
+        "trade_pnl": -113.0,
+        "cumulative_pnl": 788.0
+      },
+      {
+        "time": 1779714600,
+        "equity": 2675.0,
+        "trade_pnl": -113.0,
+        "cumulative_pnl": 675.0
+      },
+      {
+        "time": 1779715800,
+        "equity": 2691.25,
+        "trade_pnl": 16.25,
+        "cumulative_pnl": 691.25
+      },
+      {
+        "time": 1779722100,
+        "equity": 2707.5,
+        "trade_pnl": 16.25,
+        "cumulative_pnl": 707.5
+      },
+      {
+        "time": 1779801900,
+        "equity": 2738.75,
+        "trade_pnl": 31.25,
+        "cumulative_pnl": 738.75
+      },
+      {
+        "time": 1779802200,
+        "equity": 3229.75,
+        "trade_pnl": 491.0,
+        "cumulative_pnl": 1229.75
+      },
+      {
+        "time": 1779802500,
+        "equity": 3386.25,
+        "trade_pnl": 156.5,
+        "cumulative_pnl": 1386.25
+      },
+      {
+        "time": 1779802800,
+        "equity": 3417.5,
+        "trade_pnl": 31.25,
+        "cumulative_pnl": 1417.5
+      },
+      {
+        "time": 1779823500,
+        "equity": 3434.5,
+        "trade_pnl": 17.0,
+        "cumulative_pnl": 1434.5
+      },
+      {
+        "time": 1779884100,
+        "equity": 3478.25,
+        "trade_pnl": 43.75,
+        "cumulative_pnl": 1478.25
+      },
+      {
+        "time": 1779884700,
+        "equity": 3339.75,
+        "trade_pnl": -138.5,
+        "cumulative_pnl": 1339.75
+      },
+      {
+        "time": 1779885300,
+        "equity": 3383.5,
+        "trade_pnl": 43.75,
+        "cumulative_pnl": 1383.5
+      },
+      {
+        "time": 1779886800,
+        "equity": 3808.5,
+        "trade_pnl": 425.0,
+        "cumulative_pnl": 1808.5
+      }
+    ],
+    "equity_summary": {
+      "start_equity": 2000.0,
+      "final_equity": 3808.5,
+      "total_return_pct": 90.425,
+      "max_drawdown_dollars": 4860.75,
+      "max_drawdown_pct": 114.169,
+      "n_trades": 316
+    },
+    "extended": {
+      "n_trades": 316,
+      "recovery_factor_pnl_vs_seq_dd": 0.372,
+      "breakeven_win_rate": 0.4749,
+      "actual_win_rate": 0.4905,
+      "median_bars_held_win": 3.0,
+      "median_bars_held_loss": 2.0,
+      "mean_mae_losers": -160.5932,
+      "mean_mfe_winners": 157.8581,
+      "avg_r_winners": 1.016,
+      "avg_r_losers": -1.078
+    },
+    "loss_patterns": {
+      "n_trades": 316,
+      "n_losses": 161,
+      "n_wins": 155,
+      "by_exit_reason": {
+        "stop_loss": {
+          "wins": 0,
+          "losses": 155,
+          "n": 155
+        },
+        "take_profit": {
+          "wins": 150,
+          "losses": 0,
+          "n": 150
+        },
+        "replay_force_flat_et": {
+          "wins": 2,
+          "losses": 2,
+          "n": 4
+        },
+        "timeout": {
+          "wins": 3,
+          "losses": 4,
+          "n": 7
+        }
+      },
+      "losses_by_exit_reason_pct": {
+        "stop_loss": 96.3,
+        "replay_force_flat_et": 1.2,
+        "timeout": 2.5
+      },
+      "by_side_loss_rate": {
+        "SELL": {
+          "n": 169,
+          "losses": 88,
+          "loss_rate_pct": 52.1
+        },
+        "BUY": {
+          "n": 147,
+          "losses": 73,
+          "loss_rate_pct": 49.7
+        }
+      },
+      "by_strategy_loss_mix": {
+        "morning_range_reversion": {
+          "losses": 161,
+          "trades": 316,
+          "pct_of_all_losses": 100.0
+        }
+      },
+      "losses_by_weekday": {
+        "Mon": {
+          "losses": 36,
+          "trades": 61,
+          "loss_share_of_losses_pct": 22.4
+        },
+        "Tue": {
+          "losses": 23,
+          "trades": 57,
+          "loss_share_of_losses_pct": 14.3
+        },
+        "Wed": {
+          "losses": 30,
+          "trades": 67,
+          "loss_share_of_losses_pct": 18.6
+        },
+        "Thu": {
+          "losses": 33,
+          "trades": 70,
+          "loss_share_of_losses_pct": 20.5
+        },
+        "Fri": {
+          "losses": 39,
+          "trades": 61,
+          "loss_share_of_losses_pct": 24.2
+        }
+      },
+      "correlations_with_loss": [
+        {
+          "factor": "bars_held",
+          "pearson_vs_loss_indicator": -0.0444,
+          "n": 316,
+          "hint": "Weak linear association between bars_held and losing trades (|r|\u22480.04)."
+        },
+        {
+          "factor": "initial_risk_dollars",
+          "pearson_vs_loss_indicator": 0.0207,
+          "n": 316,
+          "hint": "Weak linear association between initial_risk_dollars and losing trades (|r|\u22480.02)."
+        },
+        {
+          "factor": "entry_hour_et",
+          "pearson_vs_loss_indicator": 0.0631,
+          "n": 316,
+          "hint": "Weak linear association between entry_hour_et and losing trades (|r|\u22480.06)."
+        }
+      ]
+    }
+  },
+  "per_strategy_symbol": {
+    "morning_range_reversion|MES": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 892.5,
+        "total_return_pct": -55.375,
+        "max_drawdown_dollars": 1567.5,
+        "max_drawdown_pct": 76.277,
+        "n_trades": 110
+      },
+      "extended": {
+        "n_trades": 110,
+        "recovery_factor_pnl_vs_seq_dd": -0.707,
+        "breakeven_win_rate": 0.6292,
+        "actual_win_rate": 0.5636,
+        "median_bars_held_win": 2.0,
+        "median_bars_held_loss": 1.5,
+        "mean_mae_losers": -90.2604,
+        "mean_mfe_winners": 49.7984,
+        "avg_r_winners": 0.533,
+        "avg_r_losers": -1.157
+      },
+      "loss_patterns": {
+        "n_trades": 110,
+        "n_losses": 48,
+        "n_wins": 62,
+        "by_exit_reason": {
+          "stop_loss": {
+            "wins": 0,
+            "losses": 46,
+            "n": 46
+          },
+          "take_profit": {
+            "wins": 62,
+            "losses": 0,
+            "n": 62
+          },
+          "timeout": {
+            "wins": 0,
+            "losses": 1,
+            "n": 1
+          },
+          "replay_force_flat_et": {
+            "wins": 0,
+            "losses": 1,
+            "n": 1
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 95.8,
+          "timeout": 2.1,
+          "replay_force_flat_et": 2.1
+        },
+        "by_side_loss_rate": {
+          "SELL": {
+            "n": 54,
+            "losses": 25,
+            "loss_rate_pct": 46.3
+          },
+          "BUY": {
+            "n": 56,
+            "losses": 23,
+            "loss_rate_pct": 41.1
+          }
+        },
+        "by_strategy_loss_mix": {
+          "morning_range_reversion": {
+            "losses": 48,
+            "trades": 110,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Mon": {
+            "losses": 8,
+            "trades": 20,
+            "loss_share_of_losses_pct": 16.7
+          },
+          "Tue": {
+            "losses": 8,
+            "trades": 21,
+            "loss_share_of_losses_pct": 16.7
+          },
+          "Wed": {
+            "losses": 9,
+            "trades": 23,
+            "loss_share_of_losses_pct": 18.8
+          },
+          "Thu": {
+            "losses": 9,
+            "trades": 24,
+            "loss_share_of_losses_pct": 18.8
+          },
+          "Fri": {
+            "losses": 14,
+            "trades": 22,
+            "loss_share_of_losses_pct": 29.2
+          }
+        },
+        "correlations_with_loss": [
+          {
+            "factor": "bars_held",
+            "pearson_vs_loss_indicator": 0.0257,
+            "n": 110,
+            "hint": "Weak linear association between bars_held and losing trades (|r|\u22480.03)."
+          },
+          {
+            "factor": "initial_risk_dollars",
+            "pearson_vs_loss_indicator": -0.1056,
+            "n": 110,
+            "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.11); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "entry_hour_et",
+            "pearson_vs_loss_indicator": 0.1213,
+            "n": 110,
+            "hint": "When entry_hour_et is higher, losing trades are slightly more common (Pearson r\u22480.12); treat as exploratory\u2014causation not implied."
+          }
+        ]
+      }
+    },
+    "morning_range_reversion|MGC": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 3376.0,
+        "total_return_pct": 68.8,
+        "max_drawdown_dollars": 1732.0,
+        "max_drawdown_pct": 67.922,
+        "n_trades": 98
+      },
+      "extended": {
+        "n_trades": 98,
+        "recovery_factor_pnl_vs_seq_dd": 0.794,
+        "breakeven_win_rate": 0.4329,
+        "actual_win_rate": 0.4592,
+        "median_bars_held_win": 5.0,
+        "median_bars_held_loss": 4.0,
+        "mean_mae_losers": -213.2264,
+        "mean_mfe_winners": 263.2,
+        "avg_r_winners": 1.326,
+        "avg_r_losers": -1.014
+      },
+      "loss_patterns": {
+        "n_trades": 98,
+        "n_losses": 53,
+        "n_wins": 45,
+        "by_exit_reason": {
+          "stop_loss": {
+            "wins": 0,
+            "losses": 50,
+            "n": 50
+          },
+          "take_profit": {
+            "wins": 41,
+            "losses": 0,
+            "n": 41
+          },
+          "replay_force_flat_et": {
+            "wins": 2,
+            "losses": 1,
+            "n": 3
+          },
+          "timeout": {
+            "wins": 2,
+            "losses": 2,
+            "n": 4
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 94.3,
+          "replay_force_flat_et": 1.9,
+          "timeout": 3.8
+        },
+        "by_side_loss_rate": {
+          "BUY": {
+            "n": 42,
+            "losses": 24,
+            "loss_rate_pct": 57.1
+          },
+          "SELL": {
+            "n": 56,
+            "losses": 29,
+            "loss_rate_pct": 51.8
+          }
+        },
+        "by_strategy_loss_mix": {
+          "morning_range_reversion": {
+            "losses": 53,
+            "trades": 98,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Mon": {
+            "losses": 14,
+            "trades": 20,
+            "loss_share_of_losses_pct": 26.4
+          },
+          "Tue": {
+            "losses": 6,
+            "trades": 16,
+            "loss_share_of_losses_pct": 11.3
+          },
+          "Wed": {
+            "losses": 11,
+            "trades": 22,
+            "loss_share_of_losses_pct": 20.8
+          },
+          "Thu": {
+            "losses": 12,
+            "trades": 22,
+            "loss_share_of_losses_pct": 22.6
+          },
+          "Fri": {
+            "losses": 10,
+            "trades": 18,
+            "loss_share_of_losses_pct": 18.9
+          }
+        },
+        "correlations_with_loss": [
+          {
+            "factor": "bars_held",
+            "pearson_vs_loss_indicator": -0.1332,
+            "n": 98,
+            "hint": "When bars_held is lower, losing trades are slightly more common (Pearson r\u2248-0.13); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "initial_risk_dollars",
+            "pearson_vs_loss_indicator": 0.0323,
+            "n": 98,
+            "hint": "Weak linear association between initial_risk_dollars and losing trades (|r|\u22480.03)."
+          },
+          {
+            "factor": "entry_hour_et",
+            "pearson_vs_loss_indicator": -0.0244,
+            "n": 98,
+            "hint": "Weak linear association between entry_hour_et and losing trades (|r|\u22480.02)."
+          }
+        ]
+      }
+    },
+    "morning_range_reversion|MNQ": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 3540.0,
+        "total_return_pct": 77.0,
+        "max_drawdown_dollars": 3149.0,
+        "max_drawdown_pct": 67.575,
+        "n_trades": 108
+      },
+      "extended": {
+        "n_trades": 108,
+        "recovery_factor_pnl_vs_seq_dd": 0.489,
+        "breakeven_win_rate": 0.4125,
+        "actual_win_rate": 0.4444,
+        "median_bars_held_win": 3.5,
+        "median_bars_held_loss": 2.0,
+        "mean_mae_losers": -170.3667,
+        "mean_mfe_winners": 198.6771,
+        "avg_r_winners": 1.348,
+        "avg_r_losers": -1.072
+      },
+      "loss_patterns": {
+        "n_trades": 108,
+        "n_losses": 60,
+        "n_wins": 48,
+        "by_exit_reason": {
+          "stop_loss": {
+            "wins": 0,
+            "losses": 59,
+            "n": 59
+          },
+          "take_profit": {
+            "wins": 47,
+            "losses": 0,
+            "n": 47
+          },
+          "timeout": {
+            "wins": 1,
+            "losses": 1,
+            "n": 2
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 98.3,
+          "timeout": 1.7
+        },
+        "by_side_loss_rate": {
+          "SELL": {
+            "n": 59,
+            "losses": 34,
+            "loss_rate_pct": 57.6
+          },
+          "BUY": {
+            "n": 49,
+            "losses": 26,
+            "loss_rate_pct": 53.1
+          }
+        },
+        "by_strategy_loss_mix": {
+          "morning_range_reversion": {
+            "losses": 60,
+            "trades": 108,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Mon": {
+            "losses": 14,
+            "trades": 21,
+            "loss_share_of_losses_pct": 23.3
+          },
+          "Tue": {
+            "losses": 9,
+            "trades": 20,
+            "loss_share_of_losses_pct": 15.0
+          },
+          "Wed": {
+            "losses": 10,
+            "trades": 22,
+            "loss_share_of_losses_pct": 16.7
+          },
+          "Thu": {
+            "losses": 12,
+            "trades": 24,
+            "loss_share_of_losses_pct": 20.0
+          },
+          "Fri": {
+            "losses": 15,
+            "trades": 21,
+            "loss_share_of_losses_pct": 25.0
+          }
+        },
+        "correlations_with_loss": [
+          {
+            "factor": "bars_held",
+            "pearson_vs_loss_indicator": -0.0607,
+            "n": 108,
+            "hint": "Weak linear association between bars_held and losing trades (|r|\u22480.06)."
+          },
+          {
+            "factor": "initial_risk_dollars",
+            "pearson_vs_loss_indicator": -0.0826,
+            "n": 108,
+            "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.08); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "entry_hour_et",
+            "pearson_vs_loss_indicator": 0.1013,
+            "n": 108,
+            "hint": "When entry_hour_et is higher, losing trades are slightly more common (Pearson r\u22480.10); treat as exploratory\u2014causation not implied."
+          }
+        ]
+      }
+    }
+  }
+}

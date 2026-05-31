@@ -48,6 +48,13 @@ tp_range_pct         = 100.0         # legacy env: TP_RANGE_PCT
 [position_management]
 breakeven_enabled         = true     # legacy env: BREAKEVEN_ENABLED
 breakeven_profit_points   = 15.0     # legacy env: BREAKEVEN_PROFIT_POINTS
+# BONGO §1B (generic monitor in trading_bot._generic_breakeven_monitor_loop +
+# StrategyReplayEngine._evaluate_breakeven_watches). Both honour these keys:
+breakeven_trigger_r       = 0.6      # favourable move (× |entry − stop|) before SL snaps
+breakeven_offset          = 0.0      # price-pt offset added to the snapped SL in the trade's favour
+                                     #   LONG  -> new SL = entry + breakeven_offset
+                                     #   SHORT -> new SL = entry - breakeven_offset
+                                     # Negative values clamp to 0. Set 0 = snap exactly to entry.
 range_break_offset        = 0.25     # legacy env: RANGE_BREAK_OFFSET
 use_dynamic_atr_for_orders = true    # legacy env: USE_DYNAMIC_ATR_FOR_ORDERS
 

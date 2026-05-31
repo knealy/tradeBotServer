@@ -1,0 +1,216 @@
+{
+  "round_label": "round2_when",
+  "window_days": 90,
+  "folds": 6,
+  "symbols": "MNQ,MES,MGC",
+  "started_iso": "2026-05-29T20:17:21.191922+00:00",
+  "total_elapsed_s": 112.99928691703826,
+  "ranked": [
+    {
+      "label": "swd1.5_eff4_mf1",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 56.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "1.5",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd1.5_eff4_mf1"
+    },
+    {
+      "label": "swd1.5_eff8_mf1",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 56.7,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "1.5",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "8",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd1.5_eff8_mf1"
+    },
+    {
+      "label": "swd2.0_eff4_mf1",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 56.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "2.0",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd2.0_eff4_mf1"
+    },
+    {
+      "label": "swd2.0_eff8_mf1",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 56.4,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "2.0",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "8",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd2.0_eff8_mf1"
+    },
+    {
+      "label": "swd3.0_eff4_mf1",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 56.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "3.0",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd3.0_eff4_mf1"
+    },
+    {
+      "label": "swd1.0_eff4_mf1",
+      "score": 31540.39,
+      "n_trades": 173,
+      "final_equity": 9752.75,
+      "total_return_pct": 387.637,
+      "max_dd_pct": 50.776,
+      "recovery_factor": 3.234,
+      "actual_win_rate": 0.6416,
+      "duration_s": 56.2,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "1.0",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd1.0_eff4_mf1"
+    },
+    {
+      "label": "swd1.5_eff4_mf2",
+      "score": 8144.07,
+      "n_trades": 305,
+      "final_equity": 7590.0,
+      "total_return_pct": 279.5,
+      "max_dd_pct": 76.105,
+      "recovery_factor": 1.073,
+      "actual_win_rate": 0.6098,
+      "duration_s": 56.6,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "1.5",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "2"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd1.5_eff4_mf2"
+    },
+    {
+      "label": "swd2.0_eff4_mf2",
+      "score": 8144.07,
+      "n_trades": 305,
+      "final_equity": 7590.0,
+      "total_return_pct": 279.5,
+      "max_dd_pct": 76.105,
+      "recovery_factor": 1.073,
+      "actual_win_rate": 0.6098,
+      "duration_s": 56.3,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "2.0",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "2"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd2.0_eff4_mf2"
+    },
+    {
+      "label": "winner_r1",
+      "score": 7036.59,
+      "n_trades": 310,
+      "final_equity": 7136.5,
+      "total_return_pct": 256.825,
+      "max_dd_pct": 76.105,
+      "recovery_factor": 0.986,
+      "actual_win_rate": 0.6065,
+      "duration_s": 56.6,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/winner_r1"
+    },
+    {
+      "label": "swd1.5_eff8_mf2",
+      "score": 7036.59,
+      "n_trades": 310,
+      "final_equity": 7136.5,
+      "total_return_pct": 256.825,
+      "max_dd_pct": 76.105,
+      "recovery_factor": 0.986,
+      "actual_win_rate": 0.6065,
+      "duration_s": 56.8,
+      "env": {
+        "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "1.5",
+        "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "8",
+        "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "2"
+      },
+      "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd1.5_eff8_mf2"
+    }
+  ],
+  "winner": {
+    "label": "swd1.5_eff4_mf1",
+    "score": 31540.39,
+    "n_trades": 173,
+    "final_equity": 9752.75,
+    "total_return_pct": 387.637,
+    "max_dd_pct": 50.776,
+    "recovery_factor": 3.234,
+    "actual_win_rate": 0.6416,
+    "duration_s": 56.7,
+    "env": {
+      "MORNING_RANGE_REVERSION_SIGNAL_SL_MULT": "1.50",
+      "MORNING_RANGE_REVERSION_SIGNAL_TP_MULT": "1.50",
+      "MORNING_RANGE_REVERSION_SIGNAL_MAX_SWEEP_DISTANCE_WIDTHS": "1.5",
+      "MORNING_RANGE_REVERSION_SIGNAL_RANGE_EFFECTIVENESS_HOURS": "4",
+      "MORNING_RANGE_REVERSION_SIGNAL_MAX_FADES_PER_SESSION": "1"
+    },
+    "out_dir": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/round2_when/swd1.5_eff4_mf1"
+  }
+}
