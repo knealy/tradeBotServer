@@ -1,0 +1,51 @@
+{
+  "captured_at_utc": "2026-06-01T03:26:31+00:00",
+  "git_head": "f60f7e1b",
+  "strategies": {
+    "simple_momentum": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/simple_momentum.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/other_strats_baseline/simple_momentum_6m/config/simple_momentum.toml",
+      "data": {
+        "meta": {
+          "enabled": true,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 2,
+          "max_daily_trades": 10,
+          "risk_per_trade_pct": 0.5
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 180,
+    "folds": 6,
+    "strategies": [
+      "simple_momentum"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

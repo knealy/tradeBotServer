@@ -1,0 +1,116 @@
+{
+  "captured_at_utc": "2026-05-31T22:53:02+00:00",
+  "git_head": "f60f7e1b",
+  "strategies": {
+    "overnight_range": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/overnight_range.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/overnight/r2_9m/r2_s10_t30_bevon/config/overnight_range.toml",
+      "data": {
+        "meta": {
+          "enabled": true,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ]
+        },
+        "timing": {
+          "overnight_start": "19:00",
+          "overnight_end": "9:29",
+          "market_open": "9:29",
+          "zone_anchor": "9:29",
+          "session_timezone": "US/Eastern",
+          "replay_order_window_minutes": 0,
+          "replay_force_flat_et": "16:00"
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 2,
+          "max_daily_trades": 3,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true,
+          "max_dll_usage_pct": 0.75
+        },
+        "signal": {
+          "atr_period": 14,
+          "atr_timeframe": "5m",
+          "stop_atr_multiplier": 1.0,
+          "tp_atr_multiplier": 3.0,
+          "partial_tp_enabled": false,
+          "partial_tp_scalp_r": 1.0,
+          "use_range_pct_sltp": false,
+          "stop_range_pct": 50.0,
+          "tp_range_pct": 100.0
+        },
+        "position_management": {
+          "breakeven_enabled": true,
+          "breakeven_profit_points": 8.0,
+          "range_break_offset": 0.25,
+          "use_dynamic_atr_for_orders": true,
+          "breakeven_trigger_r": 0.5,
+          "breakeven_offset": 0.0
+        },
+        "breakout_monitor": {
+          "enabled": true,
+          "proximity_pct": 15.0,
+          "min_proximity_points": 15.0,
+          "interval_seconds": 10.0
+        },
+        "alerts": {
+          "discord_after_zero_trade_sessions": 0
+        },
+        "filters": {
+          "range_size": true,
+          "gap": false,
+          "volatility": false,
+          "dll_proximity": false,
+          "range_min_pct": 0.07142857142857142,
+          "range_max_pct": 2.857142857142857,
+          "gap_max_pct": 1.1904761904761905,
+          "atr_min_pct": 0.047619047619047616,
+          "atr_max_pct": 1.0476190476190477,
+          "dll_threshold_pct": 0.75,
+          "skip_weekdays": []
+        },
+        "symbols": {
+          "MNQ": {},
+          "MGC": {
+            "risk": {
+              "position_size": 1
+            },
+            "signal": {
+              "stop_atr_multiplier": 1.0
+            }
+          }
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "overnight_range"
+    ],
+    "symbols": [
+      "MNQ",
+      "MES",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 8,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

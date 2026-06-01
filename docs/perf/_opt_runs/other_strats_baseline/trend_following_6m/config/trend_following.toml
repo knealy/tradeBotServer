@@ -1,0 +1,12 @@
+# Trend Following strategy configuration.
+
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+
