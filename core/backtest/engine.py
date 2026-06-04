@@ -364,8 +364,21 @@ class BacktestEngine:
             pos.max_adverse_excursion = min(pos.max_adverse_excursion, adverse)
     
     def _calculate_equity(self) -> float:
-        """Calculate total equity (capital + unrealized P&L)."""
-        unrealized = sum(pos.unrealized_pnl for pos in self.positions.values())
+        """Calculate total equity (capital + unrealized P&L).
+
+        Tier 1.3 hot-loop optimization: the replay loop calls this once per
+        bar regardless of whether positions are open. For
+        ``morning_range_reversion`` (only in-position ~3% of bars) and
+        ``overnight_range`` (only in-position ~1% of bars) the generator
+        ``sum(...)`` allocation + iter overhead dominates this call's cost.
+        Short-circuit when no positions are open — the result is exactly
+        ``self.capital``.
+        """
+        if not self.positions:
+            return self.capital
+        unrealized = 0.0
+        for pos in self.positions.values():
+            unrealized += pos.unrealized_pnl
         return self.capital + unrealized
     
     async def run(

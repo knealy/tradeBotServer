@@ -411,6 +411,44 @@ class UserHubHandlers:
                                 self._bot.account_tracker.update_from_fill(account_id, fill_data)
                             
                             logger.info(f"✅ Processed {len(completed_trades)} completed trade(s), Realized PnL: ${total_realized_pnl:.2f}")
+
+                            # Publish TRADE_CLOSED per completed trade so strategies
+                            # (e.g. consec-loss breaker) can react to live PnL the
+                            # same way the backtest engine drives them from
+                            # ``_replay_engine.trades``.  Best-effort: a missing
+                            # event_bus must NOT block the fill-processing path.
+                            if self._bot.event_bus:
+                                from core.events import Event, EventType
+                                for t in completed_trades:
+                                    try:
+                                        await self._bot.event_bus.publish(
+                                            Event(
+                                                type=EventType.TRADE_CLOSED,
+                                                data={
+                                                    "trade_id": t.trade_id,
+                                                    "account_id": account_id,
+                                                    "symbol": t.symbol,
+                                                    "side": t.side,
+                                                    "quantity": t.quantity,
+                                                    "entry_price": t.entry_price,
+                                                    "exit_price": t.exit_price,
+                                                    "entry_time": t.entry_time,
+                                                    "exit_time": t.exit_time,
+                                                    "gross_pnl": t.gross_pnl,
+                                                    "net_pnl": t.net_pnl,
+                                                    "commission": t.commission,
+                                                    "fee": t.fee,
+                                                    "duration_seconds": t.duration_seconds,
+                                                    "session_id": t.session_id,
+                                                },
+                                                source="user_hub_handlers",
+                                            )
+                                        )
+                                    except Exception as exc:
+                                        logger.debug(
+                                            "Could not publish TRADE_CLOSED for trade %s: %s",
+                                            t.trade_id, exc,
+                                        )
                             
                             # Broadcast trade updates to GUI
                             try:

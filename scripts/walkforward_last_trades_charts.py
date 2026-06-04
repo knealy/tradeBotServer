@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +37,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from core.backtest.ohlcv import dataframe_to_chart_bars_unix, snap_trade_unix_to_chart_bar_open
+from core.backtest.parquet_cache import load_ohlcv_cached
 from core.backtest.strategy_config_snapshot import (
     snapshot_strategy_configs,
     snapshots_to_html,
@@ -56,12 +58,8 @@ _REPLAY_ENV: Dict[str, str] = {
 
 
 def _csv_last_date(csv_path: Path) -> date:
-    df = pd.read_csv(csv_path)
-    ts_col = next(c for c in df.columns if str(c).lower() in ("timestamp", "time", "date", "datetime"))
-    ts = pd.to_datetime(df[ts_col].iloc[-1])
-    if getattr(ts, "tz", None) is not None:
-        ts = ts.tz_convert("UTC").tz_localize(None)
-    return pd.Timestamp(ts).date()
+    df = load_ohlcv_cached(csv_path)
+    return pd.Timestamp(df.index[-1]).date()
 
 
 def _fold_ranges(anchor_end: date, *, total_days: int, folds: int) -> List[Tuple[date, date, int]]:
@@ -202,9 +200,41 @@ def main() -> int:
         metavar="KEY=VAL",
         help="Extra env for each backtest subprocess (repeatable)",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "Max concurrent replay subprocesses (default: min(n_tasks, os.cpu_count()); "
+            "env override: WALKFORWARD_LASTTRADES_WORKERS). Set to 1 to disable parallelism."
+        ),
+    )
+    ap.add_argument(
+        "--no-fast-loop",
+        action="store_true",
+        help=(
+            "Opt out of BACKTEST_FAST_LOOP (default ON; parity-pinned by "
+            "tests/test_backtest_fast_loop_parity.py)."
+        ),
+    )
+    ap.add_argument(
+        "--in-process",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Default ON. Use a pre-warmed ``ProcessPoolExecutor`` of in-process "
+            "backtest workers instead of fan-out via ``subprocess.run`` — "
+            "eliminates the per-task Python + imports startup tax "
+            "(~250-400 ms each). Trade counts and chart contents are "
+            "identical to the subprocess path. Disable with ``--no-in-process`` "
+            "when you need per-task subprocess isolation."
+        ),
+    )
     args = ap.parse_args()
 
     extra_env: Dict[str, str] = {}
+    if not args.no_fast_loop:
+        extra_env["BACKTEST_FAST_LOOP"] = "1"
     for raw in args.env or []:
         if "=" not in raw:
             print(f"error: --env must be KEY=VAL, got {raw!r}", file=sys.stderr)
@@ -288,19 +318,82 @@ def main() -> int:
         if not csv_used.is_file():
             print(f"error: no 1m/5m chart CSV for {sym}", file=sys.stderr)
             return 2
-        df = pd.read_csv(csv_used)
-        ts_col = next(c for c in df.columns if str(c).lower() in ("timestamp", "time", "date", "datetime"))
-        df["timestamp"] = pd.to_datetime(df[ts_col], utc=True, format="mixed")
-        ohlcv_cache[sym] = (df.set_index("timestamp").sort_index(), tf_chart)
+        df = load_ohlcv_cached(csv_used)
+        if getattr(df.index, "tz", None) is None:
+            df = df.tz_localize("UTC")
+        ohlcv_cache[sym] = (df, tf_chart)
 
     sections_html: List[str] = []
     chart_count = 0
 
-    for fs, fe, fold_ix in folds:
-        fold_rows: List[str] = []
-        for strat in strategies:
-            for sym in symbols:
-                payload = _run_backtest_json(
+    # Phase A: fan replay subprocesses out with a ThreadPoolExecutor (mirror of
+    # walkforward_trade_recap_report.py — see its inline comment for rationale).
+    tasks: List[Tuple[date, date, int, str, str]] = [
+        (fs, fe, fold_ix, strat, sym)
+        for fs, fe, fold_ix in folds
+        for strat in strategies
+        for sym in symbols
+    ]
+    n_tasks = len(tasks)
+    env_workers = os.environ.get("WALKFORWARD_LASTTRADES_WORKERS")
+    if args.workers is not None:
+        workers = max(1, int(args.workers))
+    elif env_workers:
+        try:
+            workers = max(1, int(env_workers))
+        except ValueError:
+            workers = min(n_tasks, os.cpu_count() or 4)
+    else:
+        workers = min(n_tasks, os.cpu_count() or 4)
+    workers = min(workers, n_tasks)
+    use_inprocess = bool(getattr(args, "in_process", False))
+    runner_label = "in-process" if use_inprocess else "subprocess"
+    print(
+        f"replay phase: {n_tasks} {runner_label} tasks across {workers} worker(s)",
+        file=sys.stderr,
+    )
+
+    payloads: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+    if use_inprocess:
+        from core.backtest.inprocess_runner import (
+            run_backtest_inprocess,
+            worker_init as _inprocess_worker_init,
+        )
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_inprocess_worker_init,
+            initargs=(dict(extra_env),),
+        ) as pool:
+            futs = {
+                pool.submit(
+                    run_backtest_inprocess,
+                    strategy=strat, symbol=sym,
+                    csv_path=str(csv_paths[sym]),
+                    start=fs.isoformat(), end=fe.isoformat(),
+                    timeframe=args.timeframe, include_trades=True,
+                ): (fold_ix, strat, sym)
+                for fs, fe, fold_ix, strat, sym in tasks
+            }
+            n_done = 0
+            for fut in as_completed(futs):
+                key = futs[fut]
+                try:
+                    payloads[key] = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    payloads[key] = {
+                        "ok": False,
+                        "error": f"worker exception: {exc!r}"[:2000],
+                        "strategy": key[1],
+                        "symbol": key[2],
+                    }
+                n_done += 1
+                if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                    print(f"  replays {n_done}/{n_tasks}", file=sys.stderr)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _run_backtest_json,
                     strategy=strat,
                     symbol=sym,
                     csv_path=csv_paths[sym],
@@ -308,7 +401,31 @@ def main() -> int:
                     end=fe,
                     timeframe=args.timeframe,
                     extra_env=extra_env,
-                )
+                ): (fold_ix, strat, sym)
+                for fs, fe, fold_ix, strat, sym in tasks
+            }
+            n_done = 0
+            for fut in as_completed(futs):
+                key = futs[fut]
+                try:
+                    payloads[key] = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    payloads[key] = {
+                        "ok": False,
+                        "error": f"worker exception: {exc!r}"[:2000],
+                        "strategy": key[1],
+                        "symbol": key[2],
+                    }
+                n_done += 1
+                if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                    print(f"  replays {n_done}/{n_tasks}", file=sys.stderr)
+
+    # Phase B: serial chart rendering / fold-row assembly using cached payloads.
+    for fs, fe, fold_ix in folds:
+        fold_rows: List[str] = []
+        for strat in strategies:
+            for sym in symbols:
+                payload = payloads[(fold_ix, strat, sym)]
                 if payload.get("ok") is False or "result" not in payload:
                     err = payload.get("error", "no result")
                     print(f"FAIL {strat} {sym} fold{fold_ix}: {err}", file=sys.stderr)

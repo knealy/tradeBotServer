@@ -38,6 +38,9 @@ alembic>=1.13.0         # Versioned schema migrations (baseline under migrations
 
 # DataFrame engine for fast Parquet caching
 polars>=0.20.27
+pyarrow>=15.0.0     # Required for transparent Parquet sidecar of historical CSV data
+                    # (HistoricalDataLoader.load_from_csv writes/reads a {csv}.parquet
+                    # sidecar to skip text parsing on subsequent reads ~10x speedup).
 
 # Data analysis and backtesting (REQUIRED for backtesting engine)
 pandas>=2.0.0       # For data analysis and backtesting

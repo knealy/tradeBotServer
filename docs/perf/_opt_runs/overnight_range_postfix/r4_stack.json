@@ -1,0 +1,50 @@
+[
+  {
+    "label": "r4a_gap120_rbo150_MNQstop07",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5},
+    "symbols": {"MNQ": {"signal.stop_atr_multiplier": 0.7}}
+  },
+  {
+    "label": "r4b_gap120_rbo150_MNQstop07_tp50",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5},
+    "symbols": {"MNQ": {"signal.stop_atr_multiplier": 0.7, "signal.tp_atr_multiplier": 5.0}}
+  },
+  {
+    "label": "r4c_gap120_rbo150_MNQstop07_breakeroff",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5, "signal.max_consecutive_losses": 99, "signal.loss_streak_cooldown_sessions": 0},
+    "symbols": {"MNQ": {"signal.stop_atr_multiplier": 0.7}}
+  },
+  {
+    "label": "r4d_gap120_rbo150_MNQstop07_1L5d",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5, "signal.max_consecutive_losses": 1, "signal.loss_streak_cooldown_sessions": 5},
+    "symbols": {"MNQ": {"signal.stop_atr_multiplier": 0.7}}
+  },
+  {
+    "label": "r4e_gap120_rbo150_MNQstop07_2L3d",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5, "signal.max_consecutive_losses": 2, "signal.loss_streak_cooldown_sessions": 3},
+    "symbols": {"MNQ": {"signal.stop_atr_multiplier": 0.7}}
+  },
+  {
+    "label": "r4f_gap120_rbo150_MGCstop07",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5},
+    "symbols": {"MGC": {"signal.stop_atr_multiplier": 0.7}}
+  },
+  {
+    "label": "r4g_gap120_rbo150_MGCtp25",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5},
+    "symbols": {"MGC": {"signal.tp_atr_multiplier": 2.5}}
+  },
+  {
+    "label": "r4h_gap120_rbo150_atrmax100",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5, "filters.atr_max_pct": 1.00}
+  },
+  {
+    "label": "r4i_gap120_rbo150_atrmin010",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5, "filters.atr_min_pct": 0.10}
+  },
+  {
+    "label": "r4j_gap120_rbo150_MNQstop07_MNQwin",
+    "root": {"filters.gap_max_pct": 1.20, "position_management.range_break_offset": 1.5},
+    "symbols": {"MNQ": {"signal.stop_atr_multiplier": 0.7, "filters.skip_weekdays": [0, 4]}, "MGC": {"signal.stop_atr_multiplier": 0.5, "signal.tp_atr_multiplier": 2.0}}
+  }
+]

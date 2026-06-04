@@ -37,6 +37,7 @@ import os
 import statistics
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
@@ -51,7 +52,16 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+from core.backtest.decision_cache import (
+    CacheKeyInputs,
+    cache_dir as _cache_dir,
+    cache_enabled as _cache_enabled,
+    lookup as _cache_lookup,
+    store as _cache_store,
+)
+from core.backtest.inprocess_runner import run_backtest_inprocess, worker_init as _inprocess_worker_init
 from core.backtest.ohlcv import dataframe_to_chart_bars_unix, snap_trade_unix_to_chart_bar_open
+from core.backtest.parquet_cache import load_ohlcv_cached
 from core.backtest.recap_metrics import (
     equity_chart_embed_js,
     equity_curve_from_trades,
@@ -74,12 +84,11 @@ _REPLAY_BASE_ENV: Dict[str, str] = {
 
 
 def _csv_last_date(csv_path: Path) -> date:
-    df = pd.read_csv(csv_path)
-    ts_col = next(c for c in df.columns if str(c).lower() in ("timestamp", "time", "date", "datetime"))
-    ts = pd.to_datetime(df[ts_col].iloc[-1])
-    if getattr(ts, "tz", None) is not None:
-        ts = ts.tz_convert("UTC").tz_localize(None)
-    return pd.Timestamp(ts).date()
+    # ``load_ohlcv_cached`` returns a sorted, naive-UTC, normalized frame
+    # — and reads through the parquet sidecar after first call, so this
+    # "just check the last timestamp" probe stops re-parsing 100 MB of CSV.
+    df = load_ohlcv_cached(csv_path)
+    return pd.Timestamp(df.index[-1]).date()
 
 
 def _fold_ranges(anchor_end: date, *, total_days: int, folds: int) -> List[Tuple[date, date, int]]:
@@ -448,9 +457,75 @@ def main() -> int:
     )
     ap.add_argument("--dry-run", action="store_true", help="Print fold calendar and exit without running replays")
     ap.add_argument("--env", action="append", default=[], metavar="KEY=VAL", help="Extra env for replay subprocess")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "Max concurrent replay subprocesses (default: min(n_tasks, os.cpu_count()); "
+            "env override: WALKFORWARD_RECAP_WORKERS). Set to 1 to disable parallelism."
+        ),
+    )
+    ap.add_argument(
+        "--cache-decisions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Default ON. Read/write per-(strategy,symbol,fold) replay payloads "
+            "to docs/perf/_decision_cache/ so re-renders of the same TOML / "
+            "strategy / window finish in seconds. Cache miss → fresh run. "
+            "Cache key includes strategy code + TOML + engine code + env vars + "
+            "CSV mtime, so it auto-invalidates on any input change. Disable "
+            "with ``--no-cache-decisions`` when you need a clean cold run "
+            "(e.g. validating a one-shot engine change). "
+            "``BACKTEST_CACHE_DECISIONS=0`` env-disables for the same effect."
+        ),
+    )
+    ap.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Override decision-cache directory (default: docs/perf/_decision_cache).",
+    )
+    ap.add_argument(
+        "--no-fast-loop",
+        action="store_true",
+        help=(
+            "Opt out of the BACKTEST_FAST_LOOP replay engine (default ON for this "
+            "script; switch off to fall back to the slow ``df.iterrows`` + "
+            "linear-scan mock_get_historical_data path). Parity is regression-pinned "
+            "by tests/test_backtest_fast_loop_parity.py; this flag is for "
+            "debugging suspected fast-loop drift only."
+        ),
+    )
+    ap.add_argument(
+        "--in-process",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Default ON. Use a pre-warmed ``ProcessPoolExecutor`` of in-process "
+            "backtest workers instead of fan-out via ``subprocess.run(python "
+            "core/backtest_executor.py ...)``. Eliminates the ~250-400 ms "
+            "Python + import startup tax per task (pandas + pyarrow + numpy + "
+            "strategy bytecode load once per worker, not once per task). "
+            "Trade counts and metrics are identical to the subprocess path "
+            "(workers call the same ``run_backtest`` pipeline); env overrides "
+            "(``--env``, ``BACKTEST_FAST_LOOP``) apply once at pool startup. "
+            "On a typical 24-fold matrix this is ~2× faster wall-clock vs the "
+            "subprocess pool. Disable with ``--no-in-process`` when you need "
+            "per-task subprocess isolation (e.g. debugging a worker crash)."
+        ),
+    )
     args = ap.parse_args()
 
     extra_env: Dict[str, str] = {}
+    # Fast loop enabled by default — pinned parity-equal to the slow path on
+    # overnight_range and morning_range_reversion across 1- and 4-month windows
+    # (see tests/test_backtest_fast_loop_parity.py). On a 3-month MNQ replay this
+    # is ~60× faster than the slow path; the wall-clock for a typical 90-day,
+    # 6-fold, 3-symbol matrix drops from minutes to seconds.
+    if not args.no_fast_loop:
+        extra_env["BACKTEST_FAST_LOOP"] = "1"
     for raw in args.env or []:
         if "=" not in raw:
             print(f"error: --env must be KEY=VAL, got {raw!r}", file=sys.stderr)
@@ -537,15 +612,20 @@ def main() -> int:
         if not csv_used.is_file():
             print(f"error: no 1m/5m chart CSV for {sym}", file=sys.stderr)
             return 2
-        df = pd.read_csv(csv_used)
-        ts_col = next(c for c in df.columns if str(c).lower() in ("timestamp", "time", "date", "datetime"))
-        df["timestamp"] = pd.to_datetime(df[ts_col], utc=True, format="mixed")
-        ohlcv_cache[sym] = (df.set_index("timestamp").sort_index(), tf_chart)
+        # Both chart-overlay slicing and morning-range signal-bar detection need
+        # a tz-aware UTC index (downstream code asks ``getattr(idx, 'tz', None)``).
+        # ``load_ohlcv_cached`` returns a naive-UTC index for compatibility with
+        # ``backtest_executor``'s ``pd.Timestamp(date)`` slice math, so we
+        # localize back to UTC here only for these chart-side reads.
+        df = load_ohlcv_cached(csv_used)
+        if getattr(df.index, "tz", None) is None:
+            df = df.tz_localize("UTC")
+        ohlcv_cache[sym] = (df, tf_chart)
         morning_5m_path = csv_paths[sym]
-        df5 = pd.read_csv(morning_5m_path)
-        ts5 = next(c for c in df5.columns if str(c).lower() in ("timestamp", "time", "date", "datetime"))
-        df5["timestamp"] = pd.to_datetime(df5[ts5], utc=True, format="mixed")
-        morning_5m_cache[sym] = df5.set_index("timestamp").sort_index()
+        df5 = load_ohlcv_cached(morning_5m_path)
+        if getattr(df5.index, "tz", None) is None:
+            df5 = df5.tz_localize("UTC")
+        morning_5m_cache[sym] = df5
 
     # ── Read morning_range_reversion knobs from the live TOML so the chart marker
     # finder mirrors what the strategy actually does in replay. Env-var overrides
@@ -579,19 +659,228 @@ def main() -> int:
     fold_sections: List[str] = []
     rollup_trades: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
 
+    # ── Phase A: fan replay subprocesses out with a ThreadPoolExecutor ────────
+    # Each ``_run_backtest_json`` invocation spawns its own ``core/backtest_executor.py``
+    # subprocess and blocks on ``subprocess.run`` — perfectly thread-safe from
+    # the parent's perspective (no shared Python state crosses the boundary).
+    # A thread pool sized to ``cpu_count()`` lets us saturate cores without
+    # bumping into the GIL in this Python process. For 36 fold-tasks on an
+    # 8-core Mac that's typically a ~4-6× wall-clock win vs the prior serial
+    # loop. Phase B (chart rendering / metrics aggregation) stays serial to
+    # preserve deterministic HTML ordering and shared cache writes.
+    tasks: List[Tuple[date, date, int, str, str]] = [
+        (fs, fe, fold_ix, strat, sym)
+        for fs, fe, fold_ix in folds
+        for strat in strategies
+        for sym in symbols
+    ]
+    n_tasks = len(tasks)
+    env_workers = os.environ.get("WALKFORWARD_RECAP_WORKERS")
+    if args.workers is not None:
+        workers = max(1, int(args.workers))
+    elif env_workers:
+        try:
+            workers = max(1, int(env_workers))
+        except ValueError:
+            workers = min(n_tasks, os.cpu_count() or 4)
+    else:
+        workers = min(n_tasks, os.cpu_count() or 4)
+    workers = min(workers, n_tasks)
+
+    # ── Decision cache (opt-in) ───────────────────────────────────────────
+    # When ``--cache-decisions`` is set, every (strategy, symbol, fold) task
+    # consults ``docs/perf/_decision_cache/`` before spawning a subprocess.
+    # Cache key includes strategy + TOML + engine + CSV stat — anything that
+    # affects results triggers a miss. See ``core/backtest/decision_cache.py``
+    # for the full key construction + invalidation strategy. The recap
+    # report prints a hits/misses counter at end of run so a stale cache
+    # doesn't go unnoticed.
+    cache_on = _cache_enabled(cli_flag=args.cache_decisions)
+    decision_cache_dir = _cache_dir(args.cache_dir) if cache_on else None
+    cache_hits = 0
+    cache_misses = 0
+
+    # Pick the per-task runner: in-process avoids the per-subprocess Python +
+    # imports startup tax (~250-400 ms each) at the cost of running tasks in
+    # worker processes that share env with the parent. The subprocess path is
+    # the historical default and still useful for debugging.
+    use_inprocess = bool(getattr(args, "in_process", False))
+
+    def _run_inprocess_task(
+        strat: str, sym: str, fs_d: date, fe_d: date,
+    ) -> Dict[str, Any]:
+        """In-process backend equivalent of ``_run_backtest_json``.
+
+        Returns the same dict shape (``{"ok": bool, "result": {...}, ...}``).
+        env-var overrides are applied once at pool startup via
+        ``_inprocess_worker_init`` — the walkforward script uses a single
+        ``extra_env`` for the whole run so this matches subprocess semantics.
+        """
+        return run_backtest_inprocess(
+            strategy=strat,
+            symbol=sym,
+            csv_path=str(csv_paths[sym]),
+            start=fs_d.isoformat(),
+            end=fe_d.isoformat(),
+            timeframe=args.timeframe,
+            include_trades=True,
+        )
+
+    def _resolve_payload(
+        strat: str, sym: str, fs_d: date, fe_d: date,
+    ) -> Tuple[Dict[str, Any], bool]:
+        """Cache-aware wrapper around the per-task runner.
+
+        Returns ``(payload, hit)`` where ``hit`` indicates a cache short-circuit.
+        Cache disabled → always miss → always run.
+        """
+        if cache_on and decision_cache_dir is not None:
+            ck = CacheKeyInputs(
+                strategy=strat, symbol=sym, timeframe=args.timeframe,
+                start=fs_d, end=fe_d, csv_path=csv_paths[sym],
+                extra_env=dict(extra_env),
+            )
+            cached = _cache_lookup(ck, cache_dir_path=decision_cache_dir)
+            if cached is not None:
+                return cached, True
+            if use_inprocess:
+                payload = _run_inprocess_task(strat, sym, fs_d, fe_d)
+            else:
+                payload = _run_backtest_json(
+                    strategy=strat, symbol=sym, csv_path=csv_paths[sym],
+                    start=fs_d, end=fe_d, timeframe=args.timeframe,
+                    extra_env=extra_env,
+                )
+            _cache_store(ck, payload, cache_dir_path=decision_cache_dir)
+            return payload, False
+        if use_inprocess:
+            return _run_inprocess_task(strat, sym, fs_d, fe_d), False
+        return _run_backtest_json(
+            strategy=strat, symbol=sym, csv_path=csv_paths[sym],
+            start=fs_d, end=fe_d, timeframe=args.timeframe,
+            extra_env=extra_env,
+        ), False
+
+    runner_label = "in-process" if use_inprocess else "subprocess"
+    print(
+        f"replay phase: {n_tasks} {runner_label} tasks across {workers} worker(s)"
+        + (f" (decision cache: {decision_cache_dir})" if cache_on else ""),
+        file=sys.stderr,
+    )
+
+    # ``--in-process`` uses ``ProcessPoolExecutor`` with a warm-import initializer
+    # — workers pre-load pandas/numpy/pyarrow/strategy modules once, then handle
+    # multiple tasks each. Parent-side cache lookups always run before any
+    # worker is involved so cache hits incur no Python startup at all.
+    payloads: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+
+    if use_inprocess:
+        # In-process path: do parent-side cache lookups first (fast — a JSON
+        # read per key), then dispatch only the misses to a ProcessPool.
+        # Threads cannot run ``run_backtest_inprocess`` concurrently because
+        # the strategy loop is pure Python (GIL-bound), so the cache-on +
+        # in-process combination MUST use processes for the actual replays.
+        pending_misses: List[Tuple[date, date, int, str, str, CacheKeyInputs]] = []
+        for fs, fe, fold_ix, strat, sym in tasks:
+            key = (fold_ix, strat, sym)
+            if cache_on and decision_cache_dir is not None:
+                ck = CacheKeyInputs(
+                    strategy=strat, symbol=sym, timeframe=args.timeframe,
+                    start=fs, end=fe, csv_path=csv_paths[sym],
+                    extra_env=dict(extra_env),
+                )
+                cached = _cache_lookup(ck, cache_dir_path=decision_cache_dir)
+                if cached is not None:
+                    payloads[key] = cached
+                    cache_hits += 1
+                    continue
+                pending_misses.append((fs, fe, fold_ix, strat, sym, ck))
+            else:
+                pending_misses.append((fs, fe, fold_ix, strat, sym, None))  # type: ignore[arg-type]
+
+        if pending_misses:
+            with ProcessPoolExecutor(
+                max_workers=workers,
+                initializer=_inprocess_worker_init,
+                initargs=(dict(extra_env),),
+            ) as pool:
+                futs: Dict[Any, Tuple[int, str, str, Optional[CacheKeyInputs]]] = {}
+                for fs, fe, fold_ix, strat, sym, ck in pending_misses:
+                    fut = pool.submit(
+                        run_backtest_inprocess,
+                        strategy=strat, symbol=sym,
+                        csv_path=str(csv_paths[sym]),
+                        start=fs.isoformat(), end=fe.isoformat(),
+                        timeframe=args.timeframe, include_trades=True,
+                    )
+                    futs[fut] = (fold_ix, strat, sym, ck)
+                n_done = 0
+                for fut in as_completed(futs):
+                    fold_ix, strat, sym, ck = futs[fut]
+                    key2 = (fold_ix, strat, sym)
+                    try:
+                        payload = fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        payload = {
+                            "ok": False,
+                            "error": f"worker exception: {exc!r}"[:2000],
+                            "strategy": strat,
+                            "symbol": sym,
+                        }
+                    payloads[key2] = payload
+                    cache_misses += 1
+                    if ck is not None and decision_cache_dir is not None:
+                        _cache_store(ck, payload, cache_dir_path=decision_cache_dir)
+                    n_done += 1
+                    if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                        print(f"  replays {n_done}/{n_tasks}", file=sys.stderr)
+    else:
+        # Subprocess path: ThreadPool of ``_resolve_payload`` (each call forks
+        # its own ``core/backtest_executor.py`` subprocess, blocking on the
+        # ``subprocess.run`` — threads run concurrently because the GIL is
+        # released while waiting on the child process I/O).
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs2 = {
+                pool.submit(_resolve_payload, strat, sym, fs, fe): (fold_ix, strat, sym)
+                for fs, fe, fold_ix, strat, sym in tasks
+            }
+            n_done = 0
+            for fut in as_completed(futs2):
+                key = futs2[fut]
+                try:
+                    payload, hit = fut.result()
+                    payloads[key] = payload
+                    if hit:
+                        cache_hits += 1
+                    else:
+                        cache_misses += 1
+                except Exception as exc:  # noqa: BLE001
+                    payloads[key] = {
+                        "ok": False,
+                        "error": f"worker exception: {exc!r}"[:2000],
+                        "strategy": key[1],
+                        "symbol": key[2],
+                    }
+                    cache_misses += 1
+                n_done += 1
+                if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                    print(f"  replays {n_done}/{n_tasks}", file=sys.stderr)
+    if cache_on:
+        print(
+            f"decision cache: {cache_hits} hit(s), {cache_misses} miss(es) "
+            f"across {n_tasks} task(s)",
+            file=sys.stderr,
+        )
+
+    # ── Phase B: walk the original ordering, render charts, build metrics ────
+    # Pulled payloads from the dict in the same loop shape the script has used
+    # since inception so HTML row order, metrics_rows order, and slug naming
+    # stay byte-identical.
     for fs, fe, fold_ix in folds:
         fold_rows: List[str] = []
         for strat in strategies:
             for sym in symbols:
-                payload = _run_backtest_json(
-                    strategy=strat,
-                    symbol=sym,
-                    csv_path=csv_paths[sym],
-                    start=fs,
-                    end=fe,
-                    timeframe=args.timeframe,
-                    extra_env=extra_env,
-                )
+                payload = payloads[(fold_ix, strat, sym)]
                 if payload.get("ok") is False or "result" not in payload:
                     err = payload.get("error", "no result")
                     print(f"FAIL {strat} {sym} fold{fold_ix}: {err}", file=sys.stderr)

@@ -40,10 +40,9 @@ class SimpleCandleStrategy(BaseStrategy):
         # Strategy config (legacy env keys for this strategy are unprefixed).
         self._cfg = load_strategy_config("simple_candle", env_prefix="")
         
-        # Strategy-specific settings
+        # Strategy-specific settings (TOML overrides applied lower in
+        # ctor for profit/stop multipliers + cooldown).
         self.candles_needed = 2  # Need 2 consecutive candles
-        self.profit_multiplier = 2.0    # Take profit at 2 * ATR
-        self.stop_multiplier = 1.5      # Stop loss at 1.5 * ATR
         self.atr_period = 14            # ATR period (14 bars)
         
         # EMA settings for cross detection (TOML [trend_filter] overrides)
@@ -83,6 +82,23 @@ class SimpleCandleStrategy(BaseStrategy):
         self._position_cache: Optional[List[Dict]] = None
         self._position_cache_time: float = 0
         self._position_cache_ttl: float = 5.0  # Cache TTL in seconds
+
+        # Cross-bar signal cooldown — same pattern as trend_following /
+        # mean_reversion / body_reversion.  6 bars ~30 min on 5m TF.
+        self.signal_cooldown_bars = int(self._cfg.get_int("signal_cooldown_bars", 6))
+        self._bar_seq: int = 0
+        self._last_signal_bar_count: Dict[str, int] = {}
+
+        # ATR-based stops/targets — exposed so backtest can tune them.
+        # Defaults match the original hardcoded values; lower these for
+        # tighter trades on 5m bars (default 5m: 1.5x stop, 2.0x TP).
+        self.stop_multiplier   = float(self._cfg.get_float("stop_multiplier", 1.5))
+        self.profit_multiplier = float(self._cfg.get_float("profit_multiplier", 2.0))
+
+        # Time-based exit (close at market after N bars). Same pattern as
+        # body_reversion. ``0`` disables.  See core/max_hold_exit.py.
+        self.max_hold_bars = int(self._cfg.get_int("max_hold_bars", 12))
+        self._entry_bar_seq: Dict[str, int] = {}
         
         # Get timeframe from environment variable or use default
         self.timeframe = self._cfg.get_str("SIMPLE_CANDLE_TIMEFRAME", "30s")
@@ -334,6 +350,43 @@ class SimpleCandleStrategy(BaseStrategy):
             logger.error(traceback.format_exc())
             return None
     
+    def _has_open_position_in_engine(self, symbol: str) -> bool:
+        """Backtest-aware position guard. Replay engine first, then live tracker."""
+        sym = str(symbol).upper()
+        engine = getattr(self, "_replay_engine", None)
+        if engine is not None:
+            be = getattr(engine, "backtest_engine", None)
+            if be is not None and getattr(be, "positions", None):
+                for pos in be.positions.values():
+                    if str(getattr(pos, "symbol", "")).upper() == sym:
+                        return True
+        ap = getattr(self, "active_positions", None)
+        if isinstance(ap, dict) and ap.get(sym):
+            return True
+        return False
+
+    async def _maybe_close_stale_positions(self) -> None:
+        """Time-based exit. Runs each bar before the signal logic.
+
+        Skips when ``_replay_engine`` is unset (live mode) — live paths
+        already enforce bracket orders and the operator-supplied flat-
+        before time.
+        """
+        if self.max_hold_bars <= 0:
+            return
+        engine = getattr(self, "_replay_engine", None)
+        if engine is None:
+            return
+        from core.max_hold_exit import close_positions_exceeding_max_hold
+        close_positions_exceeding_max_hold(
+            engine,
+            max_hold_bars=self.max_hold_bars,
+            current_bar_seq=self._bar_seq,
+            entry_bar_seq=self._entry_bar_seq,
+            log_prefix="simple_candle",
+            logger=logger,
+        )
+
     async def analyze(self, symbol: str) -> Optional[Dict]:
         """
         Analyze market and generate trading signal based on candle patterns.
@@ -342,6 +395,22 @@ class SimpleCandleStrategy(BaseStrategy):
         """
         try:
             _replay = getattr(self.trading_bot, "_is_strategy_replay", False)
+
+            # Bar counter for cooldown + max_hold exit accounting.
+            self._bar_seq = getattr(self, "_bar_seq", 0) + 1
+            # Time-based exits BEFORE the signal logic so a winner / loser
+            # is realised by the engine before the next signal stacks.
+            await self._maybe_close_stale_positions()
+
+            # Lockout 1: cross-bar signal cooldown — prevents back-to-back
+            # 2-bar-distance entries during sustained trends.
+            cooldown = int(getattr(self, "signal_cooldown_bars", 6) or 0)
+            last_count = getattr(self, "_last_signal_bar_count", {}).get(symbol)
+            if last_count is not None and cooldown > 0 and (self._bar_seq - last_count) < cooldown:
+                return None
+            # Lockout 2: open-position guard.
+            if self._has_open_position_in_engine(symbol):
+                return None
 
             # Determine current position direction for this symbol (if any)
             # Only place orders in the direction of the current position unless flat.
@@ -632,6 +701,8 @@ class SimpleCandleStrategy(BaseStrategy):
 
             if long_distance_ok and allow_long:
                 # 2 consecutive bullish candles = LONG signal
+                self._last_signal_bar_count[symbol] = self._bar_seq
+                self._entry_bar_seq[symbol] = self._bar_seq
                 logger.info(f"LONG signal condition met for {symbol} - Current position: {pos_side or 'FLAT'}, Allow long: {allow_long}")
                 
                 # Calculate ATR for stop/profit levels
@@ -681,6 +752,8 @@ class SimpleCandleStrategy(BaseStrategy):
             
             if short_distance_ok and allow_short:
                 # 2 consecutive bearish candles = SHORT signal
+                self._last_signal_bar_count[symbol] = self._bar_seq
+                self._entry_bar_seq[symbol] = self._bar_seq
                 logger.info(f"SHORT signal condition met for {symbol} - Current position: {pos_side or 'FLAT'}, Allow short: {allow_short}")
                 
                 # Calculate ATR for stop/profit levels

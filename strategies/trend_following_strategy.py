@@ -81,17 +81,34 @@ class TrendFollowingStrategy(BaseStrategy):
         self.atr_period = int(self._cfg.get_int("atr_period", 14))
         self.atr_stop_multiplier = float(self._cfg.get_float("atr_stop_multiplier", 2.0))
         self.atr_trailing_multiplier = float(self._cfg.get_float("atr_trailing_multiplier", 3.0))
+        # Take-profit is set inside ``analyze`` as ``entry + atr_target_multiplier * ATR``.
+        # Defaults to 3x (was 5x hardcoded — the wider target produced thousand-bar
+        # holds that drifted into 3000%+ DD).  Tunable from TOML.
+        self.atr_target_multiplier = float(self._cfg.get_float("atr_target_multiplier", 3.0))
         
         self.min_trend_strength = float(self._cfg.get_float("min_trend_strength", 0.5))  # MA separation
         self.pyramid_enabled = self._cfg.get_bool("pyramid_enabled", False)
         self.pyramid_max_adds = int(self._cfg.get_int("pyramid_max_adds", 2))
         
         self.timeframe = self._cfg.get_str("timeframe", "15m")
-        
+
+        # Cross-bar signal cooldown (avoids per-bar entry stacking while the
+        # MA crossover condition remains true). 20 = ~100 min on 5m bars,
+        # roughly the typical hold horizon for a single MA-trend leg.
+        self.signal_cooldown_bars = int(self._cfg.get_int("signal_cooldown_bars", 20))
+        # Time-based exit (close at market after N bars). 60 = ~5 hours on
+        # 5m bars — long enough for a real trend leg to play out, short
+        # enough to bail on rangebound chop where the ATR target never
+        # fires.  0 disables.
+        self.max_hold_bars = int(self._cfg.get_int("max_hold_bars", 60))
+
         # State tracking
         self.is_trading = False
         self._monitoring_task: Optional[asyncio.Task] = None
         self.trailing_stops: Dict[str, float] = {}  # symbol -> trailing stop price
+        self._bar_seq: int = 0
+        self._last_signal_bar_count: Dict[str, int] = {}
+        self._entry_bar_seq: Dict[str, int] = {}
         
         logger.info(f"📈 Trend Following Strategy initialized")
         logger.info(f"   MA Crossover: {self.fast_ma_period}/{self.slow_ma_period} {self.ma_type}")
@@ -144,6 +161,45 @@ class TrendFollowingStrategy(BaseStrategy):
             logger.error(f"Error calculating MA for {symbol}: {e}")
             return None
     
+    def _has_open_position_in_engine(self, symbol: str) -> bool:
+        """Return True if there is an open position on ``symbol`` either in
+        the backtest replay engine (``_replay_engine.backtest_engine.positions``)
+        or in the live broker tracker on ``trading_bot``. Both paths must be
+        consulted because the strategy can switch contexts at startup.
+        """
+        sym = str(symbol).upper()
+        engine = getattr(self, "_replay_engine", None)
+        if engine is not None:
+            be = getattr(engine, "backtest_engine", None)
+            if be is not None and getattr(be, "positions", None):
+                for pos in be.positions.values():
+                    if str(getattr(pos, "symbol", "")).upper() == sym:
+                        return True
+        # Live fallback: check the strategy's per-symbol tracker. Not
+        # perfectly reliable in backtest (the dict can drift), so the
+        # replay-engine check above is the authoritative path for replay.
+        ap = getattr(self, "active_positions", None)
+        if isinstance(ap, dict) and ap.get(sym):
+            return True
+        return False
+
+    async def _maybe_close_stale_positions(self) -> None:
+        """Time-based MARKET exit. See core/max_hold_exit.py."""
+        if self.max_hold_bars <= 0:
+            return
+        engine = getattr(self, "_replay_engine", None)
+        if engine is None:
+            return
+        from core.max_hold_exit import close_positions_exceeding_max_hold
+        close_positions_exceeding_max_hold(
+            engine,
+            max_hold_bars=self.max_hold_bars,
+            current_bar_seq=self._bar_seq,
+            entry_bar_seq=self._entry_bar_seq,
+            log_prefix="trend_following",
+            logger=logger,
+        )
+
     async def calculate_atr(self, symbol: str, period: int = None) -> Optional[float]:
         """Calculate ATR (Average True Range)."""
         try:
@@ -213,7 +269,25 @@ class TrendFollowingStrategy(BaseStrategy):
             should_trade, reason = self.should_trade(symbol)
             if not should_trade:
                 return None
-            
+
+            # Bar counter + time-based exit BEFORE the signal logic so the
+            # engine has settled timeout closes before we evaluate locks.
+            self._bar_seq = getattr(self, "_bar_seq", 0) + 1
+            await self._maybe_close_stale_positions()
+
+            # Lockout 1: cross-bar signal cooldown. The MA-crossover condition
+            # stays true for many bars after entry, so without a cooldown the
+            # strategy stacks entries every bar.
+            last_count = getattr(self, "_last_signal_bar_count", {}).get(symbol)
+            cooldown = int(getattr(self, "signal_cooldown_bars", 20) or 0)
+            if last_count is not None and cooldown > 0 and (self._bar_seq - last_count) < cooldown:
+                return None
+
+            # Lockout 2: open-position guard against the replay engine
+            # (backtest) or live broker position tracker.
+            if self._has_open_position_in_engine(symbol):
+                return None
+
             # Get current price
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
@@ -246,7 +320,7 @@ class TrendFollowingStrategy(BaseStrategy):
             if fast_ma > slow_ma and current_price > fast_ma and trend_strength >= self.min_trend_strength:
                 entry_price = current_price
                 stop_loss = entry_price - (atr * self.atr_stop_multiplier)
-                take_profit = entry_price + (atr * 5.0)  # Wide target for trend
+                take_profit = entry_price + (atr * self.atr_target_multiplier)
                 
                 confidence = min(1.0, trend_strength + 0.3)
                 
@@ -268,7 +342,7 @@ class TrendFollowingStrategy(BaseStrategy):
             elif fast_ma < slow_ma and current_price < fast_ma and trend_strength >= self.min_trend_strength:
                 entry_price = current_price
                 stop_loss = entry_price + (atr * self.atr_stop_multiplier)
-                take_profit = entry_price - (atr * 5.0)  # Wide target for trend
+                take_profit = entry_price - (atr * self.atr_target_multiplier)
                 
                 confidence = min(1.0, trend_strength + 0.3)
                 
@@ -289,7 +363,9 @@ class TrendFollowingStrategy(BaseStrategy):
             if signal:
                 logger.info(f"📈 Trend Following Signal: {signal['action']} {symbol} @ {signal['entry_price']:.2f}")
                 logger.info(f"   {signal['reason']}")
-            
+                self._last_signal_bar_count[symbol] = self._bar_seq
+                self._entry_bar_seq[symbol] = self._bar_seq
+
             return signal
             
         except Exception as e:
@@ -315,19 +391,28 @@ class TrendFollowingStrategy(BaseStrategy):
             
             # Place bracket order
             side = "BUY" if action == "LONG" else "SELL"
-            
-            result = await self.trading_bot.create_bracket_order(
+
+            # Use ``BaseStrategy.place_bracket_order`` (intercepted by the
+            # walk-forward replay engine and re-routed to the live
+            # broker for production) instead of calling
+            # ``trading_bot.create_bracket_order`` directly. The direct
+            # call worked in live but bypassed the replay simulator,
+            # which is why this strategy emitted zero trades in every
+            # walk-forward run prior to 2026-06.
+            result = await self.place_bracket_order(
                 symbol=symbol,
                 side=side,
                 quantity=position_size,
+                entry_price=entry_price,
                 stop_loss_price=stop_loss,
                 take_profit_price=take_profit,
-                account_id=self.trading_bot.selected_account if isinstance(self.trading_bot.selected_account, str) else self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else None,
-                strategy_name=self.config.name  # Add strategy name for tracking
+                enable_breakeven=False,
             )
 
-            # Fix: Check for 'success' and 'orderId' at top level (not 'order' key)
-            if result and result.get('success') and result.get('orderId'):
+            # Replay returns a dict shaped like {"orderId": ..., "method": ...};
+            # live returns {"success": True, "orderId": ..., ...}. Accept both.
+            ok = bool(result) and (result.get("success") or result.get("orderId")) and not result.get("error")
+            if ok:
                 order_id = result.get('orderId')
                 logger.info(f"✅ Trend following order placed: {side} {position_size} {symbol} (Order ID: {order_id})")
                 

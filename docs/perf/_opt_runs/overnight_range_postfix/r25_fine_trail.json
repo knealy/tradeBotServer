@@ -1,0 +1,58 @@
+[
+  {
+    "label": "r25_baseline",
+    "root": {}
+  },
+  {
+    "label": "r25_R24d_winner",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0]]}
+  },
+  {
+    "label": "r25a_trig25_lock10",
+    "root": {"position_management.trail_steps_r": [[2.5, 1.0]]}
+  },
+  {
+    "label": "r25b_trig30_lock15",
+    "root": {"position_management.trail_steps_r": [[3.0, 1.5]]}
+  },
+  {
+    "label": "r25c_trig175_lock075",
+    "root": {"position_management.trail_steps_r": [[1.75, 0.75]]}
+  },
+  {
+    "label": "r25d_trig20_lock075",
+    "root": {"position_management.trail_steps_r": [[2.0, 0.75]]}
+  },
+  {
+    "label": "r25e_trig20_lock125",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.25]]}
+  },
+  {
+    "label": "r25f_trig20_lock15",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.5]]}
+  },
+  {
+    "label": "r25g_trig25_lock15",
+    "root": {"position_management.trail_steps_r": [[2.5, 1.5]]}
+  },
+  {
+    "label": "r25h_2stage_20_30",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [3.0, 1.5]]}
+  },
+  {
+    "label": "r25i_2stage_20_40_aggressive",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [4.0, 2.5]]}
+  },
+  {
+    "label": "r25j_2stage_20_40_loose",
+    "root": {"position_management.trail_steps_r": [[2.0, 0.75], [4.0, 2.0]]}
+  },
+  {
+    "label": "r25k_3stage_classic_20_30_40",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [3.0, 1.5], [4.0, 2.5]]}
+  },
+  {
+    "label": "r25l_3stage_loose_20_40_60",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [4.0, 2.5], [6.0, 4.0]]}
+  }
+]

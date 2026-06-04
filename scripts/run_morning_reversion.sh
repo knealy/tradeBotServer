@@ -59,7 +59,10 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 PID=$$
 LOG_FILE="${LOG_DIR}/morning_range_reversion_account${ACCOUNT_NUM}_${TIMESTAMP}_${PID}.log"
 
-SYMBOLS="${MORNING_RANGE_SYMBOLS:-MNQ,MGC,MES}"
+# 2026-05-31 Round-25: MES dropped from active rotation (no-MES variant
+# Pareto-improved 6m/9m RF in the round-24 weighting sweep).  Override with
+# ``MORNING_RANGE_SYMBOLS=MNQ,MES,MGC`` to re-enable MES without editing.
+SYMBOLS="${MORNING_RANGE_SYMBOLS:-MNQ,MGC}"
 TOML_PATH="${PROJECT_ROOT}/config/strategies/morning_range_reversion.toml"
 WAKE_EARLY_MIN="${WAKE_MINUTES_EARLY:-2}"
 

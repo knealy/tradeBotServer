@@ -532,6 +532,8 @@ class BacktestExecutor:
             "hourly_anchor_retrace",
             "ema_stack_trend_15m",
             "rsi_switch_15m",
+            "nr_compression_break",
+            "globex_drift_continuation",
         ]
 
         all_strategies = function_strategies + class_strategies
@@ -818,6 +820,16 @@ class BacktestExecutor:
                 from strategies.rsi_switch_15m_strategy import RsiSwitch15mStrategy
 
                 return RsiSwitch15mStrategy
+            elif strategy_name == 'nr_compression_break':
+                from strategies.nr_compression_break_strategy import (
+                    NrCompressionBreakStrategy,
+                )
+                return NrCompressionBreakStrategy
+            elif strategy_name == 'globex_drift_continuation':
+                from strategies.globex_drift_continuation_strategy import (
+                    GlobexDriftContinuationStrategy,
+                )
+                return GlobexDriftContinuationStrategy
             else:
                 return None
         except ImportError as e:
@@ -848,12 +860,33 @@ class BacktestExecutor:
                 self._resampled_cache: Dict[str, List[Dict]] = {}
                 self._hist_loader = hist_loader
 
+            def _cursor_clipped_bars(self):
+                """Return ``self.bars`` clipped to ``[0, _fast_cursor_index + 1)`` when
+                the fast-loop cursor is active; otherwise the full ``self.bars`` list.
+
+                The strategy_replay engine sets ``self._fast_cursor_index = i``
+                each replay iteration when ``BACKTEST_FAST_LOOP=1`` is on. In
+                fast mode ``self.bars`` is the FULL bars list (set once at
+                replay start) — this helper enforces the no-look-ahead invariant
+                for the coarser-TF resample path. In slow mode the attribute is
+                absent and we return ``self.bars`` unchanged (which the slow
+                loop maintains as the per-iteration prefix anyway).
+                """
+                cursor = getattr(self, "_fast_cursor_index", None)
+                if cursor is None or cursor < 0:
+                    return self.bars
+                cutoff = cursor + 1
+                if cutoff >= len(self.bars):
+                    return self.bars
+                return self.bars[:cutoff]
+
             def _bars_to_ohlcv_dataframe(self):
                 """Build a sorted OHLCV DataFrame from ``self.bars`` (replay stream)."""
                 import pandas as pd
 
+                src_bars = self._cursor_clipped_bars()
                 rows: List[Dict[str, Any]] = []
-                for b in self.bars:
+                for b in src_bars:
                     ts = self._parse_bar_timestamp(b)
                     if ts is None:
                         continue
@@ -876,16 +909,33 @@ class BacktestExecutor:
                 return df
 
             def _resample_native_to(self, target_tf: str) -> List[Dict]:
-                if target_tf in self._resampled_cache:
-                    return self._resampled_cache[target_tf]
+                # In fast-cursor mode the cache key MUST include the cursor —
+                # the prefix changes every bar. We key by ``(target_tf, cursor)``
+                # but only retain the most recent entry per ``target_tf`` to
+                # bound memory. In slow mode (cursor is None), the slow loop
+                # clears the cache between iterations so the bare ``target_tf``
+                # key remains correct.
+                cursor = getattr(self, "_fast_cursor_index", None)
+                cache_key = target_tf if cursor is None else (target_tf, cursor)
+                cached = self._resampled_cache.get(cache_key)
+                if cached is not None:
+                    return cached
                 try:
                     df = self._bars_to_ohlcv_dataframe()
                     if df is None or len(df) < 2:
-                        out = list(self.bars)
+                        out = list(self._cursor_clipped_bars())
                     else:
                         rs = self._hist_loader.resample(df, target_tf)
                         out = replay_bars_from_ohlcv_df(rs)
-                    self._resampled_cache[target_tf] = out
+                    if cursor is not None:
+                        # Evict any prior cursor entry for this TF to keep the
+                        # cache bounded (one entry per active target_tf).
+                        for k in [
+                            k for k in self._resampled_cache
+                            if isinstance(k, tuple) and k[0] == target_tf
+                        ]:
+                            self._resampled_cache.pop(k, None)
+                    self._resampled_cache[cache_key] = out
                     return out
                 except Exception as exc:
                     logger.warning(
@@ -894,30 +944,37 @@ class BacktestExecutor:
                         target_tf,
                         exc,
                     )
-                    out = list(self.bars)
-                    self._resampled_cache[target_tf] = out
+                    out = list(self._cursor_clipped_bars())
+                    self._resampled_cache[cache_key] = out
                     return out
 
             def _select_historical_source(self, tf: str) -> List[Dict]:
-                """Bars for ``timeframe``: 1m slice, native replay list, or OHLCV-resampled coarser TFs."""
+                """Bars for ``timeframe``: 1m slice, native replay list, or OHLCV-resampled coarser TFs.
+
+                Honors ``_fast_cursor_index`` for the native-TF / finer-TF paths
+                so the BACKTEST_FAST_LOOP fast-mode replay (which keeps
+                ``self.bars`` as the FULL list) doesn't leak future bars to
+                the strategy. The resample path is already cursor-aware via
+                ``_cursor_clipped_bars`` inside ``_resample_native_to``.
+                """
                 if tf == "1m" and self.bars_1m:
                     return self.bars_1m
                 native = self.replay_timeframe
                 if tf == native:
-                    return self.bars
+                    return self._cursor_clipped_bars()
                 req_m = _strategy_replay_tf_minutes(tf)
                 nat_m = _strategy_replay_tf_minutes(native)
                 if req_m is None or nat_m is None:
-                    return self.bars
+                    return self._cursor_clipped_bars()
                 if req_m == nat_m:
-                    return self.bars
+                    return self._cursor_clipped_bars()
                 if req_m < nat_m:
                     logger.debug(
                         "Mock bot: requested %s is finer than replay %s — returning native replay bars",
                         tf,
                         native,
                     )
-                    return self.bars
+                    return self._cursor_clipped_bars()
                 return self._resample_native_to(tf)
 
             def _parse_bar_timestamp(self, bar: Dict) -> Optional[datetime]:

@@ -1,0 +1,58 @@
+# Mean Reversion strategy configuration.
+# Strategy-specific keys (RSI/MA/ATR thresholds) live at the top level here
+# because the strategy reads them as simple keys (e.g. cfg.get_int("rsi_period")).
+# Shared on/off + symbol list + sizing live under [meta] and [risk].
+#
+# 2026-06-01 — initial parameter discovery (Step 4 dormant-strategy wake).
+# The strategy reads ``atr_deviation_threshold`` (not ``atr_threshold``)
+# and requires *both* an RSI extreme AND a ≥ N×ATR deviation from the MA
+# on the same bar.  With the default 2.0× threshold + RSI 30/70 gates,
+# every walk-forward fold produced zero trades.  Loosened to RSI 35/65 +
+# 1.5×ATR so signals can fire; equity curve is still unvetted.
+#
+# NOT PRODUCTION-READY.  Kept enabled for walk-forward research only
+# (``should_trade`` reads ``meta.enabled`` per bar; flipping to false
+# silences the strategy in BOTH live and backtest).  Do not launch a
+# live executor against this until the equity curve is validated.
+
+# 24-hour trading window — see ``trend_following.toml`` comment for the
+# ``_in_trading_window`` system-clock gotcha.  Without this, backtests
+# run outside 09:30-15:45 LOCAL produce zero trades.
+start_time     = "00:00"
+end_time       = "23:59"
+no_trade_start = ""
+no_trade_end   = ""
+
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+# ---------------- strategy-specific knobs ----------------
+# MUST sit at TOML ROOT (above section headers) — the strategy reads
+# bare keys (``cfg.get_int("rsi_period")``).  Keys nested under
+# ``[risk]`` would become ``risk.rsi_period`` in the parsed tree and
+# never reach the strategy.
+rsi_period = 14
+rsi_overbought = 65.0
+rsi_oversold = 35.0
+ma_period = 20
+
+# ATR settings (used for dynamic thresholds / stops)
+atr_period = 14
+# 5m matches the default walk-forward CSV (``--timeframe=5m``).  Coarser
+# TF (15m) requires the MockTradingBot resample delegate which yields
+# zero bars in current testing — debug is open.
+atr_timeframe = "5m"
+
+# Deviation threshold (in ATR multiples).  Strategy reads
+# ``atr_deviation_threshold`` (see ``MeanReversionStrategy.__init__``);
+# legacy ``atr_threshold`` is kept as a no-op compatibility key.
+atr_deviation_threshold = 1.5
+atr_threshold = 1.0
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+

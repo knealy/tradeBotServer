@@ -176,7 +176,13 @@ class TopStepXTradingBot:
         
         # Centralized risk manager for all strategies (lazy initialization)
         self._strategy_risk_manager = None
-        
+
+        # Portfolio-level daily-loss circuit breaker (Phase 1 arsenal infra).
+        # Lazy: only constructs when ``PORTFOLIO_DAILY_LOSS_CAP`` env > 0.
+        # Wired on first ``start_strategy`` via ``_ensure_portfolio_breaker``
+        # so chart-only / dashboard processes don't pay the import cost.
+        self.portfolio_breaker = None
+
         # Initialize bar aggregator for real-time chart updates
         from core.bar_aggregator import BarAggregator
         self.bar_aggregator = BarAggregator(broadcast_callback=None)  # Will be set by webhook server
@@ -2667,6 +2673,41 @@ class TopStepXTradingBot:
                         return self._contract_cache['contracts'].copy()
             return []
     
+    async def ensure_portfolio_breaker(self) -> "Optional[Any]":
+        """Lazily construct + start the portfolio daily-loss breaker.
+
+        Reads ``PORTFOLIO_DAILY_LOSS_CAP`` (USD, positive number).  Zero or
+        unset disables the breaker entirely.  Default is ``1000`` (matches
+        the worst-case-day arithmetic in ``docs/STRATEGY_ARSENAL.md``).
+
+        Idempotent — multiple callers (StrategyManager.start_strategy,
+        master CLI, etc.) can call this safely.
+        """
+        if self.portfolio_breaker is not None:
+            return self.portfolio_breaker
+        try:
+            cap = float(os.environ.get("PORTFOLIO_DAILY_LOSS_CAP", "1000").strip() or "1000")
+        except (TypeError, ValueError):
+            cap = 1000.0
+        if cap <= 0:
+            logger.info("Portfolio breaker disabled (PORTFOLIO_DAILY_LOSS_CAP=%s)", cap)
+            return None
+        try:
+            from core.portfolio_daily_breaker import (
+                PortfolioBreakerConfig, PortfolioDailyBreaker,
+            )
+            self.portfolio_breaker = PortfolioDailyBreaker(
+                self, PortfolioBreakerConfig(daily_loss_cap_dollars=cap),
+            )
+            started = await self.portfolio_breaker.start()
+            if not started:
+                logger.warning("Portfolio breaker could not subscribe (no event bus yet)")
+            return self.portfolio_breaker
+        except Exception as exc:
+            logger.error("ensure_portfolio_breaker failed: %s", exc, exc_info=True)
+            self.portfolio_breaker = None
+            return None
+
     async def flatten_all_positions(self, interactive: bool = True) -> Dict:
         """
         Close all open positions and cancel all open orders on the selected account.

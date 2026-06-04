@@ -1,0 +1,60 @@
+[
+  {
+    "label": "r23_baseline_R22_committed",
+    "root": {}
+  },
+  {
+    "label": "r23a_partial_qty2_r10",
+    "root": {"signal.partial_tp_enabled": true, "signal.partial_tp_scalp_r": 1.0, "risk.position_size": 2},
+    "symbols": {"MGC": {"risk.position_size": 2}}
+  },
+  {
+    "label": "r23b_partial_qty2_r15",
+    "root": {"signal.partial_tp_enabled": true, "signal.partial_tp_scalp_r": 1.5, "risk.position_size": 2},
+    "symbols": {"MGC": {"risk.position_size": 2}}
+  },
+  {
+    "label": "r23c_partial_qty2_r075",
+    "root": {"signal.partial_tp_enabled": true, "signal.partial_tp_scalp_r": 0.75, "risk.position_size": 2},
+    "symbols": {"MGC": {"risk.position_size": 2}}
+  },
+  {
+    "label": "r23d_partial_qty2_r10_MNQtp5",
+    "root": {"signal.partial_tp_enabled": true, "signal.partial_tp_scalp_r": 1.0, "risk.position_size": 2},
+    "symbols": {"MGC": {"risk.position_size": 2}, "MNQ": {"signal.tp_atr_multiplier": 5.0}}
+  },
+  {
+    "label": "r23e_partial_qty2_r10_MNQtp6",
+    "root": {"signal.partial_tp_enabled": true, "signal.partial_tp_scalp_r": 1.0, "risk.position_size": 2},
+    "symbols": {"MGC": {"risk.position_size": 2}, "MNQ": {"signal.tp_atr_multiplier": 6.0}}
+  },
+  {
+    "label": "r23f_MNQpartial_MGCqty1",
+    "root": {"signal.partial_tp_enabled": true, "signal.partial_tp_scalp_r": 1.0, "risk.position_size": 2}
+  },
+  {
+    "label": "r23g_qty2_no_partial",
+    "root": {"signal.partial_tp_enabled": false, "risk.position_size": 2},
+    "symbols": {"MGC": {"risk.position_size": 2}}
+  },
+  {
+    "label": "r23h_MNQtp5_only",
+    "root": {},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 5.0}}
+  },
+  {
+    "label": "r23i_MNQtp6_only",
+    "root": {},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 6.0}}
+  },
+  {
+    "label": "r23j_MGCtp30_only",
+    "root": {},
+    "symbols": {"MGC": {"signal.tp_atr_multiplier": 3.0}}
+  },
+  {
+    "label": "r23k_MGCtp40_only",
+    "root": {},
+    "symbols": {"MGC": {"signal.tp_atr_multiplier": 4.0}}
+  }
+]

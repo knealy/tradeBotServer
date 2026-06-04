@@ -52,6 +52,8 @@ scripts/run_overnight.sh <account>
 - **No `.env*` commits** — only `.env.example` is tracked
 - **Delete dead code outright** — no archive folders; git history is the archive
 - **Hot paths**: no `INFO`-level `json.dumps`, no per-tick allocations
+- **Walk-forward sweeps**: use `scripts/walkforward_trade_recap_report.py` (or `scripts/optimize_strategy.py`/`scripts/strategy_parameter_sweep.py`) which fan out via `core/backtest/inprocess_runner.py`. Do NOT write ad-hoc per-trial `subprocess.run(['core/backtest_executor.py', ...])` loops — that path pays ~250-400 ms Python+import startup per task and is the wrong default.
+- **Replay engine bar polymorphism**: any new code in `core/backtest/strategy_replay.py` that handles a per-bar object MUST duck-type (`bar["open"]`, `bar.name`) not `isinstance(bar, pd.Series)` — the default fast loop yields `_BarRow` instances. The 2026-06-03 round-14 cross-session bug was a single `isinstance` guard silently no-op'ing the EOD flat under fast loop. See `tests/test_replay_force_flat_eod.py::test_replay_market_flat_accepts_barrow_fast_loop`.
 
 ## Overnight range strategy — key details
 

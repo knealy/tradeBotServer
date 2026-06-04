@@ -1,0 +1,65 @@
+{
+  "captured_at_utc": "2026-06-02T01:02:07+00:00",
+  "git_head": "8c96c08b0",
+  "strategies": {
+    "mean_reversion": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/mean_reversion.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_agent_runs/mr_pinned_mnqmgc_9m/config/mean_reversion.toml",
+      "data": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "rsi_period": 14,
+        "rsi_overbought": 70.0,
+        "rsi_oversold": 30.0,
+        "ma_period": 20,
+        "atr_period": 14,
+        "atr_timeframe": "5m",
+        "atr_deviation_threshold": 2.0,
+        "atr_threshold": 1.0,
+        "stop_atr_multiplier": 0.7,
+        "signal_cooldown_bars": 12,
+        "max_hold_bars": 18,
+        "meta": {
+          "enabled": true,
+          "symbols": [
+            "MNQ",
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 2,
+          "max_daily_trades": 10,
+          "risk_per_trade_pct": 0.5
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "mean_reversion"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

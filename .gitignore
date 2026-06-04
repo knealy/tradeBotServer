@@ -141,3 +141,7 @@ docs/perf/parameter_sweeps/
 
 # Walk-forward trade recap bundle (191+ HTML charts; regenerate with scripts/walkforward_trade_recap_report.py)
 docs/perf/walkforward_mnq_mgc_3m_overnight_morning_trade_recaps/
+
+# Decision cache for walkforward_trade_recap_report.py --cache-decisions
+# (content-addressed replay payloads; safe to delete to force fresh runs).
+docs/perf/_decision_cache/

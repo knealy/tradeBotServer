@@ -161,6 +161,14 @@ class HistoricalDataLoader:
         """
         import pandas as pd
 
+        from core.backtest.parquet_cache import (
+            _normalize_ohlcv_frame,
+            _parquet_cache_enabled,
+            _sidecar_path,
+            _write_sidecar,
+            load_ohlcv_cached,
+        )
+
         global _csv_cache_hits, _csv_cache_misses
 
         logger.info(f"Loading {symbol} data from CSV: {filepath}")
@@ -179,62 +187,35 @@ class HistoricalDataLoader:
         if _csv_cache_enabled() and max_entries > 0:
             _csv_cache_misses += 1
 
-        # Read CSV (optional pyarrow engine when available — faster parse)
-        try:
-            df = pd.read_csv(resolved, engine="pyarrow")
-        except (ImportError, ValueError, OSError):
-            df = pd.read_csv(resolved)
-        
-        # Auto-detect column names (case-insensitive)
-        column_mapping = {}
-        for col in df.columns:
-            col_lower = col.lower()
-            if col_lower in ['timestamp', 'time', 'date', 'datetime']:
-                column_mapping[col] = 'timestamp'
-            elif col_lower == 'open':
-                column_mapping[col] = 'open'
-            elif col_lower == 'high':
-                column_mapping[col] = 'high'
-            elif col_lower == 'low':
-                column_mapping[col] = 'low'
-            elif col_lower == 'close':
-                column_mapping[col] = 'close'
-            elif col_lower == 'volume':
-                column_mapping[col] = 'volume'
-        
-        # Rename columns to standard lowercase
-        df.rename(columns=column_mapping, inplace=True)
-        
-        # Find timestamp column
-        if 'timestamp' not in df.columns:
-            raise ValueError(f"No timestamp column found. Available columns: {list(df.columns)}")
-        
-        # Convert timestamp column
-        if date_format:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], format=date_format)
+        # ── Parquet sidecar fast-path ────────────────────────────────────────
+        # When ``date_format`` is not pinned (the overwhelmingly common case for
+        # canonical Databento / TopStepX exports), defer to the parquet sidecar
+        # cache. First call parses the CSV and writes ``<csv>.parquet`` next to
+        # it; subsequent calls skip the text-parse entirely. The sidecar carries
+        # the source CSV's mtime_ns in its parquet metadata, so a CSV refresh
+        # invalidates it automatically. See ``core/backtest/parquet_cache.py``.
+        if date_format is None:
+            df = load_ohlcv_cached(resolved)
         else:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
-        # Set index
-        df.set_index('timestamp', inplace=True)
-        df.sort_index(inplace=True)
-        # Match canonical Databento-style frames: naive UTC index. TopStepX / ISO exports
-        # often arrive tz-aware; ``backtest_executor`` date slices use naive ``pd.Timestamp``.
-        if getattr(df.index, "tz", None) is not None:
-            df.index = df.index.tz_convert("UTC").tz_localize(None)
-        
-        # Validate required columns
-        required_cols = ['open', 'high', 'low', 'close', 'volume']
-        missing = [col for col in required_cols if col not in df.columns]
-        if missing:
-            raise ValueError(f"CSV missing required columns: {missing}. Available: {list(df.columns)}")
-        
-        # Convert to numeric
-        for col in required_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Drop rows with NaN
-        df.dropna(inplace=True)
+            # Caller pinned a specific date format → don't cross the parquet path
+            # (it uses pandas default datetime parsing). Keep the legacy CSV
+            # path for these rare callers and still emit a parquet sidecar
+            # afterwards so the next default-format read is hot.
+            try:
+                raw = pd.read_csv(resolved, engine="pyarrow")
+            except (ImportError, ValueError, OSError):
+                raw = pd.read_csv(resolved)
+            # Map columns + parse timestamp with caller-pinned format before
+            # delegating to the shared normalizer.
+            for col in list(raw.columns):
+                cl = str(col).lower()
+                if cl in ('timestamp', 'time', 'date', 'datetime'):
+                    raw = raw.rename(columns={col: 'timestamp'})
+                    break
+            raw['timestamp'] = pd.to_datetime(raw['timestamp'], format=date_format)
+            df = _normalize_ohlcv_frame(raw)
+            if _parquet_cache_enabled():
+                _write_sidecar(df, _sidecar_path(resolved), mtime_ns)
 
         if _csv_cache_enabled() and max_entries > 0:
             _CSV_DF_CACHE[cache_key] = df
@@ -242,7 +223,7 @@ class HistoricalDataLoader:
             while len(_CSV_DF_CACHE) > max_entries:
                 _CSV_DF_CACHE.popitem(last=False)
 
-        logger.info(f"✅ Loaded {len(df)} bars from CSV")
+        logger.info(f"✅ Loaded {len(df)} bars from CSV (via parquet sidecar when fresh)")
         return df.copy() if (_csv_cache_enabled() and max_entries > 0) else df
     
     def load_from_json(

@@ -197,6 +197,15 @@ class OvernightRangeStrategy(BaseStrategy):
         # Breakeven management (optional)
         self.breakeven_enabled = self._cfg.get_bool("position_management.breakeven_enabled", True)
         self.breakeven_profit_points = float(self._cfg.get_float("position_management.breakeven_profit_points", 15.0))  # +15 pts
+        # Step-trail (replay-aware): up to N stages of (trigger_R, lock_offset_R) in R-multiples
+        # of the per-trade initial risk (|entry - stop|). On trigger, SL ratchets to
+        # entry ± lock_offset_R*R. Each stage fires once. Stages must be strictly
+        # increasing in trigger_R. Wired via ``bot.register_generic_breakeven_watch`` —
+        # the engine's existing BE-watch handles the SL snap (see ``_evaluate_breakeven_watches``).
+        # Default: empty → no trail (current R22 behaviour preserved). R-multiples are
+        # used instead of raw points so the same TOML row works across symbols with
+        # different point values (MNQ stop ≈ 25pts ≠ MGC stop ≈ 7pts).
+        self.trail_steps_r: List[Tuple[float, float]] = self._read_trail_steps_r()
         
         # Order placement
         self.range_break_offset = float(self._cfg.get_float("position_management.range_break_offset", 0.25))
@@ -552,6 +561,92 @@ class OvernightRangeStrategy(BaseStrategy):
                 hint=float,
             )
         )
+
+    def _overnight_symbol_tp_atr_multiplier(self, symbol: str) -> float:
+        """``[symbols.<SYM>.signal].tp_atr_multiplier`` overrides global ``[signal].tp_atr_multiplier``."""
+        return float(
+            self._cfg.symbol_override(
+                symbol.upper(),
+                "signal.tp_atr_multiplier",
+                default=self.tp_atr_multiplier,
+                hint=float,
+            )
+        )
+
+    # ── Consecutive-loss circuit breaker (cross-session) ─────────────────
+    # Mirrors the ``morning_range_reversion`` count + magnitude breaker
+    # via the shared helper in ``core/consec_loss_breaker.py``. Per-symbol
+    # overrides supported under ``[symbols.<SYM>.signal]`` for the same
+    # three keys (``max_consecutive_losses``, ``loss_streak_cooldown_sessions``,
+    # ``rolling_pnl_loss_threshold_dollars``).
+
+    def _breaker_config_for_symbol(self, symbol: str):
+        from core.consec_loss_breaker import BreakerConfig
+        sym_upper = str(symbol).upper()
+
+        def _resolve_int(key: str, default: int = 0) -> int:
+            v = self._cfg.symbol_override(sym_upper, key, default=None)
+            if v is None:
+                v = self._cfg.get_int(key, default)
+            try:
+                return max(0, int(v or 0))
+            except (TypeError, ValueError):
+                return default
+
+        def _resolve_float(key: str, default: float = 0.0) -> float:
+            v = self._cfg.symbol_override(sym_upper, key, default=None)
+            if v is None:
+                v = self._cfg.get_float(key, default)
+            try:
+                return max(0.0, float(v or 0.0))
+            except (TypeError, ValueError):
+                return default
+
+        return BreakerConfig(
+            max_losses=_resolve_int("signal.max_consecutive_losses", 0),
+            cooldown_sessions=_resolve_int("signal.loss_streak_cooldown_sessions", 0),
+            magnitude_dollars=_resolve_float("signal.rolling_pnl_loss_threshold_dollars", 0.0),
+        )
+
+    def _evaluate_consec_loss_breaker(self, symbol: str, bar_session_date) -> Dict[str, Any]:
+        from core.consec_loss_breaker import evaluate, trade_iter_for_strategy
+        cfg = self._breaker_config_for_symbol(symbol)
+        if not cfg.enabled:
+            return {"blocked": False, "streak": 0, "reason": "ok"}
+        trade_iter = trade_iter_for_strategy(self, symbol)
+        if trade_iter is None:
+            return {"blocked": False, "streak": 0, "reason": "no_engine"}
+        return evaluate(
+            symbol=symbol,
+            bar_session_date=bar_session_date,
+            trade_iter=trade_iter,
+            config=cfg,
+        )
+
+    def _overnight_symbol_skip_weekdays(self, symbol: str) -> frozenset[int]:
+        """``[symbols.<SYM>.filters].skip_weekdays`` overrides global ``[filters].skip_weekdays``.
+
+        Returns a frozenset of Python weekday ints (Mon=0 … Sun=6). Empty set
+        means *do not skip*. Falls back to ``self.filter_skip_weekdays`` (the
+        root-level list resolved at init / reload).
+        """
+        sym_node = self._cfg._data.get("symbols", {}).get(symbol.upper(), {})
+        sym_filt = sym_node.get("filters") if isinstance(sym_node, dict) else None
+        raw = None
+        if isinstance(sym_filt, dict) and "skip_weekdays" in sym_filt:
+            raw = sym_filt.get("skip_weekdays")
+        if raw is None:
+            return frozenset(int(x) for x in (self.filter_skip_weekdays or []))
+        out: set[int] = set()
+        try:
+            for x in raw:
+                try:
+                    out.add(int(x))
+                except (TypeError, ValueError):
+                    continue
+        except TypeError:
+            return frozenset(int(x) for x in (self.filter_skip_weekdays or []))
+        return frozenset(out)
 
     def _filter_pct_for_symbol(
         self,
@@ -1288,9 +1383,45 @@ class OvernightRangeStrategy(BaseStrategy):
             symbol = symbol.upper()
 
             now_et = self._effective_now_et()
-            if self.filter_skip_weekdays and now_et is not None:
-                if now_et.weekday() in self.filter_skip_weekdays:
-                    logger.debug("Skipping %s — skip_weekdays (weekday=%s)", symbol, now_et.weekday())
+            if now_et is not None:
+                sym_skip = self._overnight_symbol_skip_weekdays(symbol)
+                if sym_skip and now_et.weekday() in sym_skip:
+                    logger.debug(
+                        "Skipping %s — skip_weekdays %s (weekday=%s)",
+                        symbol, sorted(sym_skip), now_et.weekday(),
+                    )
+                    return None
+
+            # Cross-session consecutive-loss circuit breaker.  Reads the
+            # backtest engine's closed-trade list (or the live trade-history
+            # buffer fed by ``EventType.TRADE_CLOSED`` events) and halts
+            # this symbol for ``loss_streak_cooldown_sessions`` calendar
+            # days once the streak reaches ``max_consecutive_losses``.
+            # Defaults are ``0`` (disabled); enable via TOML.  See
+            # ``core/consec_loss_breaker.py`` for full semantics.
+            if now_et is not None:
+                breaker = self._evaluate_consec_loss_breaker(symbol, now_et.date())
+                if breaker.get("blocked"):
+                    bar_date = now_et.date()
+                    last_log_key = "_logged_breaker_session"
+                    if getattr(self, last_log_key, None) != (symbol, bar_date):
+                        cooldown = breaker.get("cooldown") or 0
+                        days_since = breaker.get("days_since_trip")
+                        trip_d = breaker.get("trip_session_date")
+                        if cooldown > 0 and days_since is not None:
+                            logger.info(
+                                "🚨 %-3s overnight_range consec-loss breaker active — "
+                                "streak=%d, tripped on %s, day %d of %d-day cooldown",
+                                symbol, breaker.get("streak", 0),
+                                trip_d, days_since, cooldown,
+                            )
+                        else:
+                            logger.info(
+                                "🚨 %-3s overnight_range consec-loss breaker active — "
+                                "streak=%d (cooldown=0, halt until winning trade resets)",
+                                symbol, breaker.get("streak", 0),
+                            )
+                        setattr(self, last_log_key, (symbol, bar_date))
                     return None
 
             if self._is_strategy_replay_mode():
@@ -2731,6 +2862,13 @@ class OvernightRangeStrategy(BaseStrategy):
             else:
                 logger.debug(f"Daily ATR zones (cached): Range=[{range_data.low:.2f}, {range_data.high:.2f}], Upper=[{atr_data.day_bull_price:.2f}, {atr_data.day_bull_price1:.2f}], Lower=[{atr_data.day_bear_price1:.2f}, {atr_data.day_bear_price:.2f}]")
             
+            # Resolve TP geometry once.  Historically the breakout TP was
+            # hard-coded at ``2 * current_atr``; ``signal.tp_atr_multiplier``
+            # was loaded into ``self.tp_atr_multiplier`` but ignored at order
+            # build time.  Wire it through (with per-symbol override) so
+            # optimization can sweep it independently from the stop.
+            tp_mult = self._overnight_symbol_tp_atr_multiplier(symbol) or 2.0
+
             # Calculate long breakout order (above overnight high)
             long_entry_raw = range_data.high + self.range_break_offset
             long_stop_raw = long_entry_raw - (atr_data.current_atr * stop_mult)
@@ -2740,8 +2878,8 @@ class OvernightRangeStrategy(BaseStrategy):
             upper_zone_midpoint = (atr_data.day_bull_price + atr_data.day_bull_price1) / 2.0
             
             if upper_zone_overlaps:
-                # ATR zone overlaps with range - use larger of 2*current_atr or previous day's upper zone
-                default_tp = long_entry_raw + (atr_data.current_atr * 2.0)
+                # ATR zone overlaps with range - use larger of tp_mult*current_atr or previous day's upper zone
+                default_tp = long_entry_raw + (atr_data.current_atr * tp_mult)
                 long_tp_raw = default_tp
                 
                 # Try to find better target using previous day's zones
@@ -2761,9 +2899,9 @@ class OvernightRangeStrategy(BaseStrategy):
                 logger.debug(f"  Upper ATR zone above overnight range - targeting zone midpoint at {upper_zone_midpoint:.2f} (zone: [{atr_data.day_bull_price:.2f}, {atr_data.day_bull_price1:.2f}])")
                 long_tp_raw = upper_zone_midpoint
             else:
-                # ATR zone is completely BELOW range - use ATR * 2 from entry
-                logger.debug(f"  Upper ATR zone below overnight range - using 2*current_atr for TP")
-                long_tp_raw = long_entry_raw + (atr_data.current_atr * 2.0)
+                # ATR zone is completely BELOW range - use ATR * tp_mult from entry
+                logger.debug(f"  Upper ATR zone below overnight range - using {tp_mult}*current_atr for TP")
+                long_tp_raw = long_entry_raw + (atr_data.current_atr * tp_mult)
             
             # Round to valid tick sizes
             long_entry = self.round_to_tick(long_entry_raw, tick_size)
@@ -2790,8 +2928,8 @@ class OvernightRangeStrategy(BaseStrategy):
             lower_zone_midpoint = (atr_data.day_bear_price + atr_data.day_bear_price1) / 2.0
             
             if lower_zone_overlaps:
-                # ATR zone overlaps with range - use larger of 2*current_atr or previous day's lower zone
-                default_tp = short_entry_raw - (atr_data.current_atr * 2.0)
+                # ATR zone overlaps with range - use larger of tp_mult*current_atr or previous day's lower zone
+                default_tp = short_entry_raw - (atr_data.current_atr * tp_mult)
                 short_tp_raw = default_tp
                 
                 # Try to find better target using previous day's zones
@@ -2812,9 +2950,9 @@ class OvernightRangeStrategy(BaseStrategy):
                 logger.debug(f"  Lower ATR zone below overnight range - targeting zone midpoint at {lower_zone_midpoint:.2f} (zone: [{atr_data.day_bear_price1:.2f}, {atr_data.day_bear_price:.2f}])")
                 short_tp_raw = lower_zone_midpoint
             else:
-                # ATR zone is completely ABOVE range - use ATR * 2 from entry
-                logger.debug(f"  Lower ATR zone above overnight range - using 2*current_atr for TP")
-                short_tp_raw = short_entry_raw - (atr_data.current_atr * 2.0)
+                # ATR zone is completely ABOVE range - use ATR * tp_mult from entry
+                logger.debug(f"  Lower ATR zone above overnight range - using {tp_mult}*current_atr for TP")
+                short_tp_raw = short_entry_raw - (atr_data.current_atr * tp_mult)
             
             # Round to valid tick sizes
             short_entry = self.round_to_tick(short_entry_raw, tick_size)
@@ -2873,6 +3011,89 @@ class OvernightRangeStrategy(BaseStrategy):
             logger.error(f"Error calculating range break orders for {symbol}: {e}")
             return None, None
 
+    def _read_trail_steps_r(self) -> List[Tuple[float, float]]:
+        """Parse ``position_management.trail_steps_r`` → list of (trigger_R, lock_offset_R).
+
+        Accepts either an array of 2-tuples in TOML
+        (``trail_steps_r = [[1.0, 0.0], [2.0, 1.0]]``) or a JSON-string fallback.
+        Stages with non-positive trigger are dropped. Stages are sorted by trigger
+        ascending so the watch fires in increasing-MFE order. Empty list → trail
+        disabled (R22 behaviour preserved).
+        """
+        raw = self._cfg.get_list("position_management.trail_steps_r", [])
+        if not raw:
+            return []
+        steps: List[Tuple[float, float]] = []
+        try:
+            iterable = raw
+            if isinstance(raw, str):
+                import json as _json
+                iterable = _json.loads(raw)
+            for row in iterable or []:
+                try:
+                    trig = float(row[0])
+                    lock = float(row[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if trig <= 0:
+                    continue
+                steps.append((trig, lock))
+        except Exception:
+            return []
+        steps.sort(key=lambda t: t[0])
+        return steps
+
+    def _register_trail_watches(
+        self,
+        *,
+        order_id: str,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        stop_loss_price: float,
+    ) -> None:
+        """Arm engine BE-watches with R-multiples scaled by the per-trade initial risk.
+
+        Each step converts (trigger_R, lock_R) → (trigger_pts, lock_offset_pts) =
+        (trigger_R*R_pts, lock_R*R_pts) where ``R_pts = |entry - stop|``.  Registers
+        each stage with a synthetic key ``{order_id}_trail{N}`` so multiple stages
+        co-exist for the same trade. The engine's ``_evaluate_breakeven_watches``
+        snaps the SL pending order's stop_price to ``entry ± lock_offset`` on first
+        trigger; subsequent (higher-MFE) stages fire on later bars.
+
+        Live bot: ``register_generic_breakeven_watch`` is a no-op for the OCO
+        stop-entry bracket path today (live BE monitor uses ``breakeven_monitoring``
+        dict). The per-trade trail is therefore a backtest-only mechanism until the
+        live OCO watch path is wired — acceptable because production already
+        flattens at EOD which caps downside.
+        """
+        if not self.trail_steps_r:
+            return
+        bot = self.trading_bot
+        if not hasattr(bot, "register_generic_breakeven_watch"):
+            return
+        r_pts = abs(float(entry_price) - float(stop_loss_price))
+        if r_pts <= 0:
+            return
+        for idx, (trigger_r, lock_offset_r) in enumerate(self.trail_steps_r):
+            trigger_pts = float(trigger_r) * r_pts
+            lock_offset_pts = float(lock_offset_r) * r_pts
+            synthetic_id = f"{order_id}_trail{idx}"
+            try:
+                bot.register_generic_breakeven_watch(
+                    synthetic_id,
+                    symbol=symbol,
+                    side=side,
+                    entry_price=float(entry_price),
+                    profit_threshold=float(trigger_pts),
+                    breakeven_offset=float(lock_offset_pts),
+                    strategy_name=self.config.name,
+                )
+            except Exception as e:
+                logger.debug(
+                    "register trail watch step=%d failed: %s", idx, e, exc_info=True
+                )
+
     async def _place_oco_stop_entry_bracket(
         self,
         *,
@@ -2884,7 +3105,10 @@ class OvernightRangeStrategy(BaseStrategy):
         take_profit_price: float,
         account_id: Optional[str],
     ) -> Any:
-        """Native OCO stop-entry; optionally BONGO §1A dual brackets (scalp + runner qty split)."""
+        """Native OCO stop-entry; optionally BONGO §1A dual brackets (scalp + runner qty split).
+
+        After successful placement, arms step-trail BE watches when configured (R23+).
+        """
         bot = self.trading_bot
         q = int(quantity)
         if (
@@ -2892,7 +3116,7 @@ class OvernightRangeStrategy(BaseStrategy):
             and self.partial_tp_enabled
             and hasattr(bot, "place_oco_bracket_with_stop_entry_partial_tp")
         ):
-            return await bot.place_oco_bracket_with_stop_entry_partial_tp(
+            result = await bot.place_oco_bracket_with_stop_entry_partial_tp(
                 symbol=symbol,
                 side=side,
                 quantity=q,
@@ -2904,16 +3128,31 @@ class OvernightRangeStrategy(BaseStrategy):
                 enable_breakeven=False,
                 strategy_name=self.config.name,
             )
-        return await bot.place_oco_bracket_with_stop_entry(
-            symbol=symbol,
-            side=side,
-            quantity=q,
-            entry_price=float(entry_price),
-            stop_loss_price=float(stop_loss_price),
-            take_profit_price=float(take_profit_price),
-            account_id=account_id,
-            strategy_name=self.config.name,
-        )
+        else:
+            result = await bot.place_oco_bracket_with_stop_entry(
+                symbol=symbol,
+                side=side,
+                quantity=q,
+                entry_price=float(entry_price),
+                stop_loss_price=float(stop_loss_price),
+                take_profit_price=float(take_profit_price),
+                account_id=account_id,
+                strategy_name=self.config.name,
+            )
+        try:
+            if isinstance(result, dict) and result.get("success"):
+                oid = result.get("orderId")
+                if oid:
+                    self._register_trail_watches(
+                        order_id=str(oid),
+                        symbol=symbol,
+                        side=side,
+                        entry_price=float(entry_price),
+                        stop_loss_price=float(stop_loss_price),
+                    )
+        except Exception as e:
+            logger.debug("trail watch registration skipped: %s", e, exc_info=True)
+        return result
     
     async def place_range_break_orders(self, symbol: str) -> Dict:
         """
@@ -3530,7 +3769,13 @@ class OvernightRangeStrategy(BaseStrategy):
                     await asyncio.sleep(min(self.breakout_monitor_interval, 60))  # Check at least once per minute
                     continue
 
-                if self.filter_skip_weekdays and now.weekday() in self.filter_skip_weekdays:
+                # Per-symbol weekday gates are applied inside the for-loop below;
+                # short-circuit here only if EVERY tracked symbol skips this weekday.
+                wd_today = now.weekday()
+                tracked_syms = list(self.breakout_levels.keys())
+                if tracked_syms and all(
+                    wd_today in self._overnight_symbol_skip_weekdays(s) for s in tracked_syms
+                ):
                     await asyncio.sleep(self.breakout_monitor_interval)
                     continue
 
@@ -3547,6 +3792,12 @@ class OvernightRangeStrategy(BaseStrategy):
                 orders_by_symbol = self._group_orders_by_symbol(orders_list)
 
                 for symbol, templates in self.breakout_levels.items():
+                    # Per-symbol weekday skip (e.g. MNQ skips Mondays, MGC trades 5 days).
+                    sym_skip = self._overnight_symbol_skip_weekdays(symbol)
+                    if sym_skip and wd_today in sym_skip:
+                        logger.debug(f"⏭️  Skipping {symbol} — weekday {wd_today} in skip set {sorted(sym_skip)}")
+                        continue
+
                     # OPTIMIZATION: Skip symbols where both sides are in cooldown
                     buy_cooldown, _ = self._is_cooldown_active(symbol, 'BUY')
                     sell_cooldown, _ = self._is_cooldown_active(symbol, 'SELL')
@@ -3956,6 +4207,7 @@ class OvernightRangeStrategy(BaseStrategy):
             self._cfg.get_float("position_management.breakeven_profit_points", self.breakeven_profit_points)
         )
         self.range_break_offset = float(self._cfg.get_float("position_management.range_break_offset", self.range_break_offset))
+        self.trail_steps_r = self._read_trail_steps_r()
 
         self.breakout_monitor_enabled = self._cfg.get_bool("breakout_monitor.enabled", self.breakout_monitor_enabled)
         self.breakout_proximity_percent = float(self._cfg.get_float("breakout_monitor.proximity_pct", self.breakout_proximity_percent))

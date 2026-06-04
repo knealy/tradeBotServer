@@ -1,0 +1,82 @@
+# Mean Reversion strategy configuration.
+# Strategy-specific keys (RSI/MA/ATR thresholds) live at the top level here
+# because the strategy reads them as simple keys (e.g. cfg.get_int("rsi_period")).
+# Shared on/off + symbol list + sizing live under [meta] and [risk].
+#
+# 2026-06-01 wiring complete (Round 2):
+#   - execute() now routes through BaseStrategy.place_bracket_order
+#     (was calling trading_bot.create_bracket_order which the replay
+#     simulator does not intercept; zero trades in every prior walk).
+#   - Cross-bar cooldown (signal_cooldown_bars=12) + replay-aware
+#     open-position guard prevent stacked entries on the same RSI/ATR
+#     excursion.
+#   - RSI gates tightened back to 30/70 + atr_deviation_threshold=2.0
+#     (the loosened 35/65 + 1.5× generated 581 noise trades / 90d).
+#   - stop_atr_multiplier 1.5 → 1.0 to improve R/R geometry.
+#
+# Current 90d / 3-fold MNQ walk-forward (after wiring):
+#   trades=114, avg_bars_held=1822 → still HOLDING TOO LONG.  The
+#   ``target_ma_return=true`` setting waits for price to return to the
+#   MA which can take days; without a max_hold_bars exit the wins are
+#   small and the losses are catastrophic when the deviation persists.
+#   maxDD=783% on 3m means the strategy is structurally blowing the
+#   account — needs an ``max_hold_bars`` exit wired into ``analyze``
+#   and a per-symbol parameter sweep before production.
+#
+# STATUS: EXPERIMENTAL — enabled for backtest research, NOT production.
+# Do not register in live executor rotation until the structural
+# max-hold issue is fixed and walk-forward is positive across windows.
+
+# 24-hour trading window — see ``trend_following.toml`` comment for the
+# ``_in_trading_window`` system-clock gotcha.  Without this, backtests
+# run outside 09:30-15:45 LOCAL produce zero trades.
+start_time     = "00:00"
+end_time       = "23:59"
+no_trade_start = ""
+no_trade_end   = ""
+stop_atr_multiplier = 0.8
+max_hold_bars = 12
+signal_cooldown_bars = 18
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+# ---------------- strategy-specific knobs ----------------
+# MUST sit at TOML ROOT (above section headers) — the strategy reads
+# bare keys (``cfg.get_int("rsi_period")``).  Keys nested under
+# ``[risk]`` would become ``risk.rsi_period`` in the parsed tree and
+# never reach the strategy.
+rsi_period = 14
+# Tighter RSI gates than the loosened 35/65 — 30/70 is the textbook
+# mean-reversion threshold and combined with the cooldown halves trade
+# count without losing the strong-deviation entries.
+rsi_overbought = 70.0
+rsi_oversold = 30.0
+ma_period = 20
+
+# ATR settings (used for dynamic thresholds / stops)
+atr_period = 14
+# 5m matches the default walk-forward CSV (``--timeframe=5m``).  Coarser
+# TF (15m) requires the MockTradingBot resample delegate which yields
+# zero bars in current testing — debug is open.
+atr_timeframe = "5m"
+
+# Deviation threshold (in ATR multiples).  2.0x is the original default
+# the strategy was tuned for — combined with the 30/70 RSI gates it
+# requires a real outlier excursion before firing.
+atr_deviation_threshold = 2.0
+atr_threshold = 1.0
+# Tighten stop to 1.0x ATR (was 1.5x).  At 1.5x with a 1.5×ATR deviation
+# the loss math is bad — TP target ``return_to_MA`` is at most 1.5x ATR
+# above entry, while the stop is 1.5x ATR below = 1:1 R/R minimum on a
+# strategy that needs an edge.
+stop_atr_multiplier = 1.0
+# Cooldown between same-symbol entries (bars). 12 = ~60 min on 5m.
+signal_cooldown_bars = 12
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+

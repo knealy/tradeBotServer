@@ -87,10 +87,24 @@ class MeanReversionStrategy(BaseStrategy):
         self.target_ma_return = self._cfg.get_bool("target_ma_return", True)
         
         self.timeframe = self._cfg.get_str("timeframe", "5m")
-        
+
+        # Cross-bar signal cooldown. Mean-reversion bands stay outside the
+        # threshold for multiple bars when a real reversion plays out; the
+        # cooldown stops the strategy from stacking entries on the same
+        # excursion. 12 = ~60 min on 5m bars.
+        self.signal_cooldown_bars = int(self._cfg.get_int("signal_cooldown_bars", 12))
+        # Time-based exit. Mean-reversion's ``target_ma_return=true`` setting
+        # waits for price to revert to the MA which can take days on a
+        # persistent excursion; cap at 18 bars (~90 min on 5m) to bail when
+        # the reversion thesis hasn't started playing out.
+        self.max_hold_bars = int(self._cfg.get_int("max_hold_bars", 18))
+
         # State tracking
         self.is_trading = False
         self._monitoring_task: Optional[asyncio.Task] = None
+        self._bar_seq: int = 0
+        self._last_signal_bar_count: Dict[str, int] = {}
+        self._entry_bar_seq: Dict[str, int] = {}
         
         logger.info(f"🔄 Mean Reversion Strategy initialized")
         logger.info(f"   RSI: {self.rsi_period} period, OS<{self.rsi_oversold}, OB>{self.rsi_overbought}")
@@ -200,6 +214,38 @@ class MeanReversionStrategy(BaseStrategy):
             logger.error(f"Error calculating MA for {symbol}: {e}")
             return None
     
+    def _has_open_position_in_engine(self, symbol: str) -> bool:
+        """Backtest-aware position guard (replay engine first, live fallback)."""
+        sym = str(symbol).upper()
+        engine = getattr(self, "_replay_engine", None)
+        if engine is not None:
+            be = getattr(engine, "backtest_engine", None)
+            if be is not None and getattr(be, "positions", None):
+                for pos in be.positions.values():
+                    if str(getattr(pos, "symbol", "")).upper() == sym:
+                        return True
+        ap = getattr(self, "active_positions", None)
+        if isinstance(ap, dict) and ap.get(sym):
+            return True
+        return False
+
+    async def _maybe_close_stale_positions(self) -> None:
+        """Time-based MARKET exit. See core/max_hold_exit.py."""
+        if self.max_hold_bars <= 0:
+            return
+        engine = getattr(self, "_replay_engine", None)
+        if engine is None:
+            return
+        from core.max_hold_exit import close_positions_exceeding_max_hold
+        close_positions_exceeding_max_hold(
+            engine,
+            max_hold_bars=self.max_hold_bars,
+            current_bar_seq=self._bar_seq,
+            entry_bar_seq=self._entry_bar_seq,
+            log_prefix="mean_reversion",
+            logger=logger,
+        )
+
     async def calculate_atr(self, symbol: str, period: int = None) -> Optional[float]:
         """
         Calculate ATR (Average True Range).
@@ -262,7 +308,22 @@ class MeanReversionStrategy(BaseStrategy):
             should_trade, reason = self.should_trade(symbol)
             if not should_trade:
                 return None
-            
+
+            # Bar counter + time-based exit BEFORE the signal logic.
+            self._bar_seq += 1
+            await self._maybe_close_stale_positions()
+
+            # Lockout 1: cross-bar signal cooldown — see strategy ctor.
+            last_count = self._last_signal_bar_count.get(symbol)
+            if last_count is not None and self.signal_cooldown_bars > 0 and (self._bar_seq - last_count) < self.signal_cooldown_bars:
+                return None
+
+            # Lockout 2: open-position guard against the replay engine /
+            # live broker tracker. Stops the strategy from stacking
+            # reversion entries on the same excursion.
+            if self._has_open_position_in_engine(symbol):
+                return None
+
             # Get current price
             bars = await self.trading_bot.get_historical_data(
                 symbol=symbol,
@@ -330,7 +391,9 @@ class MeanReversionStrategy(BaseStrategy):
             if signal:
                 logger.info(f"📊 Mean Reversion Signal: {signal['action']} {symbol} @ {signal['entry_price']:.2f}")
                 logger.info(f"   {signal['reason']}")
-            
+                self._last_signal_bar_count[symbol] = self._bar_seq
+                self._entry_bar_seq[symbol] = self._bar_seq
+
             return signal
             
         except Exception as e:
@@ -355,19 +418,22 @@ class MeanReversionStrategy(BaseStrategy):
             
             # Place bracket order
             side = "BUY" if action == "LONG" else "SELL"
-            
-            result = await self.trading_bot.create_bracket_order(
+
+            # Route through ``BaseStrategy.place_bracket_order`` so the
+            # walk-forward replay engine can intercept the order (same
+            # fix as trend_following — direct ``trading_bot.create_bracket_order``
+            # silently bypassed the simulator in backtest).
+            result = await self.place_bracket_order(
                 symbol=symbol,
                 side=side,
                 quantity=position_size,
+                entry_price=entry_price,
                 stop_loss_price=stop_loss,
                 take_profit_price=take_profit,
-                account_id=self.trading_bot.selected_account if isinstance(self.trading_bot.selected_account, str) else self.trading_bot.selected_account.get('id') if isinstance(self.trading_bot.selected_account, dict) else None,
-                strategy_name=self.config.name  # Add strategy name for tracking
+                enable_breakeven=False,
             )
-            
-            # Fix: Check for 'success' and 'orderId' at top level (not 'order' key)
-            if result and result.get('success') and result.get('orderId'):
+            ok = bool(result) and (result.get("success") or result.get("orderId")) and not result.get("error")
+            if ok:
                 order_id = result.get('orderId')
                 logger.info(f"✅ Mean reversion order placed: {side} {position_size} {symbol} (Order ID: {order_id})")
                 

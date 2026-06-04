@@ -24,6 +24,16 @@ class EventType(Enum):
     POSITION_OPENED = "position_opened"
     POSITION_CLOSED = "position_closed"
     POSITION_UPDATED = "position_updated"
+
+    # Trade events (entry + exit pair, with realized PnL).
+    # Distinct from ``POSITION_CLOSED`` because the latter fires whenever a
+    # position's qty drops to zero (could be a partial close stack); ``TRADE_CLOSED``
+    # is the per-(entry,exit) Trade record from ``SessionTradeTracker.process_fill``
+    # carrying ``symbol`` + ``net_pnl`` + ``side`` + entry/exit timestamps.
+    # Strategies that need to react to their own realised PnL (e.g.
+    # consec-loss breaker) subscribe to this rather than building a fill diff
+    # manually.
+    TRADE_CLOSED = "trade_closed"
     
     # Account events
     ACCOUNT_UPDATED = "account_updated"
@@ -39,7 +49,18 @@ class EventType(Enum):
     STRATEGY_STOPPED = "strategy_stopped"
     SIGNAL_GENERATED = "signal_generated"
     STRATEGY_CONFIG_RELOADED = "strategy_config_reloaded"
-    
+
+    # Regime / portfolio events.
+    # ``REGIME_UPDATE`` is emitted by ``core.regime`` consumers when the
+    # market regime label changes (trend ↔ mixed ↔ chop).  ``PORTFOLIO_KILL``
+    # is emitted by ``core.portfolio_daily_breaker`` when total realised PnL
+    # for the current ET session crosses the operator's daily cap; the
+    # subscriber is ``StrategyManager``, which flat-files every open
+    # position and disables all strategies until the next session
+    # rollover (18:00 ET futures session reset).
+    REGIME_UPDATE = "regime_update"
+    PORTFOLIO_KILL = "portfolio_kill"
+
     # GUI events
     GUI_REFRESH_REQUESTED = "gui_refresh_requested"
     CHART_SYMBOL_CHANGED = "chart_symbol_changed"

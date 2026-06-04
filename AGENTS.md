@@ -68,10 +68,14 @@ scripts/run_overnight.sh <account_num>
 
 ## Backtest
 
-- Entry point: `python core/backtest_executor.py`
-- Batch grid: `scripts/batch_backtest.sh` → `scripts/batch_backtest.py`
+- **Single-shot, JSON-mode** (one strategy / one symbol / one window): `python core/backtest_executor.py --strategy=... --symbol=... --csv=... --start=... --end=... --replay --format=json --include-trades`
+- **Walk-forward (multi-fold, multi-symbol) — ALWAYS use the harness, never roll a subprocess loop**: `scripts/walkforward_trade_recap_report.py` is the canonical optimized entry. It uses `core/backtest/inprocess_runner.py` (pre-warmed ProcessPoolExecutor with shared pandas/numpy/strategy imports) by default — ~10× faster than spawning `core/backtest_executor.py` per fold and avoids the ad-hoc subprocess fan-out anti-pattern.
+- **Parameter sweeps**: `scripts/optimize_strategy.py` (TOML-driven trial harness) → calls the walk-forward harness with `--in-process` for each trial. `scripts/strategy_parameter_sweep.py` for matrix grids. Do NOT write per-session ad-hoc sweep scripts that subprocess `core/backtest_executor.py` in a loop — that path's per-task startup overhead (~250-400 ms × pandas + numpy + pyarrow + strategy imports) dominates the actual replay cost on small windows.
+- Batch grid (legacy): `scripts/batch_backtest.sh` → `scripts/batch_backtest.py`
 - Results land in Postgres `strategy_performance`; export via `scripts/export_history.py`
 - Run offline: set `ENABLE_SIGNALR=false` — never run backtests against a live SignalR connection.
+- **Decision cache**: the walk-forward harness writes to `docs/perf/_decision_cache/`. Key includes `core/backtest/strategy_replay.py` + `core/backtest/engine.py` content hashes — engine drift invalidates. If you change anything **outside** those two files that still affects replay behaviour (e.g. a strategy file's signal logic, a shared helper), pass `--no-cache-decisions` for the validating run.
+- **`BACKTEST_FAST_LOOP=1` is the default in walk-forward harnesses.** It swaps `df.iterrows()` for a `_BarRow` (slots-based, ~10× lighter) iterator. Any new replay-engine code that touches the per-bar `bar` object MUST work for both `pd.Series` AND `_BarRow` — do NOT add `isinstance(bar, pd.Series)` guards, use duck-typing (`bar["open"]`, `bar.name`). The 2026-06-03 round-14 cross-session bug was caused by exactly this guard silently no-op'ing the EOD flat under fast loop. Regression test: `tests/test_replay_force_flat_eod.py::test_replay_market_flat_accepts_barrow_fast_loop`.
 
 ## Key env vars
 

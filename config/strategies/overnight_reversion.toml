@@ -4,7 +4,32 @@
 # See ``strategies/overnight_reversion_strategy.py`` for mechanics.
 
 [meta]
-enabled = true
+# 2026-06-01 — disabled.  9m walk-forward (270d, 9 folds, MNQ+MES+MGC)
+# across every R1 sweep variant (committed config, Round-14 ATR band
+# 0.08-0.60%, looser ATR band, tighter ATR band, dropping MES, dropping
+# MGC) all returned ret=-250% to -415% with DD 160-215%.  The strategy
+# fades a confirmed first-close breakout outside the overnight box; on
+# this dataset (Aug 2025 → May 2026) the breakouts overwhelmingly
+# continued rather than reverting, so the fade entries lost systematically.
+#
+# Sweep evidence (9m, MNQ+MES+MGC):
+#   committed              n=257 ret=-308.85% dd=163.74% rf=-0.58
+#   round14 atr band       n=253 ret=-257.40% dd=160.55% rf=-0.56
+#   loose atr band         n=257 ret=-332.17% dd=176.29% rf=-0.62
+#   tight atr band         n=226 ret=-415.70% dd=214.19% rf=-0.68
+#   drop_mes (meta-override) is silently no-op for this strategy →
+#     identical to baseline; the loader prefers ``[meta] symbols``
+#     from the TOML root over root-level dotted overrides.
+#
+# The original Step-3 plan was to rebuild this as an "overnight_range
+# mirror" with reversed entry logic and a Round-14-style ATR band.  The
+# evidence shows the breakout-continuation regime is the dominant
+# driver, not the fade trigger — every retrace gate trims trades
+# **proportionally**, so the per-trade expectancy stays negative.
+# Reactivate only after an algorithmic pass that gates entries on a
+# regime detector (e.g. trend-day classification) rather than a
+# threshold over the same range.
+enabled = false
 symbols = ["MNQ", "MES", "MGC"]
 
 [timing]

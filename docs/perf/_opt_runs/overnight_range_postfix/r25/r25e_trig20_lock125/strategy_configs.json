@@ -1,0 +1,151 @@
+{
+  "captured_at_utc": "2026-06-03T16:37:08+00:00",
+  "git_head": "8c96c08b0",
+  "strategies": {
+    "overnight_range": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/overnight_range.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/overnight_range_postfix/r25/r25e_trig20_lock125/config/overnight_range.toml",
+      "data": {
+        "meta": {
+          "enabled": true,
+          "live_breaker_enabled": true,
+          "symbols": [
+            "MNQ",
+            "MGC"
+          ]
+        },
+        "timing": {
+          "overnight_start": "19:00",
+          "overnight_end": "10:00",
+          "market_open": "10:00",
+          "zone_anchor": "9:29",
+          "session_timezone": "US/Eastern",
+          "replay_order_window_minutes": 0,
+          "replay_force_flat_et": "16:00"
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 2,
+          "max_daily_trades": 3,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true,
+          "max_dll_usage_pct": 0.75
+        },
+        "signal": {
+          "atr_period": 14,
+          "atr_timeframe": "5m",
+          "stop_atr_multiplier": 1.0,
+          "tp_atr_multiplier": 2.5,
+          "max_consecutive_losses": 2,
+          "loss_streak_cooldown_sessions": 5,
+          "rolling_pnl_loss_threshold_dollars": 0,
+          "partial_tp_enabled": false,
+          "partial_tp_scalp_r": 1.0,
+          "use_range_pct_sltp": false,
+          "stop_range_pct": 50.0,
+          "tp_range_pct": 100.0
+        },
+        "position_management": {
+          "breakeven_enabled": false,
+          "breakeven_profit_points": 8.0,
+          "range_break_offset": 1.5,
+          "use_dynamic_atr_for_orders": true,
+          "trail_steps_r": [
+            [
+              2.0,
+              1.25
+            ]
+          ]
+        },
+        "breakout_monitor": {
+          "enabled": true,
+          "proximity_pct": 15.0,
+          "min_proximity_points": 15.0,
+          "interval_seconds": 10.0
+        },
+        "alerts": {
+          "discord_after_zero_trade_sessions": 0
+        },
+        "filters": {
+          "range_size": false,
+          "gap": true,
+          "volatility": true,
+          "dll_proximity": false,
+          "range_min_pct": 0.07142857142857142,
+          "range_max_pct": 2.857142857142857,
+          "gap_max_pct": 1.2,
+          "atr_min_pct": 0.08,
+          "atr_max_pct": 0.6,
+          "dll_threshold_pct": 0.75,
+          "skip_weekdays": []
+        },
+        "symbols": {
+          "MNQ": {
+            "signal": {
+              "stop_atr_multiplier": 0.5,
+              "tp_atr_multiplier": 4.0
+            },
+            "filters": {
+              "skip_weekdays": [
+                0,
+                4
+              ]
+            }
+          },
+          "MGC": {
+            "risk": {
+              "position_size": 1
+            },
+            "signal": {
+              "stop_atr_multiplier": 0.5,
+              "tp_atr_multiplier": 2.0
+            },
+            "filters": {
+              "skip_weekdays": [
+                2
+              ]
+            }
+          },
+          "MES": {
+            "signal": {
+              "stop_atr_multiplier": 0.5,
+              "tp_atr_multiplier": 2.0
+            },
+            "filters": {
+              "skip_weekdays": [
+                0,
+                4
+              ]
+            }
+          }
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "overnight_range"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

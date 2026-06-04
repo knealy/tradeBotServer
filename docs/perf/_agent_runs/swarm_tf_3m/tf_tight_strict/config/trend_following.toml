@@ -1,0 +1,78 @@
+# Trend Following strategy configuration.
+#
+# 2026-06-01 wiring complete (Round 2):
+#   - execute() now routes through BaseStrategy.place_bracket_order so
+#     the walk-forward replay engine intercepts orders (was calling
+#     trading_bot.create_bracket_order which the simulator does not
+#     intercept; zero trades in every prior walk-forward).
+#   - Cross-bar cooldown (``signal_cooldown_bars=20``) + open-position
+#     guard prevent same-bar entry stacking that previously produced
+#     2000-bar holds (avg drift = 6+ days = 3000%+ DD).
+#   - ATR-target multiplier reduced from hardcoded 5x to TOML-tunable
+#     ``atr_target_multiplier=3.0``; stop multiplier 2.0x → 1.0x.
+#
+# Current 90d / 3-fold MNQ walk-forward (after wiring):
+#   trades=7, avg_bars_held=10.6, ret=-327%, maxDD=277% → still
+#   STRUCTURALLY NEGATIVE.  Signals fire but the MA crossover edge
+#   doesn't hold at MNQ's 5m tick density.  Production track needs:
+#   - longer TF (15m or 30m) once the MockTradingBot resample path is
+#     fixed (currently yields zero bars on coarser TF)
+#   - trailing stop wired through the replay engine (currently the
+#     ``atr_trailing_multiplier`` knob is read but not enforced in
+#     backtest)
+#   - per-symbol parameter sweep (the same MA pair almost certainly
+#     does not fit MNQ + MES + MGC simultaneously)
+#
+# STATUS: EXPERIMENTAL — enabled for backtest research, NOT production.
+# Do not register in live executor rotation until walk-forward is
+# positive across 3m/6m/9m windows.
+
+# 24-hour trading window required because ``BaseStrategy._in_trading_window``
+# (called by ``should_trade``) compares against ``datetime.now()`` — the
+# SYSTEM wall clock, NOT the replay bar's timestamp.  Without this,
+# backtests run outside 09:30-15:45 LOCAL produce zero trades regardless
+# of strategy logic.  (Same fix pattern used by ``body_reversion.toml``
+# and ``overnight_range.toml``.)
+start_time     = "00:00"
+end_time       = "23:59"
+no_trade_start = ""
+no_trade_end   = ""
+
+# Strategy-specific knobs.  MUST sit at TOML ROOT (above any section
+# header) because the strategy reads ``cfg.get_int("fast_ma_period")``
+# i.e. bare-key lookup; a key under ``[risk]`` becomes ``risk.fast_ma_period``
+# in the parsed tree which the strategy code does NOT read.
+fast_ma_period         = 9
+slow_ma_period         = 21
+ma_type                = "EMA"
+atr_period             = 14
+# Tighter than the legacy 2.0x default — the long holds (avg 2k+ bars =
+# 6+ days) on wider stops produced 3000%+ DDs.  1.0x ATR caps the per-
+# trade risk and lets the cooldown / position guard do the rest.
+atr_stop_multiplier = 0.8
+atr_trailing_multiplier = 2.0
+# 0.05 ≈ 0.25% MA separation = ~50 pts on MNQ @ 21k — fires when the
+# fast MA is meaningfully above/below the slow MA but not so loose that
+# every minor wobble triggers.  Previous default (0.5 = 5% separation =
+# 1050 pts on MNQ) was silent on the dataset.
+min_trend_strength = 0.1
+# 5m matches the default walk-forward CSV (``--timeframe=5m``); using a
+# coarser TF (15m) triggers the MockTradingBot resample path which
+# returns 0 trades in current state.
+timeframe              = "5m"
+# Cooldown between same-symbol entries (bars). 20 = ~100 min on 5m bars
+# — roughly the typical hold for a single MA-trend leg before the
+# crossover flips.
+signal_cooldown_bars   = 20
+atr_target_multiplier = 2.5
+max_hold_bars = 40
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+

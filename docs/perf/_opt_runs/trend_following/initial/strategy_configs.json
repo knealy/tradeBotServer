@@ -1,0 +1,62 @@
+{
+  "captured_at_utc": "2026-06-01T17:15:10+00:00",
+  "git_head": "8c96c08b0",
+  "strategies": {
+    "trend_following": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/trend_following.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/trend_following/initial/config/trend_following.toml",
+      "data": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "fast_ma_period": 9,
+        "slow_ma_period": 21,
+        "ma_type": "EMA",
+        "atr_period": 14,
+        "atr_stop_multiplier": 2.0,
+        "atr_trailing_multiplier": 3.0,
+        "min_trend_strength": 0.05,
+        "timeframe": "5m",
+        "meta": {
+          "enabled": true,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 2,
+          "max_daily_trades": 10,
+          "risk_per_trade_pct": 0.5
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 90,
+    "folds": 3,
+    "strategies": [
+      "trend_following"
+    ],
+    "symbols": [
+      "MNQ"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

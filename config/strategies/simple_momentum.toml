@@ -1,7 +1,20 @@
 # Simple Momentum strategy configuration.
+#
+# 2026-06-01 — disabled.  Implementation bug, not a config issue: in
+# ``strategies/simple_momentum_strategy.analyze`` the breakout gate is
+# ``current_price > recent_high`` where ``recent_high = max(highs)`` over
+# the last 10 bars INCLUDING the current bar.  By construction the
+# current close is one of the values inside the ``max(...)`` window, so
+# the inequality is never strictly true on a closed bar and the strategy
+# emits no signals on any historical dataset.  The fix is structural —
+# either shift the window to exclude the current bar or change the
+# trigger to ``close > recent_high * (1 + epsilon)`` — and belongs in
+# the strategy code, not the TOML.  Disabling here so live executors
+# don't pick this up; reactivate after the strategy is fixed +
+# walk-forward validated.
 
 [meta]
-enabled = true
+enabled = false
 symbols = ["MNQ", "MES", "MGC"]
 
 [risk]

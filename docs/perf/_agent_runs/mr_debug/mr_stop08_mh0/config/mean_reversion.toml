@@ -1,0 +1,89 @@
+# Mean Reversion strategy configuration.
+# Strategy-specific keys (RSI/MA/ATR thresholds) live at the top level here
+# because the strategy reads them as simple keys (e.g. cfg.get_int("rsi_period")).
+# Shared on/off + symbol list + sizing live under [meta] and [risk].
+#
+# 2026-06-01 wiring complete (Round 2):
+#   - execute() now routes through BaseStrategy.place_bracket_order
+#     (was calling trading_bot.create_bracket_order which the replay
+#     simulator does not intercept; zero trades in every prior walk).
+#   - Cross-bar cooldown (signal_cooldown_bars=12) + replay-aware
+#     open-position guard prevent stacked entries on the same RSI/ATR
+#     excursion.
+#   - RSI gates tightened back to 30/70 + atr_deviation_threshold=2.0
+#     (the loosened 35/65 + 1.5× generated 581 noise trades / 90d).
+#
+# 2026-06-02 max_hold_bars exit ported in (core/max_hold_exit.py).
+# Round 3 parameter sweep over stop_atr_multiplier / max_hold:
+#   stop_atr_multiplier=1.0 baseline  ret -6%  / dd 95%  / RF -0.04
+#   stop_atr_multiplier=0.8           ret+204% / dd 31%  / RF 2.94
+#   stop_atr_multiplier=0.7           ret+242% / dd 50%  / RF 2.72   ← 6m
+#   stop_atr_multiplier=0.7 (9m)      ret+167% / dd 91%  / RF 1.27
+# The 0.7x stop / 1.5R-to-MA geometry is the structural fix — wide
+# stops on a reversion strategy compound losses faster than the wins
+# can offset them.  Promoting to "production-candidate" but still
+# marked EXPERIMENTAL because the 9m DD (91%) is too close to the
+# 100% account-blow cliff for a live rotation slot.
+#
+# STATUS: EXPERIMENTAL (production-candidate) — backtest-positive
+# across 3m/6m/9m windows, but 9m DD ≥ 90% so do not live-rotate yet.
+# Validate on a 12m window + cross-symbol (MES/MGC) before promoting.
+
+# 24-hour trading window — see ``trend_following.toml`` comment for the
+# ``_in_trading_window`` system-clock gotcha.  Without this, backtests
+# run outside 09:30-15:45 LOCAL produce zero trades.
+start_time     = "00:00"
+end_time       = "23:59"
+no_trade_start = ""
+no_trade_end   = ""
+stop_atr_multiplier = 0.8
+max_hold_bars = 0
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+# ---------------- strategy-specific knobs ----------------
+# MUST sit at TOML ROOT (above section headers) — the strategy reads
+# bare keys (``cfg.get_int("rsi_period")``).  Keys nested under
+# ``[risk]`` would become ``risk.rsi_period`` in the parsed tree and
+# never reach the strategy.
+rsi_period = 14
+# Tighter RSI gates than the loosened 35/65 — 30/70 is the textbook
+# mean-reversion threshold and combined with the cooldown halves trade
+# count without losing the strong-deviation entries.
+rsi_overbought = 70.0
+rsi_oversold = 30.0
+ma_period = 20
+
+# ATR settings (used for dynamic thresholds / stops)
+atr_period = 14
+# 5m matches the default walk-forward CSV (``--timeframe=5m``).  Coarser
+# TF (15m) requires the MockTradingBot resample delegate which yields
+# zero bars in current testing — debug is open.
+atr_timeframe = "5m"
+
+# Deviation threshold (in ATR multiples).  2.0x is the original default
+# the strategy was tuned for — combined with the 30/70 RSI gates it
+# requires a real outlier excursion before firing.
+atr_deviation_threshold = 2.0
+atr_threshold = 1.0
+# Stop tightened to 0.7x ATR — Round 3 sweep showed this is the
+# structural fix.  Target (return_to_MA) is at most 2x ATR, so 0.7x
+# stop is a ~1:3 R/R floor; combined with 30%+ win-rate the expectancy
+# is positive even on long windows.  Earlier 1.0x value left the wins
+# unable to offset the losses on persistent-deviation regimes (the
+# ``target_ma_return=true`` setting can sit through 1500+ bar holds).
+stop_atr_multiplier = 0.7
+# Cooldown between same-symbol entries (bars). 12 = ~60 min on 5m.
+signal_cooldown_bars = 12
+# Time-based MARKET exit (core/max_hold_exit.py).  18 bars = ~90 min
+# on 5m TF.  Cap the worst-case "deviation persists" path so a single
+# losing leg cannot drift past the stop_atr_multiplier band.
+max_hold_bars = 18
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+

@@ -1,0 +1,112 @@
+---
+description: Backtest engine + walkforward workflow rules — fast-path defaults, parity contract, and the agent iteration loop.
+globs: "core/backtest/**/*.py,core/backtest_executor.py,scripts/walkforward_*.py,scripts/agent_perf_summary.py,strategies/strategy_base.py,tests/test_backtest_*"
+alwaysApply: false
+---
+
+# Backtest workflow
+
+These rules encode the conventions from the three rounds of backtest
+performance work (parquet sidecar / fast loop / in-process runner / active
+window gate / vectorized OHLCV). The goal: any agent landing on a perf or
+backtest task starts from the right defaults instead of re-deriving them.
+
+## The agent iteration loop
+
+For "tweak a knob → re-verify performance" tasks, prefer the make targets
+over hand-rolled CLI invocations — defaults are already set correctly:
+
+- `make backtest STRATEGY=<id>` — walkforward grid (in-process + cache ON).
+- `make summary STRATEGY=<id>` — JSON summary of all matching `docs/perf/`
+  runs, with `vs_previous` deltas already computed. Use `FORMAT=table` for
+  human-readable, `LIMIT=N` to bound, `WINDOWS=3m,9m` to filter.
+- `make smoke STRATEGY=<id>` — byte-identical parity (1m + 4m windows, ~90 s).
+- `make verify-fast` — backtest + parity tests only, skips the unrelated
+  full pytest run.
+
+Direct script invocation when you need flags `make` doesn't expose:
+`scripts/walkforward_strategy_competition.py`, `scripts/walkforward_trade_recap_report.py`,
+`scripts/walkforward_last_trades_charts.py`. **All three default to
+`--in-process` and `--cache-decisions` ON**; pass `--no-in-process` /
+`--no-cache-decisions` only when you specifically need subprocess isolation
+or a cold cache.
+
+## Parity contract — non-negotiable
+
+The slow loop (`df.iterrows()` + linear `mock_get_historical_data`) is the
+source of truth. The fast loop (`BACKTEST_FAST_LOOP=1`, default on every
+walkforward script) MUST produce byte-identical trade lists and metrics.
+
+If you touch any of:
+- `core/backtest/strategy_replay.py`
+- `core/backtest/ohlcv.py`
+- `core/backtest/engine.py`
+- `core/backtest_executor.py` (the `MockTradingBot` cursor / resample paths)
+
+then before commit run `make smoke STRATEGY=morning_range_reversion`
+**AND** `make smoke STRATEGY=overnight_range`. The 4-month MNQ window is the
+canary for O(n²) drift — never delete it from
+`tests/test_backtest_fast_loop_parity.py`.
+
+If you add a new optimization that needs to break parity for a measurable
+reason, document the divergence in `docs/CHANGELOG.md` AND add the new
+expected metrics as a separate test row — do not silently mutate the
+existing baseline.
+
+## Engine defaults the agent should know
+
+Already-shipped optimizations the agent should NOT reinvent:
+
+- **Parquet sidecar cache** (`core/backtest/parquet_cache.py`) — CSV loads
+  are transparently routed through a `<csv>.parquet` sidecar with embedded
+  `mtime_ns`. Don't add another data-cache layer.
+- **Decision cache** (`core/backtest/decision_cache.py`) — content-addressed
+  replay payload cache under `docs/perf/_decision_cache/`. Key includes
+  strategy code, TOML, engine code, env vars, CSV mtime. Always opt-in via
+  `BACKTEST_CACHE_DECISIONS=1` or `--cache-decisions` (default in
+  walkforward scripts).
+- **Fast loop** (`BACKTEST_FAST_LOOP=1`) — NumPy-iter replacement for
+  `df.iterrows`, `np.searchsorted`-based `mock_get_historical_data`,
+  cursor-driven mocks. Default in every walkforward script.
+- **In-process runner** (`core/backtest/inprocess_runner.py`) — pre-warmed
+  `ProcessPoolExecutor` workers replace per-task subprocess. Default in
+  every walkforward script.
+- **Active-window gate** (`BaseStrategy.replay_active_window_et` →
+  `StrategyReplayEngine._build_replay_active_window_mask`) — opt-in. When
+  a strategy declares its ET active window, the engine skips `analyze()` on
+  out-of-window bars when no position is open. Already declared on
+  `morning_range_reversion`. Strategies leaving `replay_active_window_et =
+  None` (the default) pay zero overhead.
+- **Precompute hook** (`BaseStrategy.replay_precompute_indicators(df)`) —
+  opt-in vectorization. Override to compute ATR / EMA / session indicators
+  once before the bar loop and stash on `self.trading_bot._precomputed`.
+  Falls back to per-bar if the override raises.
+
+## Reading performance results
+
+The walkforward scripts write three artefacts per run under their `--out-dir`:
+
+- `metrics.json` — per-fold rows (n_trades, pnl, win_rate, ...)
+- `metrics_insights.json` — aggregated `grand.equity_summary` and
+  `grand.extended` (return%, DD%, RF, WR, n_trades). **This is the headline.**
+- `strategy_configs.json` — TOML snapshot used for the run.
+
+Don't open these by hand to compare runs — `scripts/agent_perf_summary.py
+<strategy>` returns every matching run + `vs_previous` deltas in one JSON
+blob. Output format is stable; safe to parse.
+
+## What NOT to do
+
+- **Do NOT** call `python core/backtest_executor.py` in tight loops for
+  iteration — use the walkforward scripts (caching + parallel + warm pool).
+- **Do NOT** disable the fast loop globally as a "safety" measure. The
+  parity tests are the safety net. The slow path is only for one-off
+  debugging when parity has actually drifted.
+- **Do NOT** edit `tests/test_backtest_fast_loop_parity.py` to make a test
+  pass after engine changes. Fix the engine; the test pins the contract.
+- **Do NOT** add a new env-var feature flag without a matching parity test.
+- **Do NOT** invent a new CSV ingestion path. Use
+  `core.backtest.data_loader` or `core.backtest.parquet_cache.load_ohlcv_cached`.
+- **Do NOT** import strategies inside the engine. The engine consumes
+  strategies via `StrategyReplayEngine.strategy` (already wired in
+  `core/backtest_executor.py`).

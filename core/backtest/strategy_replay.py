@@ -9,17 +9,222 @@ from __future__ import annotations
 
 import bisect
 import logging
+import os
 import asyncio
+import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any, List, Tuple, Iterator
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from .engine import BacktestEngine
 from .models import BacktestResult, OrderSide, OrderType, OrderStatus
 from .ohlcv import sanitize_replay_bars_list
 
+# Sentinel used by ``_replay_force_flat_cutoff_minutes_et``'s lazy cache to
+# distinguish "not yet computed" from "computed and resolved to None" (which
+# is a valid config state, meaning "no force-flat cutoff").
+_UNSET = object()
+
 logger = logging.getLogger(__name__)
+
+
+# ── BACKTEST_FAST_LOOP fast-path ──────────────────────────────────────────────
+# Opt-in (``BACKTEST_FAST_LOOP=1``) replacement for the ``df.iterrows()`` hot
+# loop. ``iterrows`` allocates a fresh ``pd.Series`` per bar (~70 µs each, plus
+# metadata GC pressure); on a 5000-bar fold that's ~350 ms of pure iteration
+# overhead before any strategy logic runs.
+#
+# The fast loop pulls OHLCV columns out as NumPy arrays once, then on each
+# iteration wraps them in a ``_BarRow`` — a ``__slots__``-only class that
+# exposes both ``bar['high']`` (dict-style, used by ``BacktestEngine._check_order_fill``,
+# ``_update_unrealized_pnl``, ``_evaluate_breakeven_watches``, etc.) and
+# ``bar.name`` (attribute style, used by ``BacktestEngine`` when stamping
+# ``order.filled_timestamp``). Drop-in for ``pd.Series`` at the call sites the
+# replay engine touches; produces byte-identical trade lists vs the slow loop
+# (pinned by ``tests/test_backtest_fast_loop_parity.py``).
+#
+# Default is OFF so existing optimization runs / cached perf reports stay
+# identical to git history. Enable per-run via env var; will be flipped to
+# default-on after a wider validation pass.
+_FAST_LOOP_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def _fast_loop_enabled() -> bool:
+    return os.environ.get("BACKTEST_FAST_LOOP", "0").strip().lower() in _FAST_LOOP_TRUE
+
+
+class _BarRow:
+    """Drop-in OHLCV row for the replay hot loop. ~10× lighter than ``pd.Series``.
+
+    Supports both Series-style access patterns the engine relies on:
+    ``bar['high']`` (via ``__getitem__``) and ``bar.name`` (the bar's timestamp,
+    used when stamping fills). ``__slots__`` avoids the per-instance ``__dict__``
+    allocation that makes ``pd.Series`` expensive to construct at scale.
+    """
+
+    __slots__ = ("name", "open", "high", "low", "close", "volume")
+
+    def __init__(
+        self,
+        name: Any,
+        open_: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: int,
+    ) -> None:
+        self.name = name
+        self.open = open_
+        self.high = high
+        self.low = low
+        self.close = close
+        self.volume = volume
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __repr__(self) -> str:  # pragma: no cover — debug only
+        return (
+            f"_BarRow(name={self.name!r}, open={self.open}, high={self.high}, "
+            f"low={self.low}, close={self.close}, volume={self.volume})"
+        )
+
+
+def _iter_bars_fast(df: pd.DataFrame) -> Iterator[Tuple[int, Any, _BarRow]]:
+    """Yield ``(i, timestamp, _BarRow)`` triples without a per-row Series alloc.
+
+    NumPy column slices are extracted once; the per-iteration cost is just the
+    ``_BarRow.__init__`` call plus an int index advance. Constructed lazily so
+    callers can early-break without converting the tail.
+
+    **Hot-loop note:** Materializing ``df.index`` to a Python list of pd.Timestamp
+    once up front avoids ``DatetimeIndex.__getitem__`` per iteration (which costs
+    ~70 µs each — confirmed by cProfile, used to be ~3.4 s of a 6 s replay).
+    The list comprehension below pays a one-time O(n) cost (~50-150 ms for 17k
+    bars) but every per-iter access is a cheap PyList_GetItem (~50 ns).
+    """
+    opens = df["open"].to_numpy()
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    closes = df["close"].to_numpy()
+    volumes = df["volume"].to_numpy()
+    timestamps = list(df.index)  # one-shot conversion; per-iter access is cheap
+    n = len(df)
+    for i in range(n):
+        ts = timestamps[i]
+        yield i, ts, _BarRow(
+            ts,
+            float(opens[i]),
+            float(highs[i]),
+            float(lows[i]),
+            float(closes[i]),
+            int(volumes[i]) if volumes[i] == volumes[i] else 0,  # NaN-safe int cast
+        )
+
+
+# ── Fast-mode strategy-mock helpers (BACKTEST_FAST_LOOP=1) ────────────────────
+#
+# Profile of a 1-month MNQ ``morning_range_reversion`` replay (slow path):
+#
+#     mock_get_historical_data            16.0 s   (91% of total)
+#       _bar_time_utc                      5.7 s   (12.3M calls)
+#       _parse_dt                          3.2 s   (12.3M calls)
+#
+# The dominant cost is the slow path re-parsing every bar's ``timestamp`` field
+# every single time the strategy asks for "the last N bars" — which morning_range
+# does once per bar (~3000 mock calls per replay bar). That's O(n²) parsing
+# of strings that pandas already parsed once when it built the OHLCV DataFrame.
+#
+# The fast mocks below replace the slow ``mock_get_historical_data`` with a
+# ``np.searchsorted``-driven version that bisects a precomputed
+# ``bar_times_ns: np.ndarray[int64]`` (extracted directly from the DataFrame's
+# DatetimeIndex via ``.view('int64')`` — zero parsing cost). Per-call: O(log n)
+# bisect + O(k) slice. Per-bar: a single integer cursor update.
+#
+# Correctness invariants the slow path enforces that the fast path must also
+# enforce:
+#
+# 1. **No look-ahead.** The strategy must not see bars whose open time exceeds
+#    the current replay cursor's timestamp. Slow path: ``bars_list`` is the
+#    prefix, plus ``cur_utc`` redundancy guard. Fast path: ``bars_list`` is
+#    the FULL list, clipped to ``[0, cursor_index + 1)`` via the int cursor.
+# 2. **start_time / end_time honored.** Bisect with searchsorted gives the
+#    same inclusive-open / inclusive-close semantics as the slow path's
+#    ``bt < start_utc`` / ``bt > end_utc`` guards.
+# 3. **limit semantics preserved.** Last ``limit`` bars after filtering.
+# 4. **Resample path (rare).** ``MockTradingBot._select_historical_source``
+#    delegates to ``_resample_native_to`` for coarser TFs. The fast path
+#    leaves ``MockTradingBot.bars`` as the full list and sets a parallel
+#    ``_fast_cursor_index`` attribute; ``_resample_native_to`` reads that
+#    cursor and slices the bars list on demand (re-introducing the per-call
+#    slice, but only when the resample path is actually exercised — most
+#    strategies don't request a coarser TF every bar).
+#
+# Parity is pinned by ``tests/test_backtest_fast_loop_parity.py``: a fixed
+# canonical-CSV fold runs through the slow path AND the fast path and the
+# resulting trade lists are diffed byte-for-byte.
+
+
+def _bars_to_utc_ns(df: pd.DataFrame) -> np.ndarray:
+    """Extract UTC nanoseconds from a parsed-once DatetimeIndex.
+
+    Both ``data_loader.HistoricalDataLoader.load_from_csv`` and
+    ``parquet_cache.load_ohlcv_cached`` return frames with naive-UTC
+    ``DatetimeIndex`` (no tz). The underlying ``datetime64[ns]`` storage
+    aliases directly to int64 nanoseconds. No copy, no parsing.
+    """
+    idx = df.index
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_convert("UTC").tz_localize(None)
+    return idx.to_numpy(dtype="datetime64[ns]").view("int64")
+
+
+def _dt_to_utc_ns(value: Any) -> Optional[int]:
+    """Coerce ``str | datetime | int | float | pd.Timestamp`` → UTC nanoseconds.
+
+    Matches the semantics of ``_parse_dt`` in the slow path but returns int64
+    nanoseconds suitable for ``np.searchsorted`` against the precomputed
+    bar_times_ns array. Returns ``None`` only when the input is None or unparseable.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, np.integer)):
+        # Treat as epoch seconds (slow path's _parse_dt does the same).
+        return int(value) * 1_000_000_000
+    if isinstance(value, float):
+        return int(value * 1_000_000_000)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        # pd.Timestamp handles ns precision; plain datetime is only µs but
+        # the slow path also operates at datetime precision so this matches.
+        return int(value.timestamp() * 1_000_000_000)
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return int(dt.timestamp() * 1_000_000_000)
+        except ValueError:
+            return None
+    # pd.Timestamp / numpy.datetime64 fall-through via to_pydatetime / item()
+    try:
+        ts = pd.Timestamp(value)
+        if ts.tz is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return int(ts.value)  # ns
+    except Exception:
+        return None
 
 
 def replay_timeframe_to_minutes(replay_timeframe: Optional[str]) -> int:
@@ -443,11 +648,17 @@ class StrategyReplayEngine:
             # The watch was registered against the *entry* order id (``filled.order_id``)
             # before the entry filled. Now that the SL exit order exists, we can move
             # its stop_price on subsequent bars when MFE crosses the threshold.
-            watch = self._breakeven_watches.get(str(filled.order_id))
-            if watch is not None:
-                watch["sl_order_id"] = str(sl_order_id)
-                watch["entry_bar_index"] = self.backtest_engine.current_bar_index
-                watch["position_filled"] = True
+            #
+            # Multi-stage step-trail support (R23+): strategies that register multiple
+            # stage watches per trade use synthetic keys ``{entry_id}_trail{N}``. Link
+            # ALL of them to the same SL order so each stage fires once at its own
+            # MFE threshold and ratchets the SL price progressively.
+            entry_id_str = str(filled.order_id)
+            for watch_key, watch in self._breakeven_watches.items():
+                if watch_key == entry_id_str or watch_key.startswith(entry_id_str + "_"):
+                    watch["sl_order_id"] = str(sl_order_id)
+                    watch["entry_bar_index"] = self.backtest_engine.current_bar_index
+                    watch["position_filled"] = True
 
         self._maybe_arm_partial_tp_stage2(filled_this_bar, bar)
 
@@ -541,7 +752,19 @@ class StrategyReplayEngine:
             setattr(pos, "_partial_tp_stage2_armed", True)
 
     def _replay_force_flat_cutoff_minutes_et(self) -> Optional[int]:
-        """US/Eastern ``HH:MM`` after which replay must be flat (prop day cap). Default ``16:00``."""
+        """US/Eastern ``HH:MM`` after which replay must be flat (prop day cap). Default ``16:00``.
+
+        Cached on first call per replay run: the value is derived from
+        immutable TOML keys (``timing.replay_force_flat_et`` falling back to
+        ``signal.flat_before``) that never change mid-replay. Caching this
+        once cuts the per-bar cost from ~6 µs × 17.4 k bars = ~103 ms
+        (third-largest hotpath after Tier 5) down to a single resolve.
+        ``_install_fast_strategy_mocks_restore`` clears the cache as part of
+        teardown so a follow-up replay with a different config is correct.
+        """
+        cached = getattr(self, "_replay_force_flat_minutes_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached
         raw = "16:00"
         cfg = getattr(self.strategy, "_cfg", None)
         if cfg is not None and hasattr(cfg, "get_str"):
@@ -552,19 +775,32 @@ class StrategyReplayEngine:
                 fb = cfg.get_str("signal.flat_before", None)
                 if fb is not None and str(fb).strip():
                     raw = str(fb).strip()
-        return parse_replay_force_flat_et_minutes(raw)
+        result = parse_replay_force_flat_et_minutes(raw)
+        self._replay_force_flat_minutes_cache = result
+        return result
 
     def _replay_cancel_all_pending_orders(self) -> None:
         for order in self.backtest_engine.pending_orders[:]:
             order.status = OrderStatus.CANCELLED
         self.backtest_engine.pending_orders.clear()
 
-    def _replay_market_flat_all_open_positions(self, bar: pd.Series) -> None:
-        """Market-close every open position at this bar's open; tag exit reason for JSON."""
-        if not isinstance(bar, pd.Series):
+    def _replay_market_flat_all_open_positions(self, bar: Any) -> None:
+        """Market-close every open position at this bar's open; tag exit reason for JSON.
+
+        Accepts both ``pd.Series`` (slow loop) and ``_BarRow`` (fast loop). The
+        early-return guard validates only that the bar exposes the OHLC fields
+        we actually need (``open`` access + ``name`` attribute). Previously
+        this required ``isinstance(bar, pd.Series)``, which silently no-op'd
+        when ``BACKTEST_FAST_LOOP=1`` was in effect — bypassing both the EOD
+        cutoff and the date-rollover guard. Symptom: ``overnight_range``
+        positions persisted across calendar days in fast-loop walkforwards
+        (round-14 regression).
+        """
+        try:
+            px = float(bar["open"])
+            ts_name = bar.name
+        except (KeyError, AttributeError, TypeError, ValueError):
             return
-        px = float(bar["open"])
-        ts_name = bar.name
         for _ in range(32):  # guard against pathological loops
             if not self.backtest_engine.positions:
                 break
@@ -599,14 +835,46 @@ class StrategyReplayEngine:
         *,
         cutoff_minutes: Optional[int],
         bar_minutes_et: int,
+        bar_et_date: Optional[date] = None,
     ) -> None:
-        if cutoff_minutes is None or bar_minutes_et < cutoff_minutes:
+        """Force-flat replay positions when the bar clock crosses the
+        configured EOD cutoff OR when the bar date advances past the
+        previous bar's date.
+
+        Date-rollover guard: a position that opens late in the day
+        (e.g. 15:55 ET) and is followed by a multi-hour gap (16:00 ET
+        through 18:00 ET — the CME settlement window) would otherwise
+        bypass the 16:00-cutoff check entirely if the dataset's first
+        bar after the gap is on the NEXT trading day at 18:00 ET. That
+        bar's ``bar_minutes_et`` is 1080 (≥ 960), so the existing branch
+        catches it — but to make the invariant explicit, we also fire
+        on any bar whose ET date differs from the previously-recorded
+        ``_last_replay_bar_et_date``. This is the regression fix for
+        the round-14 ``overnight_range`` walkforward where some MNQ/MGC
+        positions persisted for 7-15 calendar days.
+        """
+        if cutoff_minutes is None:
             return
         if not self.backtest_engine.positions and not self.backtest_engine.pending_orders:
+            self._last_replay_bar_et_date = bar_et_date
             return
-        self._replay_cancel_all_pending_orders()
-        if self.backtest_engine.positions:
-            self._replay_market_flat_all_open_positions(bar)
+
+        past_cutoff = bar_minutes_et >= cutoff_minutes
+        # Date-rollover guard: if today's date doesn't match the previous
+        # bar's date AND we have open state, flat unconditionally.
+        prev_date = getattr(self, "_last_replay_bar_et_date", None)
+        date_rolled = (
+            prev_date is not None
+            and bar_et_date is not None
+            and prev_date != bar_et_date
+        )
+
+        if past_cutoff or date_rolled:
+            self._replay_cancel_all_pending_orders()
+            if self.backtest_engine.positions:
+                self._replay_market_flat_all_open_positions(bar)
+
+        self._last_replay_bar_et_date = bar_et_date
 
     async def replay(
         self,
@@ -618,15 +886,23 @@ class StrategyReplayEngine:
     ) -> BacktestResult:
         """
         Replay strategy on historical bars.
-        
+
         Args:
             symbol: Trading symbol
             bars: List of historical bar dicts with OHLCV data (or DataFrame)
             tick_size: Minimum price increment
             bars_1m: Optional 1m bars for intrabar fill simulation inside each aggregate bar
-            
+
         Returns:
             BacktestResult with performance metrics
+
+        Note:
+            For callers that already hold a parsed OHLCV DataFrame (the
+            walk-forward executor + parquet cache path), prefer :meth:`replay_df`
+            which skips the list-of-dicts → DataFrame round-trip entirely.
+            This method exists for backward compatibility with sample-data
+            and ad-hoc test callers; it builds the DataFrame from ``bars``
+            and forwards to the shared core.
         """
         # Handle DataFrame input (from sample data)
         if isinstance(bars, pd.DataFrame):
@@ -645,24 +921,73 @@ class StrategyReplayEngine:
 
         if isinstance(bars, list) and bars and isinstance(bars[0], dict):
             bars = sanitize_replay_bars_list(bars)
-        
+
+        # Convert bars to DataFrame for BacktestEngine.
+        df = self._bars_to_dataframe(bars)
+        return await self.replay_df(
+            symbol=symbol,
+            df=df,
+            bars=bars,
+            tick_size=tick_size,
+            replay_timeframe=replay_timeframe,
+            bars_1m=bars_1m,
+        )
+
+    async def replay_df(
+        self,
+        symbol: str,
+        df: pd.DataFrame,
+        bars: Optional[List[Dict]] = None,
+        tick_size: float = 0.25,
+        replay_timeframe: Optional[str] = None,
+        bars_1m: Optional[List[Dict]] = None,
+    ) -> BacktestResult:
+        """
+        Replay entry point that accepts a pre-parsed OHLCV DataFrame directly.
+
+        **Tier 1.1 fast path.** The walk-forward + parquet-cache pipeline already
+        loads bars as a DataFrame; this method skips the
+        ``list[dict] → _bars_to_dataframe → DataFrame`` round-trip the legacy
+        ``replay(bars=...)`` path pays. Saves a vectorized DataFrame rebuild
+        per replay (~5-10 ms × N folds across a sweep).
+
+        ``bars`` is optional and only needed by the slow ``_call_strategy_analyze``
+        path (BACKTEST_FAST_LOOP=0) and by the fast-mode strategy mocks that slice
+        ``bars[start:cutoff]`` to satisfy ``get_historical_data`` requests. When
+        omitted, it is derived from ``df`` via
+        :func:`core.backtest.ohlcv.replay_bars_from_ohlcv_df` on first need.
+
+        The hot replay loop, intrabar fills, equity bookkeeping, and result
+        construction are byte-identical to ``replay()`` — both methods share
+        the same engine code below.
+        """
+        if bars is None:
+            from core.backtest.ohlcv import replay_bars_from_ohlcv_df
+            bars = replay_bars_from_ohlcv_df(df, deroll=False)
+        elif isinstance(bars, list) and bars and isinstance(bars[0], dict):
+            bars = sanitize_replay_bars_list(bars)
+
         logger.info(f"🔄 Starting strategy replay: {self.strategy.config.name} on {symbol}")
-        logger.info(f"   Bars: {len(bars)}")
-        if bars and isinstance(bars[0], dict):
-            first_ts = bars[0].get('timestamp', 'N/A')
-            last_ts = bars[-1].get('timestamp', 'N/A')
-            logger.info(f"   Period: {first_ts} to {last_ts}")
-        
+        logger.info(f"   Bars: {len(df)}")
+        if len(df) > 0:
+            logger.info(f"   Period: {df.index[0]} to {df.index[-1]}")
+
         self._current_symbol = symbol
         self._current_bars = bars
         self._replay_timeframe = replay_timeframe
 
+        # Tier 4: invalidate per-replay caches that key off the strategy's
+        # TOML config. A new replay() invocation may be for the same engine
+        # instance but a different fold's config — flush so the lazy resolve
+        # picks up the new values on first per-bar call.
+        self._replay_force_flat_minutes_cache = _UNSET
+        # Date-rollover tracker for the EOD force-flat guard.  Reset per replay
+        # so a new fold starts clean (no carryover from prior fold's last bar).
+        self._last_replay_bar_et_date = None
+
         # Reset breakeven-watch state so back-to-back replays (e.g. walk-forward folds
         # sharing a StrategyReplayEngine) don't carry watches across runs.
         self._breakeven_watches.clear()
-
-        # Convert bars to DataFrame for BacktestEngine
-        df = self._bars_to_dataframe(bars)
         
         # Intercept strategy's order placement methods
         self._intercept_strategy_methods()
@@ -686,8 +1011,64 @@ class StrategyReplayEngine:
                     agg_minutes,
                 )
 
-            # Run strategy on each bar
-            for i, (timestamp, bar) in enumerate(df.iterrows()):
+            # Run strategy on each bar. The ``BACKTEST_FAST_LOOP=1`` opt-in swaps
+            # the per-bar ``pd.Series`` allocation that ``df.iterrows`` emits for
+            # a lightweight ``_BarRow`` view over pre-extracted NumPy column
+            # arrays — same dict-key / ``.name`` surface the engine uses, ~10×
+            # lighter to construct. Regression-pinned in
+            # ``tests/test_backtest_fast_loop_parity.py``.
+            fast_loop = _fast_loop_enabled()
+            if fast_loop:
+                bar_iter: Iterator[Tuple[int, Any, Any]] = _iter_bars_fast(df)
+            else:
+                bar_iter = (
+                    (i, ts, row) for i, (ts, row) in enumerate(df.iterrows())
+                )
+
+            # Fast-mode mocks installed ONCE per replay (instead of per-bar).
+            # The closure captures the full bars list + a precomputed
+            # int64-ns timestamp array and reads ``self.backtest_engine.current_bar_index``
+            # as the live cursor. Bisect-driven; collapses the per-call cost
+            # from O(n × parse) to O(log n). See ``_install_fast_strategy_mocks``.
+            fast_mocks_restore = None
+            if fast_loop:
+                fast_mocks_restore = self._install_fast_strategy_mocks(
+                    replay_symbol=symbol,
+                    bars=bars,
+                    df=df,
+                )
+
+            # ── Tier 5: Active-window gate ─────────────────────────────────
+            # If the strategy declares an ET active window via
+            # ``replay_active_window_et``, precompute the per-bar mask once so
+            # the hot loop's gate check is a single bool indexed lookup. Bars
+            # outside ALL windows AND with no open positions skip ``analyze()``
+            # entirely (engine still processes fills + equity for the bar).
+            # Strategies leaving the attribute None pay zero overhead.
+            active_window_mask = self._build_replay_active_window_mask(df)
+
+            # ── Tier 3: Precompute hook ────────────────────────────────────
+            # Strategies can override ``replay_precompute_indicators(df)`` to
+            # vectorize per-bar work (ATR / EMA / session ranges) into a
+            # single pass before the loop starts. Default base impl is a
+            # no-op; any exception falls back to the per-bar path so a bad
+            # override can't break the run.
+            try:
+                precomp = getattr(self.strategy, "replay_precompute_indicators", None)
+                if callable(precomp):
+                    precomp(df)
+            except Exception as exc:
+                logger.warning(
+                    "Strategy %s.replay_precompute_indicators failed: %s — falling back to per-bar path",
+                    type(self.strategy).__name__, exc,
+                )
+
+            # Tier 4: Resolve the prop-day force-flat cutoff ONCE per replay
+            # (was profiled at 103 ms / 17.4 k calls). The value is derived
+            # from immutable TOML keys, so caching it before the loop is
+            # functionally identical and saves ~6 µs × n_bars of overhead.
+            cutoff_minutes = self._replay_force_flat_cutoff_minutes_et()
+            for i, timestamp, bar in bar_iter:
                 self.backtest_engine.current_bar_index = i
                 self.backtest_engine.current_timestamp = timestamp
 
@@ -698,7 +1079,6 @@ class StrategyReplayEngine:
                 else:
                     setattr(self.trading_bot, "_current_bar_timestamp", timestamp)
 
-                cutoff_minutes = self._replay_force_flat_cutoff_minutes_et()
                 bar_minutes_et = bar_minutes_since_midnight_et(timestamp)
                 past_cutoff = cutoff_minutes is not None and bar_minutes_et >= cutoff_minutes
 
@@ -709,10 +1089,23 @@ class StrategyReplayEngine:
                 except Exception as hook_err:
                     logger.error("Strategy replay_before_bar_fills failed: %s", hook_err, exc_info=True)
 
+                # ET date of this bar — used by ``_maybe_replay_force_flat_et``'s
+                # rollover guard to flatten any position that survives across
+                # a calendar-day boundary even if no bar at the configured
+                # cutoff (e.g. 16:00 ET) appeared in the data.
+                try:
+                    _ts = pd.Timestamp(timestamp)
+                    if _ts.tzinfo is None:
+                        _ts = _ts.tz_localize("UTC")
+                    bar_et_date = _ts.tz_convert(ZoneInfo("America/New_York")).date()
+                except Exception:
+                    bar_et_date = None
+
                 self._maybe_replay_force_flat_et(
                     bar,
                     cutoff_minutes=cutoff_minutes,
                     bar_minutes_et=bar_minutes_et,
+                    bar_et_date=bar_et_date,
                 )
 
                 if not past_cutoff:
@@ -736,30 +1129,63 @@ class StrategyReplayEngine:
                 try:
                     # Update strategy's active_positions from backtest engine
                     self._sync_strategy_positions()
-                    
-                    # Get bars up to current point for strategy analysis
-                    current_bars_for_strategy = bars[:i+1]
-                    
-                    # Update mock trading bot's bars to current set
-                    if hasattr(self.trading_bot, 'bars'):
-                        self.trading_bot.bars = current_bars_for_strategy
-                        # Coarser TF requests delegate to MockTradingBot resampling, which caches by
-                        # target timeframe only; invalidate when the prefix grows.
-                        rc = getattr(self.trading_bot, "_resampled_cache", None)
-                        if isinstance(rc, dict):
-                            rc.clear()
-                    if hasattr(self.trading_bot, "bars_1m") and bars_1m_sorted:
-                        t_excl = pd.Timestamp(timestamp) + pd.Timedelta(minutes=agg_minutes)
-                        self.trading_bot.bars_1m = [
-                            b
-                            for b in bars_1m_sorted
-                            if pd.Timestamp(b.get("timestamp")) < t_excl
-                        ]
 
-                    # Call strategy analyze (it will use trading_bot.get_historical_data internally)
-                    # Also mock get_open_positions / get_market_quote so the strategy behaves like live
-                    signal = await self._call_strategy_analyze(symbol, current_bars_for_strategy)
-                    
+                    # ── Tier 5 active-window gate ──────────────────────────
+                    # Skip analyze() when ALL of these hold:
+                    #   1. Strategy declared a replay_active_window_et
+                    #   2. This bar's ET time is outside every declared window
+                    #   3. No open positions (so the strategy has nothing to manage)
+                    # The engine has already processed fills + equity above, so
+                    # skipping only suppresses signal-detection work. Strategies
+                    # without a window declaration always pass through.
+                    if (
+                        active_window_mask is not None
+                        and not active_window_mask[i]
+                        and not self.backtest_engine.positions
+                    ):
+                        continue
+
+                    if fast_loop:
+                        # Fast path: no per-bar ``bars[:i+1]`` allocation, no
+                        # ``MockTradingBot.bars`` reassignment, no resample-cache
+                        # clear. Mocks were installed once at the top of replay()
+                        # and read the cursor via ``self.backtest_engine.current_bar_index``.
+                        # The rare resample path (``MockTradingBot._resample_native_to``)
+                        # reads ``_fast_cursor_index`` and slices on demand for correctness.
+                        if hasattr(self.trading_bot, "_fast_cursor_index"):
+                            self.trading_bot._fast_cursor_index = i
+                        if hasattr(self.trading_bot, "bars_1m") and bars_1m_sorted:
+                            t_excl = pd.Timestamp(timestamp) + pd.Timedelta(minutes=agg_minutes)
+                            self.trading_bot.bars_1m = [
+                                b
+                                for b in bars_1m_sorted
+                                if pd.Timestamp(b.get("timestamp")) < t_excl
+                            ]
+                        signal = await self.strategy.analyze(symbol)
+                    else:
+                        # Get bars up to current point for strategy analysis
+                        current_bars_for_strategy = bars[:i+1]
+
+                        # Update mock trading bot's bars to current set
+                        if hasattr(self.trading_bot, 'bars'):
+                            self.trading_bot.bars = current_bars_for_strategy
+                            # Coarser TF requests delegate to MockTradingBot resampling, which caches by
+                            # target timeframe only; invalidate when the prefix grows.
+                            rc = getattr(self.trading_bot, "_resampled_cache", None)
+                            if isinstance(rc, dict):
+                                rc.clear()
+                        if hasattr(self.trading_bot, "bars_1m") and bars_1m_sorted:
+                            t_excl = pd.Timestamp(timestamp) + pd.Timedelta(minutes=agg_minutes)
+                            self.trading_bot.bars_1m = [
+                                b
+                                for b in bars_1m_sorted
+                                if pd.Timestamp(b.get("timestamp")) < t_excl
+                            ]
+
+                        # Call strategy analyze (it will use trading_bot.get_historical_data internally)
+                        # Also mock get_open_positions / get_market_quote so the strategy behaves like live
+                        signal = await self._call_strategy_analyze(symbol, current_bars_for_strategy)
+
                     if signal:
                         # Strategy wants to place an order - call execute which uses place_bracket_order
                         # This will be intercepted by our _simulate_place_bracket_order
@@ -810,22 +1236,171 @@ class StrategyReplayEngine:
         
         finally:
             # Restore original methods
+            if fast_mocks_restore is not None:
+                try:
+                    fast_mocks_restore()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("fast strategy-mocks restore failed: %s", exc)
             self._restore_strategy_methods()
             self._restore_trading_bot_methods()
     
-    def _bars_to_dataframe(self, bars: List[Dict]) -> pd.DataFrame:
-        """Convert bar dicts to pandas DataFrame."""
-        import pandas as pd
+    def _build_replay_active_window_mask(
+        self, df: pd.DataFrame
+    ) -> Optional[np.ndarray]:
+        """Build a per-bar boolean array marking bars inside ``replay_active_window_et``.
 
+        Returns ``None`` when the strategy hasn't declared a window (the common
+        case for legacy strategies) — callers treat ``None`` as "always
+        active" and pay zero per-bar gate overhead.
+
+        The mask is computed vectorized via NumPy so a 17 k-bar 3-month
+        replay costs ~2 ms once, vs ~5 µs × 17 k = ~85 ms if checked
+        per-bar inside the Python loop. The savings show up for any strategy
+        whose active window is a strict subset of the bar stream (most are —
+        ``morning_range_reversion`` is 9 hours of a 24h bar stream).
+
+        Args:
+            df: Replay DataFrame with naive-UTC index. The strategy's
+                ``session_zone`` (or ``session_timezone`` / a hard-coded
+                ``America/New_York`` default) is used to convert each bar
+                timestamp to ET before the window check.
+
+        Returns:
+            Boolean ``np.ndarray`` of shape ``(len(df),)`` or ``None``.
+            ``mask[i] == True`` means bar ``i`` is INSIDE at least one
+            declared window.
+        """
+        window = getattr(self.strategy, "replay_active_window_et", None)
+        if not window:  # None or empty list both mean "always active"
+            return None
+
+        # Normalize: accept a single (start, end) tuple OR a list of them.
+        if isinstance(window, tuple) and len(window) == 2 and not isinstance(
+            window[0], (list, tuple)
+        ):
+            windows: List[Tuple[Any, Any]] = [window]  # type: ignore[list-item]
+        else:
+            windows = list(window)  # type: ignore[arg-type]
+
+        # Resolve the ET timezone (prefer the strategy's own session_zone
+        # so it stays in sync with the strategy's own clock; fall back to
+        # America/New_York). Robust to strategies that store the zone as a
+        # pytz tz, a zoneinfo, or a str.
+        tz_attr = getattr(self.strategy, "_tz", None) or getattr(
+            self.strategy, "timezone", None
+        )
+        try:
+            if tz_attr is not None:
+                # Both pytz and zoneinfo expose .zone or .key respectively
+                # — but tz_convert accepts the object directly.
+                tz = tz_attr
+            else:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/New_York")
+        except Exception:
+            return None  # bail safely if tz resolution fails
+
+        try:
+            # df.index is naive-UTC (the canonical replay shape). Localize
+            # to UTC then convert to ET — single vectorized pass.
+            idx = df.index
+            if getattr(idx, "tz", None) is None:
+                idx_utc = idx.tz_localize("UTC")
+            else:
+                idx_utc = idx
+            idx_et = idx_utc.tz_convert(tz)
+            # ``hour`` / ``minute`` are vectorized accessors on DatetimeIndex
+            # — extract minute-of-day once and compare against window bounds.
+            mins_of_day = idx_et.hour * 60 + idx_et.minute
+        except Exception:
+            return None
+
+        mask = np.zeros(len(df), dtype=bool)
+        for w in windows:
+            try:
+                start_t, end_t = w
+                start_min = int(start_t.hour) * 60 + int(start_t.minute)
+                end_min = int(end_t.hour) * 60 + int(end_t.minute)
+            except Exception:
+                continue
+            if start_min <= end_min:
+                # Same-day window (e.g. 07:00-16:00 ET)
+                mask |= (mins_of_day >= start_min) & (mins_of_day < end_min)
+            else:
+                # Wrapping window (e.g. 19:00 ET → 09:30 ET next day)
+                # — flagged as either >= start OR < end.
+                mask |= (mins_of_day >= start_min) | (mins_of_day < end_min)
+
+        return mask
+
+    def _bars_to_dataframe(self, bars: List[Dict]) -> pd.DataFrame:
+        """Convert bar dicts to pandas DataFrame.
+
+        Profile-driven rewrite: the legacy implementation called ``pd.to_datetime``
+        on every bar **twice** (once per loop iter, once in the index
+        comprehension), which dominated replay() wall time at ~2.9 s of a
+        ~6 s 3-month MNQ replay even though the timestamps coming from
+        :func:`core.backtest.ohlcv.replay_bars_from_ohlcv_df` are already native
+        Python ``datetime`` objects.
+
+        The fast path here:
+          1. Pulls OHLCV values into preallocated NumPy arrays in a single Python loop.
+          2. Builds the index via ``pd.DatetimeIndex(list)`` — pandas detects
+             pre-parsed datetimes and skips per-element parsing.
+          3. Assembles the DataFrame from the arrays (column-oriented), which is
+             materially faster than DataFrame-from-list-of-dicts.
+
+        The slow path (pd.to_datetime + dict assembly) is only taken when a
+        non-datetime timestamp appears (string/int/float) — rare in production
+        but kept for back-compat with tests and ad-hoc callers.
+        """
+        import pandas as pd
+        import numpy as np
+        from datetime import datetime
+
+        n = len(bars)
+        if n == 0:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        # Fast path: timestamps are already datetime / pd.Timestamp objects.
+        # Detect on the first bar (cheap) and fall back if any bar lies about
+        # its shape mid-stream. Numbers/strings hit the slow path so we don't
+        # silently mis-parse epoch seconds vs ms.
+        first_ts = bars[0].get("timestamp")
+        if isinstance(first_ts, (datetime, pd.Timestamp)):
+            opens = np.empty(n, dtype=np.float64)
+            highs = np.empty(n, dtype=np.float64)
+            lows = np.empty(n, dtype=np.float64)
+            closes = np.empty(n, dtype=np.float64)
+            volumes = np.empty(n, dtype=np.int64)
+            timestamps: List = [None] * n
+            for i, bar in enumerate(bars):
+                ts = bar.get("timestamp")
+                if not isinstance(ts, (datetime, pd.Timestamp)):
+                    timestamps = None  # type: ignore[assignment]
+                    break
+                timestamps[i] = ts
+                opens[i] = bar.get("open", bar.get("o", 0.0))
+                highs[i] = bar.get("high", bar.get("h", 0.0))
+                lows[i] = bar.get("low", bar.get("l", 0.0))
+                closes[i] = bar.get("close", bar.get("c", 0.0))
+                volumes[i] = int(bar.get("volume", bar.get("v", 0)))
+            if timestamps is not None:
+                idx = pd.DatetimeIndex(timestamps)
+                return pd.DataFrame(
+                    {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+                    index=idx,
+                )
+
+        # Legacy slow path — only for non-datetime timestamps (string/int/float).
         data = []
         for bar in bars:
-            # Handle different timestamp formats
             timestamp = bar.get('timestamp')
             if isinstance(timestamp, str):
                 timestamp = pd.to_datetime(timestamp)
             elif isinstance(timestamp, (int, float)):
                 timestamp = pd.to_datetime(timestamp, unit='s')
-            
+
             data.append({
                 'open': float(bar.get('open', bar.get('o', 0))),
                 'high': float(bar.get('high', bar.get('h', 0))),
@@ -833,7 +1408,7 @@ class StrategyReplayEngine:
                 'close': float(bar.get('close', bar.get('c', 0))),
                 'volume': int(bar.get('volume', bar.get('v', 0)))
             })
-        
+
         df = pd.DataFrame(data, index=[pd.to_datetime(b.get('timestamp')) for b in bars])
         return df
     
@@ -1199,6 +1774,26 @@ class StrategyReplayEngine:
                 self._breakeven_watches.pop(oid, None)
                 continue
 
+            # ── One-way ratchet (R23+) ────────────────────────────────────────────
+            # Multi-stage step-trail registers N watches that may fire on the same
+            # bar if MFE jumps multiple stages at once. Each watch overwrites the
+            # SL ``stop_price`` — so a higher-trigger stage with a LOWER lock would
+            # silently regress the SL.  Guard: a LONG stop only moves up; a SHORT
+            # stop only moves down. Prevents regressions while still letting the
+            # last-firing stage advance the stop.
+            cur_stop: Optional[float] = None
+            try:
+                cur_stop = float(sl_order.stop_price)
+            except (TypeError, ValueError, AttributeError):
+                cur_stop = None
+            if cur_stop is not None:
+                if side == "LONG" and new_stop <= cur_stop:
+                    watch["triggered"] = True
+                    continue
+                if side == "SHORT" and new_stop >= cur_stop:
+                    watch["triggered"] = True
+                    continue
+
             try:
                 sl_order.stop_price = float(new_stop)
                 # Anchor placement_price to the new stop_price itself so the engine's
@@ -1421,6 +2016,196 @@ class StrategyReplayEngine:
             'method': 'backtest_simulation'
         }
     
+    def _install_fast_strategy_mocks(
+        self,
+        *,
+        replay_symbol: str,
+        bars: List[Dict],
+        df: pd.DataFrame,
+    ):
+        """Install bisect-driven mocks once at the top of ``replay()`` when
+        ``BACKTEST_FAST_LOOP=1`` is set.
+
+        Mirrors the contract of the per-bar ``_call_strategy_analyze`` install
+        block, but installs ONCE for the whole replay instead of per iteration.
+        Returns a ``restore`` callable the caller invokes in its ``finally``
+        block to revert the trading_bot to its original methods.
+
+        Mock specifics:
+
+        - ``mock_get_historical_data``: replaces the O(n × parse) intraday-csv
+          slow path with O(log n) ``np.searchsorted`` over a precomputed UTC-ns
+          array carved out of ``df.index`` (already-parsed). Non-intraday TFs
+          delegate to the original ``MockTradingBot.get_historical_data``,
+          which honors a new ``self.trading_bot._fast_cursor_index`` to keep
+          the prefix-resample semantics correct in fast mode.
+        - ``mock_get_open_positions``: identical to slow path.
+        - ``mock_get_market_quote``: indexes ``bars[_fast_cursor_index]``
+          (instead of slow path's ``bars_list[-1]`` where ``bars_list`` was
+          the prefix). Behaviorally identical.
+
+        Look-ahead safety: every call clips to bars whose UTC-ns timestamp is
+        ``<=`` the cursor's UTC-ns. The cursor is the bar timestamp at
+        ``self.backtest_engine.current_bar_index``.
+        """
+        original_get_historical = getattr(self.trading_bot, "get_historical_data", None)
+        original_get_open_positions = getattr(self.trading_bot, "get_open_positions", None)
+        original_get_market_quote = getattr(self.trading_bot, "get_market_quote", None)
+        # Stash the original ``bars`` value so we can restore it. We intentionally
+        # leave ``self.trading_bot.bars = bars`` (the FULL list) for the duration
+        # of the replay so the resample path sees the same data the slow path
+        # would have seen (clipped via ``_fast_cursor_index``).
+        original_bars = getattr(self.trading_bot, "bars", None)
+        original_fast_cursor = getattr(self.trading_bot, "_fast_cursor_index", None)
+
+        bar_times_ns = _bars_to_utc_ns(df)
+        n_bars = len(bars)
+        replay_tf = (self._replay_timeframe or "").lower()
+
+        # Surface the full bars list + a live cursor to ``MockTradingBot``.
+        # ``MockTradingBot._select_historical_source`` reads ``_fast_cursor_index``
+        # when present (see ``core/backtest_executor.py``) and slices on
+        # demand for the rare coarser-TF resample path. The intraday-csv path
+        # bypasses this entirely via the closure below.
+        self.trading_bot.bars = bars
+        self.trading_bot._fast_cursor_index = -1  # advanced per bar by the replay loop
+
+        async def fast_mock_get_historical_data(
+            symbol: str,
+            timeframe: str = "1m",
+            limit: int = 100,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            **kwargs,
+        ) -> List[Dict]:
+            if symbol.upper() != replay_symbol.upper():
+                logger.warning(f"Backtest requested different symbol: {symbol} != {replay_symbol}")
+                return []
+
+            tf = (timeframe or "1m").lower()
+            cursor_ix = self.backtest_engine.current_bar_index
+            if cursor_ix is None or cursor_ix < 0:
+                cursor_ix = -1
+
+            # Intraday-csv fast path: same TF as replay (or no replay_tf set).
+            intraday_from_csv = (not replay_tf) or (tf == replay_tf)
+            if intraday_from_csv:
+                # End index = min(cursor + 1, n_bars). Bisect for any caller-
+                # supplied end_time. We use side='right' so a timestamp equal
+                # to a bar's open time INCLUDES that bar (matches slow path's
+                # ``bt > end_utc`` strict inequality which keeps equal bars).
+                cutoff = cursor_ix + 1
+                if cutoff > n_bars:
+                    cutoff = n_bars
+                if cutoff <= 0:
+                    return []
+                if end_time is not None:
+                    end_ns = _dt_to_utc_ns(end_time)
+                    if end_ns is not None:
+                        end_cutoff = int(np.searchsorted(bar_times_ns, end_ns, side="right"))
+                        if end_cutoff < cutoff:
+                            cutoff = end_cutoff
+                start_ix = 0
+                if start_time is not None:
+                    start_ns = _dt_to_utc_ns(start_time)
+                    if start_ns is not None:
+                        start_ix = int(np.searchsorted(bar_times_ns, start_ns, side="left"))
+                if start_ix >= cutoff:
+                    return []
+                if limit and limit < (cutoff - start_ix):
+                    start_ix = cutoff - limit
+                # Slice the bars list — O(k) memcpy of pointers, no parsing.
+                return bars[start_ix:cutoff]
+
+            # Coarser-TF delegate path. Hand off to MockTradingBot which knows
+            # how to resample; it reads ``_fast_cursor_index`` to honor the
+            # no-look-ahead invariant.
+            if original_get_historical is None:
+                return []
+            effective_end = end_time
+            cursor_ns = (
+                int(bar_times_ns[cursor_ix]) if 0 <= cursor_ix < n_bars else None
+            )
+            if effective_end is None and cursor_ns is not None:
+                effective_end = datetime.fromtimestamp(cursor_ns / 1e9, tz=timezone.utc)
+            elif effective_end is not None and cursor_ns is not None:
+                eff_end_ns = _dt_to_utc_ns(effective_end)
+                if eff_end_ns is not None and eff_end_ns > cursor_ns:
+                    effective_end = datetime.fromtimestamp(cursor_ns / 1e9, tz=timezone.utc)
+            # Reuse the daily-bars passthrough cache.
+            start_iso = start_time.isoformat() if isinstance(start_time, datetime) else ""
+            end_day_iso = ""
+            if effective_end is not None:
+                end_dt = (
+                    effective_end.astimezone(timezone.utc)
+                    if effective_end.tzinfo
+                    else effective_end.replace(tzinfo=timezone.utc)
+                )
+                end_day_iso = end_dt.date().isoformat()
+            cache_key = (symbol.upper(), tf, int(limit or 0), start_iso, end_day_iso)
+            if tf.endswith("d") and cache_key in self._passthrough_cache:
+                return self._passthrough_cache[cache_key]
+            result = await original_get_historical(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                start_time=start_time,
+                end_time=effective_end,
+                **kwargs,
+            )
+            if tf.endswith("d"):
+                self._passthrough_cache[cache_key] = result or []
+            return result or []
+
+        async def fast_mock_get_open_positions(account_id=None):
+            positions = []
+            for sym, pos in self.backtest_engine.positions.items():
+                positions.append({
+                    "symbol": sym,
+                    "side": "LONG" if pos.side == OrderSide.BUY else "SHORT",
+                    "quantity": pos.quantity,
+                    "entry_price": pos.entry_price,
+                })
+            return positions
+
+        async def fast_mock_get_market_quote(symbol: str):
+            cursor_ix = self.backtest_engine.current_bar_index
+            if cursor_ix is not None and 0 <= cursor_ix < n_bars:
+                last_bar = bars[cursor_ix]
+                close_price = float(last_bar.get("close", last_bar.get("c", 0)) or 0)
+                vol = int(last_bar.get("volume", last_bar.get("v", last_bar.get("Volume", 0))) or 0)
+                return {
+                    "bid": close_price, "ask": close_price, "last": close_price,
+                    "volume": vol, "Volume": vol,
+                }
+            return {"bid": 0, "ask": 0, "last": 0, "volume": 0, "Volume": 0}
+
+        if original_get_historical is not None:
+            self.trading_bot.get_historical_data = fast_mock_get_historical_data
+        if original_get_open_positions is not None or hasattr(self.trading_bot, "get_open_positions"):
+            self.trading_bot.get_open_positions = fast_mock_get_open_positions
+        if original_get_market_quote is not None or hasattr(self.trading_bot, "get_market_quote"):
+            self.trading_bot.get_market_quote = fast_mock_get_market_quote
+
+        def restore() -> None:
+            if original_get_historical is not None:
+                self.trading_bot.get_historical_data = original_get_historical
+            if original_get_open_positions is not None:
+                self.trading_bot.get_open_positions = original_get_open_positions
+            if original_get_market_quote is not None:
+                self.trading_bot.get_market_quote = original_get_market_quote
+            if original_bars is not None:
+                self.trading_bot.bars = original_bars
+            if original_fast_cursor is None:
+                try:
+                    delattr(self.trading_bot, "_fast_cursor_index")
+                except AttributeError:
+                    pass
+            else:
+                self.trading_bot._fast_cursor_index = original_fast_cursor
+
+        return restore
+
     async def _call_strategy_analyze(self, replay_symbol: str, bars_list: List[Dict]) -> Optional[Dict]:
         """
         Call strategy's analyze method with mocked historical data.

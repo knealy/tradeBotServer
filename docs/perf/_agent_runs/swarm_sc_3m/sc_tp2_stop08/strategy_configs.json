@@ -1,0 +1,68 @@
+{
+  "captured_at_utc": "2026-06-02T00:48:23+00:00",
+  "git_head": "8c96c08b0",
+  "strategies": {
+    "simple_candle": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/simple_candle.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_agent_runs/swarm_sc_3m/sc_tp2_stop08/config/simple_candle.toml",
+      "data": {
+        "profit_multiplier": 2.0,
+        "stop_multiplier": 0.8,
+        "meta": {
+          "enabled": true,
+          "live_breaker_enabled": true,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ],
+          "start_time": "00:00",
+          "end_time": "23:59",
+          "no_trade_start": "",
+          "no_trade_end": ""
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 2,
+          "max_daily_trades": 10,
+          "risk_per_trade_pct": 0.5,
+          "SIMPLE_CANDLE_TIMEFRAME": "5m",
+          "stop_multiplier": 1.0,
+          "profit_multiplier": 1.5,
+          "signal_cooldown_bars": 6
+        },
+        "trend_filter": {
+          "enabled": true,
+          "ema_fast_period": 8,
+          "ema_slow_period": 21,
+          "min_trend_score": 20,
+          "lookback_bars": 10
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 90,
+    "folds": 3,
+    "strategies": [
+      "simple_candle"
+    ],
+    "symbols": [
+      "MNQ"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

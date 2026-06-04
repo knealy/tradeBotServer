@@ -93,6 +93,16 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "RsiSwitch15mStrategy",
         "15m RSI extreme switch: enter at thresholds, exit/hold at opposite extreme",
     ),
+    "nr_compression_break": (
+        "strategies.nr_compression_break_strategy",
+        "NrCompressionBreakStrategy",
+        "NR7 (Toby Crabel daily-TF) compression breakout — next-day continuation bias",
+    ),
+    "globex_drift_continuation": (
+        "strategies.globex_drift_continuation_strategy",
+        "GlobexDriftContinuationStrategy",
+        "Asian-session (18:00-04:00 ET) breakout in the prior-RTH-close direction",
+    ),
 }
 
 # Built-ins that stay importable for explicit replay / tests but are hidden from
@@ -206,6 +216,48 @@ class StrategyManager:
             )
         except Exception as exc:
             logger.debug("Strategy lifecycle event not published: %s", exc)
+
+    async def _ensure_portfolio_kill_subscription(self) -> None:
+        """Subscribe once to ``EventType.PORTFOLIO_KILL`` so a tripped
+        :class:`core.portfolio_daily_breaker.PortfolioDailyBreaker` disables
+        every active strategy until the operator restarts.
+
+        Idempotent — guarded by the ``_portfolio_kill_subscribed`` flag.
+        """
+        if getattr(self, "_portfolio_kill_subscribed", False):
+            return
+        bus = getattr(self.trading_bot, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            bus.subscribe(EventType.PORTFOLIO_KILL, self._on_portfolio_kill)
+            self._portfolio_kill_subscribed = True
+            logger.debug("StrategyManager subscribed to PORTFOLIO_KILL")
+        except Exception as exc:
+            logger.debug("Could not subscribe StrategyManager to PORTFOLIO_KILL: %s", exc)
+
+    async def _on_portfolio_kill(self, event: Event) -> None:
+        """Disable every active strategy (no manager-level stop; the
+        breaker has already flat-filed the account).  Strategies remain
+        loaded so the operator can re-enable them after reviewing.
+        """
+        data = getattr(event, "data", None) or {}
+        cap = data.get("cap_dollars")
+        pnl = data.get("realised_pnl_today")
+        logger.warning(
+            "🚨 StrategyManager received PORTFOLIO_KILL — disabling %d active strategies "
+            "(daily PnL=%.2f, cap=%.2f)",
+            len(self.active_strategies), float(pnl or 0.0), float(cap or 0.0),
+        )
+        for n in list(self.active_strategies):
+            strat = self.strategies.get(n)
+            if strat is None:
+                continue
+            try:
+                strat.config.enabled = False
+                strat.status = StrategyStatus.PAUSED
+            except Exception as exc:
+                logger.debug("Could not disable %s on PORTFOLIO_KILL: %s", n, exc)
 
     def _all_registered_names(self) -> List[str]:
         """Strategy keys including lazy-registered (not yet imported)."""
@@ -1077,6 +1129,33 @@ class StrategyManager:
         self.active_strategies.append(n)
         strategy.config.enabled = True
 
+        # Live consec-loss / equity-curve breaker bridge: subscribe the
+        # strategy to ``EventType.TRADE_CLOSED`` so live fills update its
+        # in-memory trade history the same way the backtest engine writes
+        # to ``_replay_engine.trades``.  Opt-in via env ``STRATEGY_LIVE_BREAKER=1``
+        # (or per-strategy ``meta.live_breaker_enabled = true`` in TOML)
+        # so existing live deployments are unchanged until validated.
+        try:
+            from core.live_trade_history import live_breaker_default_enabled
+            cfg_flag = getattr(strategy.config, "live_breaker_enabled", None)
+            enabled = cfg_flag if isinstance(cfg_flag, bool) else live_breaker_default_enabled()
+            if enabled and hasattr(strategy, "start_live_trade_bridge"):
+                await strategy.start_live_trade_bridge()
+        except Exception as exc:
+            logger.debug("Live-breaker bridge start failed for %s: %s", n, exc)
+
+        # Portfolio-level daily-loss breaker (Phase 1 arsenal infra).
+        # Lazy-constructs on first strategy start; subscribes once to
+        # ``EventType.TRADE_CLOSED`` and ``PORTFOLIO_KILL``.  Cap = env
+        # ``PORTFOLIO_DAILY_LOSS_CAP`` (default $1000, 0 = disabled).
+        try:
+            ensure = getattr(self.trading_bot, "ensure_portfolio_breaker", None)
+            if callable(ensure):
+                await ensure()
+            await self._ensure_portfolio_kill_subscription()
+        except Exception as exc:
+            logger.debug("Portfolio-breaker wiring for %s raised: %s", n, exc)
+
         # Strategies with their own event loop can implement an async start() or run() hook
         custom_start = getattr(strategy, 'start', None)
         custom_run = getattr(strategy, 'run', None)
@@ -1117,6 +1196,14 @@ class StrategyManager:
         strategy.status = StrategyStatus.IDLE
         self.active_strategies.remove(n)
         strategy.config.enabled = False
+
+        # Tear down live-breaker bridge subscription (idempotent if it
+        # was never started for this strategy).
+        try:
+            if hasattr(strategy, "stop_live_trade_bridge"):
+                await strategy.stop_live_trade_bridge()
+        except Exception as exc:
+            logger.debug("Live-breaker bridge stop failed for %s: %s", n, exc)
 
         # Clear start time for UI
         try:

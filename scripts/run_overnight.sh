@@ -33,8 +33,14 @@ echo "📝 Project root: ${PROJECT_ROOT}"
 
 export LOG_FILE
 cd "$PROJECT_ROOT"
+
+# 2026-05-31 Round-13: MES dropped from active rotation (see TOML
+# ``[meta].symbols`` rationale).  Override at the command line to A/B test:
+#   OVERNIGHT_RANGE_SYMBOLS=mnq,mes,mgc ./scripts/run_overnight.sh 1
+SYMBOLS="${OVERNIGHT_RANGE_SYMBOLS:-mnq,mgc}"
+
 caffeinate -dimsu python3 core/strategy_executor.py \
-  --symbols=mnq,mes,mgc \
+  --symbols="${SYMBOLS}" \
   --timeframe=2m \
   --strategy=overnight_range \
   --account_select=${ACCOUNT_NUM} \

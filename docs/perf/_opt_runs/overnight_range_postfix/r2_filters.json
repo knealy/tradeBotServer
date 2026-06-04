@@ -1,0 +1,50 @@
+[
+  {
+    "label": "r2a_gap_off",
+    "root": {"filters.gap": false}
+  },
+  {
+    "label": "r2b_gap_050",
+    "root": {"filters.gap_max_pct": 0.50}
+  },
+  {
+    "label": "r2c_gap_100",
+    "root": {"filters.gap_max_pct": 1.00}
+  },
+  {
+    "label": "r2d_gap_120",
+    "root": {"filters.gap_max_pct": 1.20}
+  },
+  {
+    "label": "r2e_atrmin_005",
+    "root": {"filters.atr_min_pct": 0.05}
+  },
+  {
+    "label": "r2f_atrmin_012",
+    "root": {"filters.atr_min_pct": 0.12}
+  },
+  {
+    "label": "r2g_atrmax_040",
+    "root": {"filters.atr_max_pct": 0.40}
+  },
+  {
+    "label": "r2h_atrmax_080",
+    "root": {"filters.atr_max_pct": 0.80}
+  },
+  {
+    "label": "r2i_atr_off",
+    "root": {"filters.volatility": false}
+  },
+  {
+    "label": "r2j_rbo_050",
+    "root": {"position_management.range_break_offset": 0.5}
+  },
+  {
+    "label": "r2k_rbo_150",
+    "root": {"position_management.range_break_offset": 1.5}
+  },
+  {
+    "label": "r2l_rbo_200",
+    "root": {"position_management.range_break_offset": 2.0}
+  }
+]

@@ -39,26 +39,65 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 
 def _csv_last_date(csv_path: Path) -> date:
     """Last calendar date of the bar-open timestamp column."""
     import pandas as pd
 
-    df = pd.read_csv(csv_path)
-    ts_col = next(
-        c for c in df.columns if str(c).lower() in ("timestamp", "time", "date", "datetime")
+    from core.backtest.parquet_cache import load_ohlcv_cached
+
+    df = load_ohlcv_cached(csv_path)
+    return pd.Timestamp(df.index[-1]).date()
+
+
+def _run_one_inprocess(
+    *,
+    strategy: str,
+    symbol: str,
+    csv_path: Path,
+    start: date,
+    end: date,
+    timeframe: str,
+    out_json: Path,
+) -> Tuple[bool, Dict[str, Any]]:
+    """In-process equivalent of :func:`_run_one`.
+
+    Runs the backtest in the current worker process (via
+    :func:`core.backtest.inprocess_runner.run_backtest_inprocess`) and writes
+    the result to ``out_json`` so the on-disk artefact matches the subprocess
+    path byte-for-byte. The walkforward summary doesn't read the JSON file
+    later — it consumes the returned dict directly — but keeping the file
+    around preserves debug-trail parity with the subprocess runs.
+    """
+    import json as _json
+    from core.backtest.inprocess_runner import run_backtest_inprocess
+
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    payload = run_backtest_inprocess(
+        strategy=strategy,
+        symbol=symbol,
+        csv_path=str(csv_path),
+        start=start.isoformat(),
+        end=end.isoformat(),
+        timeframe=timeframe,
+        include_trades=False,  # competition summary doesn't render per-trade detail
     )
-    ts = pd.to_datetime(df[ts_col].iloc[-1])
-    if getattr(ts, "tz", None) is not None:
-        ts = ts.tz_convert("UTC").tz_localize(None)
-    return pd.Timestamp(ts).date()
+    try:
+        out_json.write_text(_json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
+    if payload.get("ok") is False:
+        return False, payload
+    return True, payload
 
 
 def _fold_ranges(
@@ -184,9 +223,42 @@ def main() -> int:
         metavar="KEY=VAL",
         help="Extra env var for each subprocess (repeatable). Example: --env MORNING_RANGE_REVERSION_SIGNAL_TP_MULT=0.7",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "Max concurrent replay subprocesses (default: min(n_tasks, os.cpu_count()); "
+            "env override: WALKFORWARD_COMPETITION_WORKERS). Set to 1 to disable parallelism."
+        ),
+    )
+    ap.add_argument(
+        "--no-fast-loop",
+        action="store_true",
+        help=(
+            "Opt out of BACKTEST_FAST_LOOP (default ON; parity-pinned by "
+            "tests/test_backtest_fast_loop_parity.py)."
+        ),
+    )
+    ap.add_argument(
+        "--in-process",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Default ON. Use a pre-warmed ``ProcessPoolExecutor`` of in-process "
+            "backtest workers instead of fan-out via ``subprocess.run`` — "
+            "eliminates the per-task Python + imports startup overhead "
+            "(~250-400 ms). Trade counts are identical to the subprocess path; "
+            "env-var overrides (``--env``, ``BACKTEST_FAST_LOOP``) apply once "
+            "at pool startup. Disable with ``--no-in-process`` when you need "
+            "subprocess isolation (e.g. debugging a worker crash)."
+        ),
+    )
     args = ap.parse_args()
 
     extra_env: Dict[str, str] = {}
+    if not args.no_fast_loop:
+        extra_env["BACKTEST_FAST_LOOP"] = "1"
     for raw in args.env or []:
         if "=" not in raw:
             print(f"error: --env must be KEY=VAL, got {raw!r}", file=sys.stderr)
@@ -225,23 +297,105 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    rows: List[FoldRow] = []
+    # Build the full task matrix up front, then fan replay subprocesses out
+    # through a ``ThreadPoolExecutor``. Each ``_run_one`` invocation owns its
+    # own subprocess + JSON output file, so the parent threads only block on
+    # ``subprocess.run`` — no shared Python state needs locking. The final
+    # ``rows`` list is reassembled in the original (symbol → strategy → fold)
+    # order so ``summary.tsv`` and ``leaderboard.md`` stay deterministic.
+    tasks: List[Tuple[str, str, int, date, date, Path]] = []
     for sym in symbols:
         csv_path = csv_paths[sym]
         for strat in strategies:
             for fs, fe, fold_ix in folds:
                 tag = f"{strat}_{sym}_fold{fold_ix}_{fs}_{fe}"
-                out_json = out_dir / "runs" / f"{tag}.json"
-                ok, d = _run_one(
+                tasks.append((strat, sym, fold_ix, fs, fe, out_dir / "runs" / f"{tag}.json"))
+
+    n_tasks = len(tasks)
+    env_workers = os.environ.get("WALKFORWARD_COMPETITION_WORKERS")
+    if args.workers is not None:
+        workers = max(1, int(args.workers))
+    elif env_workers:
+        try:
+            workers = max(1, int(env_workers))
+        except ValueError:
+            workers = min(n_tasks, os.cpu_count() or 4)
+    else:
+        workers = min(n_tasks, os.cpu_count() or 4)
+    workers = min(workers, n_tasks)
+    use_inprocess = bool(getattr(args, "in_process", False))
+    runner_label = "in-process" if use_inprocess else "subprocess"
+    print(
+        f"replay phase: {n_tasks} {runner_label} tasks across {workers} worker(s)",
+        file=sys.stderr,
+    )
+
+    results: Dict[Tuple[str, str, int], Tuple[bool, Dict[str, Any]]] = {}
+    if use_inprocess:
+        # ProcessPool with pre-warmed workers — env vars (incl.
+        # ``BACKTEST_FAST_LOOP``) applied once at worker startup. The actual
+        # replay runs in the worker so the parent's GIL is irrelevant.
+        from core.backtest.inprocess_runner import (
+            worker_init as _inprocess_worker_init,
+        )
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_inprocess_worker_init,
+            initargs=(dict(extra_env),),
+        ) as pool:
+            futs = {
+                pool.submit(
+                    _run_one_inprocess,
+                    strategy=strat, symbol=sym,
+                    csv_path=csv_paths[sym], start=fs, end=fe,
+                    timeframe=args.timeframe, out_json=out_json,
+                ): (strat, sym, fold_ix)
+                for (strat, sym, fold_ix, fs, fe, out_json) in tasks
+            }
+            n_done = 0
+            for fut in as_completed(futs):
+                key = futs[fut]
+                try:
+                    ok, d = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    ok, d = False, {"error": f"worker exception: {exc!r}"[:2000]}
+                results[key] = (ok, d)
+                n_done += 1
+                if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                    print(f"  replays {n_done}/{n_tasks}", file=sys.stderr)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _run_one,
                     strategy=strat,
                     symbol=sym,
-                    csv_path=csv_path,
+                    csv_path=csv_paths[sym],
                     start=fs,
                     end=fe,
                     timeframe=args.timeframe,
                     out_json=out_json,
                     extra_env=extra_env if extra_env else None,
-                )
+                ): (strat, sym, fold_ix)
+                for (strat, sym, fold_ix, fs, fe, out_json) in tasks
+            }
+            n_done = 0
+            for fut in as_completed(futs):
+                key = futs[fut]
+                try:
+                    ok, d = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    ok, d = False, {"error": f"worker exception: {exc!r}"[:2000]}
+                results[key] = (ok, d)
+                n_done += 1
+                if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                    print(f"  replays {n_done}/{n_tasks}", file=sys.stderr)
+
+    rows: List[FoldRow] = []
+    for sym in symbols:
+        for strat in strategies:
+            for fs, fe, fold_ix in folds:
+                ok, d = results[(strat, sym, fold_ix)]
                 if not ok:
                     err = d.get("error", d)
                     print(f"FAIL {strat} {sym} fold{fold_ix}: {err}", file=sys.stderr)

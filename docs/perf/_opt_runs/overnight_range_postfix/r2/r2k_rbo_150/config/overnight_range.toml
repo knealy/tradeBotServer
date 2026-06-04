@@ -1,0 +1,227 @@
+# Overnight Range Breakout strategy configuration.
+# See _schema.toml for documentation of every field.
+# Edit values here without restarting unrelated strategies; the executor
+# polls mtime and reloads on next loop tick when --reload is enabled.
+# Master GUI chart OR lines (when the executor is a separate process): see
+# process_states.metadata.or_ranges + strategy_states.settings.or_ranges in README / HANDOFF.
+
+[meta]
+enabled = true
+# Live consec-loss / equity-curve breaker bridge — Round 21 commits the
+# 19:00→10:00 + gap + 2x5-day breaker config; live deployment needs this
+# bridge ON so the breaker reacts to live fills the same way it reacts to
+# replayed trades in the walk-forward. Env STRATEGY_LIVE_BREAKER=0 is the
+# kill-switch.
+live_breaker_enabled = true
+# 2026-05-31 round-13 — dropped MES from active rotation (consistent with the
+# parallel finding for ``morning_range_reversion``).  See CHANGELOG for the
+# 13-round optimization sweep details.  MES per-symbol stanzas are kept
+# (dormant) at the bottom of this file for fast re-enablement.
+symbols = ["MNQ", "MGC"]
+
+[timing]
+# Default 18:00–9:29 ET. Sweep `docs/perf/parameter_sweeps/overnight_timing_mnq` (2026-04-11..2026-05-01, MNQ, ATR 1.5/2.5):
+#   start 19:00 → +PnL vs 17:00/18:00; end 7:00 → higher WR (~61%) but slightly lower PnL than 9:29; open 9:25/9:29/9:30 tied.
+#
+# 2026-06-01 R18-R19 + R20-R21 sweeps (270d / 9 folds, MNQ+MGC):
+#   prior committed (19:00→9:29)         ret=+678.49% dd=11.73% rf=10.85  n=190
+#   19:00→10:00 + gap only (r19g)        ret=+681.12% dd=13.72% rf=17.57  n=131
+#   19:00→10:00 + gap + brk_2x5 (r21c)   ret=+654.05% dd= 9.78% rf=21.73  n=107  ← NOW COMMITTED
+#   19:00→10:00 + gap + brk_3x5 (r20h)   ret=+658.41% dd= 8.47% rf=18.81  n=112
+# Cross-window validation (270d / 9f, 180d / 6f, 90d / 3f):
+#   r21c 3m: ret +234.49% dd 26.20% rf 7.79 | 6m ret +545% dd 9.76% rf 18.11 | 9m above
+#   baseline 3m: ret +274.92% dd 28.86% rf 4.40 | 6m ret +588% dd 18.67% rf 9.41
+#   Trade-off: -4% return on 9m for -17% DD + 100% RF gain. Same direction on 6m and 3m.
+# The breaker (2 losses → 5-session cooldown) plus the gap filter trims
+# the high-vol cluster sessions that historically pushed the equity curve
+# into 18%+ DD. WR up from 33% to 38% — fewer setups, much higher quality.
+overnight_start  = "19:00"
+overnight_end    = "10:00"
+market_open      = "10:00"
+zone_anchor      = "9:29"
+session_timezone = "US/Eastern"
+# CSV replay only: minutes after ``market_open`` (ET) in which ``analyze()`` may place brackets.
+# **0 = no cap** (full session after open; still at most one attempt per symbol/session via
+# ``_replay_sessions_signaled``). Live uses breakout monitor + full day — unchanged by this.
+replay_order_window_minutes = 0
+# CSV / walk-forward replay: US/Eastern clock to market-flat + cancel pendings (prop day cap).
+replay_force_flat_et = "16:00"
+
+[risk]
+position_size      = 1
+max_positions      = 2
+max_daily_trades   = 3
+
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+atr_period          = 14
+atr_timeframe       = "5m"
+# Round-13: root stop/TP are the MGC defaults inherited via [symbols.MGC.*].
+# MNQ overrides both (tighter stop, wider TP) in its own [symbols.MNQ.*] block.
+# Geometric R:R = 1 : 2.5 (root) and 1 : 8 (MNQ override after stop=0.5/tp=4).
+stop_atr_multiplier = 1.0
+tp_atr_multiplier   = 2.5
+
+# ── Cross-session consec-loss circuit breaker ─────────────────────────────────
+# Round 21 sweep (270d / 9 folds, MNQ+MGC; committed = 19:00→10:00 + gap on):
+#   no breaker:          ret=+681.12% dd=13.72% rf=17.57 wr=37.40% n=131
+#   2-loss/5-day:        ret=+654.05% dd= 9.78% rf=21.73 wr=38.32% n=107  ← committed
+#   3-loss/5-day:        ret=+658.41% dd= 8.47% rf=18.81 wr=38.39% n=112
+# Cross-window (3m / 6m / 9m) confirmed the same Pareto direction: -4% return,
+# -17% DD, +100% RF on 9m; -7% return, -48% DD, +92% RF on 6m.
+# Reads ``StrategyReplayEngine.trades`` (backtest) or ``_live_trade_history``
+# (live, fed by EventType.TRADE_CLOSED).  See core/consec_loss_breaker.py.
+max_consecutive_losses            = 2
+loss_streak_cooldown_sessions     = 5
+# Optional magnitude filter ($ threshold).  0 = count-only (recommended for this
+# strategy — the gap filter already screens out the deep-loss regimes).
+rolling_pnl_loss_threshold_dollars = 0
+
+
+# BONGO §1A — dual native stop-entry when qty ≥ 2 (see docs/BONGO.md).
+partial_tp_enabled  = false
+partial_tp_scalp_r  = 1.0
+use_range_pct_sltp  = false
+stop_range_pct      = 50.0
+tp_range_pct        = 100.0
+
+[position_management]
+breakeven_enabled          = false
+# NOTE (round-13): explicit isolation sweep (`r2b_isolation`) proved BE has
+# ZERO effect in the overnight_range replay path because
+# ``_simulate_place_oco_bracket`` never registers a breakeven watch (the live
+# bot's ``register_generic_breakeven_watch`` is only intercepted for the
+# ``place_bracket_order`` path used by morning_range).  Re-wiring BE for the
+# OCO replay path is a deferred follow-up — until then this knob is a no-op
+# for backtests, so it stays OFF to keep live + backtest behaviour consistent.
+breakeven_profit_points    = 8.0
+# Round-13 sweep r5/r6: ``range_break_offset = 1.0`` (vs default 0.25) added
+# +92% return on the 9m window because it gates out the first-touch false
+# breakouts.  ``= 1.5`` was slightly better on return but slightly worse on
+# DD; ``= 0.0`` collapsed return to +173%.  Sweet spot is 1.0.
+range_break_offset = 1.5
+
+use_dynamic_atr_for_orders = true
+
+[breakout_monitor]
+enabled              = true
+proximity_pct        = 15.0
+min_proximity_points = 15.0
+interval_seconds     = 10.0
+
+[alerts]
+# Discord when this many consecutive sessions end with zero completed trades (0 = off).
+discord_after_zero_trade_sessions = 0
+
+[filters]
+# --- Trade frequency note ---
+# At most ~1 bracket attempt / symbol / session near open. ``skip_weekdays`` removes listed
+# weekdays (Mon=0 … Sun=6). With range+gap+volatility all true, narrow bands still skip many sessions.
+#
+# **Range / gap / ATR** use **percent of overnight midpoint** ``(H+L)/2`` — same bands on MNQ,
+# MES, MGC. Values below match the prior MNQ point globals at reference price 21_000
+# (e.g. 15 pts → 15/21000×100). Legacy ``*_pts`` keys in ``[filters]`` still load and convert
+# the same way.
+#
+# Round-14 (2026-06-01) — ATR-percent volatility filter ON.
+# Sweep R16/R17 (15 trials × 3 horizons): ``volatility=true`` with
+# ``atr_min_pct=0.08`` / ``atr_max_pct=0.60`` dominates the committed
+# Round-13 baseline on every horizon:
+#   3m: ret +265%→+275%   dd 30.18%→28.86%   rf 4.24→4.40
+#   6m: ret +568%→+588%   dd 20.85%→18.67%   rf 9.09→9.41
+#   9m: ret +656%→+678%   dd 11.53%→11.73%   rf 10.49→10.85
+# The floor (0.08% of midpoint) gates out dead-range overnights where the
+# breakout has no fuel; the ceiling (0.60%) gates out the 2026-Q1 vol-cluster
+# choppy sessions whose 1-σ overnight range was prone to multi-side whipsaw
+# (those were the bulk of MGC's prior Feb 24-Mar 17 drawdown contribution).
+# Wider-floor (0.12) variant pushed 6m DD to 11.75% but cost some
+# 9m return — kept tighter floor to preserve trade count on quiet expiries.
+#
+# Round-13: ``filters.range_size`` stayed OFF because the band-on sweep
+# (r5j, r11e/f) added no return at the current band defaults; the per-symbol
+# weekday skips below were the bigger lever.  Magnitude/ATR percent filters
+# remain available for future regime work.
+range_size        = false
+# R20-R21 sweep result: gap filter ON + tighter threshold (0.80% of midpoint) is
+# part of the new committed 19:00→10:00 config (paired with the consec-loss
+# breaker in [signal]).  Trims the 35% of overnight-end-→-10:00 sessions where
+# the opening gap is too large for the breakout-continuation thesis to work.
+gap               = true
+volatility        = true
+dll_proximity     = false
+range_min_pct     = 0.07142857142857142
+range_max_pct     = 2.857142857142857
+gap_max_pct       = 0.80
+atr_min_pct       = 0.08
+atr_max_pct       = 0.60
+dll_threshold_pct = 0.75
+
+# Round-13: root-level weekday skip is OFF.  Per-symbol weekday skips below
+# (MNQ skips Mon+Fri, MGC skips Wed) collapse drawdown without sacrificing
+# return — see CHANGELOG for the per-fold MGC analysis that motivated MGC
+# Wednesday skip (fold 4: 1 win in 13 trades = -$1166 in the choppy
+# Feb 24-Mar 17 regime).
+skip_weekdays     = []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MNQ — wider stop coverage, asymmetric breakout R:R (1 : 8) and weekday gating
+# ─────────────────────────────────────────────────────────────────────────────
+# Round-13 per-symbol sweep (sweep r6g vs r5d vs r9b):
+#   • ``stop_atr_multiplier = 0.5`` (vs root 1.0) → MNQ pulled from +$0 to
+#     +$228/9m (sweep r5d, RF 5.25; sweep r6g, RF 6.81).  Tighter stop is the
+#     dominant MNQ lever — false breakouts that retrace 0.5R are now cut as
+#     small losers instead of compounding to a full 1R stop.
+#   • ``tp_atr_multiplier = 4.0`` (vs root 2.5) → +449%→+677% on 9m at the
+#     same DD.  TP=4 sits above the typical 2-ATR mean-reversion node where
+#     range-break continuation trades top out.
+#   • ``filters.skip_weekdays = [0, 4]`` (Mon+Fri) cut DD 43→38% and
+#     boosted RF 6.81→10.95 (r9b vs r6g).  MNQ Mondays are choppy and
+#     Fridays often see weekend-de-risking reversal — both regimes hostile
+#     to breakout continuation.  Wednesday and Thursday remain MNQ's best.
+[symbols.MNQ.signal]
+stop_atr_multiplier = 0.5
+tp_atr_multiplier   = 4.0
+
+[symbols.MNQ.filters]
+skip_weekdays = [0, 4]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MGC — tighter stop + tighter TP + skip Wednesdays
+# ─────────────────────────────────────────────────────────────────────────────
+# Round-13 per-symbol sweep (sweep r11b, r11j, r12d, r12e, r13a):
+#   • ``stop_atr_multiplier = 0.5`` (vs root 1.0) → 9m DD 38%→23%.  MGC's
+#     biggest historical losses were the cluster of Feb 24-Mar 17 2026 false
+#     breakouts (1 win in 13 trades).  Tighter stop cuts the per-trade loss
+#     magnitude there from ~1R to ~0.5R.
+#   • ``tp_atr_multiplier = 2.0`` (vs root 2.5) → 6m DD 78%→31%.  MGC's
+#     range-break continuations rarely run past 2 ATR (high WR but low
+#     payoff multiple) so taking profit earlier captures more of them and
+#     reduces giveback during chop.
+#   • ``filters.skip_weekdays = [2]`` (Wed) cut MGC trades 123→101 and
+#     boosted MGC PnL +279→+333 on 9m (sweep r12d).  Wednesday MGC overnight
+#     ranges are statistically the noisiest in the dataset.
+[symbols.MGC.risk]
+position_size = 1
+
+[symbols.MGC.signal]
+stop_atr_multiplier = 0.5
+tp_atr_multiplier   = 2.0
+
+[symbols.MGC.filters]
+skip_weekdays = [2]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MES — DORMANT (dropped from rotation in round-13, see [meta].symbols).
+# Settings preserved for fast A/B re-enable via:
+#   OVERNIGHT_RANGE_META_SYMBOLS=MNQ,MES,MGC ./scripts/run_overnight.sh 1
+# ─────────────────────────────────────────────────────────────────────────────
+[symbols.MES.signal]
+stop_atr_multiplier = 0.5
+tp_atr_multiplier   = 2.0
+
+[symbols.MES.filters]
+skip_weekdays = [0, 4]

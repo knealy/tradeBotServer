@@ -1,0 +1,60 @@
+# Trend Following strategy configuration.
+#
+# 2026-06-01 — initial parameter discovery (Step 4 dormant-strategy wake).
+# The previous stub-TOML produced **zero trades** on every walk-forward
+# because the strategy's ``min_trend_strength`` default of 0.5 demands a
+# 5% MA separation (1050+ points on MNQ @ 21k) which essentially never
+# occurs.  Lowered to 0.05 + tightened MA periods so signals can fire;
+# the resulting equity curve is still unvetted — see
+# ``docs/perf/_opt_runs/trend_following/r1_3m`` once the sweep lands.
+#
+# NOT PRODUCTION-READY.  Kept enabled for walk-forward research only
+# (``should_trade`` reads ``meta.enabled`` per bar; flipping to false
+# silences the strategy in BOTH live and backtest, which defeats the
+# Step-4 discovery goal).  Do not launch a live executor against this
+# until the equity curve is validated — verify by visiting
+# ``docs/perf/_opt_runs/trend_following`` and the latest walk-forward
+# recap before flipping ``meta.symbols`` to anything resembling a live
+# allocation.
+
+# 24-hour trading window required because ``BaseStrategy._in_trading_window``
+# (called by ``should_trade``) compares against ``datetime.now()`` — the
+# SYSTEM wall clock, NOT the replay bar's timestamp.  Without this,
+# backtests run outside 09:30-15:45 LOCAL produce zero trades regardless
+# of strategy logic.  (Same fix pattern used by ``body_reversion.toml``
+# and ``overnight_range.toml``.)
+start_time     = "00:00"
+end_time       = "23:59"
+no_trade_start = ""
+no_trade_end   = ""
+
+# Strategy-specific knobs.  MUST sit at TOML ROOT (above any section
+# header) because the strategy reads ``cfg.get_int("fast_ma_period")``
+# i.e. bare-key lookup; a key under ``[risk]`` becomes ``risk.fast_ma_period``
+# in the parsed tree which the strategy code does NOT read.
+fast_ma_period         = 9
+slow_ma_period         = 21
+ma_type                = "EMA"
+atr_period             = 14
+atr_stop_multiplier    = 2.0
+atr_trailing_multiplier = 3.0
+# 0.05 ≈ 0.25% MA separation = ~50 pts on MNQ @ 21k — fires when the
+# fast MA is meaningfully above/below the slow MA but not so loose that
+# every minor wobble triggers.  Previous default (0.5 = 5% separation =
+# 1050 pts on MNQ) was silent on the dataset.
+min_trend_strength     = 0.05
+# 5m matches the default walk-forward CSV (``--timeframe=5m``); using a
+# coarser TF (15m) triggers the MockTradingBot resample path which
+# returns 0 trades in current state.
+timeframe              = "5m"
+
+[meta]
+enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+

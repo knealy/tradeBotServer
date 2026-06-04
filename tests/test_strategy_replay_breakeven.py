@@ -927,3 +927,153 @@ def test_bracket_tp_placement_price_also_anchored_for_symmetry():
     )
     assert tp_order is not None
     assert tp_order.placement_price == pytest.approx(24775.125)
+
+
+# ── R23 step-trail: multi-stage watches share one SL order ──────────────────
+
+
+def test_multistage_trail_links_all_watches_to_same_sl():
+    """R23 step-trail: ``overnight_range_strategy._register_trail_watches`` registers
+    N synthetic watches keyed ``{entry_id}_trail{N}``; the engine must link ALL of
+    them to the freshly-placed SL exit order on entry fill so each stage fires once
+    at its own MFE threshold.
+    """
+    eng = _make_replay_engine()
+    t0 = datetime(2026, 6, 3, 13, 0, tzinfo=timezone.utc)
+
+    bar0 = _bar(t0, 99, 101, 99, 100.5)
+    entry_oid = _seed_long_entry(eng, entry=100.0, stop=90.0, tp=140.0, bar=bar0)
+    # Register two stage watches with synthetic keys (mirrors strategy wiring).
+    for idx, (trig_pts, lock_pts) in enumerate([(20.0, 0.0), (40.0, 20.0)]):
+        eng._simulate_register_breakeven_watch(
+            f"{entry_oid}_trail{idx}", symbol="MNQ", side="BUY",
+            entry_price=100.0, profit_threshold=trig_pts, breakeven_offset=lock_pts,
+        )
+
+    eng._process_subbar_fills(bar0, tick_size=0.25)
+
+    # Both stage watches must share the same sl_order_id.
+    sl_ids = {
+        eng._breakeven_watches[f"{entry_oid}_trail0"]["sl_order_id"],
+        eng._breakeven_watches[f"{entry_oid}_trail1"]["sl_order_id"],
+    }
+    assert len(sl_ids) == 1
+    assert next(iter(sl_ids)) is not None
+    # Both watches must be marked position_filled with the same entry_bar_index.
+    assert eng._breakeven_watches[f"{entry_oid}_trail0"]["position_filled"] is True
+    assert eng._breakeven_watches[f"{entry_oid}_trail1"]["position_filled"] is True
+    assert (
+        eng._breakeven_watches[f"{entry_oid}_trail0"]["entry_bar_index"]
+        == eng._breakeven_watches[f"{entry_oid}_trail1"]["entry_bar_index"]
+    )
+
+
+def test_multistage_trail_ratchets_stop_forward_on_progressive_mfe():
+    """R23 step-trail: on a long, SL moves to entry on stage-0 trigger (1R MFE),
+    then ratchets to entry+lock on stage-1 trigger (2R MFE) on a later bar.
+    """
+    eng = _make_replay_engine()
+    t0 = datetime(2026, 6, 3, 13, 0, tzinfo=timezone.utc)
+
+    # Entry=100, SL=90 → R=10 pts. Stages: (20,0)=BE@2R, (40,20)=lock 1R @4R.
+    bar0 = _bar(t0, 99, 101, 99, 100.5)
+    entry_oid = _seed_long_entry(eng, entry=100.0, stop=90.0, tp=200.0, bar=bar0)
+    for idx, (trig_pts, lock_pts) in enumerate([(20.0, 0.0), (40.0, 20.0)]):
+        eng._simulate_register_breakeven_watch(
+            f"{entry_oid}_trail{idx}", symbol="MNQ", side="BUY",
+            entry_price=100.0, profit_threshold=trig_pts, breakeven_offset=lock_pts,
+        )
+    eng._process_subbar_fills(bar0, tick_size=0.25)
+    sl_oid = eng._breakeven_watches[f"{entry_oid}_trail0"]["sl_order_id"]
+
+    # Bar 1: MFE crosses stage-0 trigger (high=125 → +25 ≥ 20) — low stays above
+    # entry+0 so the moved stop isn't ambiguous; stage-1 trigger not yet reached.
+    eng.backtest_engine.current_bar_index = 1
+    eng._process_subbar_fills(_bar(t0, 100.5, 125.0, 110.0, 122.0), tick_size=0.25)
+    sl = next(o for o in eng.backtest_engine.pending_orders if o.order_id == sl_oid)
+    assert sl.stop_price == pytest.approx(100.0)  # stage-0 fired → BE
+    assert eng._breakeven_watches[f"{entry_oid}_trail0"]["triggered"] is True
+    assert eng._breakeven_watches[f"{entry_oid}_trail1"]["triggered"] is False
+
+    # Bar 2: MFE crosses stage-1 trigger (high=145 → +45 ≥ 40) — low above lock=120
+    # so the new stop isn't ambiguous.
+    eng.backtest_engine.current_bar_index = 2
+    eng._process_subbar_fills(_bar(t0, 122.0, 145.0, 125.0, 140.0), tick_size=0.25)
+    sl = next(o for o in eng.backtest_engine.pending_orders if o.order_id == sl_oid)
+    assert sl.stop_price == pytest.approx(120.0)  # stage-1 fired → lock 1R
+    assert eng._breakeven_watches[f"{entry_oid}_trail1"]["triggered"] is True
+
+
+def test_multistage_trail_one_way_ratchet_prevents_regression():
+    """R23 step-trail: if a higher-trigger stage has a LOWER lock_offset (mis-config),
+    the engine's one-way ratchet must refuse to regress the SL.
+    """
+    eng = _make_replay_engine()
+    t0 = datetime(2026, 6, 3, 13, 0, tzinfo=timezone.utc)
+
+    # Stage-0 locks 1R (+10); stage-1 mis-configured to lock 0 (BE) at trigger 4R.
+    # Order of insertion matters for replication: low-trigger stage first, then the
+    # mis-configured higher-trigger stage.
+    bar0 = _bar(t0, 99, 101, 99, 100.5)
+    entry_oid = _seed_long_entry(eng, entry=100.0, stop=90.0, tp=200.0, bar=bar0)
+    eng._simulate_register_breakeven_watch(
+        f"{entry_oid}_trail0", symbol="MNQ", side="BUY",
+        entry_price=100.0, profit_threshold=20.0, breakeven_offset=10.0,
+    )
+    eng._simulate_register_breakeven_watch(
+        f"{entry_oid}_trail1", symbol="MNQ", side="BUY",
+        entry_price=100.0, profit_threshold=40.0, breakeven_offset=0.0,
+    )
+    eng._process_subbar_fills(bar0, tick_size=0.25)
+    sl_oid = eng._breakeven_watches[f"{entry_oid}_trail0"]["sl_order_id"]
+
+    # Single bar where MFE jumps past both stages — both watches fire same bar.
+    # Stage-0 sets SL to 110; stage-1 *would* set SL to 100 (regression) but the
+    # ratchet guard skips and marks the watch triggered.
+    eng.backtest_engine.current_bar_index = 1
+    eng._process_subbar_fills(_bar(t0, 100.5, 145.0, 115.0, 140.0), tick_size=0.25)
+    sl = next(o for o in eng.backtest_engine.pending_orders if o.order_id == sl_oid)
+    assert sl.stop_price == pytest.approx(110.0)  # stage-0 won; stage-1 ratchet-blocked
+    assert eng._breakeven_watches[f"{entry_oid}_trail0"]["triggered"] is True
+    assert eng._breakeven_watches[f"{entry_oid}_trail1"]["triggered"] is True
+
+
+def test_multistage_trail_short_ratchets_stop_downward():
+    """R23 step-trail SHORT mirror: SL stop_price moves DOWN (in trade's favour).
+
+    TP placed far out (30) and bar 2's range kept above the same-bar-ambiguity
+    threshold (high < new_stop) so stage-1 actually fires without the OCO TP
+    cancelling the SL first.
+    """
+    eng = _make_replay_engine()
+    t0 = datetime(2026, 6, 3, 13, 0, tzinfo=timezone.utc)
+
+    # Entry=100, SL=110 → R=10. Stages (20,0)=BE@2R, (40,20)=lock 1R @4R.
+    # TP=30 (very far) so bar-level lows don't accidentally hit it before
+    # stage-1 fires.
+    bar0 = _bar(t0, 101, 101, 99, 100.5)
+    entry_oid = _seed_short_entry(eng, entry=100.0, stop=110.0, tp=30.0, bar=bar0)
+    for idx, (trig, lock) in enumerate([(20.0, 0.0), (40.0, 20.0)]):
+        eng._simulate_register_breakeven_watch(
+            f"{entry_oid}_trail{idx}", symbol="MNQ", side="SELL",
+            entry_price=100.0, profit_threshold=trig, breakeven_offset=lock,
+        )
+    eng._process_subbar_fills(bar0, tick_size=0.25)
+    sl_oid = eng._breakeven_watches[f"{entry_oid}_trail0"]["sl_order_id"]
+
+    # MFE for SHORT = entry - low. Bar 1 low=78 → MFE 22 ≥ 20, < 40.
+    # high=95 < new_stop=100 → not ambiguous → stage-0 fires.
+    eng.backtest_engine.current_bar_index = 1
+    eng._process_subbar_fills(_bar(t0, 100.0, 95.0, 78.0, 80.0), tick_size=0.25)
+    sl = next(o for o in eng.backtest_engine.pending_orders if o.order_id == sl_oid)
+    assert sl.stop_price == pytest.approx(100.0)
+    assert eng._breakeven_watches[f"{entry_oid}_trail0"]["triggered"] is True
+
+    # Bar 2 low=58 → MFE 42 ≥ 40 → stage-1 fires; lock=20 → new SL = 80.
+    # high=78 < new_stop=80 → not ambiguous. low=58 > TP=30 so TP stays pending.
+    # high=78 < current SL=100 so SL doesn't fire pre-move.
+    eng.backtest_engine.current_bar_index = 2
+    eng._process_subbar_fills(_bar(t0, 80.0, 78.0, 58.0, 70.0), tick_size=0.25)
+    sl = next(o for o in eng.backtest_engine.pending_orders if o.order_id == sl_oid)
+    assert sl.stop_price == pytest.approx(80.0)
+    assert eng._breakeven_watches[f"{entry_oid}_trail1"]["triggered"] is True

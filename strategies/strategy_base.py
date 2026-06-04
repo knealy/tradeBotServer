@@ -9,10 +9,13 @@ import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from enum import Enum
+
+if TYPE_CHECKING:  # pragma: no cover — type-only import to keep runtime cost zero
+    import pandas as pd
 
 logger = logging.getLogger(__name__)
 from core.strategy_config import load_strategy_config
@@ -36,6 +39,24 @@ class StrategyStatus(Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     ERROR = "error"
+
+
+# Sentinel used by ``_resolve_live_breaker_enabled`` to distinguish
+# "TOML omitted the key" from "TOML set it to False".  Both are valid
+# states with different runtime semantics (env-default vs hard-off).
+_LIVE_BREAKER_SENTINEL = object()
+
+
+def _resolve_live_breaker_enabled(cfg) -> Optional[bool]:
+    """Return per-strategy live-breaker flag or ``None`` for env-default."""
+    raw = cfg.get("meta.live_breaker_enabled", _LIVE_BREAKER_SENTINEL)
+    if raw is _LIVE_BREAKER_SENTINEL:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return bool(raw)
 
 
 @dataclass
@@ -67,6 +88,13 @@ class StrategyConfig:
     # Per-instrument risk configuration (optional)
     risk_config: Optional[Dict[str, Dict[str, Any]]] = None
     # Format: {'SYMBOL': {'max_quantity': int, 'cooldown': float, 'max_pending': int}}
+
+    # Live consec-loss breaker bridge (off = process-wide
+    # ``STRATEGY_LIVE_BREAKER`` env var decides).  Per-strategy TOML can
+    # opt-in or opt-out via ``[meta].live_breaker_enabled`` regardless of
+    # the env default — useful during early rollout when one strategy is
+    # validated for live and others stay in shadow-only mode.
+    live_breaker_enabled: Optional[bool] = None
     
     @staticmethod
     def _parse_conditions(conditions_str: str) -> List[MarketCondition]:
@@ -115,6 +143,12 @@ class StrategyConfig:
             respect_dll=cfg.get_bool("respect_dll", True),
             respect_mll=cfg.get_bool("respect_mll", True),
             max_dll_usage_percent=float(cfg.get_float("max_dll_usage", 0.75)),
+            # ``cfg.get`` returns the sentinel default unchanged when the key
+            # is absent, so we use a unique sentinel to distinguish
+            # "missing in TOML" (→ ``None`` → bridge follows env default)
+            # from "explicitly set to false in TOML" (→ ``False`` → never
+            # bridge regardless of env).
+            live_breaker_enabled=_resolve_live_breaker_enabled(cfg),
         )
 
 
@@ -204,7 +238,19 @@ class BaseStrategy(ABC):
         # Centralized risk manager (lazy initialization)
         self._risk_manager = None
         self._risk_config = getattr(config, 'risk_config', None)  # Per-instrument risk config
-        
+
+        # ── Live trade history (lazy) ────────────────────────────────────────
+        # Per-symbol bounded buffer fed by ``EventType.TRADE_CLOSED`` events
+        # published from ``core/user_hub_handlers.on_trade``. Read by
+        # strategy-specific circuit breakers (e.g. consec-loss) when there is
+        # no ``_replay_engine`` available (i.e. live mode).
+        # The attribute is created on first ``record_trade_outcome`` call so
+        # strategies that never use the breaker pay nothing for it.
+        self._live_trade_history = None  # type: ignore[var-annotated]
+        # Unsubscribe handle for the TRADE_CLOSED bus subscription (set when
+        # ``start_live_trade_bridge`` is called by the strategy_manager).
+        self._live_trade_bridge_unsub = None  # type: ignore[var-annotated]
+
         logger.info(f"✨ Initialized {self.config.name} strategy")
     
     @property
@@ -280,6 +326,60 @@ class BaseStrategy(ABC):
         
         print("\n" + "="*80 + "\n")
     
+    # ── Backtest performance hooks (opt-in) ─────────────────────────────────
+    # ``replay_active_window_et``: when a subclass overrides this to return
+    # one or more (start_et, end_et) ``datetime.time`` ranges, the
+    # ``StrategyReplayEngine`` will SKIP ``analyze()`` for bars whose ET
+    # timestamp falls outside ALL windows AND that have no open position
+    # for any symbol. Used by ``StrategyReplayEngine.replay()`` in fast mode.
+    #
+    # Semantics:
+    #   - Returns None → strategy is "always active"; engine never skips analyze.
+    #   - Returns [] → also treated as "always active" (defensive, matches None).
+    #   - Returns [(time(7,0), time(16,0))] → analyze() is called only on bars
+    #     whose ET time is in [07:00, 16:00). Outside that, the engine still
+    #     processes per-bar fills (TP/SL hits on existing positions) but the
+    #     strategy callback is suppressed when no positions are open. When a
+    #     position IS open the strategy is called regardless of window so it
+    #     can manage exits (break-even, scratch, etc.).
+    #   - Multiple windows allowed for split sessions (e.g. premarket build +
+    #     RTH fade): returning [(time(7,0), time(8,0)), (time(8,0), time(16,0))]
+    #     is equivalent to one merged [(7,16)] window.
+    #
+    # Why a class attribute and not a method: it's read once per replay (at
+    # the top of the bar loop) so even a hot getattr is cheap. Use a property
+    # if the window needs to be config-driven (see
+    # ``MorningRangeReversionStrategy.replay_active_window_et``).
+    #
+    # NOTE: This is a backtest-only hint. Live mode never consults this
+    # attribute. If you set it incorrectly you risk silently dropping signals
+    # at the boundary — the parity test in
+    # ``tests/test_backtest_active_window_parity.py`` is the regression net.
+    replay_active_window_et: Optional[List[Tuple["time", "time"]]] = None
+
+    def replay_precompute_indicators(self, df: "pd.DataFrame") -> None:
+        """Optional hook to precompute indicators once before the bar loop.
+
+        Called once by ``StrategyReplayEngine.replay()`` just before the bar
+        iteration starts (after `_install_fast_strategy_mocks` in fast mode).
+        The default is a no-op; strategies that compute the same indicator
+        (e.g. ATR / EMA / session ranges) on every ``analyze()`` call can
+        override this to vectorize the work, store the result on
+        ``self.trading_bot._precomputed`` (or similar), and consume it from
+        ``analyze()``.
+
+        Args:
+            df: The full OHLCV DataFrame for the replay (sorted, naive-UTC
+                index, lowercase ``open/high/low/close/volume`` columns).
+                Mutating this DataFrame is undefined behaviour — the engine
+                may iterate it concurrently with strategy callbacks.
+
+        The hook is **best-effort**: any exception is caught and logged by
+        the engine, then the replay falls back to the per-bar path so a
+        bad precompute can't tank a run.
+        """
+        return None
+
     @abstractmethod
     async def analyze(self, symbol: str) -> Optional[Dict]:
         """
@@ -328,7 +428,139 @@ class BaseStrategy(ABC):
         Clean up strategy resources.
         """
         pass
-    
+
+    # ── Live trade-history bridge (consumed by consec-loss / similar breakers) ──
+
+    def record_trade_outcome(
+        self,
+        symbol: str,
+        pnl: float,
+        exit_time: Optional[datetime] = None,
+        side: str = "",
+        **extras: Any,
+    ) -> None:
+        """Append a completed trade to the strategy's live history buffer.
+
+        Called by ``_on_trade_closed_event`` (live mode) and may also be
+        called by tests.  Subclasses that maintain their own history can
+        override; the default implementation simply appends to
+        ``self._live_trade_history`` (constructed lazily).
+
+        ``extras`` keys correspond to ``LiveTradeRecord`` fields
+        (``trade_id``, ``quantity``, ``entry_price``, ``exit_price``,
+        ``entry_time``, ``session_id``).
+        """
+        if not symbol:
+            return
+        try:
+            pnl_f = float(pnl)
+        except (TypeError, ValueError):
+            return
+        if self._live_trade_history is None:
+            from core.live_trade_history import LiveTradeHistory
+            self._live_trade_history = LiveTradeHistory()
+        from core.live_trade_history import LiveTradeRecord
+        rec = LiveTradeRecord(
+            symbol=symbol,
+            pnl=pnl_f,
+            entry_time=extras.get("entry_time"),
+            exit_time=exit_time,
+            side=side or "",
+            trade_id=extras.get("trade_id"),
+            quantity=int(extras.get("quantity") or 0),
+            entry_price=float(extras.get("entry_price") or 0.0),
+            exit_price=float(extras.get("exit_price") or 0.0),
+            session_id=extras.get("session_id"),
+        )
+        self._live_trade_history.record(rec)
+
+    async def _on_trade_closed_event(self, event: Any) -> None:
+        """``EventType.TRADE_CLOSED`` subscriber — forwards into history.
+
+        Strategy filtering happens here: a strategy only records trades
+        whose ``symbol`` is in ``self.config.symbols``.  This is a
+        coarse-grained filter (two strategies trading the same symbol
+        will both see the trade; the consec-loss breaker treats that as
+        a regime signal, which is the safer-of-the-two failure mode).
+        """
+        try:
+            data = getattr(event, "data", None) or {}
+        except Exception:
+            return
+        sym = str(data.get("symbol") or "").upper()
+        if not sym:
+            return
+        try:
+            cfg_syms = {str(s).upper() for s in (self.config.symbols or [])}
+        except Exception:
+            cfg_syms = set()
+        if cfg_syms and sym not in cfg_syms:
+            return
+        from core.live_trade_history import trade_record_from_event
+        rec = trade_record_from_event(data)
+        if rec is None:
+            return
+        self.record_trade_outcome(
+            symbol=rec.symbol,
+            pnl=rec.pnl,
+            exit_time=rec.exit_time,
+            side=rec.side,
+            trade_id=rec.trade_id,
+            quantity=rec.quantity,
+            entry_price=rec.entry_price,
+            exit_price=rec.exit_price,
+            entry_time=rec.entry_time,
+            session_id=rec.session_id,
+        )
+
+    async def start_live_trade_bridge(self) -> bool:
+        """Subscribe to ``TRADE_CLOSED`` so live fills feed the breaker.
+
+        Returns True when a subscription was established.  Idempotent: a
+        second call is a no-op.  Called by ``StrategyManager.start_strategy``
+        when both the bot's ``event_bus`` exists and the live breaker is
+        enabled (env ``STRATEGY_LIVE_BREAKER=1`` or per-strategy override).
+        """
+        if self._live_trade_bridge_unsub is not None:
+            return True
+        bus = getattr(self.trading_bot, "event_bus", None)
+        if bus is None:
+            return False
+        try:
+            from core.events import EventType
+            bus.subscribe(EventType.TRADE_CLOSED, self._on_trade_closed_event)
+        except Exception as exc:
+            logger.debug("Could not subscribe %s to TRADE_CLOSED: %s", self.config.name, exc)
+            return False
+        # ``EventBus.subscribe`` does not return an unsub handle; capture the
+        # parameters needed to call ``bus.unsubscribe`` later as a closure.
+        from core.events import EventType as _ET
+
+        def _unsub() -> None:
+            try:
+                bus.unsubscribe(_ET.TRADE_CLOSED, self._on_trade_closed_event)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Could not unsubscribe %s from TRADE_CLOSED: %s",
+                    self.config.name, exc,
+                )
+
+        self._live_trade_bridge_unsub = _unsub
+        logger.info("🔗 %s subscribed to TRADE_CLOSED for live consec-loss breaker", self.config.name)
+        return True
+
+    async def stop_live_trade_bridge(self) -> None:
+        """Tear down the ``TRADE_CLOSED`` subscription if active."""
+        unsub = self._live_trade_bridge_unsub
+        self._live_trade_bridge_unsub = None
+        if unsub is None:
+            return
+        try:
+            if callable(unsub):
+                unsub()
+        except Exception as exc:
+            logger.debug("Could not unsubscribe %s from TRADE_CLOSED: %s", self.config.name, exc)
+
     # Common utility methods all strategies can use
     
     def get_market_condition(self, symbol: str) -> MarketCondition:

@@ -1,0 +1,45 @@
+[
+  {
+    "label": "r26_baseline_no_trail",
+    "root": {}
+  },
+  {
+    "label": "r26_R25_winner_trail_only",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0]]}
+  },
+  {
+    "label": "r26a_trail_MNQtp5",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 5.0}}
+  },
+  {
+    "label": "r26b_trail_MNQtp6",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 6.0}}
+  },
+  {
+    "label": "r26c_trail_MNQtp8",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 8.0}}
+  },
+  {
+    "label": "r26d_trail_MNQtp10",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 10.0}}
+  },
+  {
+    "label": "r26e_trail_MNQtp5_2stage",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [4.0, 2.5]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 5.0}}
+  },
+  {
+    "label": "r26f_trail_MNQtp8_2stage_loose",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [4.0, 2.5]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 8.0}}
+  },
+  {
+    "label": "r26g_trail_MNQtp10_3stage",
+    "root": {"position_management.trail_steps_r": [[2.0, 1.0], [4.0, 2.5], [6.0, 4.0]]},
+    "symbols": {"MNQ": {"signal.tp_atr_multiplier": 10.0}}
+  }
+]

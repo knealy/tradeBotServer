@@ -1,7 +1,23 @@
 # Trend Scalping strategy configuration.
+#
+# 2026-06-01 — disabled.  ``strategies/trend_scalping_strategy.analyze``
+# requires THREE conditions in lockstep on the same 1m bar:
+#   1. Market structure trend == UP or DOWN (not RANGE)
+#   2. EMA cross (89/233) firing on that exact bar (BULLISH/BEARISH)
+#   3. Pullback within 0.3% of the 89-EMA on the same bar
+# With 89/233 EMAs on 1m bars, condition (2) is a rare-event detector
+# (cross fires on the single bar where the short EMA crosses the long),
+# so signals practically never satisfy (1)+(2)+(3) simultaneously.
+# Every walk-forward fold produced zero trades.
+#
+# Re-enabling requires loosening the cross gate (e.g. "short EMA above
+# long EMA AND was below within last K bars") or adding an
+# always-eligible state, plus a per-symbol replay validation.  That's a
+# code change, not a TOML one — disabling here so executors don't pick
+# this up.
 
 [meta]
-enabled = true
+enabled = false
 symbols = ["MNQ", "MES", "MGC"]
 
 [risk]

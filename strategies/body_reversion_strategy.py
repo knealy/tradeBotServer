@@ -287,6 +287,53 @@ class BodyReversionStrategy(BaseStrategy):
     def _tick_size(self, symbol: str) -> float:
         return self.tick_sizes.get(symbol.upper(), 0.25)
 
+    # ── Consecutive-loss circuit breaker ────────────────────────────────
+    # Same pattern as ``overnight_range_strategy._breaker_config_for_symbol``;
+    # both delegate to the shared helper in ``core/consec_loss_breaker.py``.
+
+    def _breaker_config_for_symbol(self, symbol: str):
+        from core.consec_loss_breaker import BreakerConfig
+        sym_upper = str(symbol).upper()
+
+        def _resolve_int(key: str, default: int = 0) -> int:
+            v = self._cfg.symbol_override(sym_upper, key, default=None)
+            if v is None:
+                v = self._cfg.get_int(key, default)
+            try:
+                return max(0, int(v or 0))
+            except (TypeError, ValueError):
+                return default
+
+        def _resolve_float(key: str, default: float = 0.0) -> float:
+            v = self._cfg.symbol_override(sym_upper, key, default=None)
+            if v is None:
+                v = self._cfg.get_float(key, default)
+            try:
+                return max(0.0, float(v or 0.0))
+            except (TypeError, ValueError):
+                return default
+
+        return BreakerConfig(
+            max_losses=_resolve_int("signal.max_consecutive_losses", 0),
+            cooldown_sessions=_resolve_int("signal.loss_streak_cooldown_sessions", 0),
+            magnitude_dollars=_resolve_float("signal.rolling_pnl_loss_threshold_dollars", 0.0),
+        )
+
+    def _evaluate_consec_loss_breaker(self, symbol: str, bar_session_date) -> Dict[str, Any]:
+        from core.consec_loss_breaker import evaluate, trade_iter_for_strategy
+        cfg = self._breaker_config_for_symbol(symbol)
+        if not cfg.enabled:
+            return {"blocked": False, "streak": 0, "reason": "ok"}
+        trade_iter = trade_iter_for_strategy(self, symbol)
+        if trade_iter is None:
+            return {"blocked": False, "streak": 0, "reason": "no_engine"}
+        return evaluate(
+            symbol=symbol,
+            bar_session_date=bar_session_date,
+            trade_iter=trade_iter,
+            config=cfg,
+        )
+
     def _now_eastern(self) -> datetime:
         anchor = getattr(self.trading_bot, "_current_bar_timestamp", None)
         if anchor is not None:
@@ -669,6 +716,33 @@ class BodyReversionStrategy(BaseStrategy):
                 return None
             last_count = self._last_signal_bar_count.get(symbol)
             if last_count is not None and (self._bar_seq - last_count) < self.min_bars_between_signals:
+                return None
+
+            # Cross-session consecutive-loss circuit breaker.
+            # Halts the symbol for ``loss_streak_cooldown_sessions`` days
+            # after ``max_consecutive_losses`` in a row.  Defaults to OFF
+            # (max_consecutive_losses=0); enable via TOML.  Reads
+            # ``_replay_engine.trades`` (backtest) or
+            # ``_live_trade_history`` (live, fed by TRADE_CLOSED events).
+            breaker = self._evaluate_consec_loss_breaker(symbol, bar_et.date())
+            if breaker.get("blocked"):
+                if getattr(self, "_logged_breaker_session", None) != (symbol, bar_et.date()):
+                    cooldown = breaker.get("cooldown") or 0
+                    days_since = breaker.get("days_since_trip")
+                    trip_d = breaker.get("trip_session_date")
+                    if cooldown > 0 and days_since is not None:
+                        logger.info(
+                            "🚨 %-3s body_reversion consec-loss breaker active — "
+                            "streak=%d, tripped on %s, day %d of %d-day cooldown",
+                            symbol, breaker.get("streak", 0), trip_d, days_since, cooldown,
+                        )
+                    else:
+                        logger.info(
+                            "🚨 %-3s body_reversion consec-loss breaker active — "
+                            "streak=%d (cooldown=0, halt until win resets)",
+                            symbol, breaker.get("streak", 0),
+                        )
+                    setattr(self, "_logged_breaker_session", (symbol, bar_et.date()))
                 return None
 
             o = self._val(last, "open", "o")

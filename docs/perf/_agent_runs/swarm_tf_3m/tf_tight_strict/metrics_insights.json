@@ -1,0 +1,185 @@
+{
+  "sim_start_equity": 2000.0,
+  "grand": {
+    "equity_curve": [
+      {
+        "time": 1772119800,
+        "equity": 2000.0,
+        "trade_pnl": 0.0,
+        "cumulative_pnl": 0.0
+      },
+      {
+        "time": 1772120400,
+        "equity": 1883.48,
+        "trade_pnl": -116.5214,
+        "cumulative_pnl": -116.5214
+      },
+      {
+        "time": 1774264800,
+        "equity": 1704.44,
+        "trade_pnl": -179.0357,
+        "cumulative_pnl": -295.5571
+      },
+      {
+        "time": 1774978500,
+        "equity": 1576.86,
+        "trade_pnl": -127.5786,
+        "cumulative_pnl": -423.1357
+      },
+      {
+        "time": 1775141400,
+        "equity": 1430.37,
+        "trade_pnl": -146.4929,
+        "cumulative_pnl": -569.6286
+      }
+    ],
+    "equity_summary": {
+      "start_equity": 2000.0,
+      "final_equity": 1430.37,
+      "total_return_pct": -28.481,
+      "max_drawdown_dollars": 569.63,
+      "max_drawdown_pct": 28.481,
+      "n_trades": 4
+    },
+    "extended": {
+      "n_trades": 4,
+      "recovery_factor_pnl_vs_seq_dd": -1.0,
+      "breakeven_win_rate": 1.0,
+      "actual_win_rate": 0.0,
+      "median_bars_held_win": null,
+      "median_bars_held_loss": 1.5,
+      "mean_mae_losers": -153.125,
+      "mean_mfe_winners": null,
+      "avg_r_winners": null,
+      "avg_r_losers": -1.041
+    },
+    "loss_patterns": {
+      "n_trades": 4,
+      "n_losses": 4,
+      "n_wins": 0,
+      "by_exit_reason": {
+        "stop_loss": {
+          "wins": 0,
+          "losses": 4,
+          "n": 4
+        }
+      },
+      "losses_by_exit_reason_pct": {
+        "stop_loss": 100.0
+      },
+      "by_side_loss_rate": {
+        "SELL": {
+          "n": 1,
+          "losses": 1,
+          "loss_rate_pct": 100.0
+        },
+        "BUY": {
+          "n": 3,
+          "losses": 3,
+          "loss_rate_pct": 100.0
+        }
+      },
+      "by_strategy_loss_mix": {
+        "trend_following": {
+          "losses": 4,
+          "trades": 4,
+          "pct_of_all_losses": 100.0
+        }
+      },
+      "losses_by_weekday": {
+        "Mon": {
+          "losses": 1,
+          "trades": 1,
+          "loss_share_of_losses_pct": 25.0
+        },
+        "Tue": {
+          "losses": 1,
+          "trades": 1,
+          "loss_share_of_losses_pct": 25.0
+        },
+        "Thu": {
+          "losses": 2,
+          "trades": 2,
+          "loss_share_of_losses_pct": 50.0
+        }
+      },
+      "correlations_with_loss": []
+    }
+  },
+  "per_strategy_symbol": {
+    "trend_following|MNQ": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 1430.37,
+        "total_return_pct": -28.481,
+        "max_drawdown_dollars": 569.63,
+        "max_drawdown_pct": 28.481,
+        "n_trades": 4
+      },
+      "extended": {
+        "n_trades": 4,
+        "recovery_factor_pnl_vs_seq_dd": -1.0,
+        "breakeven_win_rate": 1.0,
+        "actual_win_rate": 0.0,
+        "median_bars_held_win": null,
+        "median_bars_held_loss": 1.5,
+        "mean_mae_losers": -153.125,
+        "mean_mfe_winners": null,
+        "avg_r_winners": null,
+        "avg_r_losers": -1.041
+      },
+      "loss_patterns": {
+        "n_trades": 4,
+        "n_losses": 4,
+        "n_wins": 0,
+        "by_exit_reason": {
+          "stop_loss": {
+            "wins": 0,
+            "losses": 4,
+            "n": 4
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 100.0
+        },
+        "by_side_loss_rate": {
+          "SELL": {
+            "n": 1,
+            "losses": 1,
+            "loss_rate_pct": 100.0
+          },
+          "BUY": {
+            "n": 3,
+            "losses": 3,
+            "loss_rate_pct": 100.0
+          }
+        },
+        "by_strategy_loss_mix": {
+          "trend_following": {
+            "losses": 4,
+            "trades": 4,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Mon": {
+            "losses": 1,
+            "trades": 1,
+            "loss_share_of_losses_pct": 25.0
+          },
+          "Tue": {
+            "losses": 1,
+            "trades": 1,
+            "loss_share_of_losses_pct": 25.0
+          },
+          "Thu": {
+            "losses": 2,
+            "trades": 2,
+            "loss_share_of_losses_pct": 50.0
+          }
+        },
+        "correlations_with_loss": []
+      }
+    }
+  }
+}

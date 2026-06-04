@@ -304,7 +304,9 @@ def test_v3_defaults_load_from_toml():
     ]
     strat = BodyReversionStrategy(_MockBot(bars), cfg)
     assert strat.body_pct_min == 0.90
-    assert strat.stop_atr_multiplier == 0.5
+    # Round-1 (2026-06-01) tightened the stop to 0.35×ATR + boosted TP to 3.0R
+    # for 9m DD 82% → 11.33% / RF 6.21 → 29.27. Stop=0.5 was the legacy R0 default.
+    assert strat.stop_atr_multiplier == 0.35
     assert strat.tp_r_multiple == 3.0
     assert strat.max_hold_bars == 6
     assert strat.min_bars_between_signals == 6

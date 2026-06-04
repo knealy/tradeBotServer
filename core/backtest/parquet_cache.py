@@ -101,12 +101,103 @@ def _write_sidecar(df: pd.DataFrame, parquet_path: Path, csv_mtime_ns: int) -> N
         logger.warning("parquet sidecar write failed for %s: %s", parquet_path, exc)
 
 
+_CONTRACT_ROLL_GUARD_ENV = "BACKTEST_QUARANTINE_ROLL_DAYS"
+_CONTRACT_ROLL_GAP_RATIO = 5.0       # next_open vs close gap > 5× typical-bar-range = impossible
+_CONTRACT_ROLL_MAX_DT_MIN = 5.0      # only flag gaps between bars ≤ 5 min apart
+_CONTRACT_ROLL_MIN_FLAGS_PER_DAY = 5 # a date is only "rolled" if it has ≥N impossible gaps
+
+
+def _quarantine_contract_roll_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop calendar days where the bar-to-bar |next_open − close| exceeds a
+    symbol-agnostic outlier threshold — the signature of two contract months
+    being interleaved into one timestream (the standard databento corruption
+    near quarterly futures rolls, e.g. 2025-09-15 = Sep→Dec MNQ roll).
+
+    Heuristic (gap_ratio):
+      • ``typical_range = median(high − low)`` across the first 5000 bars
+        gives a stable per-symbol normaliser without taking the symbol as
+        an argument.
+      • ``gap = |open_t+1 − close_t|`` measured between consecutive bars
+        whose timestamp delta ≤ ``_CONTRACT_ROLL_MAX_DT_MIN`` (default 5 min).
+      • Any bar with ``gap / typical_range > _CONTRACT_ROLL_GAP_RATIO``
+        (default 5×) is *flagged*.
+      • A calendar date is only quarantined when it has
+        ``≥ _CONTRACT_ROLL_MIN_FLAGS_PER_DAY`` flagged bars (default 5) —
+        a real roll day typically has 30–100+ flags, while a one-off
+        fat-finger print or isolated bad tick has just 1.
+      • All bars on quarantined dates are dropped.
+
+    Rationale — overnight session-open gaps (CME 18:00 ET reopen, holiday
+    early closes) routinely produce 0.5–2× typical-range gaps; real liquid
+    futures basically never produce a > 5× typical-range gap in ≤ 5 min
+    between adjacent bars. The Sep 15 2025 MNQ corruption produced 535
+    such gaps in one calendar day, each ~240pt (≈ 24× typical 10pt 1m bar
+    range). A future databento refresh that fixes the CSV will naturally
+    have no flagged dates → no-op.
+
+    Disable via env ``BACKTEST_QUARANTINE_ROLL_DAYS=0`` (e.g. for unit
+    tests that intentionally feed pathological data).
+
+    Idempotent: a frame already free of flagged dates passes through with
+    O(N) cost (one shifted subtraction + one boolean reduction).
+    """
+    if os.environ.get(_CONTRACT_ROLL_GUARD_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+        return df
+    if len(df) < 3 or "open" not in df.columns or "close" not in df.columns:
+        return df
+
+    # Per-symbol typical-bar-range normaliser: use the head 5000 rows (stable,
+    # avoids paying O(N) on every load for huge frames). Even on a roll-day
+    # the median is dominated by clean bars.
+    head = df.iloc[:5000] if len(df) > 5000 else df
+    typical = float((head["high"] - head["low"]).median())
+    if not typical > 0:
+        return df
+
+    next_open = df["open"].shift(-1)
+    gap = (next_open - df["close"]).abs()
+    # dt between rows
+    ts_diff_min = df.index.to_series().diff(-1).dt.total_seconds().abs() / 60.0
+    impossible = (gap / typical > _CONTRACT_ROLL_GAP_RATIO) & (
+        ts_diff_min <= _CONTRACT_ROLL_MAX_DT_MIN
+    )
+    if not impossible.any():
+        return df
+
+    # Per-date flag count — only quarantine days with ≥ MIN_FLAGS_PER_DAY
+    # impossible gaps. Roll days carry 30-100+ flags; isolated bad ticks
+    # carry exactly 1.
+    flagged_dates = df.index[impossible].normalize()
+    counts = flagged_dates.value_counts()
+    bad_dates = set(counts[counts >= _CONTRACT_ROLL_MIN_FLAGS_PER_DAY].index)
+    if not bad_dates:
+        return df
+
+    keep_mask = ~df.index.normalize().isin(bad_dates)
+    n_dropped = int((~keep_mask).sum())
+    sample = sorted({d.date().isoformat() for d in bad_dates})
+    head_sample = sample[:6]
+    tail = f" ... +{len(sample) - 6} more" if len(sample) > 6 else ""
+    logger.warning(
+        "Quarantined %d roll-corrupted calendar day(s), %d bars dropped (gap/typical_range > %.0f× within ≤%.0f min, ≥%d flags/day). "
+        "Sample dates: %s%s. Disable via %s=0.",
+        len(bad_dates), n_dropped, _CONTRACT_ROLL_GAP_RATIO,
+        _CONTRACT_ROLL_MAX_DT_MIN, _CONTRACT_ROLL_MIN_FLAGS_PER_DAY,
+        head_sample, tail, _CONTRACT_ROLL_GUARD_ENV,
+    )
+    return df.loc[keep_mask]
+
+
 def _normalize_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Canonical shape every caller expects: lowercase cols, naive-UTC sorted index, no NaN.
 
     Same normalization the long-standing ``HistoricalDataLoader.load_from_csv``
     path applies, lifted into a helper so the parquet/CSV branches stay in
     sync. Idempotent — safe to call on a frame already in canonical shape.
+
+    Also runs ``_quarantine_contract_roll_dates`` at the end to drop calendar
+    days corrupted by contract-roll interleaving (the databento Sep/Dec/Mar/Jun
+    quarterly-roll issue). Disable via env ``BACKTEST_QUARANTINE_ROLL_DAYS=0``.
     """
     column_mapping = {}
     for col in df.columns:
@@ -144,6 +235,7 @@ def _normalize_ohlcv_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in required:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=required)
+    df = _quarantine_contract_roll_dates(df)
     return df
 
 
@@ -185,6 +277,12 @@ def load_ohlcv_cached(csv_path: Path | str, *, force_csv: bool = False) -> pd.Da
                     df = df.sort_index()
                     if getattr(df.index, "tz", None) is not None:
                         df.index = df.index.tz_convert("UTC").tz_localize(None)
+                    # Older sidecars were written before the contract-roll
+                    # quarantine existed; re-apply on every read so stale
+                    # sidecars cannot leak roll-corrupted bars back into the
+                    # engine. Idempotent + O(N) — no-op once sidecars are
+                    # rebuilt fresh.
+                    df = _quarantine_contract_roll_dates(df)
                     logger.debug("parquet sidecar hit %s (%d rows)", sidecar.name, len(df))
                     return df
             else:

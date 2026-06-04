@@ -800,6 +800,21 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self.flat_before: time = _parse_hhmm(
             self._cfg.get_str("signal.flat_before", "16:00"), time(16, 0)
         )
+        # ── Backtest active-window hint (Tier 5) ─────────────────────────────
+        # MorningRangeReversion only emits signals while the morning anchor box
+        # is building (``range_start``→``range_end_open``) and during the fade
+        # window after that (``range_end_open``→``flat_before``). Outside this
+        # span the strategy's analyze() always returns None on the first time
+        # check anyway, so we let the replay engine skip the call entirely on
+        # bars with no open positions. Bars with open positions still flow
+        # through analyze() so ``manage_positions`` and the breakeven/scratch
+        # logic keep firing — losing those on bars 16:00→07:00 would change
+        # exit timing. The window is computed from the SAME TOML keys the
+        # strategy reads (no separate truth), so retunes carry through.
+        try:
+            self.replay_active_window_et = [(self.range_start, self.flat_before)]
+        except Exception:
+            self.replay_active_window_et = None
         self.max_hold_bars: int = int(self._cfg.get_int("signal.max_hold_bars", 96))
         self.allow_long: bool = bool(self._cfg.get_bool("signal.allow_long", True))
         self.allow_short: bool = bool(self._cfg.get_bool("signal.allow_short", True))
@@ -1201,22 +1216,30 @@ class MorningRangeReversionStrategy(BaseStrategy):
             }
 
         Reads ``self._replay_engine.trades`` (set by ``StrategyReplayEngine``
-        at startup) — a pure read, no state writes, so this is safe to call
-        on every bar.  Live mode falls through with ``blocked=False`` since
-        the live bot tracks fills via its own ``brokers/topstepx_adapter``
-        pipeline (live wiring is a follow-up).
+        at startup) when available — a pure read, no state writes, so this is
+        safe to call on every bar.  In **live mode** ``_replay_engine`` is
+        absent; the breaker walks ``self._live_trade_history`` instead,
+        which is fed by ``EventType.TRADE_CLOSED`` events published from
+        ``core/user_hub_handlers.on_trade`` (see ``BaseStrategy._on_trade_closed_event``).
+        Both sources expose the same ``symbol``/``pnl``/``exit_time``
+        accessors so the walk loop is identical.
         """
         mcl = self._max_consecutive_losses(symbol)
         if mcl <= 0:
             return {"blocked": False, "streak": 0, "reason": "ok"}
         engine = getattr(self, "_replay_engine", None)
-        if engine is None or not hasattr(engine, "trades"):
+        if engine is not None and hasattr(engine, "trades"):
+            trade_iter = reversed(getattr(engine, "trades", []))
+        elif self._live_trade_history is not None:
+            # Live path — already most-recent-first.
+            trade_iter = iter(self._live_trade_history.trades_for(symbol))
+        else:
             return {"blocked": False, "streak": 0, "reason": "no_engine"}
         sym_upper = str(symbol).upper()
         streak = 0
         streak_pnl_sum = 0.0
         latest_loss_date: Optional[date] = None
-        for trade in reversed(getattr(engine, "trades", [])):
+        for trade in trade_iter:
             t_sym = str(getattr(trade, "symbol", "") or "").upper()
             if t_sym != sym_upper:
                 continue
@@ -1630,22 +1653,18 @@ class MorningRangeReversionStrategy(BaseStrategy):
             }
         return self._state[sym]
 
-    def record_trade_outcome(self, symbol: str, pnl: float) -> None:
-        """Legacy live-mode hook for the consec-loss breaker.
-
-        **No longer used in backtest** — the breaker now reads
-        ``self._replay_engine.trades`` directly in
-        ``_consec_loss_breaker_status`` (a pure read, no state writes),
-        which avoids the per-bar non-determinism a hook-based dispatch
-        caused (2026-05-29 9m walk-forward: +4 MNQ trades vs no-hook run
-        even when the hook body was a no-op).
-
-        Kept as a no-op stub for forward compatibility — if live trading
-        later wants to drive the breaker from the bot's fill handler, the
-        live path can build its own per-symbol trade-history list and
-        adapt ``_consec_loss_breaker_status`` to read from that source.
-        """
-        return
+    # ``record_trade_outcome`` is inherited from ``BaseStrategy`` and is the
+    # live-mode entry point for the consec-loss breaker (driven by
+    # ``EventType.TRADE_CLOSED`` events from ``core/user_hub_handlers.on_trade``).
+    # **Backtest path unchanged**: ``_consec_loss_breaker_status`` reads
+    # ``self._replay_engine.trades`` directly in backtest mode and only
+    # falls back to ``self._live_trade_history`` when no replay engine is
+    # attached — so this override is no longer necessary.  The legacy
+    # 2026-05-29 hook non-determinism (extra MNQ trades when the live
+    # hook fired during a backtest replay) is impossible by construction
+    # now: the bridge subscription is only created by
+    # ``StrategyManager.start_strategy`` when ``STRATEGY_LIVE_BREAKER=1``
+    # (default OFF), and the StrategyReplayEngine never invokes the bus.
 
     def _seed_range_from_history(
         self,
