@@ -139,18 +139,21 @@ skip_weekdays = [2]
 
 
 def test_overnight_committed_round23_defaults_resolve_correctly():
-    """Pins the live ``config/strategies/overnight_range.toml`` round-23 values.
+    """Pins the live ``config/strategies/overnight_range.toml`` round-23+24 values.
 
     Round-23 (2026-06-03 PM, step-trail addition on top of R22):
       • Root: stop=1.0, tp=2.5, offset=1.5, skip_weekdays=[],
               ``trail_steps_r = [[2.0, 1.0]]`` (NEW — single-stage step trail in
               R-multiples: trigger at 2R MFE, lock 1R)
-      • MNQ:  stop=0.5, tp=4.0, skip_weekdays=[0, 4]  — unchanged
+      • MNQ:  stop=0.5, tp=4.0, skip_weekdays=[0, 4]  (R23)
       • MGC:  stop=0.5, tp=2.0, skip_weekdays=[2]     — unchanged
-    Trail is global (per-symbol override not yet supported in ``_read_trail_steps_r``).
-    Sweep evidence: R24/R25 (270d / 9 folds) ranked `[[2.0, 1.0]]` first by
-    RF×ret on the corrected baseline; cross-validated 3m (+16% ret) and
-    9m (+2.3% ret) — see overnight_range.toml step-trail comment block.
+    Round-24 (2026-06-08, fresh-cache truth audit, MNQ flip from loser → winner):
+      • MNQ:  skip_weekdays=[0, 1, 4]  ← added Tuesday (R24).  Sweep
+        evidence under docs/perf/_opt_runs/overnight_range/r28_*:
+          9m: ret +69.77 → +133.28 (+91 %); RF 3.40 → 6.43 (+89 %)
+          6m: ret +56.94 → +93.47 (+64 %); RF 2.78 → 4.51 (+62 %)
+          3m: ret +28.26 → +39.67 (+40 %); RF 1.58 → 2.20 (+39 %)
+        MNQ standalone 9m: -16.48 % → +47.03 % (+63 pp swing).
     """
     from core.strategy_config import load_strategy_config
 
@@ -163,7 +166,8 @@ def test_overnight_committed_round23_defaults_resolve_correctly():
     assert cfg.get_list("position_management.trail_steps_r", []) == [[2.0, 1.0]]
     assert cfg.symbol_override("MNQ", "signal.stop_atr_multiplier", hint=float) == 0.5
     assert cfg.symbol_override("MNQ", "signal.tp_atr_multiplier", hint=float) == 4.0
-    assert list(cfg.symbol_override("MNQ", "filters.skip_weekdays")) == [0, 4]
+    # 2026-06-08 R24: MNQ Tuesday added to the skip list (was [Mon, Fri]).
+    assert list(cfg.symbol_override("MNQ", "filters.skip_weekdays")) == [0, 1, 4]
     assert cfg.symbol_override("MGC", "signal.stop_atr_multiplier", hint=float) == 0.5
     assert cfg.symbol_override("MGC", "signal.tp_atr_multiplier", hint=float) == 2.0
     assert list(cfg.symbol_override("MGC", "filters.skip_weekdays")) == [2]

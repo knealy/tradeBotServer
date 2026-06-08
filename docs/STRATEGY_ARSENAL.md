@@ -49,7 +49,7 @@ The "R26 (cached)" column is what the previously-printed doc said. The "R26 (fre
 | Rank | Strategy | PnL (committed) | Return % | RF | DD % | WR | n | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `morning_range_reversion` (**R28**) | **≈ $+18,300** | **+914.6 %** | **10.32** | **41.9 %** | **68.3 %** | 183 | 2026-06-05 PM commit; +17.7 % / +18 % RF on top of R27; MGC `max_range_width_points` 65 → 46. Pareto over R27 on every window. |
-| 2 | `overnight_range` R23 | $+2,504 (cached) | +125.2 % | 7.03 | 15.6 % | 39.7 % | 126 | numbers in this row are still on the stale-cache state; will refresh on next re-tune |
+| 2 | `overnight_range` (**R24**) | $+2,665 (fresh truth) | **+133.3 %** | **6.43** | **12.9 %** | 40.4 % | 114 | 2026-06-08 commit; **MNQ skip_weekdays [0, 4] → [0, 1, 4]** — added Tuesday. MNQ leg flipped from −16.5 % loser to +47.0 % winner. +91 % return / +89 % RF / −1.7 pp DD vs R23 baseline on 9 m. Truth recap dir: `docs/perf/overnight_range_r24_truth_{3m,6m,9m}/`. |
 | — | `body_reversion` | RETIRED | — | — | — | — | — | retired 2026-06-04 — see Disabled tier |
 | — | `nr_compression_break` (NR7) | RETIREMENT FLAGGED | — | — | — | — | 16 / 9m | 2026-06-05 PM: too sparse to validate (currently `enabled = false`) |
 | — | `globex_drift_continuation` | RETIREMENT FLAGGED | $−$71 % | — | 76.4 % | — | 333 / 9m | 2026-06-05 PM: bleeds capital across every symbol (currently `enabled = false`) |

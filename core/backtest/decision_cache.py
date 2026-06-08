@@ -29,6 +29,10 @@ following into the cache key (any change → cache miss):
 - ``core/backtest/engine.py`` content (fill / position bookkeeping drift)
 - ``extra_env`` dict (canonical-sorted; mirrors ``StrategyConfig`` env precedence)
 - CSV path + size + mtime_ns (catches data refreshes / edits within range)
+- Parquet sidecar (``<csv>.parquet``) size + mtime_ns when present
+  (catches in-place sidecar rewrites the CSV mtime alone does not detect —
+  e.g. the 2026-06-03 contract-roll quarantine that mutates the sidecar
+  without touching the source CSV; see ``core/backtest/parquet_cache.py``).
 - ``_CACHE_KEY_VERSION`` (bump to invalidate every cached entry at once)
 
 This deliberately does NOT hash transitive imports beyond the two engine
@@ -37,6 +41,16 @@ files. If you change an indirect dependency that affects results (e.g.
 ``_CACHE_KEY_VERSION`` to wipe the cache. The cost of a false hit (stale
 trade list rendered as if fresh) is bad enough that this version-key
 escape hatch is worth the small operational tax.
+
+2026-06-08 (R28 follow-up): ``_CACHE_KEY_VERSION`` bumped 1 → 2 to wipe
+every entry from before the parquet-sidecar mtime fix landed. The failure
+mode that motivated this: the R26 → R27 → R28 sweep series produced
+materially different baseline metrics across consecutive runs on the SAME
+committed TOML because the in-process runner served stale cache entries
+after the contract-roll quarantine had rewritten the parquet sidecars
+in place (CSV mtime unchanged → key unchanged → stale hit). See
+``docs/CHANGELOG.md`` "Decision-cache stale-data invalidation gap"
+known-issue entry.
 
 Safety note: the cache intentionally lives under ``docs/perf/`` (already
 in ``.gitignore`` for that subtree) so cached files don't leak into PRs.
@@ -57,7 +71,13 @@ logger = logging.getLogger(__name__)
 
 # Bump this whenever you intentionally invalidate every cached entry
 # (e.g. changed a shared bracket helper not covered by the engine hash).
-_CACHE_KEY_VERSION = 1
+#
+# v2 (2026-06-08, R28 follow-up): parquet sidecar size+mtime now folded
+#     into the cache key.  The earlier v1 entries were keyed only on CSV
+#     descriptor, which let an in-place sidecar rewrite (contract-roll
+#     quarantine path) serve stale results when the CSV mtime hadn't
+#     changed.  Bumping wipes every pre-fix entry in one shot.
+_CACHE_KEY_VERSION = 2
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_CACHE_DIR = _REPO_ROOT / "docs" / "perf" / "_decision_cache"
@@ -133,6 +153,19 @@ class CacheKeyInputs:
             csv_descriptor = f"{self.csv_path}|{csv_stat.st_size}|{csv_stat.st_mtime_ns}"
         except OSError:
             csv_descriptor = f"{self.csv_path}|MISSING"
+        # 2026-06-08 R28-follow-up: also fold the parquet sidecar's
+        # size+mtime into the key.  The in-process runner reads the
+        # sidecar — not the CSV — when present, so a sidecar that was
+        # rewritten in place (contract-roll quarantine path) AFTER the
+        # cache entry was written can otherwise serve stale rows.
+        parquet_path = self.csv_path.with_suffix(self.csv_path.suffix + ".parquet")
+        try:
+            pq_stat = parquet_path.stat()
+            parquet_descriptor = (
+                f"{parquet_path}|{pq_stat.st_size}|{pq_stat.st_mtime_ns}"
+            )
+        except OSError:
+            parquet_descriptor = f"{parquet_path}|MISSING"
         material = "|".join((
             f"v={_CACHE_KEY_VERSION}",
             f"strat={self.strategy}",
@@ -141,6 +174,7 @@ class CacheKeyInputs:
             f"start={self.start.isoformat()}",
             f"end={self.end.isoformat()}",
             f"csv={csv_descriptor}",
+            f"parquet={parquet_descriptor}",
             f"py={_sha256_of_file(py)}",
             f"toml={_sha256_of_file(toml)}",
             f"engine={_ENGINE_FP}",

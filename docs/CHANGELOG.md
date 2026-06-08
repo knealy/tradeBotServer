@@ -7,6 +7,51 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **`morning_range_reversion` R29 MNQ max_range_width sweep — negative finding (2026-06-08).** After the R24 `overnight_range` MNQ Tuesday fix, the next "low-hanging fruit" candidate was applying the R28 MGC `max_range_width_points` insight to MNQ (root default is `300`, which only ever bound on the most extreme MNQ days). Swept MNQ `max_range_width_points` ∈ {80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200, 250} across all three windows (fresh cache, `--no-cache-decisions`, sweep dir `docs/perf/_opt_runs/morning_range_reversion/r29_mnq_maxrange_{3m,6m,9m}/`). Pareto-best variants (150 / 160 / 180 all produce identical metrics — they cut exactly **one** MNQ session per 9-month window):
+
+  | Window | baseline R28 | mnq_max150 (best) | Δ Return | Δ RF |
+  | --- | --- | --- | --- | --- |
+  | 3m | +665.70 % / RF 13.45 / WR 76.92 % | +678.80 % / RF 13.71 / WR 78.12 % | +2.0 % | +1.9 % |
+  | 6m | +803.15 % / RF 9.06 | +816.25 % / RF 9.21 | +1.6 % | +1.7 % |
+  | 9m | +914.55 % / RF 10.32 | +927.65 % / RF 10.46 | +1.4 % | +1.4 % |
+
+  Tighter ceilings (≤ 140) start trimming valid trades and regress; at 80 the 9 m return drops to +792 % (−13 %). Verdict: lever exhausted — MNQ range distribution on the active session window is already well-contained, and the 1 extreme-width session per multi-month window isn't a reliable enough signal to justify a config commit (+13 pts in returns is below the "miniscule" bar from the prior R27 feedback). TOML unchanged; this entry is the on-record explanation of the negative result so the lever isn't re-swept by accident.
+
+- **`overnight_range` R24 — MNQ Tuesday skip added (2026-06-08, fresh-cache truth audit).** Continuation of the R28-era "what's actually a money-maker on the corrected engine + current data" pass. Fresh-cache truth recap of the R23 commit (`docs/perf/overnight_range_r28era_truth_{3m,6m,9m}/`, `--no-cache-decisions` end-to-end after the decision-cache-stale-data fix landed) revealed the MNQ leg was a CONSISTENT MONEY-LOSER across every window despite the headline aggregate being positive:
+
+  | Window (R23 truth, fresh-cache) | MNQ ret | MNQ RF | MNQ WR | MGC ret | MGC RF |
+  | --- | --- | --- | --- | --- | --- |
+  | 9 m | **−16.48 %** | **−0.31** | 29.2 % | +86.25 % | 4.99 |
+  | 6 m | +0.59 % | 0.02 | 29.5 % | +56.35 % | 3.26 |
+  | 3 m | **−4.12 %** | **−0.28** | 36.0 % | +32.38 % | 4.07 |
+
+  Per-fold MNQ analysis surfaced Tuesdays as the bulk of the underperformance — the post-Globex Tuesday breakout has a notably low continuation rate on MNQ on current data, with more chop / failed follow-through than Mon or the rest of the week.
+
+  **R24 single TOML change**: `[symbols.MNQ.filters].skip_weekdays` **`[0, 4]` → `[0, 1, 4]`** (added Tuesday). Pareto-dominates baseline on every window:
+
+  | Window | R23 baseline (fresh truth) | R24 (committed) | Δ Return | Δ RF | Δ DD pp |
+  | --- | --- | --- | --- | --- | --- |
+  | 3m | +28.26 % / RF 1.58 / DD 17.86 % | **+39.67 %** / RF **2.20** / DD 18.07 % | **+40 %** | +39 % | +0.2 |
+  | 6m | +56.94 % / RF 2.78 / DD 15.61 % | **+93.47 %** / RF **4.51** / DD **13.24 %** | **+64 %** | +62 % | **−2.4** |
+  | 9m | +69.77 % / RF 3.40 / DD 14.59 % | **+133.28 %** / RF **6.43** / DD **12.92 %** | **+91 %** | **+89 %** | **−1.7** |
+
+  **MNQ standalone delta is the headline**:
+  - 9 m: MNQ ret **−16.48 % → +47.03 %** (+63 pp swing — MNQ flips from net loser to net winner).
+  - 6 m: MNQ ret +0.59 % → +37.12 % (+37 pp).
+  - 3 m: MNQ ret −4.12 % → +7.30 % (+11 pp).
+
+  MGC override untouched — same +86 % / +56 % / +32 % across 9m / 6m / 3m. MGC R:R remains 2.66:1, fully positive.
+
+  **Sweep matrix** (14 trials × 3 windows via `scripts/optimize_strategy.py` → `walkforward_trade_recap_report.py --in-process --no-cache-decisions`, dirs under `docs/perf/_opt_runs/overnight_range/r28_{3m,6m,9m}/`). Rejection log:
+  - `mnq_skip_only_fri` ([Fri] only): better 3m return alone but 9m regresses; net worse Pareto.
+  - `mnq_skip_thu_fri` ([Thu, Fri]): RF 2.01 / 9m return drops to +45 %; rejected.
+  - `mnq_tighter_atr_floor` (0.12 / 0.15) and `mnq_tighter_atr_ceiling_50`: trim valid trades, net regression.
+  - `mnq_tighter_stop_0p4` / `mnq_tighter_tp_3` / `mnq_wider_tp_5`: per-symbol stop/TP knobs all regress vs the R23 0.5 / 4.0 ATR multipliers.
+  - `tighter_gap_max_pct` 1.0 / 0.8: both regress (filter over-aggressive).
+  - `mgc_only` / `mnq_only` (`meta.symbols` overrides): no-op in the patch path (meta-section root-array key not handled by `_patch_block_in_text`); not pursued further since the Tuesday skip captured the MNQ-leg fix without touching `meta.symbols`.
+
+  **Truth recap dirs**: `docs/perf/overnight_range_r24_truth_{3m,6m,9m}/`. Pinning test updated in `tests/test_overnight_range_symbol_risk_signal_overrides.py::test_overnight_committed_round23_defaults_resolve_correctly` to lock MNQ skip_weekdays = [0, 1, 4]. **Files**: `config/strategies/overnight_range.toml` (R24 evidence block + `skip_weekdays = [0, 1, 4]`); `docs/STRATEGY_ARSENAL.md` (row #2 refreshed to R24 truth numbers); this CHANGELOG entry; updated pinning test.
+
 - **`morning_range_reversion` R28 — material PnL lift via MGC `max_range_width_points` tightening (2026-06-05 PM, response to user feedback that R27 was "miniscule").** User pushed back on R27's marginal gains (+2.6 % R:R, +1.8 % per-trade EV) and asked to keep iterating until we see a material improvement OR consider retiring strategies. Two more sweep rounds (dynamic-SL-from-TP + structural partial-TP/breakeven + signal-quality filters, ≈ 50 trials × 3 windows) found the real lever: **MGC `[symbols.MGC.signal].max_range_width_points` 65 → 46.** Pareto-dominates baseline R27 across every window with **identical drawdown**:
 
   | Window | R27 baseline | R28 (committed) | Δ PnL | Δ RF | Δ WR |
@@ -63,8 +108,11 @@ changes runtime behavior or conventions adds an entry here AND updates
 - **`scripts/optimize_strategy.py` TOML-restore hardening (2026-06-05 PM, related to the partial-TP debug above).** When a trial subprocess crashed mid-run, the `try / finally toml_path.write_text(original)` block could be skipped (e.g. on hard interrupt), leaving the production TOML in a patched state — silently polluting ALL subsequent baseline runs in the same session. Caught when the R28 baseline diverged from R27 truth (n_trades 182 → 258, MNQ +192 → -64) until inspection revealed `partial_tp_enabled = true` stuck in the committed TOML. Fix: write a sibling sentinel `.optimize_strategy.bak` BEFORE the patch so a hard-kill recovery is trivial, plus tighten the `finally` block so the backup cleanup never masks the restore. **Files**: `scripts/optimize_strategy.py`.
 - **`core/user_hub_handlers.py::on_trade` SyntaxError — `await` outside async function (2026-06-04).** The 2026-06-03 backtest-engine fix commit (`c526ec03e`) added an `await self._bot.event_bus.publish(...)` block inside `on_trade`, but `on_trade` is the **sync** SignalR callback delivered from a hub thread (the other sync callbacks `on_position` / `on_order` defer their async work via `_defer_coro_from_sync`). The illegal `await` made `core.user_hub_handlers` un-importable, which in turn broke any entrypoint that constructs `TopStepXTradingBot` — including `scripts/stitch_broker_history_to_databento_1m.py` (and by extension all stitcher / history-pull tooling). Fix: extract the publish loop into an async helper `_publish_trade_closed_events(completed_trades, account_id)` and dispatch it via `self._defer_coro_from_sync(...)`, mirroring the existing `on_order → _on_order_async_tail` pattern. The TRADE_CLOSED publish behaviour is preserved 1:1; only the dispatch path changed. **Files**: `core/user_hub_handlers.py`.
 
-### Known issues
-- **Decision-cache stale-data invalidation gap (`core/backtest/decision_cache.py`).** Surfaced during the 2026-06-05 R27 re-tune: the cache key correctly hashes the CSV path + size + mtime, but the in-process runner's parquet-sidecar read path can serve a cached result whose CSV-state-at-cache-time differs from the current parquet-sidecar-state. Concrete failure mode: after a historical-data refresh added ~7 trading days of new bars + the contract-roll quarantine ran on the refreshed CSVs, the parquet sidecars were re-built but cached `decision_cache` entries from the prior data state were still being served by `lookup()` because the CSV mtime (used in the key) hadn't been touched on the relevant trade dates. Workaround used for R27: pass `--no-cache-decisions` end-to-end OR `rm -rf docs/perf/_decision_cache && mkdir docs/perf/_decision_cache` before each round. Proper fix (TODO): either (a) bump `_CACHE_KEY_VERSION` whenever the parquet-sidecar normalisation pipeline changes (already covers H-A/H-B engine fixes but not data-side fixes), OR (b) include the parquet-sidecar mtime in the cache key when the in-process runner is used. Tracking issue noted in `docs/STRATEGY_ARSENAL.md` "Next research" for `morning_range_reversion`.
+### Fixed (cont'd)
+- **Decision-cache stale-data invalidation gap closed (`core/backtest/decision_cache.py`, 2026-06-08, R28 follow-up).** Surfaced during the 2026-06-05 R27 re-tune and reproduced again at the start of the R28 sweep: the v1 cache key hashed the CSV path + size + mtime, but the in-process runner reads the parquet sidecar (`<csv>.parquet`), not the CSV. An in-place sidecar rewrite — concretely the 2026-06-03 contract-roll quarantine path — could mutate the sidecar without touching the source CSV's mtime, leaving the cache key unchanged → `lookup()` returned stale rows even though the data on disk had moved. Fix:
+  1. **`_CACHE_KEY_VERSION` bumped 1 → 2.** One-shot wipe of every pre-fix entry so no caller can accidentally hit a stale row from before the fix landed.
+  2. **`CacheKeyInputs.fingerprint()` now also hashes `<csv>.parquet` size + mtime_ns when present** (degrades to a stable `MISSING` sentinel when no sidecar exists, so transient fixtures stay reproducible).
+  Regression tests live in `tests/test_backtest_decision_cache.py::test_fingerprint_invalidates_on_parquet_sidecar_mtime` (sidecar rewrite must change the key) and `::test_fingerprint_unaffected_when_no_sidecar_present` (no sidecar → stable key across runs). **Files**: `core/backtest/decision_cache.py`, `tests/test_backtest_decision_cache.py`.
 
 ### Added (earlier — superseded by R27 above)
 - **`morning_range_reversion` R26 re-tune committed (2026-06-04 PM, post-engine-fix).** Full re-tune via 5 sweep rounds × 85 trials (`scripts/optimize_strategy.py` → `walkforward_trade_recap_report.py --in-process --no-cache-decisions`, in-process workers, 270d / 9 folds, MNQ+MGC). Sweep artefacts under `docs/perf/_opt_runs/mrr_postengine/r{1..5}_*/`. Final committed config delta vs pre-R26 (all in `[symbols.MGC.signal]`):

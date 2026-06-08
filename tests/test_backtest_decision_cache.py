@@ -49,7 +49,11 @@ def test_fingerprint_is_deterministic(tmp_path: Path) -> None:
     a = _inputs(csv).fingerprint()
     b = _inputs(csv).fingerprint()
     assert a == b
-    assert a.startswith("v1_")
+    # _CACHE_KEY_VERSION was bumped 1 → 2 on 2026-06-08 when the parquet
+    # sidecar size+mtime joined the cache key. Loosely assert the prefix
+    # so future bumps don't ripple to every test in this file.
+    from core.backtest.decision_cache import _CACHE_KEY_VERSION
+    assert a.startswith(f"v{_CACHE_KEY_VERSION}_")
     assert len(a) > 20  # v{N}_ + 64-char sha256
 
 
@@ -91,6 +95,43 @@ def test_fingerprint_invalidates_on_csv_mtime(tmp_path: Path) -> None:
     os.utime(csv, None)
     b = _inputs(csv).fingerprint()
     assert a != b
+
+
+def test_fingerprint_invalidates_on_parquet_sidecar_mtime(tmp_path: Path) -> None:
+    """Sidecar rewritten in place → cache key changes even if CSV mtime is unchanged.
+
+    Regression for the 2026-06-08 R28-follow-up fix.  The contract-roll
+    quarantine path mutates ``<csv>.parquet`` without touching the source
+    CSV; the prior v1 key only hashed the CSV descriptor, so stale results
+    could be served after a sidecar rewrite.  v2 folds the sidecar
+    size+mtime into the key.
+    """
+    csv = _csv(tmp_path)
+    parquet = csv.with_suffix(csv.suffix + ".parquet")
+    parquet.write_bytes(b"fake-parquet-payload-v1")
+    a = _inputs(csv).fingerprint()
+    # Re-write the sidecar with different content (and let the FS bump mtime).
+    import time
+    time.sleep(0.01)  # mtime_ns resolution guard on coarse filesystems
+    parquet.write_bytes(b"fake-parquet-payload-v2-after-contract-roll-quarantine")
+    os.utime(parquet, None)
+    b = _inputs(csv).fingerprint()
+    assert a != b, (
+        "parquet sidecar rewrite must invalidate the cache key — otherwise "
+        "the in-process runner can serve stale rows after a sidecar mutation"
+    )
+
+
+def test_fingerprint_unaffected_when_no_sidecar_present(tmp_path: Path) -> None:
+    """When no ``<csv>.parquet`` exists, the descriptor degrades to a stable
+    ``MISSING`` sentinel so the key is reproducible across runs that all
+    lack a sidecar (typical for transient test fixtures)."""
+    csv = _csv(tmp_path)
+    parquet = csv.with_suffix(csv.suffix + ".parquet")
+    assert not parquet.exists()
+    a = _inputs(csv).fingerprint()
+    b = _inputs(csv).fingerprint()
+    assert a == b
 
 
 def test_store_and_lookup_round_trip(tmp_path: Path) -> None:
