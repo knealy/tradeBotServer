@@ -7,6 +7,40 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Stagnant-tier truth audit on corrected engine (2026-06-08). Two revival winners surfaced.** Continuation of the "what's actually in my arsenal" theme: every strategy that was dismissed on the pre-engine-fix pipeline got a single 9 m walk-forward truth recap on the corrected engine + fresh-cache (`--no-cache-decisions` end-to-end after the decision-cache parquet-sidecar fix landed earlier today). Audit dir: `docs/perf/_audit_stagnant/<strategy>_9m/`.
+
+  **Dead on corrected engine (final verdict — engine bugs were NOT what was holding them back):**
+
+  | Strategy | 9m ret | 9m DD | 9m RF | Engine-fix delta |
+  | --- | --- | --- | --- | --- |
+  | `mean_reversion` | **−189 %** | 284 % | −0.45 | Was DD 142 % on buggy → 2× worse on corrected; both symbols negative |
+  | `trend_following` | **−21 %** | 114 % | −0.10 | Was DD 148 % on buggy → marginal improvement but structurally broken |
+  | `simple_candle` | **−1,645 %** | **1,620 %** | −0.99 | Was DD 213 % on buggy → **7.6× worse** on corrected. The "let-it-ride" logic was masked by phantom STOP-gap profits; with H-B fixed the compounding losers show their full damage |
+  | `ema_stack_trend_15m` | −278 % | 333 % | −0.74 | (Never-validated; dead) |
+  | `rsi_switch_15m` | −34 % | 49.6 % | −0.61 | n=53, too sparse to be useful even if positive |
+  | `hourly_anchor_retrace` | +21 % | 116 % | +0.17 | 50 % WR but DD blows the cliff |
+  | `simple_rth` / `simple_momentum` / `trend_scalping` | 0 trades | — | — | Logic bugs / over-restrictive filters as previously documented |
+
+  **REVIVAL WINNER #1 — `vwap_zscore_reversion` MGC-only PROMOTED to Production tier.** Cross-window robust on the corrected engine:
+
+  | Window | n | ret | DD | RF | WR |
+  | --- | --- | --- | --- | --- | --- |
+  | 3m | 61 | +67.40 % | 14.59 % | **2.45** | 49.2 % |
+  | 6m | 119 | +80.51 % | 33.34 % | **1.42** | 45.4 % |
+  | 9m | 181 | +55.98 % | 38.98 % | 0.99 | 40.9 % |
+
+  RF *improves* 9m → 6m → 3m, DD shrinks, WR rises — alpha is **current**, not decaying.  The MNQ leg drags the global verdict negative (-82 % / RF -0.89 / WR 26.7 % on 9m) — fade signal does not work on MNQ on current data (MNQ intraday is more trend-persistent than MGC; VWAP fades during NY morning drives are the dominant MNQ failure mode per chart audit).  Config change: `[meta].enabled = false → true`; `[meta].symbols = ["MNQ","MES","MGC"] → ["MGC"]` only.  MNQ + MES stanzas retained dormant for future tune.  Truth recap dir (as-committed config): `docs/perf/vwap_zscore_revival_truth_{3m,6m,9m}/`.  **Files**: `config/strategies/vwap_zscore_reversion.toml` (TOML header rewritten with revival rationale + per-window truth table + MNQ disable explanation); `docs/STRATEGY_ARSENAL.md` (new Production tier row #3); this CHANGELOG entry.
+
+  **REVIVAL CANDIDATE — `overnight_reversion` — promoted from "9-months-negative-expectancy" disable to Watch / research list.** The disable rationale ("breakouts continue more often than they revert on the current futures dataset") was a buggy-engine artefact.  Truth on corrected engine:
+
+  | Window | n | ret | DD | RF | WR |
+  | --- | --- | --- | --- | --- | --- |
+  | 9m | 237 | **+150.19 %** | 22.81 % | **2.18** | 30.0 % |
+  | 6m | 152 | +58.95 % | 32.67 % | 0.85 | 27.0 % |
+  | 3m | 76 | **+7.67 %** | 43.16 % | **0.11** | 23.7 % |
+
+  9m / 6m are solid (both symbols positive at 9m: MGC +92 % / MNQ +58 %); **3m is barely positive with DD approaching the cliff and RF near zero** — recent regime softness signals a tune-up is needed before live deploy.  Not committed to live yet (TOML stays `enabled = false`); listed in `STRATEGY_ARSENAL.md` Production tier as **Watch**.  Next research: regime-gated entry filter or signal-quality cut (high candidate for the so-far-unused `core/regime.py` infrastructure built in Phase 1).  Audit dirs: `docs/perf/_audit_stagnant/overnight_reversion_{3m,6m,9m}/`.
+
 - **`morning_range_reversion` R29 MNQ max_range_width sweep — negative finding (2026-06-08).** After the R24 `overnight_range` MNQ Tuesday fix, the next "low-hanging fruit" candidate was applying the R28 MGC `max_range_width_points` insight to MNQ (root default is `300`, which only ever bound on the most extreme MNQ days). Swept MNQ `max_range_width_points` ∈ {80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200, 250} across all three windows (fresh cache, `--no-cache-decisions`, sweep dir `docs/perf/_opt_runs/morning_range_reversion/r29_mnq_maxrange_{3m,6m,9m}/`). Pareto-best variants (150 / 160 / 180 all produce identical metrics — they cut exactly **one** MNQ session per 9-month window):
 
   | Window | baseline R28 | mnq_max150 (best) | Δ Return | Δ RF |

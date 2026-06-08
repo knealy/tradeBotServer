@@ -1,0 +1,71 @@
+{
+  "captured_at_utc": "2026-06-08T16:00:50+00:00",
+  "git_head": "6d6ae00be",
+  "strategies": {
+    "vwap_zscore_reversion": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/vwap_zscore_reversion.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/vwap_zscore_revival_truth_3m/config/vwap_zscore_reversion.toml",
+      "data": {
+        "meta": {
+          "enabled": true,
+          "symbols": [
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 1,
+          "max_daily_trades": 6,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true,
+          "max_dll_usage_pct": 0.75
+        },
+        "signal": {
+          "timeframe": "1m",
+          "lookback_bars": 600,
+          "window_bars": 30,
+          "min_session_bars": 15,
+          "z_entry": 2.0,
+          "z_max": 5.0,
+          "atr_period": 14,
+          "stop_atr_multiplier": 1.5,
+          "entry_offset_ticks": 1.0,
+          "rth_only": true,
+          "rth_start": "09:35",
+          "rth_end": "15:30",
+          "session_timezone": "US/Eastern"
+        },
+        "symbols": {
+          "MNQ": {},
+          "MES": {},
+          "MGC": {}
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 90,
+    "folds": 3,
+    "strategies": [
+      "vwap_zscore_reversion"
+    ],
+    "symbols": [
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

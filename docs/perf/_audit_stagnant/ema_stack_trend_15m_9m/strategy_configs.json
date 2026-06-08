@@ -1,0 +1,79 @@
+{
+  "captured_at_utc": "2026-06-08T15:56:34+00:00",
+  "git_head": "6d6ae00be",
+  "strategies": {
+    "ema_stack_trend_15m": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/ema_stack_trend_15m.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_audit_stagnant/ema_stack_trend_15m_9m/config/ema_stack_trend_15m.toml",
+      "data": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "meta": {
+          "enabled": false,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 1,
+          "max_daily_trades": 20,
+          "risk_per_trade_pct": 0.5
+        },
+        "signal": {
+          "timeframe": "15m",
+          "rsi_timeframe": "5m",
+          "lookback_bars": 500,
+          "ema_periods": [
+            8,
+            21,
+            50,
+            100,
+            200
+          ],
+          "atr_period": 14,
+          "stop_atr_multiplier": 2.0,
+          "tp_r_multiple": 2.5,
+          "allow_long": true,
+          "allow_short": true,
+          "min_bars_between_signals": 3,
+          "entry_offset_ticks": 0.0,
+          "rsi_period": 14,
+          "rsi_long_max": 35.0,
+          "rsi_short_min": 65.0,
+          "reaction_tol_atr": 0.5,
+          "reaction_require_reclaim_bar": false
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "ema_stack_trend_15m"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

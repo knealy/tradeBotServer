@@ -50,6 +50,8 @@ The "R26 (cached)" column is what the previously-printed doc said. The "R26 (fre
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `morning_range_reversion` (**R28**) | **≈ $+18,300** | **+914.6 %** | **10.32** | **41.9 %** | **68.3 %** | 183 | 2026-06-05 PM commit; +17.7 % / +18 % RF on top of R27; MGC `max_range_width_points` 65 → 46. Pareto over R27 on every window. |
 | 2 | `overnight_range` (**R24**) | $+2,665 (fresh truth) | **+133.3 %** | **6.43** | **12.9 %** | 40.4 % | 114 | 2026-06-08 commit; **MNQ skip_weekdays [0, 4] → [0, 1, 4]** — added Tuesday. MNQ leg flipped from −16.5 % loser to +47.0 % winner. +91 % return / +89 % RF / −1.7 pp DD vs R23 baseline on 9 m. Truth recap dir: `docs/perf/overnight_range_r24_truth_{3m,6m,9m}/`. |
+| 3 | `vwap_zscore_reversion` MGC-only (**REVIVAL**) | $+560 (9m) | **+56.0 %** | 0.99 | 39.0 % | 40.9 % | 181 | 2026-06-08 promoted from Disabled tier after stagnant-tier audit on the corrected engine. **Cross-window improving**: 3m RF 2.45 / 6m RF 1.42 / 9m RF 0.99 — most recent regime favours it. MNQ leg dormant (-82 % drag); MGC fade signal alone is structurally positive. Truth recap dir: `docs/perf/vwap_zscore_revival_truth_{3m,6m,9m}/`. |
+| Watch | `overnight_reversion` (**REVIVAL CANDIDATE**) | $+1,500 (9m) | **+150.2 %** | 2.18 | 22.8 % | 30.0 % | 237 | 2026-06-08 stagnant-tier audit: revived from "9 months of negative expectancy" (rationale was buggy-engine artefact). 9m / 6m solid; **3m only +7.7 % / RF 0.11 / DD 43.2 %** — recent regime softness. Needs tune-up (signal-quality filters, regime gate) before promoting to live. Audit dir: `docs/perf/_audit_stagnant/overnight_reversion_{3m,6m,9m}/`. |
 | — | `body_reversion` | RETIRED | — | — | — | — | — | retired 2026-06-04 — see Disabled tier |
 | — | `nr_compression_break` (NR7) | RETIREMENT FLAGGED | — | — | — | — | 16 / 9m | 2026-06-05 PM: too sparse to validate (currently `enabled = false`) |
 | — | `globex_drift_continuation` | RETIREMENT FLAGGED | $−$71 % | — | 76.4 % | — | 333 / 9m | 2026-06-05 PM: bleeds capital across every symbol (currently `enabled = false`) |
@@ -243,37 +245,46 @@ Pre-2026-06-04 numbers below — engine-artefact-inflated by both H-A (slip doub
 - **Sizing**: MNQ 4 contracts (slfix=50pt → 30pt cap), MGC 2 contracts (sl_mult=3.0 against half-range → **22pt cap as of 2026-06** for the portfolio worst-case-day budget — see below).
 - **Per-symbol breakeven offset**: 8pt MNQ / 0.7pt MGC.
 
-## Stagnant tier — wired but not viable, parked
+## Stagnant tier — CONFIRMED DEAD on the corrected engine (2026-06-08)
 
-All three strategies below now generate real trades in walk-forward (the previous "zero
-trades" failure was a combination of `execute()` not routing through `place_bracket_order`,
-missing `max_hold_bars` exit, and a **TOML-scoping bug** that put root-level knobs under
-`[meta]` / `[risk]` headers so `cfg.get_float("stop_atr_multiplier")` was silently falling
-through to the strategy default). The 2026-06-02 fix sequence is recorded in each TOML's
-header.
+All three strategies below were re-audited on the corrected engine after the
+2026-06-03 H-A (slip double-count) + H-B (STOP gap-through) fixes landed.
+**Verdict: all three remain dead. The engine bugs were not what was holding
+them back — they're structurally negative on the current futures dataset.**
 
-But **none of them pass the DD-100 % cliff on a full 9-month walk-forward**, even after the
-scoping fix and round-3 parameter sweeps. They are not next-session iteration targets — the
-remaining work (fixed-fraction sizing, multi-leg exits, per-day loss caps) is shared
-infrastructure that would benefit the production tier too, so it's being prioritised under
-*Arsenal roadmap → Phase 1 — Risk infrastructure* below rather than as per-strategy tuning.
+| Strategy           | 9m ret (corrected engine) | 9m DD | 9m RF | Note |
+| ------------------ | ------------------------- | ----- | ----- | ---- |
+| `mean_reversion`   | **−189 %** | 284 % | −0.45 | Both MNQ and MGC negative.  Catastrophically worse on the corrected engine vs the 142 % DD originally reported. |
+| `trend_following`  | **−21 %**  | 114 % | −0.10 | MGC drags (-24 %); MNQ flat (+3 %).  5m MA-crossover signal is structurally broken on current data. |
+| `simple_candle`    | **−1,645 %** | 1,620 % | −0.99 | Catastrophic.  Engine bugs were MASKING the failure — corrected DD is **7.6× worse** than the originally-reported 213 %.  The "let it ride" logic compounds losers ruinously. |
 
-| Strategy        | 3m DD | 6m DD | 9m DD | Verdict |
-| --------------- | ----- | ----- | ----- | ------- |
-| `mean_reversion`   | 120 % | **55 %** | 142 % | RF 3.3 on 6m looks great, but 3m / 9m blow the cliff — structurally non-robust. |
-| `trend_following`  |  39 % |  70 % | 148 % | Positive on 3m only; the MA-crossover edge does not survive long windows on 5m TF. |
-| `simple_candle`    | 155 % | 139 % | 213 % | Alpha is real (47 % WR × 1.5R) but the let-it-ride logic that captures it also compounds losers — DD > 100 % on EVERY horizon. |
+Audit recap dirs: `docs/perf/_audit_stagnant/{mean_reversion,trend_following,simple_candle}_9m/`,
+fresh-cache `--no-cache-decisions` end-to-end.
 
-Each TOML retains its 2026-06-02 sweep-validated config + commentary so a future agent
-picking these back up has the full evidence trail. They are NOT in any deployment phase,
-NOT in any account-partition slot, and NOT on the active research list. **Net conclusion:
-the three dormant-strategy slots in the arsenal are a dead end for the current architecture.
-Move on.**
+Each TOML retains its 2026-06-02 sweep-validated config + the 2026-06-08
+post-engine-fix audit numbers in its header.  They are NOT in any
+deployment phase, NOT on the active research list. **Net conclusion: dead.
+The engine bugs hid HOW dead.  Move on.**
+
+### Stagnant-tier audit also surfaced two revival winners (see Production tier rows #3 + Watch above)
+
+The 2026-06-08 audit ran every dismissed-on-buggy-engine strategy through the
+corrected pipeline.  Two flipped positive:
+
+- **`vwap_zscore_reversion` MGC-only** — promoted to Production tier (row #3).
+  RF improves 3m (2.45) > 6m (1.42) > 9m (0.99); alpha is current, not decaying.
+- **`overnight_reversion`** — revival candidate (Watch row).  Strong 9m (+150 %)
+  and 6m (+59 %) but weak 3m (+7.7 % / RF 0.11) — needs a tune-up before deploy.
+
+Also re-audited as dead (already in Disabled tier, audit just confirms):
+`ema_stack_trend_15m` (-278 % / DD 333 %), `rsi_switch_15m` (-34 % / DD 49 %, n=53),
+`hourly_anchor_retrace` (+21 % / DD 116 % — fails cliff), `simple_rth` / `simple_momentum`
+/ `trend_scalping` (all 0 trades — logic bugs / over-restrictive filters as documented).
 
 ## Disabled tier — known-broken or empirically negative
 
 - **`body_reversion` — RETIRED 2026-06-04 after the backtest-engine audit (debug session `f635c2`).** Was production-tier with a headline of $+9,332 / RF 24.70 / 9 m before the 2026-06-03 contract-roll data quarantine corrected that to $+2,150, and then the 2026-06-03 evening engine-fix corrected it a second time to **$−1,028 / RF −0.67 / DD 74.1 % / WR 33.8 %** (recap `docs/perf/body_reversion_postengine_truth/`). Both symbols flipped negative on the corrected engine: MNQ `n=177 W/L=59/118 WR=33.3 % PnL=$−668.80`; MGC `n=187 W/L=64/123 WR=34.2 % PnL=$−359.28`. The strategy's geometry — fade single high-body-percentage bars with a tight `0.35 × ATR` stop and 3R TP — maximally exposed both bugs: every stop trigger gap-through (H-B) booked phantom profit, and the per-trade slip double-count (H-A) ate ~$0.50/trade on MGC × 187 trades = $94 of phantom cost. With both fixed, the alpha vanishes entirely. **Status**: hard-disabled in `config/strategies/body_reversion.toml` via `meta.enabled = false`; full retirement rationale in the TOML header. **Future work** (deferred, not on active research list): the underlying body-percentage signal (effect-size deep-scan in `docs/alpha/deep_scan_INDEX.md`) was statistically real on raw 5m forward returns and may still support a strategy with **wider stops, fewer trades, and exits that don't depend on STOP fills** — but that's a full re-design, not a re-tune. Pre-engine-fix R5/R6 historical numbers (retained for archaeology only, **do not trust**): 3m +280 % RF 10.05 / 6m +520 % RF 18.66 / 9m +735 % RF 24.70. All bugs.
-- `overnight_reversion` — 9 months of negative expectancy across every parameter combo. Breakouts continue more often than they revert on the current futures dataset. Disabled in TOML with the full evidence trail.
+- ~~`overnight_reversion` — 9 months of negative expectancy across every parameter combo. Breakouts continue more often than they revert on the current futures dataset. Disabled in TOML with the full evidence trail.~~ **REVIVED 2026-06-08** (rationale was a buggy-engine artefact). Truth on corrected engine: 9m +150 % / RF 2.18 / DD 22.8 %.  Listed in Production tier as a **Watch / revival candidate** (3m softness needs a regime tune-up before live deploy).
 - `simple_momentum` — logic bug in `analyze()` (recent_high includes current bar, makes `current_price > recent_high` impossible).
 - `trend_scalping` — three-condition signal logic is too restrictive; cadence is effectively zero on the dataset.
 - `rsi_switch_15m`, `ema_stack_trend_15m`, `hourly_anchor_retrace`, `vwap_zscore_reversion`, `simple_rth` — TOML-disabled, no walk-forward evidence either way.

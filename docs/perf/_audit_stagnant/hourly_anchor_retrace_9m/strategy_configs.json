@@ -1,0 +1,65 @@
+{
+  "captured_at_utc": "2026-06-08T15:54:19+00:00",
+  "git_head": "6d6ae00be",
+  "strategies": {
+    "hourly_anchor_retrace": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/hourly_anchor_retrace.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_audit_stagnant/hourly_anchor_retrace_9m/config/hourly_anchor_retrace.toml",
+      "data": {
+        "meta": {
+          "enabled": false,
+          "symbols": [
+            "MNQ"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 1,
+          "max_daily_trades": 1,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true,
+          "max_dll_usage_pct": 0.75
+        },
+        "signal": {
+          "timeframe": "5m",
+          "lookback_bars": 400,
+          "session_timezone": "America/New_York",
+          "anchor_start": "07:00",
+          "anchor_end_open": "08:00",
+          "flat_before": "16:00",
+          "allow_long": true,
+          "allow_short": true,
+          "entry_offset_ticks": 0.0,
+          "min_range_pts": 0.0,
+          "max_range_pts": 0.0
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "hourly_anchor_retrace"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

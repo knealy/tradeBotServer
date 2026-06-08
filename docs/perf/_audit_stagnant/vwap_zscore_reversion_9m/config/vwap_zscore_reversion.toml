@@ -1,0 +1,48 @@
+# VWAP Z-score reversion (research-grade).
+#
+# Live wiring is OFF by default. Backtest:
+#   .venv/bin/python core/backtest_executor.py --strategy=vwap_zscore_reversion \
+#     --symbol=MNQ --timeframe=1m --csv=historical_data/price/MNQ_1m_complete.csv \
+#     --start=2025-12-24 --end=2026-04-30 --format=json --include-trades --replay
+#
+# All knobs honor env overrides (e.g. VWAP_ZSCORE_REVERSION_SIGNAL_Z_ENTRY=2.5).
+
+[meta]
+enabled = false
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 6
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe          = "1m"
+# Bars pulled from history each tick (must be > one full RTH session ≈ 390 1m bars).
+lookback_bars      = 600
+# Rolling stdev window for the (close - VWAP) residual.
+window_bars        = 30
+# Skip the first N RTH bars so VWAP / stdev are stable.
+min_session_bars   = 15
+# |Z| must exceed this to trigger.
+z_entry            = 2.0
+# Hard cap to avoid blow-out trades during regime shifts (skip > z_max).
+z_max              = 5.0
+# ATR(period) on the same timeframe used for stop distance (entry +/- stop_atr * ATR).
+atr_period         = 14
+stop_atr_multiplier = 1.5
+# Stop-entry offset beyond current close, in ticks (small confirmation move).
+entry_offset_ticks = 1.0
+# RTH window (US/Eastern). 09:35–15:30 by default avoids open-noise + cash-close drift.
+rth_only           = true
+rth_start          = "09:35"
+rth_end            = "15:30"
+session_timezone   = "US/Eastern"
+
+[symbols.MNQ]
+[symbols.MES]
+[symbols.MGC]

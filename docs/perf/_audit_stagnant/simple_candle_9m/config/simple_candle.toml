@@ -1,0 +1,120 @@
+# Simple Candle / "2-bar distance break" momentum strategy.
+#
+# 2026-06-01 wiring complete (Round 2):
+#   - Already routed through place_bracket_order (no execute() fix needed).
+#   - Added cooldown (signal_cooldown_bars=6) + replay-aware position
+#     guard. Without these, the 2-bar displacement test re-fired every
+#     bar of an uptrend, stacking entries.
+#   - Profit/stop multipliers exposed in TOML (were hardcoded 2.0/1.5);
+#     tightened to 1.5/1.0 for shorter holds.
+#
+# 2026-06-02 max_hold_bars + critical scoping fix + sweep:
+#   The Round 2 TOML had ``stop_multiplier``, ``profit_multiplier`` etc.
+#   declared AFTER ``[risk]`` which TOML scopes as
+#   ``risk.stop_multiplier`` — but the strategy reads them via root-key
+#   lookup.  Every Round-2 tightening fell through to strategy defaults.
+#   Round-3 results below are with the fixed root placement.
+#
+#   max_hold_bars=12 (default cap)            ret  -98% / dd 226% — cap kills alpha
+#   max_hold_bars=0  (no time exit)           ret +2562% / dd 228%
+#   max_hold_bars=0 + stop06/tp1.5            ret  +841% / dd 139%
+#   max_hold_bars=0 + stop06/tp2.0            ret +1666% / dd 200%
+#   max_hold_bars=0 + trend_filter=40         ret +1332% / dd 251%
+# Verdict: simple_candle alpha is REAL (60% win-rate, large positive
+# expectancy when winners run) BUT every viable config has DD ≥ 130%.
+# The strategy is fundamentally tail-heavy on losses and CANNOT be
+# de-risked with stop/target tuning alone — the only path under 100%
+# DD is a max_hold cap that destroys the alpha.
+#
+# Structural fixes that would unlock production deployment (not yet
+# wired):
+#   1. Position-size by Kelly fraction / fixed dollar-risk per trade so
+#      that account equity does not compound into the next loser.
+#   2. Multi-leg scratch — exit half at 1R, trail the rest with a
+#      progressively tighter ATR stop. The current single-bracket geometry
+#      forces an all-in / all-out trade per signal.
+#   3. Per-symbol pin instead of MNQ-everywhere — MES/MGC may carry the
+#      same statistical pattern with a lower DD profile.
+#
+# Alpha thesis (this is the EXPLICIT alpha we are wiring in 2026-06):
+#   Two consecutive bars closing OUTSIDE the prior bar's range (c1.close >
+#   c0.high AND c2.close > c1.high, mirrored for shorts) is a low-noise
+#   "displacement out of recent compression" pattern.  Trend filter
+#   confirms the regime is directional (EMA8/EMA21 separation + ATR
+#   expansion + same-direction candle streak), and the trade enters at a
+#   small momentum offset above c2 with a 1.5-ATR target / 0.6-ATR stop.
+#
+# Why it differs from morning_range_reversion / overnight_range:
+#   - Both range strategies key off a single multi-bar anchor (a 60-min
+#     morning range, an overnight range). simple_candle keys off two
+#     individual bars — much higher cadence, much shorter holds.
+#   - Trend filter (EMA8/EMA21) is the regime gate, not a time-of-day
+#     window. So it can fire anytime there is real displacement on the
+#     configured timeframe.
+
+# ---------------- strategy-specific knobs (ROOT level — DO NOT move below [meta]) ----------------
+# These must sit ABOVE any ``[section]`` header.  The strategy reads
+# ``cfg.get_float("stop_multiplier")`` which looks up
+# ``self._data["stop_multiplier"]`` directly — any key declared after a
+# ``[meta]`` / ``[risk]`` header becomes ``meta.foo`` / ``risk.foo`` in
+# the parsed tree, which the strategy code does NOT consult and the
+# strategy's hard-coded default takes effect.
+
+# Strategy-base trading window. simple_candle overrides _in_trading_window
+# to always return True (this is a 24h strategy by design), but the
+# strategy_base / executor still reads these on the runner side — keep
+# them 24h so backtest works.
+start_time       = "00:00"
+end_time         = "23:59"
+no_trade_start   = ""
+no_trade_end     = ""
+
+# Strategy-specific timeframe.  Legacy env-style key (the strategy reads
+# ``self._cfg.get_str("SIMPLE_CANDLE_TIMEFRAME", "30s")``).  5m matches
+# the shipped Databento CSVs so the walk-forward harness does not need
+# to resample (which has rare gap-handling issues for non-5m TF).
+SIMPLE_CANDLE_TIMEFRAME = "5m"
+
+# Stop/target multipliers (ATR-based).  Round-3 sweep showed the alpha
+# requires letting winners run (max_hold_bars=0); the trade-off is
+# DD > 100%.  This config is the least-bad of the positive-return set:
+# stop=0.6x ATR + TP=1.5x ATR gives the best ret/DD ratio (RF 5.34,
+# DD 139%).
+stop_multiplier      = 0.6
+profit_multiplier    = 1.5
+# Cooldown between same-symbol entries (5m bars). 6 = ~30 min.
+signal_cooldown_bars = 6
+# Max-hold MARKET exit (core/max_hold_exit.py).  ``0`` = disabled —
+# any cap destroys the alpha (a 12-bar cap turned +2562% into -98%).
+# The "long-tail of losses" risk is acknowledged in the header.
+max_hold_bars        = 0
+
+[meta]
+# Enabled for backtest research as of Round 6 wiring.  Not yet a
+# production strategy — live deployment needs a walk-forward batch +
+# small paper-trade sanity test first.
+enabled = true
+# 2026-06 wiring sweep (90d / 3 folds, MNQ): the strategy generated
+# zero trades on min_trend_score=30 and on the legacy ema_distance>=20
+# flatten gate — both reasonable in live but lethal in backtest.
+# Lowered min_trend_score=20 to let real signals through; the
+# live-only flatten path is unreachable from replay (no market quote
+# stream) so it does not interfere with backtest expectations.
+live_breaker_enabled = true
+symbols = ["MNQ", "MES", "MGC"]
+
+[risk]
+position_size = 1
+max_positions = 2
+max_daily_trades = 10
+risk_per_trade_pct = 0.5
+
+[trend_filter]
+enabled = true
+ema_fast_period = 8
+ema_slow_period = 21
+# 20/100 lets pure 2-bar-displacement signals through during normal
+# regimes (the original 30 threshold required strong-trend confirmation
+# which is rare on 5m bars; cadence dropped to ~0/yr).
+min_trend_score = 20
+lookback_bars = 10

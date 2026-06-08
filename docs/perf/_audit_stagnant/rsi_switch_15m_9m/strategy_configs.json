@@ -1,0 +1,88 @@
+{
+  "captured_at_utc": "2026-06-08T15:57:40+00:00",
+  "git_head": "6d6ae00be",
+  "strategies": {
+    "rsi_switch_15m": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/rsi_switch_15m.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_audit_stagnant/rsi_switch_15m_9m/config/rsi_switch_15m.toml",
+      "data": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "meta": {
+          "enabled": false,
+          "symbols": [
+            "MNQ",
+            "MES",
+            "MGC"
+          ]
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 1,
+          "max_daily_trades": 20,
+          "risk_per_trade_pct": 0.5
+        },
+        "signal": {
+          "timeframe": "15m",
+          "rsi_timeframe": "5m",
+          "lookback_bars": 500,
+          "ema_periods": [
+            8,
+            21,
+            50,
+            100,
+            200
+          ],
+          "rsi_period": 14,
+          "rsi_long_max": 32.0,
+          "rsi_short_min": 68.0,
+          "rsi_hook_buffer": 3.0,
+          "rsi_deep_extra": 2.0,
+          "rsi_neutral_high": 48.0,
+          "rsi_neutral_low": 52.0,
+          "rsi_profit_exit_long": 52.0,
+          "rsi_profit_exit_short": 48.0,
+          "require_confirm_candle": true,
+          "require_ema_reaction": true,
+          "block_counter_trend": true,
+          "reaction_tol_atr": 0.35,
+          "atr_period": 14,
+          "stop_atr_multiplier": 2.0,
+          "tp_r_multiple": 1.25,
+          "min_hold_bars": 2,
+          "flat_move_atr": 0.08,
+          "loss_cut_atr": 0.7,
+          "min_bars_between_entries": 4,
+          "entry_offset_ticks": 0.0
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "rsi_switch_15m"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}
