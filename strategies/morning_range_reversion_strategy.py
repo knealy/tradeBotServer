@@ -1063,6 +1063,37 @@ class MorningRangeReversionStrategy(BaseStrategy):
         except (TypeError, ValueError):
             return 0.0
 
+    def _sl_from_tp_ratio(self, symbol: str) -> float:
+        """Per-symbol ``signal.sl_from_tp_ratio`` — derive SL from TP distance
+        to enforce a target reward-to-risk geometry (2026-06-05 R28).
+
+        When > 0, the entry→stop distance is set to ``tp_distance /
+        sl_from_tp_ratio`` (where ``tp_distance`` is the same half-range ×
+        ``tp_mult`` value used for the take-profit price).  Examples:
+
+          * ``= 1.0`` → SL distance equals TP distance (forced 1:1 R:R).
+          * ``= 1.5`` → TP is 1.5× SL distance (forced 1.5:1 R:R).
+          * ``= 2.0`` → TP is 2× SL distance (forced 2:1 R:R).
+
+        Overrides ``sl_mult`` / ``sl_fixed_pts``.  Safety bounds
+        (``sl_max_pts`` / ``sl_min_pts`` / ``sl_max_pct_of_range``) are still
+        applied AFTER the derivation, so the operator can still cap the
+        worst-case dollar risk.
+
+        Rationale (user feedback 2026-06-04): the strategy's structurally
+        negative R:R (avg loser >> avg winner) is held up only by a high WR.
+        Anchoring SL to TP enforces ≥1:1 geometry per trade, which converts
+        more of the high WR into expectancy gain. Set to 0 to disable (legacy
+        behaviour using ``sl_mult`` / ``sl_fixed_pts``).
+        """
+        v = self._cfg.symbol_override(str(symbol).upper(), "signal.sl_from_tp_ratio", default=None)
+        if v is None:
+            v = self._cfg.get_float("signal.sl_from_tp_ratio", 0.0)
+        try:
+            return max(0.0, float(v or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
     def _entry_window(self, symbol: str) -> tuple[Optional[dt_time], Optional[dt_time]]:
         """Per-symbol entry-time window ``[entry_start_et, entry_end_et]``.
 
@@ -1997,6 +2028,9 @@ class MorningRangeReversionStrategy(BaseStrategy):
         sl_cap = self._sl_max_pts(symbol)
         sl_floor = self._sl_min_pts(symbol)
         sl_pct_cap = self._sl_max_pct_of_range(symbol)
+        # 2026-06-05 R28: when > 0, derive SL distance from TP distance to
+        # enforce target R:R geometry (overrides sl_mult / sl_fixed_pts).
+        sl_from_tp = self._sl_from_tp_ratio(symbol)
         # Dynamic cap = X * width. Combined with absolute sl_max_pts via min().
         sl_pct_cap_abs = sl_pct_cap * width if sl_pct_cap > 0 else 0.0
         depth = max(0.0, float(entry_depth_pts or 0.0))
@@ -2004,6 +2038,8 @@ class MorningRangeReversionStrategy(BaseStrategy):
         max_depth = max(0.0, half - 1e-6)
         if depth > max_depth:
             depth = max_depth
+        # ── TP distance is identical for both directions (half × tp_mult). ──
+        tp_dist_raw = half * tp_mult
         if sweep == "high":
             if not self.allow_short:
                 return None
@@ -2014,7 +2050,14 @@ class MorningRangeReversionStrategy(BaseStrategy):
             # vs range-anchored geometry differs by which side the stop sits
             # on relative to the high; bound the *entry→stop distance* so the
             # cap/floor semantics are symmetrical across modes.
-            if sl_fp > 0:
+            #
+            # SHORT TP sits at ``H − half × tp_mult``; the entry→TP distance
+            # accounts for the ``depth`` reentry pull-back inside the range.
+            tp_price = H - tp_dist_raw
+            tp_dist = entry - tp_price
+            if sl_from_tp > 0 and tp_dist > 0:
+                sl_dist = tp_dist / sl_from_tp
+            elif sl_fp > 0:
                 sl_dist = sl_fp
             else:
                 sl_dist = (H + half * sl_mult) - entry
@@ -2025,13 +2068,19 @@ class MorningRangeReversionStrategy(BaseStrategy):
             if sl_floor > 0:
                 sl_dist = max(sl_dist, sl_floor)
             stop = self._round_px(symbol, entry + sl_dist)
-            tp = self._round_px(symbol, H - half * tp_mult)
+            tp = self._round_px(symbol, tp_price)
         else:
             if not self.allow_long:
                 return None
             action = "LONG"
             entry = self._round_px(symbol, L + depth)
-            if sl_fp > 0:
+            # LONG TP sits at ``L + half × tp_mult``; entry→TP distance accounts
+            # for the depth reentry pull-back.
+            tp_price = L + tp_dist_raw
+            tp_dist = tp_price - entry
+            if sl_from_tp > 0 and tp_dist > 0:
+                sl_dist = tp_dist / sl_from_tp
+            elif sl_fp > 0:
                 sl_dist = sl_fp
             else:
                 sl_dist = entry - (L - half * sl_mult)
@@ -2042,7 +2091,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
             if sl_floor > 0:
                 sl_dist = max(sl_dist, sl_floor)
             stop = self._round_px(symbol, entry - sl_dist)
-            tp = self._round_px(symbol, L + half * tp_mult)
+            tp = self._round_px(symbol, tp_price)
 
         self._last_signal_bar[symbol] = bar_et
         self._entry_bar_seq[symbol] = self._bar_seq

@@ -204,7 +204,19 @@ class BacktestEngine:
                     return False
                 if bar['high'] >= order.stop_price:
                     slippage_amount = self.slippage_ticks * tick_size
-                    order.filled_price = order.stop_price + slippage_amount
+                    # 2026-06-03 fix (debug session f635c2): on a bar that GAPS THROUGH the
+                    # stop (bar.open already past stop_price), a stop-becomes-market order
+                    # cannot fill at stop_price — the price was already past the trigger
+                    # when this bar opened. Real-broker behaviour is to fill at the next
+                    # available price (≈ bar.open). The pre-fix code returned
+                    # `stop_price + slip` even when bar.open >> stop_price, manufacturing
+                    # an over-optimistic fill (verified at runtime: 25.2 % of stop fills
+                    # in a 90d walkforward gap-through, producing 188pt of phantom gain
+                    # across the sample — top single fill 36pt = $72 fake profit on 1ct MNQ).
+                    # Clamp fill to `max(stop, bar.open) + slip` so gap-through is filled
+                    # at the realistic worst-of-gap price.
+                    effective_trigger = max(float(order.stop_price), float(bar['open']))
+                    order.filled_price = effective_trigger + slippage_amount
                     order.filled_timestamp = bar.name
                     order.slippage = slippage_amount
                     order.status = OrderStatus.FILLED
@@ -215,7 +227,13 @@ class BacktestEngine:
                     return False
                 if bar['low'] <= order.stop_price:
                     slippage_amount = self.slippage_ticks * tick_size
-                    order.filled_price = order.stop_price - slippage_amount
+                    # 2026-06-03 fix (debug session f635c2) — mirror of the BUY-STOP clamp.
+                    # On a bar whose open is already below stop_price, the SELL-STOP
+                    # cannot fill at stop_price — it was already past the trigger at the
+                    # open. Use min(stop, bar.open) − slip to get the realistic
+                    # worst-of-gap fill. (See BUY-STOP block above for full rationale.)
+                    effective_trigger = min(float(order.stop_price), float(bar['open']))
+                    order.filled_price = effective_trigger - slippage_amount
                     order.filled_timestamp = bar.name
                     order.slippage = slippage_amount
                     order.status = OrderStatus.FILLED
@@ -264,9 +282,19 @@ class BacktestEngine:
                 exit_comm = commission
                 entry_comm = self.commission_per_contract * qty_to_close
                 round_trip_commission = exit_comm + entry_comm
-                pnl = gross - round_trip_commission - slip_dollars
+                # 2026-06-03 fix (debug session f635c2): exit slippage was being SUBTRACTED TWICE.
+                # `gross` is computed from filled prices that already have slip baked in
+                # (entry_price was set to entry_fill_price including entry slip, exit_filled_price
+                # already includes exit slip — see `_check_order_fill`). Subtracting `slip_dollars`
+                # again on top of `gross` deducted the exit-leg slip a second time. Verified by
+                # runtime instrumentation: ``double_count_delta == slip_dollars`` on 94/136 closed
+                # trades in a 90d MNQ+MGC walkforward, magnitude $0.25 (MNQ) / $0.50 (MGC) per
+                # trade. The invariant ``initial_capital + sum(trade.pnl) == final_capital`` still
+                # holds because we drop the term from BOTH pnl and capital. ``slip_dollars`` is
+                # retained as a metadata field on the trade record (see BacktestTrade.slippage below).
+                pnl = gross - round_trip_commission
 
-                self.capital += gross - slip_dollars
+                self.capital += gross
 
                 risk_pts = 0.0
                 sl_px = getattr(pos, "stop_loss", None)
@@ -299,7 +327,7 @@ class BacktestEngine:
                     initial_risk_dollars=initial_risk_dollars,
                 )
                 self.trades.append(trade)
-                
+
                 # Update or close position
                 pos.quantity -= qty_to_close
                 if pos.quantity == 0:

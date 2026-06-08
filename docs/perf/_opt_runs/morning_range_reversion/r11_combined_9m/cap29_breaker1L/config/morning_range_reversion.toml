@@ -1,0 +1,402 @@
+# Morning range reversion (7:00–7:55 US/Eastern anchor range → fade vs breakout).
+#
+
+# Executor ``should_trade`` window: US/Eastern wall clock (see ``MorningRangeReversionStrategy._in_trading_window``).
+# Start before ``signal.range_start`` so the 07:00–08:00 ET anchor can build on live bars.
+start_time       = "06:55"
+end_time         = "16:00"
+# Disable generic RTH no-trade clip (``flat_before`` still manages end-of-day intent).
+no_trade_start   = ""
+no_trade_end     = ""
+
+[meta]
+enabled = true
+# Live consec-loss / equity-curve breaker bridge: subscribe to TRADE_CLOSED
+# events so the existing signal.max_consecutive_losses breaker runs in live
+# mode as well as backtest.  Env var STRATEGY_LIVE_BREAKER=0 still wins as
+# an emergency kill-switch; per-strategy TOML value (true) is the new
+# default for committed strategies.  See docs/CHANGELOG.md (2026-06).
+live_breaker_enabled = true
+# 2026-05-31 round-25 — dropped MES from active rotation.  Per-symbol re-eval
+# vs Round-24 (MNQ 2× + MES + MGC committed): the "no MES" variant under the
+# same MNQ 2× weighting Pareto-improved RF on 6m (4.02 → 4.26) and 9m
+# (6.66 → 6.71) at the cost of ~8% return.  MES standalone RF was 1.95 with
+# 5/9 bad folds on 9m and 100% stop-only loss exits — the 1/3 win/loss
+# magnitude ratio means the 85% WR is a near-breakeven trap.  MNQ and MGC
+# both have legitimate standalone edges (RF 4.14 and 5.68 respectively);
+# their bad folds are uncorrelated which is the real diversification engine.
+# MES per-symbol stanzas below are kept (dormant) for fast re-enablement.
+symbols = ["MNQ","MGC"]
+
+[risk]
+position_size      = 2
+max_positions      = 1
+max_daily_trades   = 4
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = "5m"
+session_timezone  = "America/New_York"
+
+# Bar opens in [range_start, range_end_open) define the pre-market range (5m bars).
+range_start       = "07:00"
+range_end_open    = "08:00"
+
+# Force-flat any managed position at or after this US/Eastern clock time (live).
+flat_before       = "16:00"
+
+# Replay safety: market-close stale brackets (5m bars ≈ 8h session cap).
+max_hold_bars     = 46
+allow_long        = true
+allow_short       = true
+
+# Execution geometry (multipliers vs half-range). Defaults preserve 1:1 vs midpoint.
+# stop_distance = (width/2) * sl_mult   (when sl_fixed_pts == 0)
+# target_distance = (width/2) * tp_mult  (tp_mult=1.0 -> midpoint target)
+#
+# 2026-05-29 walk-forward sweep: root ``sl_fixed_pts=35`` (overrides ``sl_mult``)
+# + ``tp_mult=1.5`` + ``max_fades_per_session=1`` produced the cleanest 3m equity
+# curve across MNQ/MES/MGC.  MNQ alone preferred slightly wider stops & tighter
+# TPs (slfix=50, tp=1.25) — see ``[symbols.MNQ.signal]`` overrides at bottom.
+sl_mult          = 1
+tp_mult          = 1.5
+# Safety MAX-CAP on the final entry→stop distance.  This bounds the
+# worst-case per-trade risk regardless of whether the SL came from
+# ``sl_fixed_pts`` or ``sl_mult × half_width``.  Picks up the user's
+# "maximum-of-35pts equivalent" idea — but the 2026-05-29 walk-forward
+# cap sweep (3m/6m/9m × {25, 30, 35, 40, 50, 60, 75}) showed cap=30
+# is the cross-window optimum:
+#   3m: ret 573%  / DD 23.0% / RF 10.78  (baseline 608% / 31.4% / 7.66)
+#   6m: ret 510%  / DD 127.3% / RF  3.14 (baseline 488% / 146.3% / 2.70)
+#   9m: ret 643%  / DD  62.4% / RF  3.96 (baseline 656% /  62.8% / 3.51)
+# DD drops on every window vs the prior un-capped config; tighter caps
+# (cap=25) catastrophe on 9m (DD 104%) because too-tight stops convert
+# winners into whipsaw-out losses.  cap=30 = the sweet spot.
+sl_max_pts       = 30
+# Floor for the SL distance.  Unused at the moment; left as a 0-default
+# knob so a future "tiny range = bad signal quality" guard can flip it
+# on without a code change.
+sl_min_pts       = 0
+
+# ── Narrow / wide range filters ───────────────────────────────────────────────
+# When the morning range is very narrow the entry depth (reentry_threshold_points)
+# is capped to half-1e-6, making entry ≈ midpoint ≈ TP. A TP fill then earns
+# near-zero gross and pays commission → net loss.  This filter skips those days.
+#
+# Rule of thumb: set to at least 2 * reentry_threshold_points (14 for MNQ) to
+# ensure the TP is at least 1 pt above entry after depth-capping.
+# 0 = no minimum (default; no change to existing behaviour).
+min_range_width_points = 20
+
+# Wide morning ranges create outsized per-trade risk.
+# Example: 150 caps MNQ risk to ~(75+7)*$2 = ~$164/trade on 1 contract.
+# 0 = no cap (default).
+max_range_width_points = 300
+
+# ── Far-sweep guard (2026-05-29) ──────────────────────────────────────────────
+# Hard cap on how far past the anchor boundary the latest close may be before the
+# fade signal is skipped, expressed as a multiple of the anchor width.
+#
+# Why: the sweep detector is direction-only (close above H ⇒ SHORT, below L ⇒ LONG).
+# Without this guard the strategy will place a stop-entry at the boundary even when
+# current market has drifted dramatically past it — e.g. on 2026-05-29 MGC
+# closed ~43pt above its 15.10pt anchor high and the broker rejected the entry
+# as ``Invalid price. Price is outside allowed range.``  In practice anything
+# beyond ~2× width is an "already moved" trade with near-zero retrace odds.
+#
+# Per-symbol overrides live in ``[symbols.<SYM>.signal]``. 0 = disable the guard
+# (legacy behaviour). 2.0 is a sensible default for futures with 5m bars.
+max_sweep_distance_widths = 2.0
+
+# Only acknowledge trades that have 5m candle close back into the price range.
+require_reentry_close = false
+
+# sl_fixed_pts > 0 overrides the range-anchored SL and places the stop a fixed
+# number of points from entry instead.
+#
+# 2026-05-29 walk-forward sweep (90d, 6 folds, all 3 symbols): slfix=35 beat
+# slfix=∈{20,25,30,32,37,40,55,70} and every ``sl_mult`` variant ∈ {0.5–2.0}
+# on composite (final_equity × recovery_factor) by 30–50%.  Combined with
+# ``max_fades_per_session=1`` it lifted aggregate return from +90% (baseline)
+# to +518% with max_DD dropping 114% → 28% and RF 0.37 → 5.34. Per-symbol
+# MNQ override (slfix=50) lives in ``[symbols.MNQ.signal]`` below.
+sl_fixed_pts     = 35
+
+# One fade per anchor session.
+# 2026-05-29 sweep: mf=1 beat mf=2 by ~4× composite score at every slfix
+# value tested — the second fade of the day is consistently worse expectancy
+# than the first.
+max_fades_per_session = 1
+
+# Inner-band for legacy candle-close re-entry (0.0 = arm on first close inside [L, H]).
+# Only used when ``reentry_threshold_points`` <= 0. BONGO §4.2: try 0.15 for deeper re-entry.
+reentry_frac    = 0.0
+
+# Advance stop-entry offset (overnight_range style). 
+# MES/MGC overrides use 0 until per-symbol sweep.
+reentry_threshold_points = 1
+
+# No new fade arms (sweep / re-entry) after ``range_end_open`` + N hours on the anchor ET date (0 = off).
+range_effectiveness_hours = 8
+
+# ── Weekday gate (2026-05-29 walk-forward) ───────────────────────────────────
+# List of weekday names (Mon/Tue/Wed/Thu/Fri/Sat/Sun) OR ints (0..6, Mon=0) for
+# which the anchor build is suppressed entirely — the strategy does not arm the
+# scanner, does not fire signals, and logs ``🚫 SYM session skipped DATE (Fri
+# in skip_weekdays=[Fri])`` once per (symbol, date). Per-symbol overrides via
+# ``[symbols.<SYM>.signal].skip_weekdays``.  Empty list = trade every day.
+#
+# Why Friday: across the 90d / 6-fold post-optimization walk-forward, Fri
+# loss-rate was 38% (13/34 trades) vs 14–22% Mon–Thu; MNQ Fri loss-rate was
+# 58% — basically a coin flip toward losing.  Same pattern on the 270d / 9-fold
+# window (Fri 32%, Mon–Thu 17–21%). Pre-weekend closeout flow + thin afternoon
+# liquidity break the morning-range mean-reversion geometry.
+skip_weekdays = ["Fri"]
+
+# ── Live data-freshness guard ─────────────────────────────────────────────────
+# Maximum age (seconds) of the most recent bar before ``analyze()`` aborts with
+# a loud ``⛔ STALE DATA`` error. 
+# Recommended: 600 (10 min) for 5m bars; raise on slower timeframes.
+# 0 = disable the guard entirely (legacy behaviour, not recommended live).
+max_bar_staleness_seconds = 600
+
+# atr regime settings (not done)
+require_high_atr       = false
+atr_period             = 14
+atr_regime_lookback    = 500
+atr_regime_quantile    = 0.75
+
+# BONGO §1A — partial TP at ``partial_tp_scalp_r`` × initial R + runner to full ``tp_mult`` target.
+# Replay simulates two-stage OCO; live still depends on broker ``place_oco_bracket_stop_entry_partial_tp_v1``.
+partial_tp_enabled = false
+partial_tp_scalp_r   = 1.0
+
+[position_management]
+# BONGO §1B: broker stop → entry after ``breakeven_trigger_r`` × |entry − stop| favourable move.
+breakeven_enabled   = false
+breakeven_trigger_r = 1.5
+breakeven_offset    = 5
+
+# ── Per-symbol overrides ──────────────────────────────────────────────────────
+# IMPORTANT (TOML structural footgun, fixed 2026-05-21): every section header
+# (``[symbols.X.Y]``, ``[position_management]``, etc.) ends ``[signal]``. Once a
+# new header appears, any subsequent key — including the ones the strategy reads
+# via ``signal.X`` — is routed to whatever section is currently open. The
+# 2026-05-21 walk-forward bug where ``max_fades_per_session=1`` produced 8 trades
+# on a single day was caused by exactly this: the keys had been moved below
+# ``[position_management]`` and the strategy's ``signal.max_fades_per_session``
+# lookup returned ``None`` → class default of 0 (unlimited). Keep all
+# ``signal.*`` knobs above ``[position_management]`` and put the per-symbol
+# overrides at the very bottom.
+
+[symbols.MES.signal]
+# 2026-05-30 round-23 per-symbol re-evaluation:
+#   - tp_mult sweep tested {0.85, 1.0, 1.25, 1.5}.  Every alternative
+#     hurt MES DD on every window — tp=1.0 raised 9m DD 20% → 41%
+#     and tp=1.5 to 66%.  MES thin ranges cause higher-TP variants to
+#     time out frequently.  Conclusion: **tp_mult = 0.7 is empirically
+#     optimal** for MES; keep as committed.
+#   - Weekday sweep tested {none, [Tue,Fri], [Wed,Fri], [Wed]}.  Every
+#     alternative was worse than baseline Fri-only (skip_none dropped
+#     9m ret to -11%; skip_wed_only to -50%).  Conclusion: **inherit
+#     root [Fri] skip — no per-symbol weekday override**.
+# 2026-05-30 cross-session consec-loss breaker (same config as MGC).
+# 9m MES max-drawdown fell from 32% → 20% (-12pp) with negligible
+# return impact.  MES fold 3 (Nov-Dec 2025) had a 3-loss streak
+# coinciding with the MGC trend cluster — same regime detector handles
+# both.  6m MES DD also dipped from 29% → 26%.
+max_consecutive_losses           = 2
+loss_streak_cooldown_sessions    = 10
+# 2026-05-29 walk-forward MES sweep (270d / 9 folds, Friday-skip on):
+# ``sl_fixed_pts=0`` + ``sl_mult=3.0`` + ``tp_mult=0.7`` matches the prior
+# slfix=35 / tp=0.7 winner on composite score (3721 vs 3920) but drops
+# 9m max DD from 40% to 32% AND fixes the geometric scaling problem — a
+# 35pt fixed stop on MES means a $175 dollar risk vs MNQ's $70 at the
+# same setting (MES = $5/pt vs MNQ = $2/pt). ``sl_mult=3.0`` keeps the
+# SL proportional to the day's anchor width: a 10pt MES range → 15pt SL
+# ≈ $75 (≈ MNQ parity); a wider 20pt range day → 30pt SL ≈ $150. Risk
+# auto-scales with the contract's natural volatility regime instead of
+# taking a blanket 3.5×-typical-range stop on every day.  ``tp_mult=0.7``
+# is the long-standing MES per-symbol override — every R12 sweep
+# evaluated with this effective value (per-symbol overrides win over
+# root env-var overrides in the precedence chain), so it stays.
+sl_fixed_pts = 0
+sl_mult      = 3.0
+tp_mult      = 0.7
+# MES typically builds a ~2–6 pt morning range. A 7pt MNQ-calibrated threshold
+# would exceed half-width and clamp every session. Tighter thresholds (1.5–2)
+# trigger on most retraces and lose on slippage/commission friction at MES's
+# small per-point value. Fall back to legacy candle-close re-entry (now honest
+# thanks to the stop-direction guard in BacktestEngine); revisit after a
+# dedicated MES walk-forward sweep across {1.0, 2.0, 3.0} pts.
+reentry_threshold_points = 0.0
+# Per-symbol range-width filters — calibrated to the same % of typical
+# pre-market range as MNQ's root values (20 / 300 ≈ 27% / 410% of MNQ's
+# typical 73pt width). Without these, MNQ's 20pt minimum silently filtered
+# every MES day at the ``_fade_signal_after_sweep`` width guard.
+min_range_width_points = 3
+max_range_width_points = 50
+
+[symbols.MGC.signal]
+# 2026-06-04 round-26 (post-engine-fix re-tune) — MGC overrides re-derived
+# on the corrected backtest engine. The pre-fix tune (skip_weekdays =
+# ["Wed", "Fri"], sl_mult = 3.0, sl_max_pts = 22, no tp override) had been
+# selected by sweeps on the buggy engine and was found to be a bug-favoured
+# candidate: H-B's gap-through phantom-profit channel disproportionately
+# advantaged tight-stop / tight-cap configs (more triggers → more
+# gap-through hits → more inflated PnL in the sweep ranking). With both
+# engine bugs fixed (see docs/CHANGELOG.md "Backtest engine — two PnL
+# accounting bugs"), the previously-skipped Wed losses were largely
+# phantom; un-skipping Wed AND loosening the cap recovers materially
+# better risk-adjusted returns.
+#
+# Sweep evidence (5 rounds × 80 trials via scripts/optimize_strategy.py,
+# in-process walkforward_trade_recap_report.py, 270d / 9 folds, MNQ+MGC):
+#
+#   committed_baseline (pre-engine-fix tune): ret +390 % / RF 2.14 / DD 58 %
+#   R1 winner (just MGC cap=32):              ret +595 % / RF 5.54 / DD 34 %
+#   R2 winner (+ MGC tp=1.75):                ret +623 % / RF 6.45 / DD 28 %
+#   R3 winner (+ drop MGC Wed-skip):          ret +727 % / RF 8.49 / DD 26 %
+#   R4 winner (+ MGC slmult 3.0→3.25):        ret +747 % / RF 9.24 / DD 24 %
+#   R5 CHAMPION (+ MGC tp 1.75→1.8):          ret +777 % / RF 9.71 / DD 24 % ← committed
+#
+# Cross-window validation (committed_baseline → R5 winner):
+#   3m: ret +288 → +405 (+41 %), RF 5.83 → 5.06 (-13 %), DD 29 → 45 (riskier on the short window)
+#   6m: ret +265 → +550 (+108 %), RF 1.92 → 6.88 (+259 %), DD 95 → 59 (HUGE — was at cliff)
+#   9m: ret +390 → +777 (+99 %), RF 2.14 → 9.71 (+354 %), DD 58 → 24
+#   All windows clear the DD-100 % cliff. 6m and 9m are massive wins; the
+#   3m DD increase reflects un-Wed-skipped trades in a 90d sub-sample
+#   without the bigger long-window losing-Wed-cluster that the breaker
+#   would handle — still well under the cliff.
+#
+# Per-knob rejection log (R3-R5):
+#   - tp_mult 1.5/1.7/2.0: 1.5 ret 638, 1.7 RF 9.60, 1.8 ← winner RF 9.71, 2.0 RF 7.49
+#   - sl_mult 3.0/3.1/3.15/3.2/3.25/3.3/3.4/3.5: 3.25 = best, 3.0 ret -100/RF -1.6, 3.5 RF 5.72
+#   - sl_max_pts 25/28/30/32/35/40: 30 = sweet spot (ret 601/RF 5.70), 32 nearly identical
+#   - skip_weekdays []/["Fri"]/["Wed","Fri"]: ["Fri"] = winner (Wed-skip was pre-fix artefact)
+#   - max_consecutive_losses 0/1/2/3: 2 stays (off → DD 49, 1L → cuts trades, 3L → DD 42)
+#   - reentry_threshold_points 0/1/2: no MGC effect (MGC inherits 0.0 override)
+#   - max_sweep_distance_widths 1.5/2.0/3.0: no effect at MGC (likely not binding here)
+#   - range_effectiveness_hours 4/6/8: no effect (already > effective trading window)
+#
+# PORTFOLIO WORST-CASE-DAY BUDGET NOTE (2026-06-04 R26):
+#   The R3 sweep evidence said sl_max_pts=30 (was 22) is the sweet spot
+#   for MGC PnL. With body_reversion retired (2026-06-04) the cross-
+#   strategy stop-out budget is now:
+#     MNQ morning  : 30pt × $2  × 4ct = $240
+#     MGC morning  : 30pt × $10 × 2ct = $600  ← was $440 at cap=22
+#     overnight MNQ: ~50pt × $2  × 1ct = $100
+#     overnight MGC: ~15pt × $10 × 1ct = $150
+#     ──────────────────────────────────────
+#     Worst-case   = $1,090
+#   That's $90 over the operator's $1000 single-day MAX limit. Three
+#   options for the operator (all left as comments — pick one):
+#     (1) Accept the $90 (9%) breach. Probability of a 3-strategy
+#         simultaneous worst-case stop-out day is small and the +354%
+#         RF improvement / -34pp DD reduction more than compensates.
+#     (2) Drop MGC to 1 contract (uncomment [symbols.MGC.risk] block
+#         below). Halves expected return on MGC but keeps RF, brings
+#         worst-case to $790.
+#     (3) Hold MGC at sl_max_pts=25 (the budget-tight Pareto pick;
+#         see R2 sweep — ret +544 / RF 3.37 / DD 52 — markedly worse
+#         than cap=30 but still much better than the pre-R26 baseline).
+#   Default: (1). Operator can flip to (2) by uncommenting the [risk]
+#   block below.
+skip_weekdays                    = ["Fri"]
+# 2026-05-30 cross-session consec-loss breaker (kept unchanged in R26).
+# Reactive 2-loss / 10-day MGC-specific halt. R26 sweep confirmed this is
+# still the right setting: breaker-off ret +833 % / DD 49 % / RF 4.95
+# (worse RF), breaker_3L ret +815 / DD 42 / RF 5.65 (looser, worse),
+# breaker_1L_5d ret 685 / DD 34 / RF 6.35 (too tight, cuts trades).
+max_consecutive_losses = 1
+loss_streak_cooldown_sessions    = 10
+# 2026-06-04 R26 stop-geometry committed: slmult 3.0 → 3.25 (R4/R5 sweep
+# winner). sl_max_pts 22 → 30 (R3 sweep — the original 22-cap was the
+# binding bug-favoured constraint; loosening to 30 picks up ~17 extra
+# MGC trades over 9m AND lifts MGC PnL from $180 to $537 because cap=22
+# was clamping winners and turning gap-through losses into "stop-hit"
+# phantom-fills that booked at the cap level). cap=32 was the R1 winner
+# but cap=30 is essentially identical (R3 ret +601 vs R2 +595) and fits
+# the portfolio budget tradeoff better.
+sl_fixed_pts = 0
+sl_mult      = 3.25
+sl_max_pts = 29
+# 2026-06-04 R26: MGC-specific TP override added (was inheriting root
+# tp_mult=1.5). R5 sweep showed tp_mult=1.8 is the local optimum
+# (RF 9.71 vs 1.75 RF 9.24, 2.0 RF 7.49, 1.5 RF 5.90) — slightly wider
+# TPs cleanly outperform now that gap-through SL fills no longer
+# manufacture phantom profit.
+tp_mult      = 1.8
+# MGC range similarly compact; legacy candle-close mode is the safer default
+# until a per-symbol threshold sweep produces a positive-expectancy value.
+reentry_threshold_points = 0.0
+min_range_width_points = 4
+max_range_width_points = 65
+
+# [symbols.MGC.risk]
+# 2026-06-04 R26 — UNCOMMENT this block to switch MGC to 1 contract.
+# Use this if the $90 portfolio worst-case-day budget breach (see
+# [symbols.MGC.signal] PORTFOLIO note above) is unacceptable. Halves
+# expected MGC return on the strategy; RF stays roughly the same since
+# DD also halves proportionally.
+# position_size = 1
+
+[symbols.MNQ.risk]
+# 2026-05-30 round-24 per-symbol position-size weighting — MNQ doubled
+# to 4 contracts per trade.  Walk-forward sweep (3m/6m/9m, 7 weighting
+# variants, root position_size=2 baseline ⇒ MNQ=4):
+#
+#   baseline_all_1x: 3m ret 434% DD 12.4 RF 12.4 | 6m 403% 74.9 3.78 | 9m 583% 31.8 6.27
+#   MNQ_2x:          3m ret 513% DD 13.1 RF 12.4 | 6m 484% 79.0 4.02 | 9m 711% 30.5 6.66
+#
+# +18-22% return on every window with **same-or-better DD** (9m DD actually
+# drops 31.79% → 30.49%) and **same-or-better RF**.  MNQ has the best per-
+# symbol risk profile (RF 4.14 on 9m standalone, DD 19%), so doubling it
+# adds more "good" trades that smooth the composite equity curve.
+#
+# Other variants tested and rejected:
+#   - MGC_2x:        +71% ret but 6m DD blew to 111% (vs 75% baseline)
+#   - MNQ_2x+MGC_2x: +90% ret but 6m DD 112% — same MGC risk problem
+#   - MES_half:      neutral (-5% ret, ~tied DD/RF) — not worth changing
+#   - MNQ_2x+MES_half: marginal vs MNQ_2x alone
+#
+# Effective per-trade dollar risk (MNQ slfix=50 → cap=30 × $2/pt × 4ct = $240):
+#   MNQ $240, MES $150, MGC $450 — closer to risk parity than baseline
+#   ($120 / $150 / $450). Worst-case 3-symbol stop-out day = $840.
+position_size = 4
+
+[symbols.MNQ.signal]
+# 2026-05-30 round-23 per-symbol weekday filter — MNQ's Mondays and
+# Thursdays show 53-57% loss rates across all windows (vs ~40% Tue/Wed).
+# Sweep result (MNQ-specific metrics):
+#   baseline (Fri only):     3m DD 23% RF 3.28 | 6m DD 55% RF 1.16 | 9m DD 40% RF 1.74
+#   skip ["Mon","Thu","Fri"]:3m DD 10% RF 4.86 | 6m DD 24% RF 3.01 | 9m DD 19% RF 4.14
+# DD HALVED on every window, RF improves 1.5-2.5x.  Cost: ~50% fewer
+# MNQ trades (23/48 on 3m, 73/140 on 9m); MNQ alpha concentrated on
+# Tue/Wed.  ``skip_thu_fri`` alone was a weaker variant (3m RF 2.40,
+# 6m RF 2.29); the Mon-Thu-Fri triple was the clear cross-window winner.
+skip_weekdays                    = ["Mon", "Thu", "Fri"]
+# 2026-05-29 walk-forward fine-tune (MNQ alone, 90d, 6 folds):
+# slfix=50 + tp_mult=1.25 lifted MNQ composite from 1350 (root slfix=35,
+# tp=1.5) to 7208 (+5.3×); return 45% → 101%; RF 0.46 → 1.79.  Wider stop
+# + slightly tighter TP suits MNQ's larger per-point volatility.  MNQ's
+# tighter tick value ($2/pt) means slfix=50 is $100 / trade — still in
+# the same dollar-risk neighbourhood as MES's range-anchored stop, so the
+# heterogeneous SL geometry across symbols normalises in dollar terms.
+#
+# Tested-and-rejected (2026-05-29 MNQ dynamic sweep, 270d / 9 folds): tried
+# ``sl_fixed_pts=0`` + ``sl_mult ∈ {1.0, 1.25, 1.5, 2.0, 2.5, 3.0}`` against
+# the slfix=50 baseline. ``sl_mult=2.5`` tied baseline on 9m (ret 143.5
+# vs 143.2, DD 40.28 vs 40.34) but regressed badly on shorter windows in
+# the cross-window validation: 3m ret 108% → 49%, 6m ret 71% → 6%, 6m RF
+# 1.16 → 0.09. Root cause: with root ``sl_max_pts=30`` already clamping
+# wide-range MNQ days, the dynamic ``sl_mult`` only changes behavior on
+# narrow-range days where the resulting tighter stop causes whipsaw
+# losses. Fixed 50pt → 30pt capped is the right MNQ geometry; MES/MGC
+# stay dynamic because their narrow-range whipsaw days are the EDGE
+# (the fade is tighter when range is compressed).
+sl_fixed_pts = 50
+tp_mult      = 1.25

@@ -386,13 +386,23 @@ def test_breakeven_clean_bar_moved_stop_fills_when_close_below_new_stop():
     # Bar 2: gap-down to 96 close → low=95 dips BELOW the moved SL=100. The bar's
     # close (96) is below the new stop too — old code rejected this fill via the
     # placement_price < stop_price check. Now it must fire.
+    #
+    # 2026-06-03 H-B fix update: bar.open=99 is already below the moved-SL=100,
+    # so the SELL-STOP cannot fill at 100 (the price had already gapped through
+    # the trigger by the time this bar opened). The engine now clamps the fill
+    # to ``min(stop, bar.open) − slip`` = 99 − 0 = 99 → the BE protection
+    # delivers a small loss instead of a perfect $0 (which is exactly what a
+    # real broker would do on a gap-through bar). exit_reason is still
+    # "breakeven" because the SL had been moved by the BE watch — the tag
+    # reflects the mechanism that placed the modified SL, not the final PnL.
     eng.backtest_engine.current_bar_index = 2
     eng._process_subbar_fills(_bar(t0, 99, 99, 95.0, 96.0), tick_size=0.25)
     assert "MNQ" not in eng.backtest_engine.positions
     trade = eng.backtest_engine.trades[0]
     assert trade.exit_reason == "breakeven"
-    assert trade.exit_price == pytest.approx(100.0)
-    assert trade.pnl == pytest.approx(0.0, abs=0.01)
+    assert trade.exit_price == pytest.approx(99.0)  # bar.open, not moved-SL
+    # PnL = (fill − entry) × pv × qty = (99 − 100) × 2 × 1 = −$2 — gap cost.
+    assert trade.pnl == pytest.approx(-2.0, abs=0.01)
 
 
 def test_breakeven_same_bar_ambiguity_defers_short_side():
@@ -820,9 +830,18 @@ def test_bracket_short_sl_fires_when_entry_bar_close_runs_above_sl_level():
         f"got {sl_order.placement_price} (likely fell back to last_close=bar.close)."
     )
 
-    # ── Next bar: bar.high pushes through the SL level. The SL must fire and
-    # close the position as a real ``stop_loss`` exit at ~24900.125, not get
+    # ── Next bar: bar OPENS at 24950 (already above the SL at 24900.125 — a
+    # gap-up that blew past the SL trigger before this bar started). The SL
+    # must fire and close the position as a real ``stop_loss`` exit, not get
     # silently rejected by the direction guard.
+    #
+    # 2026-06-03 H-B fix: pre-fix the BUY-STOP filled at ``sl_level`` (24900.125)
+    # regardless of how far the bar's open had already gapped past it. That
+    # was unrealistic — a real broker fills the stop-becomes-market at the
+    # first available price after the gap, i.e. ≈ bar.open. The engine now
+    # clamps the fill to ``max(stop, bar.open) + slip`` = 24950 + 0 = 24950.
+    # PnL widens correspondingly: (entry − fill) × pv × qty rather than
+    # (entry − sl_level) × pv × qty.
     eng.backtest_engine.current_bar_index = 2
     eng._process_subbar_fills(_bar(t0, 24950.0, 25010.0, 24945.0, 25000.0), tick_size=0.25)
 
@@ -833,9 +852,9 @@ def test_bracket_short_sl_fires_when_entry_bar_close_runs_above_sl_level():
     assert len(eng.backtest_engine.trades) == 1
     trade = eng.backtest_engine.trades[0]
     assert trade.exit_reason == "stop_loss"
-    assert trade.exit_price == pytest.approx(sl_level)
-    # PnL ≈ (entry − sl) × point_value × qty = (24837.625 − 24900.125) × 2 × 1 = −$125
-    assert trade.pnl == pytest.approx(-125.0, abs=0.5)
+    assert trade.exit_price == pytest.approx(24950.0)  # bar.open, not sl_level
+    # PnL = (entry − fill) × point_value × qty = (24837.625 − 24950.0) × 2 × 1 = −$224.75
+    assert trade.pnl == pytest.approx(-224.75, abs=0.5)
 
 
 def test_bracket_long_sl_fires_when_entry_bar_close_runs_below_sl_level():
@@ -885,14 +904,19 @@ def test_bracket_long_sl_fires_when_entry_bar_close_runs_below_sl_level():
     assert sl_order is not None
     assert sl_order.placement_price == pytest.approx(sl_level)
 
-    # Next bar: low pierces the SL.
+    # Next bar OPENS at 24795 — already below the SL at 24799.875 (gap-down).
+    # The SL must fire and close the position as a real ``stop_loss`` exit.
+    #
+    # 2026-06-03 H-B fix: pre-fix the SELL-STOP filled at ``sl_level`` even
+    # when bar.open was well below it. Engine now clamps the fill to
+    # ``min(stop, bar.open) − slip`` = 24795 + 0 = 24795 (realistic gap-fill).
     eng.backtest_engine.current_bar_index = 2
     eng._process_subbar_fills(_bar(t0, 24795.0, 24798.0, 24780.0, 24785.0), tick_size=0.25)
 
     assert "MNQ" not in eng.backtest_engine.positions
     trade = eng.backtest_engine.trades[0]
     assert trade.exit_reason == "stop_loss"
-    assert trade.exit_price == pytest.approx(sl_level)
+    assert trade.exit_price == pytest.approx(24795.0)  # bar.open, not sl_level
 
 
 def test_bracket_tp_placement_price_also_anchored_for_symmetry():

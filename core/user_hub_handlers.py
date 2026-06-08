@@ -341,7 +341,49 @@ class UserHubHandlers:
             await broadcast_update({"type": gui_type, "data": {"orders": [order_data]}}, immediate=is_critical)
         except Exception as e:
             logger.debug("Could not broadcast order update to GUI: %s", e)
-    
+
+    async def _publish_trade_closed_events(self, completed_trades, account_id: str) -> None:
+        """Publish TRADE_CLOSED events for each completed trade on the bot loop.
+
+        Called from sync ``on_trade`` via ``_defer_coro_from_sync`` because the
+        SignalR callback runs on a hub thread and cannot ``await`` directly.
+        Best-effort: a publish failure on one trade must not block the others.
+        """
+        if not self._bot.event_bus or not completed_trades:
+            return
+        from core.events import Event, EventType
+
+        for t in completed_trades:
+            try:
+                await self._bot.event_bus.publish(
+                    Event(
+                        type=EventType.TRADE_CLOSED,
+                        data={
+                            "trade_id": t.trade_id,
+                            "account_id": account_id,
+                            "symbol": t.symbol,
+                            "side": t.side,
+                            "quantity": t.quantity,
+                            "entry_price": t.entry_price,
+                            "exit_price": t.exit_price,
+                            "entry_time": t.entry_time,
+                            "exit_time": t.exit_time,
+                            "gross_pnl": t.gross_pnl,
+                            "net_pnl": t.net_pnl,
+                            "commission": t.commission,
+                            "fee": t.fee,
+                            "duration_seconds": t.duration_seconds,
+                            "session_id": t.session_id,
+                        },
+                        source="user_hub_handlers",
+                    )
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Could not publish TRADE_CLOSED for trade %s: %s",
+                    t.trade_id, exc,
+                )
+
     def on_trade(self, data: Dict):
         """Callback for User Hub trade updates."""
         try:
@@ -415,41 +457,16 @@ class UserHubHandlers:
                             # Publish TRADE_CLOSED per completed trade so strategies
                             # (e.g. consec-loss breaker) can react to live PnL the
                             # same way the backtest engine drives them from
-                            # ``_replay_engine.trades``.  Best-effort: a missing
-                            # event_bus must NOT block the fill-processing path.
-                            if self._bot.event_bus:
-                                from core.events import Event, EventType
-                                for t in completed_trades:
-                                    try:
-                                        await self._bot.event_bus.publish(
-                                            Event(
-                                                type=EventType.TRADE_CLOSED,
-                                                data={
-                                                    "trade_id": t.trade_id,
-                                                    "account_id": account_id,
-                                                    "symbol": t.symbol,
-                                                    "side": t.side,
-                                                    "quantity": t.quantity,
-                                                    "entry_price": t.entry_price,
-                                                    "exit_price": t.exit_price,
-                                                    "entry_time": t.entry_time,
-                                                    "exit_time": t.exit_time,
-                                                    "gross_pnl": t.gross_pnl,
-                                                    "net_pnl": t.net_pnl,
-                                                    "commission": t.commission,
-                                                    "fee": t.fee,
-                                                    "duration_seconds": t.duration_seconds,
-                                                    "session_id": t.session_id,
-                                                },
-                                                source="user_hub_handlers",
-                                            )
-                                        )
-                                    except Exception as exc:
-                                        logger.debug(
-                                            "Could not publish TRADE_CLOSED for trade %s: %s",
-                                            t.trade_id, exc,
-                                        )
-                            
+                            # ``_replay_engine.trades``.  ``on_trade`` is a sync
+                            # SignalR callback, so the publish must be dispatched
+                            # to the bot loop via ``_defer_coro_from_sync``.
+                            if self._bot.event_bus and completed_trades:
+                                self._defer_coro_from_sync(
+                                    self._publish_trade_closed_events(
+                                        list(completed_trades), account_id
+                                    )
+                                )
+
                             # Broadcast trade updates to GUI
                             try:
                                 try:

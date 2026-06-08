@@ -1518,11 +1518,10 @@ class StrategyReplayEngine:
                 entry_price,
                 stop_loss_price,
                 take_profit_price,
-                None,
-                enable_breakeven,
-                None,
-                scalp_r_multiple=float(partial_tp_scalp_r or 1.0),
+                account_id=None,
+                enable_breakeven=enable_breakeven,
                 strategy_name=strategy_name,
+                scalp_r_multiple=float(partial_tp_scalp_r or 1.0),
             )
         logger.debug(f"📝 Simulating bracket order: {side} {quantity} {symbol} @ {entry_price:.2f}")
         

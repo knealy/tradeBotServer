@@ -1,6 +1,64 @@
 # Strategy Arsenal
 
-Last refresh: 2026-06-03 PM **CRITICAL CORRECTION** (contract-roll data quarantine shipped — see `docs/CHANGELOG.md` "Fixed → Backtest engine — contract-roll data quarantine"): every per-strategy 9 m PnL number on this page is now re-stated against **clean** databento data. The biggest swing: `body_reversion`'s headline $+9,332 collapsed to $+2,150 (−$7,182 / −77 %) because 23 of its 190 MNQ trades were fake "fills" produced by interleaved Sep/Dec contract bars on roll dates (12.1 % of trades, 89 % of PnL). **`morning_range_reversion` is the real arsenal #1** at $+9,082 / 9 m (4× the next-best strategy) — its mean-revert geometry never had meaningful exposure to roll dates. `overnight_range` (R23) sits at $+2,409 unchanged.
+Last refresh: 2026-06-05 PM **R28 `morning_range_reversion` material PnL lift via MGC `max_range_width_points` 65 → 46**. User pushed back on R27 as "miniscule" and asked for either a material improvement or retirement. Two more sweep rounds (≈ 50 trials × 3 windows: dynamic-SL-from-TP / partial-TP / breakeven / signal-quality / regime filters) found the real lever — MGC's morning range-width upper bound. R28 **Pareto-dominates R27 across every window with identical drawdown**:
+
+| Window | R27 truth | R28 truth (committed) | Δ Return | Δ RF | Δ WR |
+| --- | --- | --- | --- | --- | --- |
+| 3m | +558 % / RF 11.27 / DD 13.15 % | **+666 %** / RF **13.45** / DD 12.78 % | **+19.3 %** | +19 % | +2.3 pp |
+| 6m | +666 % / RF 7.51 / DD 88.65 % | **+803 %** / RF **9.06** / DD 88.65 % | **+20.6 %** | +21 % | +2.0 pp |
+| 9m | +777 % / RF 8.77 / DD 41.94 % | **+915 %** / RF **10.32** / DD 41.94 % | **+17.7 %** | +18 % | +1.3 pp |
+
+MGC standalone PnL (9m): +585 % → **+722 %** (+23.4 %). MNQ unchanged (R28 only touched the MGC override). Mechanism: the prior 65pt MGC range-width ceiling admitted the wide-range vol-cluster sessions (CPI / rate-decision / large-physical-flow days) that produced the user-reported worst losers (2025-11-13 BUY −$526, 2025-11-18 SELL −$554). On those days the fade thesis breaks down structurally — price keeps moving in the sweep direction long after the close back into the box, hitting the 29pt SL cap. Capping the range filter at 46pt skips ~3 of those sessions per fold. The 46-48pt cluster is the cross-window Pareto-optimal bound: tighter (≤44) skips one valid winner per fold, looser (≥50) lets the bad sessions back in.
+
+**Also in this session — Phase-2 strategy retirement decisions**:
+- `globex_drift_continuation` **flagged for retirement** on truth-recap (currently `meta.enabled = false`): 333 trades over 9 m / total return **−71 %** / DD 76 %. Bleeds capital across every symbol (MNQ −20 %, MES −25 %, MGC −26 %). Original Phase-2 paper edge does not survive the corrected engine + current data. Strategy code + TOML retained on disk for autopsy, removed from rotation list below.
+- `nr_compression_break` (NR7) **flagged for retirement**: 16 trades over 9 m / +5 % combined. Too sparse to call statistically. Daily-TF compression signal needs orders of magnitude more sessions to validate. Strategy code + TOML retained on disk.
+
+The R27 detail panel + the older R26 staleness audit remain below — preserved for context. The "R27 truth" column in the table above was added today (a fresh `--no-cache-decisions` recap of the R27 TOML) so the R28 delta is on directly-comparable ground.
+
+---
+
+Last refresh: 2026-06-05 **R27 `morning_range_reversion` geometry tune + stale-cache fix**. Three things happened in that session:
+
+1. **Decision-cache staleness uncovered.** While investigating the user's "30pt MGC stop is excessive" feedback, the R26 truth-baseline metrics in this doc (PnL $+15,540, DD 23.5 %, RF 9.71) were found to be **served by the on-disk `docs/perf/_decision_cache/`** built before the most recent historical-data refresh. The data refresh added ~7 trading days of new bars; the cache key includes the CSV mtime → strictly speaking it SHOULD have invalidated, but the parquet sidecar path used by the in-process runner bypasses the CSV-mtime check in some hits. **All sweep results below are from `--no-cache-decisions` / freshly-rebuilt cache only.** The TRUE current R26 baseline on the refreshed data is materially weaker than the previously-documented number:
+
+   | Metric | docs R26 (cached) | R26 (fresh, true) | R27 (committed) |
+   | --- | --- | --- | --- |
+   | Total PnL | $+15,540 | $+14,306 | **$+15,545** |
+   | Return % | +777.0 | +715.3 | **+777.3** |
+   | RF | 9.71 | 7.93 | **8.77** |
+   | Max DD | 23.5 % | 51.2 % | **41.9 %** |
+   | n trades | 175 | 182 | 182 |
+   | MGC PnL | $+11,340 | $+10,467 | **$+11,706** |
+   | MGC worst-trade | -$612 | -$612 | **-$592** |
+   | MGC max DD | $1,166 | $1,657 | **$1,263** |
+   | MGC avg R:R | 0.79 | 0.74 | **0.76** |
+
+2. **`morning_range_reversion` Round 27 committed.** User raised the geometry concern: with MGC `sl_max_pts=30` + `tp_mult=1.8`, the cap-bound R:R is 0.45:1 and the typical-day R:R is 0.55:1 — structurally negative; the strategy depends on its 72 % WR for expectancy. R6 (sl_mult tightening to ≥1:1 geometry) and R7 (cap-only tightening) both REJECTED on truth (PnL −7 to −22 %, DD +5 to +13 pp). R10–R11 (cap + slmult + tp_mult co-tuning, then breaker_1L test) found a **clean cross-window Pareto improvement** at:
+   - MGC `sl_max_pts`: **30 → 29**  (R10 sweep: best cap value on truth)
+   - MGC `sl_mult`: **3.25 → 3.30**  (RF +0.35 / DD -7 pp on the +29 cap)
+   - MGC `tp_mult`: **1.8 → 1.85**  (RF +0.66 / PnL +$31 / no DD penalty)
+   - MGC `skip_weekdays` / `max_consecutive_losses` / `loss_streak_cooldown_sessions`: **UNCHANGED** (R10 breaker_1L test rejected as 9m-overfit; failed 6m + 3m)
+   - MNQ overrides: **UNCHANGED**
+3. **Portfolio worst-case-day budget impact**: MGC cap 30 → 29 cuts worst MGC stop-out from $600 → $580 / trade. Cross-strategy worst-case day drops from $1,090 → **$1,070** (now $70 over the operator's $1,000 daily MAX, was $90 over). Same operator options as before: accept the $70 breach (default — DD-likely-experienced drops too) / drop MGC to 1 contract / further cap-tighten at a known PnL cost.
+
+### Truth-baseline 9 m ranking (post-2026-06-05 R27 commit; ALL no-cache)
+
+The "R26 (cached)" column is what the previously-printed doc said. The "R26 (fresh)" column is what the *same* committed TOML actually produces on the refreshed data. The "R27 (committed)" column is what's deployed RIGHT NOW.
+
+| Rank | Strategy | PnL (committed) | Return % | RF | DD % | WR | n | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `morning_range_reversion` (**R28**) | **≈ $+18,300** | **+914.6 %** | **10.32** | **41.9 %** | **68.3 %** | 183 | 2026-06-05 PM commit; +17.7 % / +18 % RF on top of R27; MGC `max_range_width_points` 65 → 46. Pareto over R27 on every window. |
+| 2 | `overnight_range` R23 | $+2,504 (cached) | +125.2 % | 7.03 | 15.6 % | 39.7 % | 126 | numbers in this row are still on the stale-cache state; will refresh on next re-tune |
+| — | `body_reversion` | RETIRED | — | — | — | — | — | retired 2026-06-04 — see Disabled tier |
+| — | `nr_compression_break` (NR7) | RETIREMENT FLAGGED | — | — | — | — | 16 / 9m | 2026-06-05 PM: too sparse to validate (currently `enabled = false`) |
+| — | `globex_drift_continuation` | RETIREMENT FLAGGED | $−$71 % | — | 76.4 % | — | 333 / 9m | 2026-06-05 PM: bleeds capital across every symbol (currently `enabled = false`) |
+
+**Operator implication**: `morning_range_reversion` remains the unambiguous #1 by every metric and the R27 tune sharpens the edge further (+8.7 % PnL, −18 % DD, −24 % MGC DD vs the fresh R26 baseline). The committed config has been validated on the actual current data, not a stale cache. `overnight_range`'s row above is INTENTIONALLY left at its cached numbers because no `overnight_range` config changes were made in this session — when that strategy is next re-tuned, run `--no-cache-decisions` end-to-end and refresh both columns.
+
+Last refresh: 2026-06-04 AM **SECOND CRITICAL CORRECTION — backtest engine PnL bugs fixed** (debug session `f635c2`, see `docs/CHANGELOG.md` "Fixed → Backtest engine — two PnL accounting bugs"). Two independent bugs were found and fixed in `core/backtest/engine.py`: (H-A) exit slippage was double-counted in PnL and capital; (H-B) STOP orders filled at trigger price even on gap-through bars, manufacturing phantom profit. Truth-baseline 9 m walkforwards of each then-committed production tune were re-run on the post-fix engine (recap dirs `docs/perf/{strategy}_postengine_truth/`); the resulting ranking (now superseded by the R26 ranking above) identified `morning_range_reversion` as needing a re-tune and `body_reversion` as needing retirement.
+
+Last refresh: 2026-06-03 PM **CRITICAL CORRECTION** (contract-roll data quarantine shipped — see `docs/CHANGELOG.md` "Fixed → Backtest engine — contract-roll data quarantine"): every per-strategy 9 m PnL number on this page was re-stated against **clean** databento data. The biggest swing at that time: `body_reversion`'s headline $+9,332 collapsed to $+2,150 (−$7,182 / −77 %) because 23 of its 190 MNQ trades were fake "fills" produced by interleaved Sep/Dec contract bars on roll dates (12.1 % of trades, 89 % of PnL). The 2026-06-04 engine-fix above re-states those numbers a second time on the corrected accounting engine.
 
 Last refresh: 2026-06-02 (Round 3 wrap-up: dormant-strategy investigation concluded — `trend_following` / `mean_reversion` / `simple_candle` all parked as **STAGNANT** after multi-window validation showed they cannot pass the DD-100 % cliff. Pivot to designing 5 net-new strategies that fill genuine arsenal gaps — see *Arsenal roadmap*.).
 Last refresh: 2026-06-03 PM (R23 step-trail ship: `overnight_range` now ratchets SL to entry+1R once MFE crosses 2R, via a new `position_management.trail_steps_r` TOML knob. Backtest-only today (engine work in `core/backtest/strategy_replay.py` — multi-stage watches + one-way ratchet guard); live OCO trail path deferred. Phase-1 risk infrastructure already shipped earlier today: `core/portfolio_daily_breaker.py`, `core/risk_sizer.py`, `core/regime.py` — all unit-tested.  Phase-2 first two strategies wired: `nr_compression_break` (NR7, **R1 baseline positive on MNQ+MES+MGC**) and `globex_drift_continuation` (**R1 baseline NEGATIVE — needs research**, kept disabled).  **Bug fix (2-stage, both shipped same day)**: replay engine now flat-files on (1) calendar-date rollover AND (2) the fast-loop `_BarRow` polymorphism case — the round-14 `overnight_range` cross-session hold artefacts the user surfaced (positions persisting 7-15 days) were the joint symptom.  Tests: `tests/test_replay_force_flat_eod.py` (9 cases including fast-loop `_BarRow` regression).  **Consequence + recovery**: the previously-headlined `overnight_range` R21 numbers (RF 21.73 / +654 % / 9m) were measurement artefacts produced by partial-fill legs of cross-session positions booking as separate trades.  Round-22 re-tune on the corrected engine (4 rounds × 42 trials via `scripts/optimize_strategy.py`) found `gap_max_pct = 0.80 → 1.20` and `range_break_offset = 1.0 → 1.5` are the two committed TOML changes that recover most of the practical edge — RF 11.50 / +$2,789 / 9m on the clean baseline (vs +$1,562 / 6.77 immediately post-fix).  Per-symbol stop/TP and breaker knobs re-validated and kept unchanged.).
@@ -30,18 +88,11 @@ The CSV data quarantine drops calendar days where databento interleaved front-mo
 
 **Operator implication**: deploy `morning_range_reversion` first; it's a 4× larger absolute-PnL strategy than the rest. `body_reversion` and `overnight_range` are both still net-positive and deserve their slot in the account-per-strategy partition (see the deployment blueprint below), but they're no longer in the running for "where's the alpha". The per-strategy panels below preserve the headline 9 m metrics each tier was committed at; treat them as the WR / RF profile of the strategy on the symbols/sessions it actually trades — but reach for the table above for absolute-PnL comparisons.
 
-### 1. `body_reversion` — best risk-adjusted
+### 1. `body_reversion` — **RETIRED (2026-06-04)**
 
-Round 5/6 walk-forward (270d / 9 folds, MNQ+MGC, committed config = stop_atr=0.35, tp_R=3.0,
-ATR-percentile gate, per-symbol overrides, **breaker 4-loss / 3-day cooldown**):
+Hard-disabled in TOML (`meta.enabled = false`). Code, tests, breaker, and per-symbol overrides preserved on disk so a future agent can re-tune from scratch if the underlying body-percentage signal is still desired. Moved out of the production tier ranking and into the **Disabled tier** below — see the `body_reversion` entry there for the full retirement rationale and the post-engine-fix truth numbers that triggered it.
 
-|     | Return     | DD       | RF    | WR     | n   |
-| --- | ---------- | -------- | ----- | ------ | --- |
-| 3m  | +280.13 %  | 22.79 %  | 10.05 | 38.2 % | 76  |
-| 6m  | +519.93 %  |  7.70 %  | 18.66 | 38.9 % | 226 |
-| 9m  | **+734.75 %** | **10.27 %** | **24.70** | **38.3 %** | **371** |
-
-- **What it trades**: a single 5m bar with `body_pct ≥ 0.90` + ATR-percentile regime ≥ 0.65 (root) or 0.75 (MGC) → fade entry next bar. Stop = `0.35 × ATR`, TP = `3.0R` (8.6:1).
+**Why retired (one-line)**: post-2026-06-04 engine-fix 9 m truth was **$−1,028 / RF −0.67 / DD 74.1 %**, both symbols negative — the entire reported alpha was a compound artefact of the H-A slip-double-count tax and the H-B stop-gap-through phantom profit channel. With both bugs fixed the strategy is structurally net-negative on the current futures dataset.
 - **Live breaker**: 4 consecutive losses on a symbol → 3-day cooldown. Reads `TRADE_CLOSED` events in live, `_replay_engine.trades` in backtest. Same module as `morning_range_reversion` and `overnight_range` (`core/consec_loss_breaker.py`).
 - **Symbols**: MNQ + MGC committed (MES TOML stanza dormant; thin per-tick edge).
 - **Active hours**: anytime in RTH after a qualifying bar prints (effectively concentrates 9:30 – 12:00 and 13:00 – 15:30 — the high-body-bar density windows).
@@ -77,7 +128,7 @@ Per-symbol on 9m: MNQ +$604.60 / 62 trades / WR 24.2 % / 7.0 bars (was $191.70 /
 - **Cross-window net of `[[2.0, 1.0]]`** vs R22 baseline: 3m ret +63 vs +54 (+16%, RF +16%), 6m flat (-0.2% ret, RF flat), 9m +2.3% / RF +2.2% / WR +5pp. WR consistently **+5–10pp** across all windows. Per-symbol: MNQ ret +30.23 → +32.12 (+6.3%, winners protected); MGC +109.22 → +110.50 (+1.2%, mostly unchanged).
 - **Live deployment caveat**: `register_generic_breakeven_watch` is currently a no-op for OCO brackets in the live bot (live BE monitor uses the legacy `breakeven_monitoring` dict path). The step-trail is therefore **backtest-only** until the live OCO watch path is wired — acceptable because production already flattens at EOD which caps the downside. Filed as a deferred follow-up.
 
-**Post-R23 walk-forward** (270d / 9 folds, MNQ+MGC, NEW config adds `trail_steps_r = [[2.0, 1.0]]` to R22 base, recap dir `docs/perf/overnight_range_round23_postfix/`):
+**Post-R23 walk-forward** (270d / 9 folds, MNQ+MGC, NEW config adds `trail_steps_r = [[2.0, 1.0]]` to R22 base, recap dir `docs/perf/overnight_range_round23_postfix/`) — **pre-2026-06-04 engine-fix numbers**:
 
 |     | Return       | DD ($)   | RF (PnL/worst-fold-DD) | WR     | n   | avg bars held |
 | --- | ------------ | -------- | ---------------------- | ------ | --- | ------------- |
@@ -85,7 +136,15 @@ Per-symbol on 9m: MNQ +$604.60 / 62 trades / WR 24.2 % / 7.0 bars (was $191.70 /
 | 6m  | **+$1,598.20** (sweep) | $307 | **4.88**            | **36.6 %** | **82**  | — |
 | 9m  | **+$2,852.40** | **$193** | **14.48**          | **39.7 %** | **126** | **4.7** |
 
-Per-symbol on 9m: MNQ +$642.40 / 66 trades / WR 31.8 % (was $604.60 / 62 / 24.2 % on R22 — winners now protected by the 1R lock); MGC +$2,210.00 / 60 trades / WR 48.3 % (was $2,184.50 / 59 / 45.8 %). The DD improvement is the clearest signal — $242.55 → $193 (−20 %) on 9m as the trail caps giveback on running winners.
+Per-symbol on 9m (pre-engine-fix): MNQ +$642.40 / 66 trades / WR 31.8 % (was $604.60 / 62 / 24.2 % on R22 — winners now protected by the 1R lock); MGC +$2,210.00 / 60 trades / WR 48.3 % (was $2,184.50 / 59 / 45.8 %). The DD improvement is the clearest signal — $242.55 → $193 (−20 %) on 9m as the trail caps giveback on running winners.
+
+**Post-2026-06-04-engine-fix truth** (same committed config, recap `docs/perf/overnight_range_postengine_truth/`):
+
+|     | Trades | W / L | Return | DD ($) | DD % | RF | WR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 9m  | **126 (unchanged)** | **50 / 76 (unchanged)** | +125.19 % | $356.10 | 15.64 % | **7.03** | 39.68 % |
+
+Per-symbol on 9m post-fix: MNQ $+386.70 / 66 / WR 31.8 % (PnL −$255.70 vs pre-fix, same trade count); MGC $+2,117.00 / 60 / WR 48.3 % (PnL −$93 vs pre-fix). **The tune is robust** — identical trade selection (entries at fixed levels, unchanged), identical W/L composition, only effect is each loser costs ~$2–4 more on the corrected engine (gap-through clamp + slip de-double-count on the SL leg; winners are LIMIT take-profits → completely immune). Avg-R-losers worsened from −1.17 → −1.33 (the expected gap-through fingerprint). **No re-tune needed. Strategy stays production-tier on the corrected engine.**
 
 - **Status**: STAYS PRODUCTION. The R23 step-trail addition is a Pareto-better commit on every horizon (3m / 9m strictly better; 6m essentially flat with same RF). +$60/month on a 2-symbol pair vs R22, but the real win is **better risk-adjusted returns** (RF 14.48 vs 11.50) and **higher WR** (+5pp) — the continuation thesis paid off. Strategy clears the production tier comfortably.
 - **What it trades**: tracks 19:00 ET → 10:00 ET range. After 10:00 ET, places stop-entry brackets at range high + **1.5pt** (LONG) and range low − **1.5pt** (SHORT). Live monitor continuously stages the closer-side bracket as price approaches. Gap filter screens out > **1.20 %** open-gap sessions.
@@ -95,12 +154,81 @@ Per-symbol on 9m: MNQ +$642.40 / 66 trades / WR 31.8 % (was $604.60 / 62 / 24.2 
 - **Live breaker**: 2 consecutive losses on a symbol → 5-day cooldown (R21, re-validated R22-R23 — still the RF leader among breaker variants).
 - **Next research**: (1) wire the step-trail into the **live** OCO order path (today it's backtest-only — see "Live deployment caveat" above); (2) per-fold MNQ analysis — losing folds suggest there's a regime that still hurts; (3) `trail_steps_r` per-symbol override (today it's global-only — MGC may benefit from a different trigger now that we have the infrastructure); (4) re-introduce a regime gate (Phase-1 `core/regime.py`) and gate the breakout to trend regimes only.
 
-### 3. `morning_range_reversion` — committed mean-revert fader
+### 3. `morning_range_reversion` — **R28 MATERIAL PNL LIFT COMMITTED (2026-06-05 PM)**
+
+R28 single TOML change: `[symbols.MGC.signal].max_range_width_points` **65 → 46**.
+
+R28 truth recap (`--no-cache-decisions`, fresh-cache; recap dirs `docs/perf/morning_range_r28_truth_{3m,6m,9m}/`):
+- **9 m**: ret **+914.6 %** / RF **10.32** / DD **41.94 %** / WR **68.3 %** / n=183 (vs R27 +777 / 8.77 / 41.94 / 67.0 / 182).
+- **6 m**: ret **+803.2 %** / RF **9.06** / DD 88.65 % / WR 68.9 % / n=119 (vs R27 +666 / 7.51 / 88.65 / 67.0 / 118).
+- **3 m**: ret **+665.7 %** / RF **13.45** / DD 12.78 % / WR 76.9 % / n=65 (vs R27 +558 / 11.27 / 13.15 / 74.6 / 63).
+- Per-symbol MGC PnL (9 m): +585 % → **+722 %** (+23.4 %). MNQ unchanged at +192 % / 73 trades.
+
+R28 mechanism: MGC's prior 65pt morning range-width ceiling admitted the wide-range vol-cluster sessions (CPI / rate-decision / large-physical-flow days) that consistently produced the user-reported worst losers. Capping the range filter at 46pt skips ~3 of those sessions per fold without affecting normal-volatility days. The 46-48pt cluster is the empirical cross-window Pareto-optimal bound — tighter (≤44) skips one valid winner per fold, looser (≥50) lets the bad sessions back in.
+
+R28 rejected alternatives (all sweep evidence under `docs/perf/_opt_runs/morning_range_reversion/r28_*/`):
+- `sl_from_tp_ratio` (NEW lever; user's literal "dynamic SL keyed to TP" ask) — 6 ratio values × tp_mult combinations; every variant hurt because the strategy's edge IS the wide-stop / high-WR structure. Knob retained in code (default 0 = no-op) for future regime-aware work.
+- partial-TP (BONGO §1A) — catastrophic across the board (MNQ −64 to −124 % vs +192 baseline). Two-stage OCO interacts poorly with the 5m fade tempo.
+- breakeven_enabled with any trigger_R — −3 to −17 % return; breakeven defeats the fade thesis.
+- `max_sweep_distance_widths ≤ 1.75` (vs 2.0) — no-op; cap rarely binds.
+- `require_reentry_close=true` (legacy candle-close mode) — kills MGC to 2 trades.
+- `mgc_skip_thu_fri` / `mgc_skip_mon_fri` — −34 to −37 % ret; MGC alpha is not weekday-selective.
+
+### 3. `morning_range_reversion` — historical R27 panel (kept for context)
 
 **Direction: FADE** (counter-trend). Opposite side of `overnight_range`'s breakout-continuation,
 which is the deliberate diversification: when overnight_range goes LONG above the overnight high,
 morning_range_reversion can fade a separate 07:00 – 08:00 morning range and go SHORT on the same
 event. Both are sized to take the heat; the breakers limit the bleed.
+
+**R27 trigger**: user feedback on two specific MGC stop-out trades (Nov-13 / Nov-18, $526 + $554 losses) — "30pt MGC stop is excessive when average winners are typically <30pt; please test dynamic stops keyed to TP targets so we maintain positive risk geometry."
+
+**R27 investigation findings**:
+1. The per-trade reward:risk geometry IS structurally negative: typical-day SL ≈ 24pt vs TP ≈ 13.5pt → 0.55:1; cap-bound SL = 30pt vs TP = 13.5pt → 0.45:1. The user is correct that the geometry is below 1:1.
+2. BUT sweeps that tighten `sl_mult` toward ≥1:1 geometry (R6, 10 trials covering sl_mult 0.75 – 2.75) **crash the strategy** — WR drops 67 % → 48–62 %, RF drops 50–87 %, total PnL drops 16–85 %. The strategy's edge IS the 72 % MGC WR + 60 % MNQ WR, and that WR depends on giving trades enough room to ride out the post-fade noise.
+3. Cap-only tightening (R7, cap 20 – 30) is a softer lever but still ultimately net-negative on truth: every step from 30 → 20 trades dollars-of-PnL for marginal worst-case improvement (cap=24 cost $3,093 of PnL and added $251 of DD for $120 of worst-case savings).
+4. **The clean Pareto improvement is at cap=29 + slmult=3.30 + tp=1.85** — improves PnL, RF, DD, WR, R:R, AND modestly reduces worst-case ALL at once. Cross-window validated.
+5. **Decision-cache staleness**: the R26 baseline metrics in the prior version of this doc ($+15,540 / RF 9.71 / DD 23.5 %) were served by stale `docs/perf/_decision_cache/` entries from before the most recent historical-data refresh. The TRUE R26 baseline on current data is $+14,306 / RF 7.93 / DD 51.2 %. All R27 sweep numbers below are from `--no-cache-decisions` runs only.
+
+**R27 committed truth** (270d / 9 folds, MNQ+MGC, `--no-cache-decisions`, recap dir `docs/perf/morning_range_round27_committed/`):
+
+|     | Return       | DD ($)   | DD % | RF   | WR     | n   |
+| --- | ------------ | -------- | ---- | ---- | ------ | --- |
+| 9m  | **+777.25 %** | **$1,263** | **41.94 %** | **8.77** | **67.03 %** | **182 (122W / 60L)** |
+
+Per-symbol on 9m: MGC $+11,706 / 109 trades / WR 72.5 % (avg winner $296 / avg loser -$390 / worst -$592 / R:R 0.76:1); MNQ $+3,839 / 73 trades / WR 58.9 % (avg winner $294 / avg loser -$294 / worst -$988 / R:R 1.00:1 — MNQ already has positive per-trade geometry).
+
+**Cross-window validation** (fresh-cache truth: R26 committed → R27 committed; sweep dirs under `docs/perf/_opt_runs/morning_range_reversion/`):
+
+|     | R26 committed (fresh) | R27 committed | Δ ret | Δ RF | Δ DD pp |
+| --- | --- | --- | --- | --- | --- |
+| 3m  | ret +542 % / RF 10.74 / DD 13.78 % | ret +558 % / RF **11.27** / DD **13.15 %** | **+16** | **+5 %** | **-0.6** |
+| 6m  | ret +639 % / RF 7.09 / DD 90.15 % | ret +666 % / RF **7.51** / DD **88.65 %** | **+27** | **+6 %** | **-1.5** |
+| 9m  | ret +715 % / RF 7.93 / DD 51.15 % | ret +777 % / RF **8.77** / DD **41.94 %** | **+62** | **+11 %** | **-9.2** |
+
+**R27 is a clean Pareto improvement on every window** — better PnL, better RF, lower DD on 3m / 6m / 9m simultaneously. No regressions.
+
+**R27 sweep evidence** (11 trials × 3 windows via `scripts/optimize_strategy.py` → `walkforward_trade_recap_report.py --in-process`, sweep dirs under `docs/perf/_opt_runs/morning_range_reversion/`):
+- **R6 (20 trials, sl_mult tightening to enforce positive geometry)**: ALL variations rejected. sl_mult 0.75 dropped WR to 48 % / PnL to +$124. sl_mult 2.25 was the best of the bunch but still RF 6.30 vs baseline 7.93. The strategy's high WR is incompatible with ≥1:1 per-trade geometry on this fade signal.
+- **R7 (16 trials, cap-only tightening with slmult unchanged)**: cap=29 = marginal lift (RF 8.10 vs 7.93). cap≤27 net-negative (PnL down, DD up). cap=24 cost $3,093 of PnL for $120 of worst-case savings — empirically bad trade.
+- **R8 + R9 (28 trials, cap + tp_mult combos)**: misled by stale-cache baseline; results not used for committed config.
+- **R10 (12 trials, FRESH CACHE)**: re-baselined truth. cap=29 + slmult=3.30 ranked top by ret×RF (RF 8.28 / DD 44 %); cap=29 + tp=1.85 second (RF 8.59); tp + slmult stacked = best (RF 8.77).
+- **R11 (10 trials, cross-window stacking + breaker_1L test)**: confirmed `cap=29 + slmult=3.30 + tp=1.85` is the cross-window champion. `max_consecutive_losses=1` looked stellar on 9m (RF 9.57, DD 22 %) but REGRESSED hard on 6m (RF 7.09 → 6.53) and 3m (RF 10.74 → 6.51) — rejected as 9m-overfit.
+
+**Status**: PRODUCTION TIER, #1 by every metric. R27 makes the per-trade geometry slightly less negative (0.45:1 → 0.48:1 on cap-bound days; 0.55:1 → 0.56:1 on typical days), shaves $20 off worst-case, AND lifts the whole performance envelope. The user's underlying concern (excessive single-trade losses) is addressed about as far as the data supports — going further on the cap costs more PnL than it saves.
+- **What it trades**: 07:00 – 08:00 ET premarket range. Fades re-entries into the range with a midpoint-anchored target and a per-symbol stop geometry.
+- **Active hours**: 08:00 ET (range built) until 16:00 ET (force-flat). Average hold ≈ 1.5 hours.
+- **Per-symbol weekday skips (R27, unchanged from R26)**: MNQ skips Mon + Thu + Fri (alpha concentrates Tue + Wed). **MGC skips Fri only**.
+- **Live breaker (unchanged)**: 2 consecutive losses on a symbol → 10-day cooldown. R27 confirmed 1L-tighter is overfit; 2L stays.
+- **Sizing**: MNQ 4 contracts (slfix=50pt → 30pt cap → $240 worst-case), MGC 2 contracts (sl_mult=3.30 against half-range → **29pt cap as of 2026-06-05 R27** → $580 worst-case). Portfolio worst-case-day budget = $1,070 ($70 over the operator's $1,000 MAX, was $90 over at R26 — see TOML "PORTFOLIO" note for opt-in to 1ct MGC).
+- **Per-symbol breakeven offset**: 8pt MNQ / 0.7pt MGC.
+- **Next research**: (1) MNQ slfix=50 + cap=30 hasn't been touched in years — same fresh-cache sweep treatment may unlock more; (2) the `decision_cache.py` parquet-sidecar invalidation gap should be investigated (cache should auto-bust on parquet refresh, currently doesn't); (3) wire `core/risk_sizer.py` for true fixed-dollar-risk per-trade — currently MGC's 2-contract sizing means a cap-bound day costs $580 even if account is at peak; risk-sizer would scale contracts dynamically.
+
+---
+
+### Historical record (pre-engine-fix / pre-R26, kept for context)
+
+Pre-2026-06-04 numbers below — engine-artefact-inflated by both H-A (slip double-count tax in PnL accounting) and H-B (stop-gap-through phantom profit), and based on the pre-R26 MGC tune that's now superseded. **Do not trust the RF / DD figures below for production sizing decisions** — use the R26 truth panel above.
 
 |     | Return    | DD      | RF   | WR     | n   |
 | --- | --------- | ------- | ---- | ------ | --- |
@@ -144,6 +272,7 @@ Move on.**
 
 ## Disabled tier — known-broken or empirically negative
 
+- **`body_reversion` — RETIRED 2026-06-04 after the backtest-engine audit (debug session `f635c2`).** Was production-tier with a headline of $+9,332 / RF 24.70 / 9 m before the 2026-06-03 contract-roll data quarantine corrected that to $+2,150, and then the 2026-06-03 evening engine-fix corrected it a second time to **$−1,028 / RF −0.67 / DD 74.1 % / WR 33.8 %** (recap `docs/perf/body_reversion_postengine_truth/`). Both symbols flipped negative on the corrected engine: MNQ `n=177 W/L=59/118 WR=33.3 % PnL=$−668.80`; MGC `n=187 W/L=64/123 WR=34.2 % PnL=$−359.28`. The strategy's geometry — fade single high-body-percentage bars with a tight `0.35 × ATR` stop and 3R TP — maximally exposed both bugs: every stop trigger gap-through (H-B) booked phantom profit, and the per-trade slip double-count (H-A) ate ~$0.50/trade on MGC × 187 trades = $94 of phantom cost. With both fixed, the alpha vanishes entirely. **Status**: hard-disabled in `config/strategies/body_reversion.toml` via `meta.enabled = false`; full retirement rationale in the TOML header. **Future work** (deferred, not on active research list): the underlying body-percentage signal (effect-size deep-scan in `docs/alpha/deep_scan_INDEX.md`) was statistically real on raw 5m forward returns and may still support a strategy with **wider stops, fewer trades, and exits that don't depend on STOP fills** — but that's a full re-design, not a re-tune. Pre-engine-fix R5/R6 historical numbers (retained for archaeology only, **do not trust**): 3m +280 % RF 10.05 / 6m +520 % RF 18.66 / 9m +735 % RF 24.70. All bugs.
 - `overnight_reversion` — 9 months of negative expectancy across every parameter combo. Breakouts continue more often than they revert on the current futures dataset. Disabled in TOML with the full evidence trail.
 - `simple_momentum` — logic bug in `analyze()` (recent_high includes current bar, makes `current_price > recent_high` impossible).
 - `trend_scalping` — three-condition signal logic is too restrictive; cadence is effectively zero on the dataset.

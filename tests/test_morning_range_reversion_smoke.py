@@ -10,22 +10,25 @@ import pytest
 
 
 def test_morning_range_toml_per_symbol_tp_mult_overrides():
-    """Per-symbol ``tp_mult`` overrides must be honoured, and symbols without an
-    explicit override (currently MGC) must fall back to the root ``[signal]
-    tp_mult`` value — *whatever* the operator has the root pinned at in the live
-    TOML. The MNQ override (2026-05-29 walk-forward) and the MES override
-    (2026-05-29 MES-only sweep) are asserted explicitly so a future TOML edit
-    that removes them is caught."""
+    """Per-symbol ``tp_mult`` overrides must be honoured. The MNQ override
+    (2026-05-29 walk-forward), MES override (2026-05-29 MES-only sweep), AND
+    the MGC override (2026-06-04 R26 introduced 1.8 → 2026-06-05 R27 bumped
+    to 1.85) are asserted explicitly so a future TOML edit that removes them
+    is caught.
+
+    2026-06-05 R27 update: MGC ``tp_mult`` 1.8 → 1.85. Fresh-cache R10
+    sweep showed tp=1.85 is the local optimum at cap=29 / sl_mult=3.30
+    (RF 8.59 vs 1.80 RF 8.10 / 1.75 RF 7.62 / 1.90 RF 8.59 at cap=30 but
+    crashes RF at cap=29). The R27 stack (cap 29 + slmult 3.30 + tp 1.85)
+    is a clean cross-window Pareto improvement.
+    """
     from core.strategy_config import load_strategy_config
 
     cfg = load_strategy_config("morning_range_reversion")
-    root_tp_mult = float(cfg.get_float("signal.tp_mult", 1.0) or 1.0)
     assert float(cfg.symbol_override("MES", "signal.tp_mult", default=1.0)) == pytest.approx(0.7)
     assert float(cfg.symbol_override("MNQ", "signal.tp_mult", default=1.0)) == pytest.approx(1.25)
-    # MGC still has no tp_mult override → must fall back to root
-    assert float(
-        cfg.symbol_override("MGC", "signal.tp_mult", default=root_tp_mult)
-    ) == pytest.approx(root_tp_mult)
+    # 2026-06-05 R27: MGC tp_mult bumped 1.8 → 1.85.
+    assert float(cfg.symbol_override("MGC", "signal.tp_mult", default=-1.0)) == pytest.approx(1.85)
 
 
 def test_sl_max_pts_and_floor_resolution_semantics(monkeypatch):
@@ -215,16 +218,21 @@ def test_per_symbol_position_size_committed_defaults():
 
 
 def test_per_symbol_skip_weekdays_committed_defaults():
-    """Round-23 per-symbol weekday filters (committed):
+    """Per-symbol weekday filters (committed as of 2026-06-04 R26):
 
-    * MGC: ``["Wed", "Fri"]`` — disproportionate MGC Wed losses (3m: 50% of
-      losses fall on Wed; 40% loss rate vs 10-22% on other days).  Sweep
-      dropped 3m MGC DD 39% → 16% with +18% return.
+    * MGC: ``["Fri"]`` only — 2026-06-04 R26 dropped the previous ``Wed`` skip
+      after the engine-fix audit. The pre-fix evidence ("MGC Wed has 40% loss
+      rate") was an H-B gap-through-phantom artefact; on the corrected engine
+      R3 sweep showed un-skipping Wed adds 17 MGC trades and lifts RF from
+      6.45 → 8.49 with DD unchanged. The Fri-skip remains valid on the
+      corrected engine (no R5 trial overturned it).
     * MNQ: ``["Mon", "Thu", "Fri"]`` — MNQ Mon and Thu have 53-57% loss
-      rates across all windows.  Sweep halved MNQ DD on every window
-      (3m 23%→10%, 6m 55%→24%, 9m 40%→19%) with higher RF.
-    * MES: inherits root ``["Fri"]`` only — sweep showed every alternative
-      (skip none / Tue+Fri / Wed+Fri / Wed-only) regressed MES DD.
+      rates across all windows. R4/R5 sweeps confirmed this set is still
+      optimal on the corrected engine (skip-none lifts ret but drops RF
+      to 8.16 vs the current 9.71).
+    * MES: inherits root ``["Fri"]`` only — MES stanzas remain dormant in
+      committed symbols list; this assertion still pins the inheritance
+      logic so a future MES re-enable doesn't reintroduce the bug.
 
     This test pins the precedence: per-symbol TOML overrides take priority
     over the root ``signal.skip_weekdays``.
@@ -232,7 +240,8 @@ def test_per_symbol_skip_weekdays_committed_defaults():
     from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
     strat = MorningRangeReversionStrategy(_MockBot([]), None)
     Mon, Tue, Wed, Thu, Fri = 0, 1, 2, 3, 4
-    assert strat._skip_weekdays("MGC") == frozenset({Wed, Fri})
+    # 2026-06-04 R26: MGC Wed-skip removed; only Fri remains.
+    assert strat._skip_weekdays("MGC") == frozenset({Fri})
     assert strat._skip_weekdays("MNQ") == frozenset({Mon, Thu, Fri})
     # MES has no per-symbol override; inherits root [Fri].
     assert strat._skip_weekdays("MES") == frozenset({Fri})
@@ -293,25 +302,48 @@ def test_morning_range_toml_root_has_sl_max_pts_safety_cap():
 
 
 def test_morning_range_toml_per_symbol_sl_mult_overrides():
-    """The 2026-05-29 per-symbol risk-normalization commit adds ``sl_mult``
-    overrides for MES (3.0) and MGC (3.0) so range-anchored SLs apply on
-    smaller-tick contracts instead of the blanket root ``sl_fixed_pts=35``
-    (which would expose them to $175 / $350 per-trade dollar risk vs MNQ's
-    $70).  MNQ explicitly DOES NOT override ``sl_mult`` — it uses
-    ``sl_fixed_pts=50`` per-symbol which beats range-anchored for MNQ alone
-    in the walk-forward sweep."""
+    """Per-symbol ``sl_mult`` overrides — risk-normalized stop geometry for
+    smaller-tick contracts so range-anchored SLs apply correctly on each:
+
+    * MES: ``sl_mult=3.0`` (2026-05-29 MES risk-normalization).
+    * MGC: ``sl_mult=3.30`` (**2026-06-05 R27 update**, was 3.25). R10 fresh-cache
+      sweep at cap=29 showed 3.30 is the local optimum (RF 8.28 vs 3.25 RF
+      8.10 / 3.20 RF 8.24) and the user-requested geometry improvement
+      (worst MGC loss $612 → $592) ships with this commit.
+    * MES + MGC: explicit ``sl_fixed_pts=0`` so range-anchored ``sl_mult``
+      governs.
+    * MNQ: keeps ``sl_fixed_pts=50`` (not range-anchored). The 2026-05-29
+      dynamic ``sl_mult`` sweep tied baseline on 9m but regressed on 3m
+      (108→49%) / 6m (71→6%); R4 + R10 sweeps confirmed MNQ overrides are
+      still engine-robust post-fix. See TOML inline note in [symbols.MNQ.signal].
+    """
     from core.strategy_config import load_strategy_config
 
     cfg = load_strategy_config("morning_range_reversion")
     assert float(cfg.symbol_override("MES", "signal.sl_mult", default=1.0)) == pytest.approx(3.0)
-    assert float(cfg.symbol_override("MGC", "signal.sl_mult", default=1.0)) == pytest.approx(3.0)
+    # 2026-06-05 R27: MGC sl_mult lifted 3.25 → 3.30.
+    assert float(cfg.symbol_override("MGC", "signal.sl_mult", default=1.0)) == pytest.approx(3.30)
     # MES + MGC explicitly zero sl_fixed_pts so range-anchored sl_mult wins.
     assert float(cfg.symbol_override("MES", "signal.sl_fixed_pts", default=-1.0)) == pytest.approx(0.0)
     assert float(cfg.symbol_override("MGC", "signal.sl_fixed_pts", default=-1.0)) == pytest.approx(0.0)
     # MNQ keeps slfix=50 — the dynamic sl_mult sweep (2026-05-29, 9m) only
     # tied baseline on the long window AND regressed on 3m / 6m (ret 108%
-    # → 49% on 3m, 71% → 6% on 6m). See TOML inline note in [symbols.MNQ.signal].
+    # → 49% on 3m, 71% → 6% on 6m). R4 + R10 sweep confirmed MNQ slfix=50
+    # still holds on the corrected engine. See TOML inline note.
     assert float(cfg.symbol_override("MNQ", "signal.sl_fixed_pts", default=-1.0)) == pytest.approx(50.0)
+    # 2026-06-05 R27: MGC sl_max_pts tightened 30 → 29 (worst-case tail trim
+    # validated on fresh-cache truth — cuts worst MGC loss by $20 / -3.3 %
+    # AND keeps RF / DD strictly better than baseline).
+    assert float(cfg.symbol_override("MGC", "signal.sl_max_pts", default=-1.0)) == pytest.approx(29.0)
+    # 2026-06-05 R28 (material PnL lift): MGC max_range_width_points
+    # tightened 65 → 46.  Pareto improvement across 3m/6m/9m:
+    #   9m: +17.7% ret, +18% RF, +1.3pp WR (DD identical)
+    #   6m: +20.6% ret, +21% RF, +2.0pp WR (DD identical)
+    #   3m: +19.3% ret, +19% RF, +2.3pp WR
+    # Skips the wide-range volatility-cluster sessions that produced the
+    # user-reported worst MGC losers (2025-11-13 BUY -$526, 2025-11-18
+    # SELL -$554).
+    assert float(cfg.symbol_override("MGC", "signal.max_range_width_points", default=-1.0)) == pytest.approx(46.0)
 
 
 def test_strategy_registered_in_manager():

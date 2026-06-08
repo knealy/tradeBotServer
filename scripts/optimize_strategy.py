@@ -173,6 +173,14 @@ async def run_trial(
 ) -> dict:
     target = out_root / label
     target.mkdir(parents=True, exist_ok=True)
+    # Snapshot the TOML to a sibling sentinel BEFORE any write, so a hard
+    # interrupt (Ctrl-C, OOM kill, etc.) can be recovered by hand — the
+    # ``.optimize_strategy.bak`` file is the safety copy of the last-known
+    # original.  ``write_overrides`` itself also returns the original text
+    # for the in-process ``finally`` restore.
+    backup_path = toml_path.with_suffix(toml_path.suffix + ".optimize_strategy.bak")
+    pre_text = toml_path.read_text()
+    backup_path.write_text(pre_text)
     original = write_overrides(toml_path, root, symbols)
     try:
         env = os.environ.copy()
@@ -216,7 +224,15 @@ async def run_trial(
         metrics = json.loads(metrics_path.read_text())
         return {"label": label, "ok": True, "duration_s": duration, "metrics": metrics}
     finally:
-        toml_path.write_text(original)
+        # Best-effort restore.  Even if write fails, ``.optimize_strategy.bak``
+        # is the manual recovery copy committed before the patch.
+        try:
+            toml_path.write_text(original)
+        finally:
+            try:
+                backup_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _row(g: dict) -> tuple[float, float, float, float, int]:
