@@ -1,0 +1,91 @@
+# Opening Range Breakout (ORB) — purpose-built same-day breakout strategy.
+#
+# Created 2026-06-09 to test ORB-style alpha that ``overnight_range`` could
+# not measure cleanly (its ``track_overnight_range`` hard-codes a 1-minute
+# history fetch with a 10-bar minimum — silently produces zero trades for
+# windows < ~60 min when the backtest CSV is 5m).  See
+# ``strategies/opening_range_breakout_strategy.py`` module docstring.
+
+# Executor wall-clock window (US/Eastern).  Wider than the strategy's own
+# build / fade gates so the bar feed is alive throughout the session.
+start_time     = "09:25"
+end_time       = "16:00"
+no_trade_start = ""
+no_trade_end   = ""
+
+[meta]
+enabled = false
+# Disabled by default until walk-forward evidence justifies live deploy.
+# Sweep evidence lives in ``docs/perf/_opt_runs/orb_strategy/``.
+live_breaker_enabled = true
+# Symbols + timeframe override the executor defaults when set.
+symbols    = ["MNQ", "MGC"]
+timeframe  = "5m"
+# Hot-reloadable.  Set to true once a window/symbol combination passes the
+# RF-vs-overnight_range_R24 (truth 3m: RF 2.20 / +39.67 % / DD 18 %) bar.
+
+[risk]
+position_size    = 1
+max_positions    = 1
+max_daily_trades = 1
+risk_per_trade_pct = 0.5
+respect_dll      = true
+respect_mll      = true
+
+[signal]
+timeframe         = "5m"
+lookback_bars     = 400
+session_timezone  = "America/New_York"
+# Default window: 15-min ORB.  Sweep variants override these via the
+# optimization harness; see scripts/optimize_strategy.py trial JSONs.
+range_start = "09:30"
+range_end_open = "09:45"
+flat_before       = "15:55"
+
+# Range-width guard (POINTS — symbol-aware via overrides).
+# 0 = off.  Use to skip days too narrow (false-break risk) or too wide
+# (high-vol, low-edge) for the breakout mechanic.
+min_range_width_points = 0.0
+max_range_width_points = 0.0
+
+# Bracket geometry — two modes.  Default = range-width fraction (clean,
+# self-scaling).  Set ``use_atr_geometry = true`` for ATR-based legs.
+use_atr_geometry  = false
+stop_range_pct    = 0.5   # stop = width × 0.5  → ~ half the range
+tp_range_pct      = 1.0   # tp   = width × 1.0  → 1R-ish geometry
+stop_atr_multiplier = 1.0
+tp_atr_multiplier   = 2.0
+atr_period          = 14
+# Buffer (points) beyond the box for the stop-entry trigger — guards
+# against microstructure noise / minor wicks on the box extreme.
+stop_entry_buffer_points = 0.0
+
+allow_long  = true
+allow_short = true
+max_hold_bars = 0
+
+# ── Cross-session consec-loss breaker (set both > 0 to enable) ────────────
+max_consecutive_losses            = 0
+loss_streak_cooldown_sessions     = 0
+rolling_pnl_loss_threshold_dollars = 0
+
+[filters]
+# Per-strategy day filters.  Empty list = no filter.  Override per-symbol
+# via [symbols.<SYM>.filters].skip_weekdays = [...].  0=Mon, 4=Fri.
+skip_weekdays = []
+
+# ─────────────────── per-symbol overrides ────────────────────
+[symbols.MNQ.risk]
+position_size = 1
+[symbols.MNQ.signal]
+# MNQ-specific overrides go here once a winning window is found.
+
+[symbols.MGC.risk]
+position_size = 1
+[symbols.MGC.signal]
+# MGC-specific overrides go here.
+
+[symbols.MES.risk]
+position_size = 1
+[symbols.MES.signal]
+# MES-specific overrides go here.

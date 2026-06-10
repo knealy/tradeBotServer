@@ -1,0 +1,115 @@
+# Opening Range Breakout (ORB) — same-day breakout strategy (R1 committed).
+#
+# Created 2026-06-09 to test ORB-style alpha that ``overnight_range`` could
+# not measure cleanly (its ``track_overnight_range`` hard-codes a 1-minute
+# history fetch with a 10-bar minimum — silently produces zero trades for
+# windows < ~60 min when the backtest CSV is 5m).  See
+# ``strategies/opening_range_breakout_strategy.py`` module docstring.
+#
+# ── R1 sweep results (2026-06-09 evening, MNQ-focused, 09:30 → 10:30
+#    60-min window, long-only, skip Friday):
+#       9m walk-forward:  RF 4.09  ret +151.94 %  DD 31.23 %  WR 56.25 %  n=80
+#       6m walk-forward:  RF 3.66  ret +131.86 %  DD 33.24 %  WR 54.72 %  n=53
+#       3m walk-forward:  RF 4.67  ret +142.24 %  DD 25.16 %  WR 56.67 %  n=30
+#    ON 3m THIS BEATS overnight_range R24 (RF 2.20 / +39.67 % / DD 18 %)
+#    BY 2.1× — the most recent quarter is where ORB has the clean edge.
+#    Sweep artifacts: docs/perf/_opt_runs/orb_strategy_mnq_focused/
+#
+#    Mechanism: post-09:30 open shows a clean range-break trend bias in
+#    current data; the long side of a 60-min ORB rides into the NY
+#    morning trend.  Short side and 15/30-min ORBs lose money (range too
+#    narrow → false breaks).  Friday is the worst-edge day (49 % WR /
+#    average MFE drift) — skipped.  MGC ORB consistently loses (~–$45
+#    avg loss per fold across windows) → MGC excluded from rotation.
+#
+# ── DD note: 25–33 % DD across all 3 windows is HIGH for a prop firm.
+#    Run on a higher-balance account ($25k+) with position_size = 1 so
+#    a single drawdown sequence stays inside the $1 000 daily-loss cap.
+#    Consider lowering to position_size = 0 (disabled) on shared-cap
+#    accounts.
+
+# Executor wall-clock window (US/Eastern).  Wider than the strategy's own
+# build / fade gates so the bar feed is alive throughout the session.
+start_time     = "09:25"
+end_time       = "16:00"
+no_trade_start = ""
+no_trade_end   = ""
+
+[meta]
+enabled = true
+# Live consec-loss breaker bridge — subscribe to TRADE_CLOSED events so the
+# signal.max_consecutive_losses breaker runs in live mode as well as backtest.
+live_breaker_enabled = true
+# MNQ-only at promotion.  MGC ORB is consistently negative on current data
+# (sweep evidence in docs/perf/_opt_runs/orb_strategy/ and orb_strategy_mnq_focused/).
+symbols    = ["MNQ"]
+timeframe  = "5m"
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 1
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = "5m"
+lookback_bars     = 400
+session_timezone  = "America/New_York"
+# 60-min ORB — the winning window from the R1 sweep.  See [meta] for the
+# truth metrics.  Shorter windows (15/30/45 min) all fail to beat
+# overnight_range R24 across walk-forwards.
+range_start       = "09:30"
+range_end_open    = "10:30"
+flat_before       = "15:55"
+
+# 0 = off.  Width filters were tested in R1 (with_width_filter trial:
+# 9 trades / 9m / RF 3.96) — clean but n is too small to commit; revisit
+# in R2 with a wider band (10-150) to see if a useful subset emerges.
+min_range_width_points = 0.0
+max_range_width_points = 0.0
+
+# Bracket geometry — range-width fraction (self-scaling).  R1 used the
+# defaults (50 % stop / 100 % TP); these stand as committed.
+use_atr_geometry         = false
+stop_range_pct           = 0.5
+tp_range_pct             = 1.0
+stop_atr_multiplier      = 1.0
+tp_atr_multiplier        = 2.0
+atr_period               = 14
+stop_entry_buffer_points = 0.0
+
+# Long-only — R1 confirmed the short side is broken in current regime
+# (orb_60min_930_1030 both-sides: 9m RF 0.47, vs long_only 0.86).
+allow_long  = true
+allow_short = false
+max_hold_bars = 0
+
+# ── Cross-session consec-loss breaker (R1 left off pending more live data).
+max_consecutive_losses             = 0
+loss_streak_cooldown_sessions      = 0
+rolling_pnl_loss_threshold_dollars = 0
+
+[filters]
+# Skip Friday — R1 found Friday has the worst WR (49 %) and weakest mean R,
+# matching the "Friday afternoon mean-revert" effect documented across the
+# arsenal (see overnight_range MNQ skip_weekdays = [0, 1, 4] for the same
+# pattern on a different mechanic).
+skip_weekdays = [4]
+
+# ─────────────────── per-symbol overrides ────────────────────
+[symbols.MNQ.risk]
+position_size = 1
+[symbols.MNQ.signal]
+
+[symbols.MGC.risk]
+# Disabled — MGC ORB consistently loses (R1: MGC -$14 to -$78 per fold).
+position_size = 0
+[symbols.MGC.signal]
+
+[symbols.MES.risk]
+# Disabled — not in active rotation; revisit if a MES-specific tune surfaces.
+position_size = 0
+[symbols.MES.signal]

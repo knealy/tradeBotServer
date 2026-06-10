@@ -1,0 +1,106 @@
+{
+  "captured_at_utc": "2026-06-10T03:51:14+00:00",
+  "git_head": "bc9a5b592",
+  "strategies": {
+    "opening_range_breakout": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/opening_range_breakout.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/orb_strategy_mnq_focused/3m/long_only_30min_skip_mon_fri/config/opening_range_breakout.toml",
+      "data": {
+        "start_time": "09:25",
+        "end_time": "16:00",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "meta": {
+          "enabled": false,
+          "live_breaker_enabled": true,
+          "symbols": [
+            "MNQ",
+            "MGC"
+          ],
+          "timeframe": "5m"
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 1,
+          "max_daily_trades": 1,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true
+        },
+        "signal": {
+          "timeframe": "5m",
+          "lookback_bars": 400,
+          "session_timezone": "America/New_York",
+          "range_start": "09:30",
+          "range_end_open": "10:00",
+          "flat_before": "15:55",
+          "min_range_width_points": 0.0,
+          "max_range_width_points": 0.0,
+          "use_atr_geometry": false,
+          "stop_range_pct": 0.5,
+          "tp_range_pct": 1.0,
+          "stop_atr_multiplier": 1.0,
+          "tp_atr_multiplier": 2.0,
+          "atr_period": 14,
+          "stop_entry_buffer_points": 0.0,
+          "allow_long": true,
+          "allow_short": false,
+          "max_hold_bars": 0,
+          "max_consecutive_losses": 0,
+          "loss_streak_cooldown_sessions": 0,
+          "rolling_pnl_loss_threshold_dollars": 0
+        },
+        "filters": {
+          "skip_weekdays": [
+            0,
+            4
+          ]
+        },
+        "symbols": {
+          "MNQ": {
+            "risk": {
+              "position_size": 1
+            },
+            "signal": {}
+          },
+          "MGC": {
+            "risk": {
+              "position_size": 1
+            },
+            "signal": {}
+          },
+          "MES": {
+            "risk": {
+              "position_size": 1
+            },
+            "signal": {}
+          }
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 90,
+    "folds": 3,
+    "strategies": [
+      "opening_range_breakout"
+    ],
+    "symbols": [
+      "MNQ"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 0,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

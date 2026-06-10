@@ -1,5 +1,21 @@
 # Strategy Arsenal
 
+Last refresh: 2026-06-09 evening **`opening_range_breakout` SPAWNED as Production tier #5 — beats overnight_range R24 on 3m truth by 2.1×**. While investigating why the 2026-06-09 `OvernightRangeStrategy`-as-ORB sweep produced 0 trades on 15/30-min windows, the root cause turned out to be a `track_overnight_range` design constraint (hard-coded `timeframe='1m'` + 10-bar minimum) rather than a true ORB-edge absence. Built a purpose-built `OpeningRangeBreakoutStrategy` (530 LoC, mirrors MRR's same-day lifecycle with overnight_range's stop-bracket entry logic).  R1 MNQ-focused sweep result on the committed config (60-min window 09:30 → 10:30, long-only, skip Friday):
+
+| Window | RF | Return | DD | WR | n |
+| --- | --- | --- | --- | --- | --- |
+| 3m | **4.67** | +142.24 % | 25.16 % | 56.67 % | 30 |
+| 6m | **3.66** | +131.86 % | 33.24 % | 54.72 % | 53 |
+| 9m | **4.09** | +151.94 % | 31.23 % | 56.25 % | 80 |
+
+**3m truth comparison:** overnight_range R24 = RF 2.20 / +39.67 % / DD 18 %.  ORB R1 = RF **4.67** / +142.24 % / DD 25 %.  The 2.1× RF improvement on the recent quarter justified the spawn.  DD is higher (25 % vs 18 %) so it goes on a higher-balance account with smaller position sizing.
+
+**Mechanism**: the 09:30-10:30 NY morning window has a clean LONG-bias breakout edge in current data — the same uptrend bias seen across the arsenal but expressed through the morning-drive mechanic rather than overnight cross-session positioning.  Short side LOSES (R1: both-sides RF 0.47 vs long-only RF 0.86 on 9m).  MGC ORB also loses (-$45/fold average) → MNQ-only at commit.  Friday is the worst day (49 % WR) → skipped.
+
+Sweep artifacts: `docs/perf/_opt_runs/orb_strategy/` (initial 9-trial sweep) and `docs/perf/_opt_runs/orb_strategy_mnq_focused/` (R1 winner).
+
+---
+
 Last refresh: 2026-06-05 PM **R28 `morning_range_reversion` material PnL lift via MGC `max_range_width_points` 65 → 46**. User pushed back on R27 as "miniscule" and asked for either a material improvement or retirement. Two more sweep rounds (≈ 50 trials × 3 windows: dynamic-SL-from-TP / partial-TP / breakeven / signal-quality / regime filters) found the real lever — MGC's morning range-width upper bound. R28 **Pareto-dominates R27 across every window with identical drawdown**:
 
 | Window | R27 truth | R28 truth (committed) | Δ Return | Δ RF | Δ WR |

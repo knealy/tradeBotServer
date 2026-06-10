@@ -78,6 +78,11 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "MorningRangeReversionStrategy",
         "7am ET 5m range sweep → re-entry fade (research-grade)",
     ),
+    "opening_range_breakout": (
+        "strategies.opening_range_breakout_strategy",
+        "OpeningRangeBreakoutStrategy",
+        "Same-day ORB: build box (e.g. 09:30→09:45), stop-bracket entries on break",
+    ),
     "hourly_anchor_retrace": (
         "strategies.hourly_anchor_retrace_strategy",
         "HourlyAnchorRetraceStrategy",

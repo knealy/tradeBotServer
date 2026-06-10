@@ -118,6 +118,7 @@ def print_registered_strategies() -> None:
     class_strategies = [
         "overnight_range",
         "overnight_reversion",
+        "opening_range_breakout",
         "mean_reversion",
         "trend_following",
         "trend_scalping",
@@ -521,6 +522,7 @@ class BacktestExecutor:
             "simple_candle",
             "overnight_range",
             "overnight_reversion",
+            "opening_range_breakout",
             "mean_reversion",
             "trend_following",
             "trend_scalping",
@@ -805,6 +807,11 @@ class BacktestExecutor:
                     MorningRangeReversionStrategy,
                 )
                 return MorningRangeReversionStrategy
+            elif strategy_name == 'opening_range_breakout':
+                from strategies.opening_range_breakout_strategy import (
+                    OpeningRangeBreakoutStrategy,
+                )
+                return OpeningRangeBreakoutStrategy
             elif strategy_name == 'hourly_anchor_retrace':
                 from strategies.hourly_anchor_retrace_strategy import (
                     HourlyAnchorRetraceStrategy,
