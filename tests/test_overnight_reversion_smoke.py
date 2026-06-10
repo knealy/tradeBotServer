@@ -94,3 +94,37 @@ def test_builtin_registry_has_overnight_reversion():
 
     assert "overnight_reversion" in BUILTIN_STRATEGY_SPECS
     assert BUILTIN_STRATEGY_SPECS["overnight_reversion"][0] == "strategies.overnight_reversion_strategy"
+
+
+def test_overnight_reversion_revival_defaults_pinned():
+    """Pins the 2026-06-09 R2 revival commit values.
+
+    Revival headlines (corrected engine + fresh cache, sweep
+    `docs/perf/_opt_runs/overnight_reversion/r2_*/`, truth recap
+    `docs/perf/overnight_reversion_revival_truth_*/`):
+      • 9m: ret +103 % / RF 1.72 / DD 37 % / WR 32.6 % (n=86)
+      • 6m: ret  +99 % / RF 3.38 / DD 23 % / WR 34.5 % (n=55)
+      • 3m: ret  +70 % / RF 2.47 / DD 18 % / WR 33.3 % (n=30)
+
+    The two material levers (vs the 2026-06-08 baseline +150 / +59 / +8 %):
+      1. ``signal.allow_short = false``  — eliminates -54 % short-side
+         losses on 3m.  Drives the 3m flip from RF 0.11 → 2.19.
+      2. ``filters.skip_weekdays = [0, 4]`` (Mon + Fri) — adds another
+         +21 % to 6m / RF 3.38, +3 % to 9m.
+
+    ``meta.enabled = true``, ``meta.symbols = ["MNQ", "MGC"]`` (MES
+    dropped — never had stanza; signal.fade_signal_timeframe stays 1m).
+    """
+    from core.strategy_config import load_strategy_config
+
+    cfg = load_strategy_config("overnight_reversion")
+    assert cfg.get_bool("meta.enabled") is True
+    assert cfg.get("meta.symbols") == ["MNQ", "MGC"]
+    assert cfg.get_bool("signal.allow_long") is True
+    assert cfg.get_bool("signal.allow_short") is False
+    assert cfg.get_list("filters.skip_weekdays", []) == [0, 4]
+    # Unchanged from pre-revival; pinned so a future tune touches them
+    # only deliberately:
+    assert cfg.get_float("signal.stop_atr_multiplier") == 1.5
+    assert cfg.get_float("signal.tp_atr_multiplier") == 2.5
+    assert cfg.symbol_override("MGC", "signal.stop_atr_multiplier", hint=float) == 1.0

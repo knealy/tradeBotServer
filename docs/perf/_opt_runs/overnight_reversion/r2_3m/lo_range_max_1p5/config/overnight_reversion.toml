@@ -1,0 +1,132 @@
+# Overnight **reversion** (failed-breakout fade vs the overnight range).
+# Same session clock and filters as ``overnight_range.toml``; signal flow mirrors
+# ``morning_range_reversion`` (first close outside H/L after open → stop-entry fade to mid).
+# See ``strategies/overnight_reversion_strategy.py`` for mechanics.
+
+[meta]
+# 2026-06-01 — disabled.  9m walk-forward (270d, 9 folds, MNQ+MES+MGC)
+# across every R1 sweep variant (committed config, Round-14 ATR band
+# 0.08-0.60%, looser ATR band, tighter ATR band, dropping MES, dropping
+# MGC) all returned ret=-250% to -415% with DD 160-215%.  The strategy
+# fades a confirmed first-close breakout outside the overnight box; on
+# this dataset (Aug 2025 → May 2026) the breakouts overwhelmingly
+# continued rather than reverting, so the fade entries lost systematically.
+#
+# Sweep evidence (9m, MNQ+MES+MGC):
+#   committed              n=257 ret=-308.85% dd=163.74% rf=-0.58
+#   round14 atr band       n=253 ret=-257.40% dd=160.55% rf=-0.56
+#   loose atr band         n=257 ret=-332.17% dd=176.29% rf=-0.62
+#   tight atr band         n=226 ret=-415.70% dd=214.19% rf=-0.68
+#   drop_mes (meta-override) is silently no-op for this strategy →
+#     identical to baseline; the loader prefers ``[meta] symbols``
+#     from the TOML root over root-level dotted overrides.
+#
+# The original Step-3 plan was to rebuild this as an "overnight_range
+# mirror" with reversed entry logic and a Round-14-style ATR band.  The
+# evidence shows the breakout-continuation regime is the dominant
+# driver, not the fade trigger — every retrace gate trims trades
+# **proportionally**, so the per-trade expectancy stays negative.
+# Reactivate only after an algorithmic pass that gates entries on a
+# regime detector (e.g. trend-day classification) rather than a
+# threshold over the same range.
+enabled = false
+symbols = ["MNQ", "MES", "MGC"]
+
+[timing]
+# Default 18:00–9:29 ET. Sweep `docs/perf/parameter_sweeps/overnight_timing_mnq` (2026-04-11..2026-05-01, MNQ, ATR 1.5/2.5):
+#   start 19:00 → +PnL vs 17:00/18:00; end 7:00 → higher WR (~61%) but slightly lower PnL than 9:29; open 9:25/9:29/9:30 tied.
+overnight_start  = "19:00"
+overnight_end    = "9:29"
+market_open      = "9:29"
+zone_anchor      = "9:29"
+session_timezone = "US/Eastern"
+# CSV replay only: minutes after ``market_open`` (ET) in which ``analyze()`` may place brackets.
+# **0 = no cap** (full session after open; still at most one attempt per symbol/session via
+# ``_replay_sessions_signaled``). Live uses breakout monitor + full day — unchanged by this.
+replay_order_window_minutes = 0
+# Same as ``overnight_range.toml`` ``timing.replay_force_flat_et`` (prop day cap in replay).
+replay_force_flat_et = "16:00"
+
+[risk]
+position_size      = 1
+max_positions      = 2
+max_daily_trades   = 4
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+atr_period          = 14
+atr_timeframe       = "15m"
+# Bars used to read the **first close** outside the overnight box (after ``timing.market_open``).
+fade_signal_timeframe = "1m"
+fade_lookback_bars    = 500
+allow_long            = true
+allow_short = false
+# Sweep `docs/perf/parameter_sweeps/smoke_atr_test`: best win-rate was sl1p5_tp2p5 (64.77% vs ~61% base on 2026-04-11..2026-05-01 MNQ).
+stop_atr_multiplier = 1.5
+tp_atr_multiplier   = 2.5
+# BONGO §1A — dual native stop-entry when qty ≥ 2 (see docs/BONGO.md).
+partial_tp_enabled  = false
+partial_tp_scalp_r  = 1.0
+use_range_pct_sltp  = false
+stop_range_pct      = 50.0
+tp_range_pct        = 100.0
+
+[position_management]
+breakeven_enabled          = true
+# BONGO: tighter BE arm (validate vs slip); was 15.
+breakeven_profit_points    = 8.0
+range_break_offset         = 0.25
+use_dynamic_atr_for_orders = true
+
+[breakout_monitor]
+# Ignored for this strategy (fade uses first close outside range, not proximity staging).
+enabled              = false
+proximity_pct        = 10.0
+min_proximity_points = 5.0
+interval_seconds     = 15.0
+
+[alerts]
+# Discord when this many consecutive sessions end with zero completed trades (0 = off).
+discord_after_zero_trade_sessions = 0
+
+[filters]
+# --- Trade frequency note ---
+# At most ~1 bracket attempt / symbol / session near open. ``skip_weekdays`` removes listed
+# weekdays (Mon=0 … Sun=6). With range+gap+volatility all true, narrow bands still skip many sessions.
+#
+# **Range / gap / ATR** use **percent of overnight midpoint** ``(H+L)/2`` — same bands on MNQ,
+# MES, MGC. Values below match the prior MNQ point globals at reference price 21_000
+# (e.g. 15 pts → 15/21000×100). Legacy ``*_pts`` keys in ``[filters]`` still load and convert
+# the same way.
+#
+# Optional per-symbol tuning: ``[symbols.<SYM>.filters]`` with ``range_min_pct`` / legacy ``range_min_pts``.
+#
+# **Live (2026-05): Pathway 1 research P5** — same knobs as ``scripts/run_overnight_range_sweep.sh``
+# step P5 (filters **on**, widened bands, Mon/Fri included): ``skip_weekdays = []``.
+range_size        = true
+gap               = true
+volatility        = true
+dll_proximity     = false
+range_min_pct     = 0.07142857142857142
+range_max_pct = 1.5
+gap_max_pct       = 1.1904761904761905
+atr_min_pct       = 0.047619047619047616
+atr_max_pct       = 1.0476190476190477
+dll_threshold_pct = 0.75
+# Python weekday: 0=Mon … 6=Sun — empty = trade all weekdays (P5 research).
+skip_weekdays     = []
+
+[symbols.MNQ]
+# Inherits ``[filters]``.
+
+# One executor: MGC-specific bracket size + stop (nested ``[symbols.MGC.risk]`` /
+# ``[symbols.MGC.signal]`` — flat keys under ``[symbols.MGC]`` are not read for these).
+# Tighter stop vs MNQ/MES; validate in replay / walk-forward before widening.
+[symbols.MGC.risk]
+position_size = 1
+
+[symbols.MGC.signal]
+stop_atr_multiplier = 1.0

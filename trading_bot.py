@@ -179,9 +179,19 @@ class TopStepXTradingBot:
 
         # Portfolio-level daily-loss circuit breaker (Phase 1 arsenal infra).
         # Lazy: only constructs when ``PORTFOLIO_DAILY_LOSS_CAP`` env > 0.
-        # Wired on first ``start_strategy`` via ``_ensure_portfolio_breaker``
+        # Wired on first ``start_strategy`` via ``ensure_portfolio_breaker``
         # so chart-only / dashboard processes don't pay the import cost.
         self.portfolio_breaker = None
+
+        # Regime classifier publisher (Phase 1 arsenal infra).  Off by
+        # default; opt-in via ``REGIME_PUBLISHER_ENABLED=1``.  Same lazy
+        # path: ``ensure_regime_publisher`` runs on first ``start_strategy``
+        # so chart-only / dashboard processes pay nothing.  No production
+        # strategy currently subscribes — strategies that want to gate on
+        # regime can either use the polling-style ``classify(bars)`` API
+        # directly in ``analyze()`` (recommended) or subscribe to
+        # ``EventType.REGIME_UPDATE`` once the publisher is enabled.
+        self.regime_publisher = None
 
         # Initialize bar aggregator for real-time chart updates
         from core.bar_aggregator import BarAggregator
@@ -2673,6 +2683,33 @@ class TopStepXTradingBot:
                         return self._contract_cache['contracts'].copy()
             return []
     
+    async def ensure_regime_publisher(self) -> "Optional[Any]":
+        """Lazily construct + start the regime classifier publisher.
+
+        Off by default — only constructs when ``REGIME_PUBLISHER_ENABLED``
+        env is truthy.  See ``core/regime.py::maybe_start_regime_publisher``
+        for the env-var contract.
+
+        Idempotent — multiple callers (StrategyManager.start_strategy,
+        master CLI, etc.) can call this safely.  No production strategy
+        currently consumes ``REGIME_UPDATE`` events; the publisher is an
+        opt-in extension point, not a hard dependency.
+        """
+        if self.regime_publisher is not None:
+            return self.regime_publisher
+        try:
+            from core.regime import maybe_start_regime_publisher
+            svc = maybe_start_regime_publisher(self)
+            if svc is None:
+                return None
+            self.regime_publisher = svc
+            await svc.start()
+            return svc
+        except Exception as exc:
+            logger.error("ensure_regime_publisher failed: %s", exc, exc_info=True)
+            self.regime_publisher = None
+            return None
+
     async def ensure_portfolio_breaker(self) -> "Optional[Any]":
         """Lazily construct + start the portfolio daily-loss breaker.
 

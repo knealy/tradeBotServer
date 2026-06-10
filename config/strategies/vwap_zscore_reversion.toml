@@ -39,6 +39,13 @@
 # after a future tune.
 enabled = true
 symbols = ["MGC"]
+# Live consec-loss breaker bridge (subscribes the strategy's in-memory
+# breaker to TRADE_CLOSED events).  Matches morning_range_reversion +
+# overnight_range + overnight_reversion; required for the per-strategy
+# circuit-breaker to operate in live mode.  Added 2026-06-09 alongside
+# the live-readiness audit pass.  See
+# ``core/live_trade_history.py::live_breaker_default_enabled``.
+live_breaker_enabled = true
 
 [risk]
 position_size      = 1

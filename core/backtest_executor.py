@@ -532,8 +532,6 @@ class BacktestExecutor:
             "hourly_anchor_retrace",
             "ema_stack_trend_15m",
             "rsi_switch_15m",
-            "nr_compression_break",
-            "globex_drift_continuation",
         ]
 
         all_strategies = function_strategies + class_strategies
@@ -820,16 +818,6 @@ class BacktestExecutor:
                 from strategies.rsi_switch_15m_strategy import RsiSwitch15mStrategy
 
                 return RsiSwitch15mStrategy
-            elif strategy_name == 'nr_compression_break':
-                from strategies.nr_compression_break_strategy import (
-                    NrCompressionBreakStrategy,
-                )
-                return NrCompressionBreakStrategy
-            elif strategy_name == 'globex_drift_continuation':
-                from strategies.globex_drift_continuation_strategy import (
-                    GlobexDriftContinuationStrategy,
-                )
-                return GlobexDriftContinuationStrategy
             else:
                 return None
         except ImportError as e:

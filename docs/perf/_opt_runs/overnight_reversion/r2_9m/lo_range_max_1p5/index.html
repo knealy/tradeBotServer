@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward trade recaps — overnight_reversion / MNQ, MGC</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+pre { background: var(--panel2); padding: 0.75rem 1rem; border-radius: 6px; overflow: auto; font-size: 0.78rem; line-height: 1.45; color: #d8d8e0; }
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+details > summary { cursor: pointer; padding: 0.3rem 0; color: var(--link); font-weight: 500; user-select: none; }
+details[open] > summary { margin-bottom: 0.5rem; }
+h2#config-snapshot { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
+</style>
+</head>
+<body>
+  <h1>Walk-forward trade recaps</h1>
+  <nav>
+    <a href="metrics.html">Metrics / survivability</a>
+    <a href="metrics.html#config-snapshot">Replay config (exact TOML)</a>
+    <a href="metrics.json">metrics.json</a>
+    <a href="metrics_insights.json">metrics_insights.json</a>
+    <a href="strategy_configs.json">strategy_configs.json</a>
+  </nav>
+  <p class="muted">Replay <code>5m</code> from <code>{csv_dir}/{sym}_5m_databento.csv</code> · anchor end <strong>2026-06-05</strong> ·
+    <strong>270</strong> calendar days · <strong>9</strong> folds · last <strong>1</strong> trades charted per fold.
+    Charts: <code>trades/&lt;slug&gt;_trade_chart.html</code> (1m when CSV present).</p>
+  <p class="muted">Shading: <strong>morning_range_reversion</strong> → 7–8am ET anchor;
+    <strong>overnight_range</strong> / <strong>overnight_reversion</strong> → overnight box (timing from <code>overnight_range.toml</code>).</p>
+  <ul><li><a href='#fold0'>Fold 0: 2025-09-08 → 2025-10-07</a></li><li><a href='#fold1'>Fold 1: 2025-10-08 → 2025-11-06</a></li><li><a href='#fold2'>Fold 2: 2025-11-07 → 2025-12-06</a></li><li><a href='#fold3'>Fold 3: 2025-12-07 → 2026-01-05</a></li><li><a href='#fold4'>Fold 4: 2026-01-06 → 2026-02-04</a></li><li><a href='#fold5'>Fold 5: 2026-02-05 → 2026-03-06</a></li><li><a href='#fold6'>Fold 6: 2026-03-07 → 2026-04-05</a></li><li><a href='#fold7'>Fold 7: 2026-04-06 → 2026-05-05</a></li><li><a href='#fold8'>Fold 8: 2026-05-06 → 2026-06-05</a></li></ul>
+  <h2 id='fold0'>Fold 0: 2025-09-08 → 2025-10-07</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2025-10-07T15:15:00Z</td><td>2025-10-07T15:25:00Z</td><td>-109.50</td><td>stop_loss</td><td><a href="trades/fold0_overnight_reversion_MNQ_T000011_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2025-10-02T19:00:00Z</td><td>2025-10-02T20:00:00Z</td><td>32.50</td><td>replay_force_flat_et</td><td><a href="trades/fold0_overnight_reversion_MGC_T000005_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold1'>Fold 1: 2025-10-08 → 2025-11-06</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2025-11-06T14:45:00Z</td><td>2025-11-06T14:50:00Z</td><td>-121.50</td><td>stop_loss</td><td><a href="trades/fold1_overnight_reversion_MNQ_T000009_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2025-10-31T17:00:00Z</td><td>2025-10-31T20:00:00Z</td><td>103.50</td><td>replay_force_flat_et</td><td><a href="trades/fold1_overnight_reversion_MGC_T000001_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold2'>Fold 2: 2025-11-07 → 2025-12-06</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2025-12-04T14:35:00Z</td><td>2025-12-04T14:55:00Z</td><td>-117.10</td><td>stop_loss</td><td><a href="trades/fold2_overnight_reversion_MNQ_T000008_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2025-12-02T16:30:00Z</td><td>2025-12-02T16:55:00Z</td><td>-6.00</td><td>breakeven</td><td><a href="trades/fold2_overnight_reversion_MGC_T000002_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold3'>Fold 3: 2025-12-07 → 2026-01-05</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2025-12-31T19:35:00Z</td><td>2025-12-31T20:00:00Z</td><td>-93.90</td><td>stop_loss</td><td><a href="trades/fold3_overnight_reversion_MNQ_T000007_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2026-01-02T15:05:00Z</td><td>2026-01-02T15:20:00Z</td><td>-111.00</td><td>stop_loss</td><td><a href="trades/fold3_overnight_reversion_MGC_T000007_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold4'>Fold 4: 2026-01-06 → 2026-02-04</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-02-04T14:35:00Z</td><td>2026-02-04T14:50:00Z</td><td>-150.50</td><td>stop_loss</td><td><a href="trades/fold4_overnight_reversion_MNQ_T000008_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2026-01-16T16:05:00Z</td><td>2026-01-16T16:40:00Z</td><td>166.50</td><td>take_profit</td><td><a href="trades/fold4_overnight_reversion_MGC_T000002_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold5'>Fold 5: 2026-02-05 → 2026-03-06</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-03-05T16:20:00Z</td><td>2026-03-05T17:00:00Z</td><td>275.35</td><td>take_profit</td><td><a href="trades/fold5_overnight_reversion_MNQ_T000009_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2026-02-26T15:30:00Z</td><td>2026-02-26T15:45:00Z</td><td>249.50</td><td>take_profit</td><td><a href="trades/fold5_overnight_reversion_MGC_T000002_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold6'>Fold 6: 2026-03-07 → 2026-04-05</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-03-26T13:40:00Z</td><td>2026-03-26T14:50:00Z</td><td>-5.50</td><td>breakeven</td><td><a href="trades/fold6_overnight_reversion_MNQ_T000007_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2026-03-17T15:45:00Z</td><td>2026-03-17T20:00:00Z</td><td>96.50</td><td>replay_force_flat_et</td><td><a href="trades/fold6_overnight_reversion_MGC_T000004_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold7'>Fold 7: 2026-04-06 → 2026-05-05</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-04-29T13:40:00Z</td><td>2026-04-29T14:00:00Z</td><td>-5.50</td><td>breakeven</td><td><a href="trades/fold7_overnight_reversion_MNQ_T000007_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2026-04-27T15:05:00Z</td><td>2026-04-27T15:50:00Z</td><td>-6.00</td><td>breakeven</td><td><a href="trades/fold7_overnight_reversion_MGC_T000002_0_trade_chart.html">trade_chart</a></td></tr></tbody></table><h2 id='fold8'>Fold 8: 2026-05-06 → 2026-06-05</h2><table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody><tr><td><code>overnight_reversion</code></td><td><code>MNQ</code></td><td>BUY</td><td>2026-06-03T13:50:00Z</td><td>2026-06-03T14:10:00Z</td><td>226.35</td><td>take_profit</td><td><a href="trades/fold8_overnight_reversion_MNQ_T000006_0_trade_chart.html">trade_chart</a></td></tr><tr><td><code>overnight_reversion</code></td><td><code>MGC</code></td><td>BUY</td><td>2026-06-03T13:50:00Z</td><td>2026-06-03T15:35:00Z</td><td>-6.00</td><td>breakeven</td><td><a href="trades/fold8_overnight_reversion_MGC_T000004_0_trade_chart.html">trade_chart</a></td></tr></tbody></table>
+</body>
+</html>

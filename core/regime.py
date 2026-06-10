@@ -1,12 +1,18 @@
 """Shared regime classifier.
 
 Single source of truth for "is the market trending vs ranging".  Each
-new strategy (``vwap_pullback_continuation``, ``nr_compression_break``,
-``globex_drift_continuation``, ``opening_drive_continuation``) consults
-this module to gate signals by regime.  Strategies in the production
-tier (``morning_range_reversion`` etc.) carry their own internal
-regime gates and are NOT being retro-fitted to this module — that's
+new strategy (planned: ``vwap_pullback_continuation``,
+``opening_drive_continuation``; first real consumer: the 2026-06-09
+``overnight_reversion`` revival regime-gate tune-up) consults this
+module to gate signals by regime.  Strategies in the production tier
+(``morning_range_reversion`` etc.) carry their own internal regime
+gates and are NOT being retro-fitted to this module — that's
 intentional: parity tests pin the production-tier behaviour.
+
+NOTE: the original docstring referenced ``nr_compression_break`` and
+``globex_drift_continuation`` as planned consumers — both were
+retired 2026-06-09 after the post-engine-fix walk-forward truth
+recap confirmed they were dead.  See ``docs/CHANGELOG.md``.
 
 Indicators
 ----------
@@ -234,3 +240,209 @@ def classify(bars: Iterable, config: Optional[RegimeConfig] = None) -> RegimeSna
         label = "mixed"
 
     return RegimeSnapshot(label=label, ker=ker_val, adx=adx_val, vol_pct=vol, n_bars=n)
+
+
+# ----------------------------- live publisher ------------------------------
+# 2026-06-09 — minimal live publisher.  Off by default; opt-in per
+# operator via env var.  Strategies subscribe to ``REGIME_UPDATE``
+# events; the publisher reclassifies on every ``BarClosedEvent`` for
+# the configured reference symbol/timeframe and emits when the label
+# changes (or when ``always_emit=True``, e.g. for richer downstream
+# vol-regime overlays).
+#
+# Why minimal: changing live behaviour of production strategies that
+# carry their own internal regime gates (e.g. ``morning_range_reversion``)
+# would invalidate the recent walk-forward tunes.  This publisher is
+# strictly a NEW EVENT STREAM that strategies can opt into; no
+# implicit subscription / no auto-wiring.  See
+# ``docs/STRATEGY_ARSENAL.md`` → "Phase 1 wiring status" for the policy.
+
+import asyncio
+import logging
+import os
+from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
+
+
+class RegimePublisherService:
+    """Optional service: classify regime on bar-close + publish events.
+
+    Wiring example (off by default — operator must opt-in):
+
+        # in trading_bot.py boot path:
+        from core.regime import RegimePublisherService, RegimeConfig
+        self.regime_publisher = RegimePublisherService(
+            self,
+            reference_symbol="MNQ",
+            reference_timeframe="5m",
+            config=RegimeConfig(),
+        )
+        await self.regime_publisher.start()
+
+    Subscribers:
+
+        bus.subscribe(EventType.REGIME_UPDATE, my_callback)
+        # event.data = {"label": "trend"|"chop"|"mixed",
+        #               "ker": float, "adx": float, "vol_pct": float,
+        #               "symbol": str, "timeframe": str,
+        #               "n_bars": int, "previous_label": str|None}
+
+    Polling-style alternative (backtest + live, no event bus needed):
+
+        snap = classify(self._recent_bars)
+        if snap.label != "trend":
+            return None
+    """
+
+    def __init__(
+        self,
+        trading_bot: Any,
+        reference_symbol: str = "MNQ",
+        reference_timeframe: str = "5m",
+        config: Optional[RegimeConfig] = None,
+        always_emit: bool = False,
+        min_bars_between_emits: int = 12,  # ~1 hour on 5m
+    ):
+        self.trading_bot = trading_bot
+        self.reference_symbol = str(reference_symbol).upper()
+        self.reference_timeframe = str(reference_timeframe)
+        self.config = config or RegimeConfig()
+        self.always_emit = bool(always_emit)
+        self.min_bars_between_emits = max(0, int(min_bars_between_emits))
+        self._last_label: Optional[str] = None
+        self._bars_since_last_emit: int = 0
+        self._unsub: Optional[Any] = None
+
+    async def start(self) -> bool:
+        """Subscribe to ``BAR_COMPLETED`` on the bot's event bus."""
+        bus = getattr(self.trading_bot, "event_bus", None)
+        if bus is None:
+            _logger.debug("RegimePublisher: no event_bus on bot; live publishing skipped")
+            return False
+        try:
+            from core.events import EventType
+            bus.subscribe(EventType.BAR_COMPLETED, self._on_bar_closed)
+        except Exception as exc:
+            _logger.warning("RegimePublisher subscribe failed: %s", exc)
+            return False
+
+        def _unsub():
+            try:
+                from core.events import EventType as _ET
+                bus.unsubscribe(_ET.BAR_COMPLETED, self._on_bar_closed)
+            except Exception as exc:
+                _logger.debug("RegimePublisher unsubscribe failed: %s", exc)
+
+        self._unsub = _unsub
+        _logger.info(
+            "🌡️  RegimePublisher active — ref=%s/%s (cfg: KER %.2f/%.2f, ADX %.0f/%.0f)",
+            self.reference_symbol, self.reference_timeframe,
+            self.config.trend_ker, self.config.chop_ker,
+            self.config.trend_adx, self.config.chop_adx,
+        )
+        return True
+
+    async def stop(self) -> None:
+        unsub = self._unsub
+        self._unsub = None
+        if unsub is not None:
+            try:
+                unsub()
+            except Exception as exc:
+                _logger.debug("RegimePublisher.stop: unsub raised %s", exc)
+
+    async def _on_bar_closed(self, event: Any) -> None:
+        """Bus callback — re-classify on each reference-symbol bar close."""
+        try:
+            data = getattr(event, "data", None) or {}
+            sym = str(data.get("symbol", "")).upper()
+            tf = str(data.get("timeframe", ""))
+            if sym != self.reference_symbol or tf != self.reference_timeframe:
+                return
+            bars = data.get("bars") or data.get("history") or []
+            if not bars:
+                fetch = getattr(self.trading_bot, "get_historical_data", None)
+                if callable(fetch):
+                    bars = await fetch(
+                        symbol=self.reference_symbol,
+                        timeframe=self.reference_timeframe,
+                        limit=max(self.config.vol_lookback_bars, 300),
+                    ) or []
+            if not bars:
+                return
+            snap = classify(bars, self.config)
+            self._bars_since_last_emit += 1
+            label_changed = (snap.label != self._last_label)
+            emit_now = label_changed or (
+                self.always_emit and self._bars_since_last_emit >= self.min_bars_between_emits
+            )
+            if emit_now:
+                await self._publish(snap)
+                self._last_label = snap.label
+                self._bars_since_last_emit = 0
+        except Exception as exc:
+            _logger.error("RegimePublisher._on_bar_closed crashed: %s", exc, exc_info=True)
+
+    async def _publish(self, snap: RegimeSnapshot) -> None:
+        bus = getattr(self.trading_bot, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            from core.events import Event, EventType
+            await bus.publish(Event(
+                type=EventType.REGIME_UPDATE,
+                data={
+                    "label": snap.label,
+                    "ker": snap.ker,
+                    "adx": snap.adx,
+                    "vol_pct": snap.vol_pct,
+                    "n_bars": snap.n_bars,
+                    "symbol": self.reference_symbol,
+                    "timeframe": self.reference_timeframe,
+                    "previous_label": self._last_label,
+                },
+                source="regime_publisher",
+            ))
+        except Exception as exc:
+            _logger.error("RegimePublisher publish failed: %s", exc, exc_info=True)
+
+
+def maybe_start_regime_publisher(trading_bot: Any) -> Optional[RegimePublisherService]:
+    """Operator opt-in helper.  Returns the service if env enables it,
+    else ``None``.  Call from the bot boot path:
+
+        from core.regime import maybe_start_regime_publisher
+        self.regime_publisher = maybe_start_regime_publisher(self)
+        if self.regime_publisher is not None:
+            await self.regime_publisher.start()
+
+    Env vars:
+      - ``REGIME_PUBLISHER_ENABLED`` ∈ {"1","true","yes","on"}: enable
+      - ``REGIME_PUBLISHER_SYMBOL`` (default ``MNQ``)
+      - ``REGIME_PUBLISHER_TIMEFRAME`` (default ``5m``)
+      - ``REGIME_PUBLISHER_ALWAYS_EMIT`` ∈ {"1","true","yes","on"}: emit
+        on every bar (default off; emits only when label changes)
+
+    NOTE: even when started, the publisher has NO effect on production
+    strategies unless those strategies explicitly subscribe to
+    ``EventType.REGIME_UPDATE``.  No strategy currently does — this
+    infrastructure is intentionally inert until the first opt-in
+    consumer ships.
+    """
+    enabled = os.environ.get("REGIME_PUBLISHER_ENABLED", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not enabled:
+        return None
+    symbol = os.environ.get("REGIME_PUBLISHER_SYMBOL", "MNQ").strip() or "MNQ"
+    timeframe = os.environ.get("REGIME_PUBLISHER_TIMEFRAME", "5m").strip() or "5m"
+    always_emit = os.environ.get("REGIME_PUBLISHER_ALWAYS_EMIT", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    return RegimePublisherService(
+        trading_bot,
+        reference_symbol=symbol,
+        reference_timeframe=timeframe,
+        always_emit=always_emit,
+    )

@@ -243,7 +243,15 @@ def test_start_disabled_when_no_event_bus():
     assert asyncio.run(breaker.start()) is False
 
 
-def test_trade_closed_event_accumulates():
+def test_trade_closed_event_accumulates(monkeypatch):
+    # Freeze "now" to a fixed test date so the session-date math is
+    # deterministic regardless of when the suite runs.  2026-06-08 ran
+    # green; later runs failed because the fixed 2026-06-02 exit_time
+    # values fell outside today's session window.  This monkeypatch is
+    # the 2026-06-09 fix (regression: post-Phase-1-wiring test sweep).
+    from core import portfolio_daily_breaker as _pdb
+    monkeypatch.setattr(_pdb, "_now_et", lambda: datetime(2026, 6, 2, 13, 0))
+
     cfg = PortfolioBreakerConfig(daily_loss_cap_dollars=500.0)
     flatten_calls: list = []
     bot = _make_stub_bot(flatten_calls=flatten_calls)
@@ -280,9 +288,12 @@ def test_trade_closed_event_accumulates():
     assert EventType.PORTFOLIO_KILL in kinds
 
 
-def test_trip_fires_once_per_session():
+def test_trip_fires_once_per_session(monkeypatch):
     """Once tripped, additional losing fills on the same day MUST NOT
     trigger another flatten — the broker call must be idempotent."""
+    from core import portfolio_daily_breaker as _pdb
+    monkeypatch.setattr(_pdb, "_now_et", lambda: datetime(2026, 6, 2, 13, 0))
+
     cfg = PortfolioBreakerConfig(daily_loss_cap_dollars=500.0)
     flatten_calls: list = []
     bot = _make_stub_bot(flatten_calls=flatten_calls)

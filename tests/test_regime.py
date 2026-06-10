@@ -165,3 +165,128 @@ def test_classify_default_label_set():
     bars = _synthetic_bars(list(np.arange(100.0, 200.0, 0.5)))
     snap = classify(bars)
     assert snap.label in {"trend", "chop", "mixed"}
+
+
+# ---------------------------- live publisher ----------------------------
+
+
+def test_maybe_start_regime_publisher_disabled_by_default(monkeypatch):
+    """Without the env flag, the helper returns ``None`` and starts nothing."""
+    from core.regime import maybe_start_regime_publisher
+
+    monkeypatch.delenv("REGIME_PUBLISHER_ENABLED", raising=False)
+    svc = maybe_start_regime_publisher(trading_bot=None)
+    assert svc is None
+
+
+def test_maybe_start_regime_publisher_constructs_when_enabled(monkeypatch):
+    """``REGIME_PUBLISHER_ENABLED=1`` returns a service; env-driven config wired."""
+    from core.regime import RegimePublisherService, maybe_start_regime_publisher
+
+    monkeypatch.setenv("REGIME_PUBLISHER_ENABLED", "1")
+    monkeypatch.setenv("REGIME_PUBLISHER_SYMBOL", "MES")
+    monkeypatch.setenv("REGIME_PUBLISHER_TIMEFRAME", "15m")
+    monkeypatch.setenv("REGIME_PUBLISHER_ALWAYS_EMIT", "true")
+    svc = maybe_start_regime_publisher(trading_bot=object())
+    assert isinstance(svc, RegimePublisherService)
+    assert svc.reference_symbol == "MES"
+    assert svc.reference_timeframe == "15m"
+    assert svc.always_emit is True
+
+
+@pytest.mark.asyncio
+async def test_regime_publisher_start_no_bus_returns_false():
+    """Service whose host has no event_bus must not crash; returns False."""
+    from core.regime import RegimePublisherService
+
+    bot = object()  # no .event_bus attr
+    svc = RegimePublisherService(bot)
+    started = await svc.start()
+    assert started is False
+
+
+@pytest.mark.asyncio
+async def test_regime_publisher_emits_on_label_change():
+    """Driving _on_bar_closed with a trending bar series emits a single
+    ``REGIME_UPDATE`` (label transitions from ``None`` → ``trend``/``mixed``)."""
+    from types import SimpleNamespace
+    from core.events import Event, EventType
+    from core.regime import RegimePublisherService
+
+    published: list = []
+
+    class _StubBus:
+        def subscribe(self, *_a, **_kw): return None
+        def unsubscribe(self, *_a, **_kw): return None
+        async def publish(self, event: Event) -> None:
+            published.append(event)
+
+    bot = SimpleNamespace(event_bus=_StubBus(), get_historical_data=None)
+    svc = RegimePublisherService(bot, reference_symbol="MNQ", reference_timeframe="5m")
+    closes = list(range(100, 300))
+    bars = [{"high": c + 1, "low": c - 1, "close": float(c)} for c in closes]
+    evt = Event(
+        type=EventType.BAR_COMPLETED,
+        data={"symbol": "MNQ", "timeframe": "5m", "bars": bars},
+    )
+    await svc._on_bar_closed(evt)
+    assert len(published) == 1
+    out = published[0]
+    assert out.type == EventType.REGIME_UPDATE
+    assert out.data["symbol"] == "MNQ"
+    assert out.data["label"] in {"trend", "chop", "mixed"}
+    assert out.data["previous_label"] is None
+
+
+@pytest.mark.asyncio
+async def test_regime_publisher_ignores_other_symbols():
+    """Bar from a non-reference symbol/timeframe must NOT trigger a publish."""
+    from types import SimpleNamespace
+    from core.events import Event, EventType
+    from core.regime import RegimePublisherService
+
+    published: list = []
+
+    class _StubBus:
+        def subscribe(self, *_a, **_kw): return None
+        def unsubscribe(self, *_a, **_kw): return None
+        async def publish(self, event: Event) -> None:
+            published.append(event)
+
+    bot = SimpleNamespace(event_bus=_StubBus(), get_historical_data=None)
+    svc = RegimePublisherService(bot, reference_symbol="MNQ", reference_timeframe="5m")
+    bars = [{"high": c + 1, "low": c - 1, "close": float(c)} for c in range(100, 300)]
+    evt = Event(
+        type=EventType.BAR_COMPLETED,
+        data={"symbol": "MES", "timeframe": "5m", "bars": bars},  # wrong symbol
+    )
+    await svc._on_bar_closed(evt)
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_regime_publisher_no_re_emit_on_same_label():
+    """Repeated bar events with the same regime label must publish only once."""
+    from types import SimpleNamespace
+    from core.events import Event, EventType
+    from core.regime import RegimePublisherService
+
+    published: list = []
+
+    class _StubBus:
+        def subscribe(self, *_a, **_kw): return None
+        def unsubscribe(self, *_a, **_kw): return None
+        async def publish(self, event: Event) -> None:
+            published.append(event)
+
+    bot = SimpleNamespace(event_bus=_StubBus(), get_historical_data=None)
+    svc = RegimePublisherService(bot, reference_symbol="MNQ", reference_timeframe="5m")
+    bars = [{"high": c + 1, "low": c - 1, "close": float(c)} for c in range(100, 300)]
+    evt = Event(
+        type=EventType.BAR_COMPLETED,
+        data={"symbol": "MNQ", "timeframe": "5m", "bars": bars},
+    )
+    await svc._on_bar_closed(evt)
+    await svc._on_bar_closed(evt)
+    await svc._on_bar_closed(evt)
+    assert len(published) == 1, "publisher must dedupe identical-label re-emits"

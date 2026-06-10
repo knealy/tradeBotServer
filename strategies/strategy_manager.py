@@ -93,16 +93,14 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "RsiSwitch15mStrategy",
         "15m RSI extreme switch: enter at thresholds, exit/hold at opposite extreme",
     ),
-    "nr_compression_break": (
-        "strategies.nr_compression_break_strategy",
-        "NrCompressionBreakStrategy",
-        "NR7 (Toby Crabel daily-TF) compression breakout — next-day continuation bias",
-    ),
-    "globex_drift_continuation": (
-        "strategies.globex_drift_continuation_strategy",
-        "GlobexDriftContinuationStrategy",
-        "Asian-session (18:00-04:00 ET) breakout in the prior-RTH-close direction",
-    ),
+    # nr_compression_break + globex_drift_continuation RETIRED 2026-06-09.
+    # NR7 (-71 % return on truth, too sparse — 16 trades / 9m to validate
+    # anything) and Globex drift (bleeds capital across every symbol).
+    # Both confirmed dead by the 2026-06-05 post-engine-fix walk-forward
+    # truth recap.  Removed from the registry per "git history is the
+    # archive" guidance in AGENTS.md.  See:
+    #   docs/CHANGELOG.md → 2026-06-09 NR7+Globex retirement entry
+    #   docs/STRATEGY_ARSENAL.md → Disabled tier (RETIRED rows)
 }
 
 # Built-ins that stay importable for explicit replay / tests but are hidden from
@@ -1155,6 +1153,19 @@ class StrategyManager:
             await self._ensure_portfolio_kill_subscription()
         except Exception as exc:
             logger.debug("Portfolio-breaker wiring for %s raised: %s", n, exc)
+
+        # Regime publisher (Phase 1 arsenal infra).  Off by default;
+        # opt-in via ``REGIME_PUBLISHER_ENABLED=1``.  Idempotent.
+        # Publishes ``EventType.REGIME_UPDATE`` on every reference-symbol
+        # bar close when the regime label changes.  No production
+        # strategy currently subscribes; this is a forward-looking
+        # extension point for regime-gated strategies.
+        try:
+            ensure_regime = getattr(self.trading_bot, "ensure_regime_publisher", None)
+            if callable(ensure_regime):
+                await ensure_regime()
+        except Exception as exc:
+            logger.debug("Regime-publisher wiring for %s raised: %s", n, exc)
 
         # Strategies with their own event loop can implement an async start() or run() hook
         custom_start = getattr(strategy, 'start', None)

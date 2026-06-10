@@ -363,6 +363,93 @@ def test_strategy_registered_in_backtest_executor():
     assert klass.__name__ == "MorningRangeReversionStrategy"
 
 
+def test_live_readiness_committed_meta_flags():
+    """2026-06-09 live-readiness audit pinning test.
+
+    Pins the meta-level toggles that gate live behaviour:
+      • ``meta.enabled = true``           — strategy is the production powerhouse
+      • ``meta.symbols`` ⊇ ['MNQ', 'MGC'] — live deploy rotation (MES dropped R25)
+      • ``meta.live_breaker_enabled = true`` — the per-strategy consec-loss
+        breaker subscribes to ``EventType.TRADE_CLOSED`` so live fills feed
+        the in-memory trade history.  Required for the breaker to do
+        anything meaningful in live mode (no-op in backtest).  Without this
+        the strategy still runs but the breaker never trips.
+
+    Catches any future TOML edit that accidentally flips one of these off.
+    """
+    from core.strategy_config import load_strategy_config
+
+    cfg = load_strategy_config("morning_range_reversion")
+    assert cfg.get_bool("meta.enabled") is True, "MRR is the powerhouse, must stay enabled"
+    syms = cfg.get("meta.symbols") or []
+    assert "MNQ" in syms and "MGC" in syms, (
+        f"meta.symbols must include MNQ + MGC for live rotation; got {syms}"
+    )
+    assert cfg.get_bool("meta.live_breaker_enabled") is True, (
+        "meta.live_breaker_enabled must be true; otherwise live consec-loss "
+        "breaker is a no-op (no TRADE_CLOSED subscription)."
+    )
+
+
+def test_live_readiness_position_size_aligned_with_wrapper_script():
+    """The wrapper script ``scripts/run_morning_reversion.sh`` passes a
+    ``--risk-config`` JSON with per-symbol ``max_quantity``.  If that
+    value drifts from the TOML's ``position_size`` (root or per-symbol
+    override), the executor silently throttles or over-sizes.
+
+    The script's risk-config block (as of 2026-06-09 R28 commit):
+        MNQ: max_quantity=4, cooldown=60, max_pending=2
+        MES: max_quantity=2, cooldown=60, max_pending=2
+        MGC: max_quantity=2, cooldown=60, max_pending=2
+
+    TOML must match: root ``position_size = 2`` (the MES + MGC default),
+    plus ``[symbols.MNQ.risk] position_size = 4`` (R24 2× weighting).
+    """
+    from core.strategy_config import load_strategy_config
+
+    cfg = load_strategy_config("morning_range_reversion")
+    # MNQ override = 4 (R24)
+    mnq_size = cfg.symbol_override("MNQ", "risk.position_size", default=None)
+    assert int(mnq_size) == 4, (
+        f"MNQ position_size must be 4 to match scripts/run_morning_reversion.sh "
+        f"--risk-config MNQ.max_quantity=4; got {mnq_size}"
+    )
+    # MGC has no risk override (uses root default = 2)
+    mgc_size = cfg.symbol_override("MGC", "risk.position_size", default=None)
+    assert mgc_size is None or int(mgc_size) == 2, (
+        f"MGC position_size must be 2 (root default) to match "
+        f"scripts/run_morning_reversion.sh --risk-config MGC.max_quantity=2; "
+        f"got {mgc_size}"
+    )
+    # Root default
+    assert int(cfg.get_int("risk.position_size", 0)) == 2, (
+        "Root [risk].position_size must be 2 (the MES + MGC default)"
+    )
+
+
+def test_live_readiness_flat_before_enforces_session_close():
+    """``signal.flat_before`` must be set so the live ``manage_positions``
+    path closes any open positions at session end.  Default 16:00 ET.
+
+    A missing ``flat_before`` would leave positions open past 16:00 in
+    live mode (potentially violating prop-firm same-session rules).
+    """
+    from core.strategy_config import load_strategy_config
+    from datetime import time
+
+    cfg = load_strategy_config("morning_range_reversion")
+    fb = cfg.get_str("signal.flat_before", "")
+    assert fb, "signal.flat_before MUST be set for live deploy"
+    parts = fb.split(":")
+    assert len(parts) == 2 and int(parts[0]) > 0, f"signal.flat_before malformed: {fb}"
+    hh, mm = int(parts[0]), int(parts[1])
+    assert 12 <= hh <= 17, (
+        f"signal.flat_before={fb} ET is suspicious for a morning fade strategy. "
+        f"Expected late-morning to mid-afternoon ET (12:00–17:00). "
+        f"Half-day prop accounts may need earlier (e.g. 12:30)."
+    )
+
+
 def test_sieve_immediate_mode_does_not_churn_while_close_stays_outside():
     """Regression: consecutive closes beyond the range arm at most once until a close inside [L,H]."""
     from strategies.morning_range_reversion_strategy import sieve_simulate_from_ohlcv

@@ -4,33 +4,62 @@
 # See ``strategies/overnight_reversion_strategy.py`` for mechanics.
 
 [meta]
-# 2026-06-01 — disabled.  9m walk-forward (270d, 9 folds, MNQ+MES+MGC)
-# across every R1 sweep variant (committed config, Round-14 ATR band
-# 0.08-0.60%, looser ATR band, tighter ATR band, dropping MES, dropping
-# MGC) all returned ret=-250% to -415% with DD 160-215%.  The strategy
-# fades a confirmed first-close breakout outside the overnight box; on
-# this dataset (Aug 2025 → May 2026) the breakouts overwhelmingly
-# continued rather than reverting, so the fade entries lost systematically.
+# 2026-06-09 — REVIVED.  The 2026-06-01 disable rationale below was a
+# buggy-engine artefact.  The 2026-06-04 backtest-engine audit (H-A slip
+# double-count + H-B STOP gap-through phantom-profit channel) reversed
+# the verdict on multiple strategies, and a 2026-06-08 stagnant-tier
+# audit on the corrected engine confirmed this strategy is PROFITABLE on
+# current data with one structural change: disable the SHORT side.
 #
-# Sweep evidence (9m, MNQ+MES+MGC):
+# 2026-06-09 R1+R2 sweep (33 trials × 3 windows, fresh-cache,
+# --no-cache-decisions, dir docs/perf/_opt_runs/overnight_reversion/r{1,2}_*):
+#
+# Headline: ``allow_short = false`` is the single biggest lever.  The
+# 3m softness in the 2026-06-08 audit (+7.7 % / RF 0.11 / DD 43 %) was
+# 100 % short-side losses.  Per-direction per-window:
+#
+#   variant            9m ret/RF/DD       6m ret/RF/DD       3m ret/RF/DD
+#   baseline           +150 / 2.18 / 23   +59 / 0.85 / 33    +7.7 / 0.11 / 43
+#   short_only         +74  / 0.93 / 32   -0.9 / -0.01 / 46  -54 / -0.71 / 65   ← broken
+#   long_only          +100 / 1.65 / 39   +82 / 1.96 / 35    +72 / 2.19 / 18    ← winner
+#   lo_skip_mon_fri    +103 / 1.72 / 37   +99 / 3.38 / 23    +70 / 2.47 / 18    ← COMMITTED
+#
+# Why long-only works on current data: the dataset (Aug 2025 → May 2026)
+# is in a generally rising regime.  Up-breakouts (close > H) tend to
+# CONTINUE, so the short-side fade entries lose systematically.
+# Down-breakouts (close < L) tend to FAIL and revert, which is exactly
+# the long-side fade entry.  Asymmetric edge.
+#
+# Skip [Mon, Fri] adds 4 % / 21 % / -3 % vs long_only on 9m/6m/3m
+# returns; bigger RF improvement (3.38 vs 1.96 on 6m).  Mon = post-weekend
+# trend reset; Fri = position-squaring drift.  Both produce fewer real
+# fade opportunities (close-outside-range happens but doesn't revert).
+#
+# Rejection log (all dominated by lo_skip_mon_fri across the 3 windows):
+#   tighter range_max_pct ≤ 1.5     — over-trims signal density
+#   wider stop_atr_multiplier 2.0+   — DD blows out, return drops
+#   tighter atr_max_pct ≤ 0.35       — marginal lift only on 9m
+#   tighter range_max_pct 2.0 alone  — Pareto-dominated by long_only baseline
+#
+# **Promoted to live**: ``enabled = true``, MNQ + MGC.  See
+# `docs/STRATEGY_ARSENAL.md` Production tier row #4.
+#
+# Historic R0 disable evidence (pre-engine-fix, retained for archaeology):
 #   committed              n=257 ret=-308.85% dd=163.74% rf=-0.58
 #   round14 atr band       n=253 ret=-257.40% dd=160.55% rf=-0.56
 #   loose atr band         n=257 ret=-332.17% dd=176.29% rf=-0.62
 #   tight atr band         n=226 ret=-415.70% dd=214.19% rf=-0.68
-#   drop_mes (meta-override) is silently no-op for this strategy →
-#     identical to baseline; the loader prefers ``[meta] symbols``
-#     from the TOML root over root-level dotted overrides.
-#
-# The original Step-3 plan was to rebuild this as an "overnight_range
-# mirror" with reversed entry logic and a Round-14-style ATR band.  The
-# evidence shows the breakout-continuation regime is the dominant
-# driver, not the fade trigger — every retrace gate trims trades
-# **proportionally**, so the per-trade expectancy stays negative.
-# Reactivate only after an algorithmic pass that gates entries on a
-# regime detector (e.g. trend-day classification) rather than a
-# threshold over the same range.
-enabled = false
-symbols = ["MNQ", "MES", "MGC"]
+# All of those numbers were on the buggy engine + buggy data.  Do not
+# trust them; the truth on corrected engine + current data is in the
+# R1+R2 table above.
+enabled = true
+symbols = ["MNQ", "MGC"]
+# Live consec-loss breaker bridge (subscribes the strategy's in-memory
+# breaker to TRADE_CLOSED events).  Matches morning_range_reversion +
+# overnight_range; required for the per-strategy circuit-breaker to
+# operate in live mode (no-op in backtest).  See
+# ``core/live_trade_history.py::live_breaker_default_enabled``.
+live_breaker_enabled = true
 
 [timing]
 # Default 18:00–9:29 ET. Sweep `docs/perf/parameter_sweeps/overnight_timing_mnq` (2026-04-11..2026-05-01, MNQ, ATR 1.5/2.5):
@@ -63,7 +92,12 @@ atr_timeframe       = "15m"
 fade_signal_timeframe = "1m"
 fade_lookback_bars    = 500
 allow_long            = true
-allow_short           = true
+# 2026-06-09 R2: SHORT disabled.  Short-side fade lost -54 % / RF -0.71
+# on the 3m window (corrected engine); 9 m had a small +74 % short-side
+# return but the recent regime is asymmetrically broken for the short
+# direction (up-breakouts CONTINUE on current data).  See [meta] block
+# at the top for the full sweep evidence + revival rationale.
+allow_short           = false
 # Sweep `docs/perf/parameter_sweeps/smoke_atr_test`: best win-rate was sl1p5_tp2p5 (64.77% vs ~61% base on 2026-04-11..2026-05-01 MNQ).
 stop_atr_multiplier = 1.5
 tp_atr_multiplier   = 2.5
@@ -116,8 +150,14 @@ gap_max_pct       = 1.1904761904761905
 atr_min_pct       = 0.047619047619047616
 atr_max_pct       = 1.0476190476190477
 dll_threshold_pct = 0.75
-# Python weekday: 0=Mon … 6=Sun — empty = trade all weekdays (P5 research).
-skip_weekdays     = []
+# Python weekday: 0=Mon … 6=Sun.
+# 2026-06-09 R2: skip [Mon, Fri].  Mon = post-weekend trend reset; Fri =
+# position-squaring drift.  Both produce fewer real fade opportunities
+# (close-outside-range still happens but doesn't revert).  See [meta]
+# block for sweep evidence — lo_skip_mon_fri Pareto-dominated all other
+# combos (including lo_skip_tue, lo_skip_fri alone, lo_skip_tue_fri) on
+# 6m + 9m by RF; matched on 3m.
+skip_weekdays     = [0, 4]
 
 [symbols.MNQ]
 # Inherits ``[filters]``.
