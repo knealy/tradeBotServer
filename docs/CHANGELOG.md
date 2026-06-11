@@ -7,6 +7,38 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **price_action_fade MVP spawned (2026-06-11) + CRITICAL simulator-vs-engine divergence found.**  Built ``strategies/price_action_fade_strategy.py`` (~470 LoC) as the minimum-viable productionization of the cross-symbol ``dragonfly_doji + Order Block`` edge characterised in earlier sessions.  Signal mechanic: a bullish-reversal doji formed inside a CONFIRMED unmitigated BEARISH order block → contrarian SHORT fade.  Geometry: ATR(14)-scaled SL = 1×ATR, TP = 2R, max 12-bar hold.  MES-only at MVP (the strongest simulator pocket).  TOML at ``config/strategies/price_action_fade.toml``; 10 pinning tests at ``tests/test_price_action_fade_smoke.py``.
+
+  **THREE BUGS CAUGHT during the walk-from-simulator-to-strategy transition**:
+
+  1. **``PatternEvent`` field mismatch** — strategy initially referenced ``ev.pattern`` and ``ev.bar_index``; correct fields are ``ev.name`` and "all events apply to last bar of slice".
+  2. **``OrderBlock`` field mismatch** — strategy initially used ``ob.high / ob.low``; correct fields are ``ob.upper / ob.lower`` (use ``ob.contains(price)`` helper instead).
+  3. **``find_order_blocks`` edge-case bug (FIXED IN PRIMITIVE)** — the detector's outer loop ``range(atr_period, len(bars) - window)`` excluded formation candidates in the LAST ``window=5`` bars of the input.  This is fine for offline simulation (always has future bars) but BREAKS live detection — the strategy can never see an OB whose confirmation bar IS the current bar (the most recent and tradeable OBs).  Trace evidence: with the bug, MES MVP fired 2 signals over 5 months instead of the expected ~32.  **Fixed** in ``core/market_structure.py``: outer loop now walks to ``len(bars) - 1``; inner impulse loop caps at ``min(i + 1 + window, len(bars))`` so partial future-windows still work.  49 / 49 market_structure tests still pass; the change is forward-compatible (any OB that confirmed with a full future window is detected identically).
+
+  **CRITICAL FINDING — simulator vs backtest-engine divergence**.  After fixing the three bugs the MVP's signal count matched expectation (34 signals over 9m MES = ~simulator's 108 / 17m extrapolation).  But the per-trade economics did NOT replicate:
+
+  | Metric | Simulator finding | Backtest-engine 9m MES |
+  |---|---|---|
+  | Trades | 108 over 17 m | 34 over 9 m |
+  | Win rate | 64.8 % | **35.3 %** |
+  | Mean R | **+0.907** | **+0.097** |
+  | Median R | — | **-1.146** |
+  | Profit factor | (strongly positive) | **0.60** |
+  | Total PnL | (strongly positive) | **-$613** |
+
+  The simulator's R/trade is **9 × higher** than the engine's.  The Median R of -1.146 (below -1.0!) implies many trades exit beyond the SL price.  Hypotheses for the gap, ranked:
+  1. **Bracket fill semantics** — simulator enters AT the pattern bar's close; engine places a real order that fills at next-bar OPEN (gap risk + worse slippage on illiquid overnight bars where most signals fire).
+  2. **Same-bar SL/TP resolution** — simulator's SL/TP check is bar-by-bar conservative (SL before TP if both touch).  Engine uses 1 m intrabar data when available; without it, the conservative path may NOT trigger TP on a bar where the SL+TP both hit.
+  3. **Session force-flat** — 6 / 34 engine trades exit ``replay_force_flat_et`` (held across session boundary then flat-mid-day).  Simulator has no such mechanism.
+  4. **Commission + slippage** — engine charges $5 / trade commission and tick-level slippage; simulator has neither.  At a 2 R baseline this is ~10 % erosion.
+
+  **Status**: MVP REMAINS ``enabled = false``.  The edge as characterised by ``scripts/simulate_price_action_trades.py`` does NOT survive realistic backtest execution.  This calls into question the entire price-action research stack's headline numbers (dragonfly+OB +0.907 R, gravestone+OB +0.257 R, sweep_into_fvg @ premarket +0.19-0.32 R, etc.) — the simulator is BIASED OPTIMISTIC.  The market-structure primitives + setups themselves are correct (49 + 7 + 22 tests pin them); the issue is in how the simulator MODELS trade execution.
+
+  **Next-session priorities** (queued, not done):
+  1. Diagnose simulator-engine gap on a single trade — instrument both paths and find where the prices diverge.
+  2. Tighten the simulator's intra-bar resolution to use 1 m data (matching the engine's truth path).
+  3. Re-run dragonfly+OB and sweep_into_fvg edges with the TRUTH simulator and see if the +0.907 R / +0.21 R numbers hold.
+  4. If they do — promote MVP (the simulator was correct, the engine has a quirk).  If they don't — accept the edges are weaker than initially measured and re-prioritise the arsenal.
 - **Exit-mechanics stress test (2026-06-11): multi-R / multi-horizon matrix + trailing stop + partial profit.**  Extended ``scripts/simulate_price_action_trades.py`` with three new exit mechanic modes:
   - **``--stress-test``** with ``--stress-tp-list`` and ``--stress-bars-list`` — runs the full (TP-ATR × max-bars) cross-product per pattern in a single pass and emits a heatmap.  Quickly answers "does my edge depend on the specific 2R / 12-bar choice or is it stable across exit configurations?"
   - **``--trail-atr N --trail-trigger-r M``** — activates a trailing stop at ``N × ATR`` once unrealised profit reaches ``M × stop_dist`` (default 1R).  SL only moves favorably.

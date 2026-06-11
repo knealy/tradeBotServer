@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward metrics — price_action_fade / MES</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+pre { background: var(--panel2); padding: 0.75rem 1rem; border-radius: 6px; overflow: auto; font-size: 0.78rem; line-height: 1.45; color: #d8d8e0; }
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+details > summary { cursor: pointer; padding: 0.3rem 0; color: var(--link); font-weight: 500; user-select: none; }
+details[open] > summary { margin-bottom: 0.5rem; }
+h2#config-snapshot { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
+</style>
+</head>
+<body>
+  <p><a href="index.html">← Back to report hub</a></p>
+  <h1>Walk-forward performance (replay)</h1>
+  <p class="muted">Fold × strategy × symbol from <code>backtest_executor.py --replay --include-trades</code>.
+    <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
+    <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
+    <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
+  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a> · <a href="strategy_configs.json">strategy_configs.json</a> · <a href="#config-snapshot">replay config ↓</a></nav>
+  <div class="banner">
+    <strong>All folds pooled:</strong> 22 trades · PnL <strong>-52.23</strong>
+    · expectancy <strong>-2.374</strong> / trade · σ <strong>108.690</strong>
+    · PF <strong>0.94</strong> · max consecutive losses <strong>3</strong>
+    · max DD (sequential) <strong>309.02</strong>
+  </div>
+  <div class="callout">
+    <strong>Survivability read:</strong> high <em>max consecutive losses</em> inside a fold with negative expectancy
+    usually means the edge is not stable across that window. Compare the <em>rollup</em> table (all folds merged
+    per strategy×symbol) to per-fold rows — widening σ or falling PF in later folds is a simple walk-forward stress signal.
+  </div>
+  <h2>Per fold</h2>
+  <table>
+    <thead><tr><th>fold</th><th>start</th><th>end</th><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th>
+    <th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>win</th><th>loss</th><th>max win str</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td>0</td><td>2025-09-08</td><td>2025-10-07</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>4</td><td class='num'>20.63</td><td class='num'>25.0%</td><td class='num'>5.156</td><td class='num'>148.543</td><td class='num'>1.11</td><td class='num'>193.21</td><td>1</td><td>3</td><td>1</td><td>3</td><td class='num'>36.2</td><td class='num'>-4.55</td></tr><tr><td>1</td><td>2025-10-08</td><td>2025-11-06</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>1</td><td class='num'>99.20</td><td class='num'>100.0%</td><td class='num'>99.196</td><td class='num'>0.000</td><td class='num'>—</td><td class='num'>0.00</td><td>1</td><td>0</td><td>1</td><td>0</td><td class='num'>6.0</td><td class='num'>1.81</td></tr><tr><td>2</td><td>2025-11-07</td><td>2025-12-06</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>2</td><td class='num'>17.05</td><td class='num'>50.0%</td><td class='num'>8.527</td><td class='num'>36.555</td><td class='num'>1.98</td><td class='num'>17.32</td><td>1</td><td>1</td><td>1</td><td>1</td><td class='num'>1.5</td><td class='num'>0.19</td></tr><tr><td>3</td><td>2025-12-07</td><td>2026-01-05</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>2</td><td class='num'>-54.82</td><td class='num'>0.0%</td><td class='num'>-27.411</td><td class='num'>7.324</td><td class='num'>0.00</td><td class='num'>54.82</td><td>0</td><td>2</td><td>0</td><td>2</td><td class='num'>2.5</td><td class='num'>-2.55</td></tr><tr><td>4</td><td>2026-01-06</td><td>2026-02-04</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>1</td><td class='num'>80.62</td><td class='num'>100.0%</td><td class='num'>80.625</td><td class='num'>0.000</td><td class='num'>—</td><td class='num'>0.00</td><td>1</td><td>0</td><td>1</td><td>0</td><td class='num'>10.0</td><td class='num'>1.84</td></tr><tr><td>5</td><td>2026-02-05</td><td>2026-03-06</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>4</td><td class='num'>94.11</td><td class='num'>50.0%</td><td class='num'>23.527</td><td class='num'>101.750</td><td class='num'>1.78</td><td class='num'>91.25</td><td>2</td><td>2</td><td>1</td><td>1</td><td class='num'>3.0</td><td class='num'>0.73</td></tr><tr><td>6</td><td>2026-03-07</td><td>2026-04-05</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>3</td><td class='num'>-72.50</td><td class='num'>66.7%</td><td class='num'>-24.167</td><td class='num'>228.422</td><td class='num'>0.75</td><td class='num'>287.14</td><td>2</td><td>1</td><td>2</td><td>1</td><td class='num'>5.7</td><td class='num'>2.68</td></tr><tr><td>7</td><td>2026-04-06</td><td>2026-05-05</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>2</td><td class='num'>-39.64</td><td class='num'>50.0%</td><td class='num'>-19.821</td><td class='num'>56.442</td><td class='num'>0.34</td><td class='num'>59.73</td><td>1</td><td>1</td><td>1</td><td>1</td><td class='num'>2.0</td><td class='num'>0.39</td></tr><tr><td>8</td><td>2026-05-06</td><td>2026-06-05</td><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>3</td><td class='num'>-196.88</td><td class='num'>0.0%</td><td class='num'>-65.625</td><td class='num'>55.926</td><td class='num'>0.00</td><td class='num'>196.88</td><td>0</td><td>3</td><td>0</td><td>3</td><td class='num'>29.7</td><td class='num'>-11.85</td></tr></tbody>
+  </table>
+  <h2>Rollup — all folds merged (per strategy × symbol)</h2>
+  <table>
+    <thead><tr><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th><th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td><code>price_action_fade</code></td><td><code>MES</code></td><td class='num'>22</td><td class='num'>-52.23</td><td class='num'>40.9%</td><td class='num'>-2.374</td><td class='num'>108.690</td><td class='num'>0.94</td><td class='num'>309.02</td><td>3</td><td class='num'>13.2</td><td class='num'>-11.32</td></tr></tbody>
+  </table>
+  <h2>Simulated account equity</h2>
+  <p class="muted">Starting balance <strong>$2,000.00</strong>. Every completed trade in this run is sorted by <strong>exit time</strong>
+    and applied in sequence to one notional account (all legs, all folds). This shows combined PnL path stress;
+    it does <em>not</em> model margin, cross-margin, or whether every leg would run on the same live account.</p>
+  <div class="banner">
+    <strong>Equity path:</strong> final <strong>1,947.77</strong>
+    · return <strong>-2.61%</strong>
+    · max drawdown <strong>309.02</strong> (<strong>13.69%</strong> from peak)
+    · closes in path <strong>22</strong>
+  </div>
+  <div id="equityChart" style="width:100%;height:340px;position:relative;"></div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function() {
+  const el = document.getElementById("equityChart");
+  if (!el || typeof LightweightCharts === 'undefined') return;
+  const chart = LightweightCharts.createChart(el, {
+    layout: { background: { color: '#131316' }, textColor: '#c8c8d0' },
+    grid: { vertLines: { color: '#2c2c34' }, horzLines: { color: '#2c2c34' } },
+    rightPriceScale: { borderColor: '#2c2c34' },
+    timeScale: { borderColor: '#2c2c34', timeVisible: true, secondsVisible: false },
+  });
+  const series = chart.addLineSeries({ color: '#5ecf8e', lineWidth: 2 });
+  const raw = [{"time": 1758170400, "value": 2000.0}, {"time": 1758172500, "value": 2213.84}, {"time": 1758284400, "value": 2171.43}, {"time": 1758312000, "value": 2035.18}, {"time": 1758632100, "value": 2020.63}, {"time": 1760628300, "value": 2119.82}, {"time": 1763040600, "value": 2154.2}, {"time": 1764253200, "value": 2136.88}, {"time": 1765216200, "value": 2104.29}, {"time": 1766063700, "value": 2082.05}, {"time": 1768929900, "value": 2162.68}, {"time": 1770302400, "value": 2071.43}, {"time": 1771600500, "value": 2201.7}, {"time": 1771924200, "value": 2172.41}, {"time": 1772536800, "value": 2256.79}, {"time": 1773722100, "value": 1969.64}, {"time": 1773725100, "value": 2094.55}, {"time": 1774536000, "value": 2184.29}, {"time": 1777559400, "value": 2124.55}, {"time": 1777876800, "value": 2144.64}, {"time": 1778270400, "value": 2015.27}, {"time": 1779371400, "value": 1972.59}, {"time": 1780561800, "value": 1947.77}];
+  series.setData(raw);
+  chart.timeScale().fitContent();
+  window.addEventListener('resize', () => {
+    chart.applyOptions({ width: el.clientWidth });
+  });
+})();
+</script>
+
+  <h2>Analysis — all legs pooled</h2>
+  
+<h3>All legs pooled (exit-time order, all folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>42.3%</td><td>Actual WR 40.9%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.169</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:4.0 / L:4.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples</td><td class='num'>win:1.791 loss:-2.111</td><td>Where initial_risk_dollars recorded</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>84.6%</td><td>losses 11 / events 11</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>15.4%</td><td>losses 2 / events 2</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>SELL</code></td><td class='num'>59.1%</td><td>13 losses / 22 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>price_action_fade</code></td><td class='num'>13</td><td>100.0% of all losses · 22 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>1</td><td>7.7% of all losses; 2 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>3</td><td>23.1% of all losses; 6 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>6</td><td>46.2% of all losses; 10 entries this weekday</td></tr><tr><td>Fri</td><td class='num'>3</td><td>23.1% of all losses; 4 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>0.253</td><td>When bars_held is higher, losing trades are slightly more common (Pearson r≈0.25); treat as exploratory—causation not implied.</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>-0.0448</td><td>Weak linear association between initial_risk_dollars and losing trades (|r|≈0.04).</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0873</td><td>When entry_hour_et is higher, losing trades are slightly more common (Pearson r≈0.09); treat as exploratory—causation not implied.</td></tr></tbody></table>
+
+  <h2>Analysis — per strategy × symbol (merged folds)</h2>
+  
+<h3>price_action_fade · MES (merged folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>42.3%</td><td>Actual WR 40.9%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.169</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:4.0 / L:4.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples</td><td class='num'>win:1.791 loss:-2.111</td><td>Where initial_risk_dollars recorded</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>84.6%</td><td>losses 11 / events 11</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>15.4%</td><td>losses 2 / events 2</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>SELL</code></td><td class='num'>59.1%</td><td>13 losses / 22 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>price_action_fade</code></td><td class='num'>13</td><td>100.0% of all losses · 22 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>1</td><td>7.7% of all losses; 2 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>3</td><td>23.1% of all losses; 6 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>6</td><td>46.2% of all losses; 10 entries this weekday</td></tr><tr><td>Fri</td><td class='num'>3</td><td>23.1% of all losses; 4 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>0.253</td><td>When bars_held is higher, losing trades are slightly more common (Pearson r≈0.25); treat as exploratory—causation not implied.</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>-0.0448</td><td>Weak linear association between initial_risk_dollars and losing trades (|r|≈0.04).</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0873</td><td>When entry_hour_et is higher, losing trades are slightly more common (Pearson r≈0.09); treat as exploratory—causation not implied.</td></tr></tbody></table>
+
+  <h2 id="config-snapshot">Replay configuration (exact TOML)</h2>
+<p class="muted">Each strategy's <code>config/strategies/&lt;name&gt;.toml</code> is copied verbatim into <code>config/&lt;name&gt;.toml</code> next to this report. Reproduce the run by dropping the snapshot back into <code>config/strategies/</code> and re-applying any environment overrides listed below (mirrors <code>StrategyConfig</code> precedence: CLI &gt; env &gt; TOML &gt; default).</p>
+<p class="muted">Machine-readable bundle: <a href="strategy_configs.json"><code>strategy_configs.json</code></a>.</p>
+<h3>price_action_fade</h3><p class='muted'>source: <code>/Users/risu/tradeBotServer/config/strategies/price_action_fade.toml</code> · snapshot: <a href="config/price_action_fade.toml"><code>config/price_action_fade.toml</code></a></p><table><thead><tr><th>env override</th><th>value</th></tr></thead><tbody><tr><td><code>PRICE_ACTION_FADE_META_ENABLED</code></td><td><code>true</code></td></tr></tbody></table><details><summary>Show TOML (4655 chars)</summary><pre><code># Price-action fade — MVP (2026-06-11).
+#
+# Fade a dragonfly_doji bullish-reversal signal that forms inside a
+# confirmed bearish Order Block.  When the bullish-reversal candle prints
+# in a zone where institutions sold (bearish OB), the rejection wick
+# typically fails and price drops → contrarian SHORT.
+#
+# Simulator findings (MES + MNQ + MGC 5m, Jan 2025 → present, contrarian,
+# 1R-SL / 2R-TP / 12-bar max hold, dragonfly_doji + OB filter):
+#   MES: n=108, mean R = +0.907, WR 64.8 %
+#   MNQ: n=72,  mean R = +0.723, WR 61.1 %
+#   MGC: n=73,  mean R = +0.452, WR 61.6 %
+# These metrics are CROSS-SYMBOL CONFIRMED.  The MVP commits MES-only with
+# the baseline (fixed 1R / 2R / 12-bar) exit mechanic.  Adaptive exits
+# (3R + 0.5×ATR trail after 1R MFE) tested at +1.327 R on MES (+46 %) but
+# deferred to v2 once the live path is proved.
+#
+# Stress-test artifacts: see CHANGELOG entry [Unreleased] (2026-06-11).
+
+# Executor wall-clock window (US/Eastern) — 24-hour because the
+# strongest edge pocket is the overnight Asia + London sessions.  The
+# strategy itself only fires when the pattern + OB confluence is
+# detected on a fresh 5m bar close.
+start_time     = &quot;00:00&quot;
+end_time       = &quot;23:59&quot;
+no_trade_start = &quot;&quot;
+no_trade_end   = &quot;&quot;
+
+[meta]
+enabled = false   # MVP — flip to true after walk-forward truth committed.
+live_breaker_enabled = true
+# MES-only at promotion.  MNQ + MGC have positive baseline edge in the
+# simulator but live-prove the framework with the strongest single symbol
+# first (MES +0.907 R, n=108).
+symbols    = [&quot;MES&quot;]
+timeframe  = &quot;5m&quot;
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 3   # rare signal — 0-2/day on MES historically
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = &quot;5m&quot;
+# 500-bar lookback is REQUIRED for OB detection at the edge.  Internally
+# find_order_blocks loops range(atr_period, len(bars) - window) — meaning
+# the last ``window=5`` bars can't be OB formation candidates.  At
+# lookback=300, OBs that confirm at or near the current bar are missed
+# (this is the most relevant population — they're the freshest).  Trace
+# evidence: with lookback=300, signal count over 5 months on MES = 2;
+# with lookback=500, signal count = 31 (matches global scan).
+lookback_bars     = 500
+session_timezone  = &quot;America/New_York&quot;
+
+# 24/5 enabled — the simulator's +0.907 R MES baseline (n=108) uses ALL
+# hours.  Session decomposition shows 53 % of dragonfly+OB signals fire
+# during Asia (7pm-3am ET), 19 % during London (3am-8am ET), only ~17 %
+# during NY hours.  Restricting to RTH-only cuts signal count by ~90 %
+# (~10 trades over 17 months — insufficient sample).  The bracket OCO
+# handles overnight execution; the consec-loss breaker handles risk.
+rth_only   = false
+rth_start  = &quot;09:30&quot;
+rth_end    = &quot;15:55&quot;
+
+# ATR-scaled bracket geometry — matches the simulator baseline.
+atr_period               = 14
+stop_atr_multiplier      = 1.0
+tp_r_multiple            = 2.0
+entry_offset_ticks       = 0
+
+# Order-block detector knobs.  ``2.0 × ATR`` impulse over a ``5``-bar
+# look-forward, computed against the 14-bar ATR.  These are the exact
+# values used in the simulator that produced the +0.907 R MES result.
+ob_impulse_threshold_atr = 2.0
+ob_window                = 5
+
+# MVP direction policy: short-only fade.  Add LONG (gravestone_doji +
+# bullish OB) in v2 after MES SHORT is live-proved.
+allow_short = true
+allow_long  = false
+
+# Time-based unwind — close any position held &gt; 12 5m bars (60 min) at
+# market.  Mirrors the simulator's ``max_bars=12`` for the truth pin.
+max_hold_bars = 12
+
+# Per-symbol cooldown so a chop session doesn't fire repeatedly inside
+# the same OB zone.
+min_bars_between_signals = 6
+
+# Cross-session consec-loss breaker — off at MVP, enable once we have
+# enough live trades to calibrate streaks.
+max_consecutive_losses             = 0
+loss_streak_cooldown_sessions      = 0
+rolling_pnl_loss_threshold_dollars = 0
+
+[filters]
+# No weekday skip at MVP — the simulator findings hold across all
+# weekdays for this signal.  Friday under-performance is more pronounced
+# in trend-following strategies (overnight_range, ORB).
+skip_weekdays = []
+
+# ─────────────────── per-symbol overrides ────────────────────
+[symbols.MES.risk]
+position_size = 1
+[symbols.MES.signal]
+
+[symbols.MNQ.risk]
+# Disabled at MVP.  MNQ simulator edge = +0.723 R (n=72) — promote once MES is live-proved.
+position_size = 0
+[symbols.MNQ.signal]
+
+[symbols.MGC.risk]
+# Disabled at MVP.  MGC simulator edge = +0.452 R (n=73) — weakest of the three; promote last.
+position_size = 0
+[symbols.MGC.signal]
+</code></pre></details>
+</body>
+</html>

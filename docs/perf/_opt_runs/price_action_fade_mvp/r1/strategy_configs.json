@@ -1,0 +1,104 @@
+{
+  "captured_at_utc": "2026-06-11T06:27:32+00:00",
+  "git_head": "bc7fe47ec",
+  "strategies": {
+    "price_action_fade": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/price_action_fade.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/price_action_fade_mvp/r1/config/price_action_fade.toml",
+      "data": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "no_trade_start": "",
+        "no_trade_end": "",
+        "meta": {
+          "enabled": false,
+          "live_breaker_enabled": true,
+          "symbols": [
+            "MES"
+          ],
+          "timeframe": "5m"
+        },
+        "risk": {
+          "position_size": 1,
+          "max_positions": 1,
+          "max_daily_trades": 3,
+          "risk_per_trade_pct": 0.5,
+          "respect_dll": true,
+          "respect_mll": true,
+          "max_dll_usage_pct": 0.75
+        },
+        "signal": {
+          "timeframe": "5m",
+          "lookback_bars": 500,
+          "session_timezone": "America/New_York",
+          "rth_only": false,
+          "rth_start": "09:30",
+          "rth_end": "15:55",
+          "atr_period": 14,
+          "stop_atr_multiplier": 1.0,
+          "tp_r_multiple": 2.0,
+          "entry_offset_ticks": 0,
+          "ob_impulse_threshold_atr": 2.0,
+          "ob_window": 5,
+          "allow_short": true,
+          "allow_long": false,
+          "max_hold_bars": 12,
+          "min_bars_between_signals": 6,
+          "max_consecutive_losses": 0,
+          "loss_streak_cooldown_sessions": 0,
+          "rolling_pnl_loss_threshold_dollars": 0
+        },
+        "filters": {
+          "skip_weekdays": []
+        },
+        "symbols": {
+          "MES": {
+            "risk": {
+              "position_size": 1
+            },
+            "signal": {}
+          },
+          "MNQ": {
+            "risk": {
+              "position_size": 0
+            },
+            "signal": {}
+          },
+          "MGC": {
+            "risk": {
+              "position_size": 0
+            },
+            "signal": {}
+          }
+        }
+      },
+      "env_overrides": {
+        "PRICE_ACTION_FADE_META_ENABLED": "true"
+      },
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1",
+    "PRICE_ACTION_FADE_META_ENABLED": "true"
+  },
+  "args": {
+    "days": 270,
+    "folds": 9,
+    "strategies": [
+      "price_action_fade"
+    ],
+    "symbols": [
+      "MES"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 8,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0
+  }
+}

@@ -83,6 +83,11 @@ BUILTIN_STRATEGY_SPECS: Dict[str, Tuple[str, str, str]] = {
         "OpeningRangeBreakoutStrategy",
         "Same-day ORB: build box (e.g. 09:30→09:45), stop-bracket entries on break",
     ),
+    "price_action_fade": (
+        "strategies.price_action_fade_strategy",
+        "PriceActionFadeStrategy",
+        "Fade dragonfly_doji bullish-reversal at confirmed bearish Order Block (MVP, MES-only)",
+    ),
     "hourly_anchor_retrace": (
         "strategies.hourly_anchor_retrace_strategy",
         "HourlyAnchorRetraceStrategy",

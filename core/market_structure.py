@@ -767,12 +767,26 @@ def find_order_blocks(
             atrs[i] = (atrs[i - 1] * (atr_period - 1) + tr) / atr_period
 
     blocks: List[OrderBlock] = []
-    for i in range(atr_period, len(bars) - window):
+    # NOTE: outer loop deliberately walks to ``len(bars) - 1`` so OB
+    # candidates whose impulse confirms WITHIN a partial future-window
+    # (i.e. the impulse fired in the last 1-4 bars of the input) are
+    # still detected.  This matters for LIVE detection where the bar
+    # slice always ends at NOW — without this, the strategy can never
+    # see an OB whose confirmation bar IS the current bar (the most
+    # recent and tradeable OBs).  Offline simulation results are
+    # unaffected because there's always a full future window for any
+    # bar except the very last few of the entire dataset.
+    for i in range(atr_period, len(bars) - 1):
         atr = atrs[i]
         if atr is None or atr <= 0:
             continue
         impulse = impulse_threshold_atr * atr
         cand = bars[i]
+        # Cap the inner window at ``len(bars)`` so we never index past
+        # the slice's last bar.  The inner loop still ``break``s on
+        # first confirmation, so the partial-window case is handled
+        # exactly like the full-window case.
+        j_end = min(i + 1 + window, len(bars))
 
         # Bullish OB: last bearish bar before impulse-up.
         # confirmation_index is the FIRST bar within the window whose
@@ -782,7 +796,7 @@ def find_order_blocks(
             cand_low = _l(cand)
             confirm_at: Optional[int] = None
             max_high = -float("inf")
-            for j in range(i + 1, i + 1 + window):
+            for j in range(i + 1, j_end):
                 hj = _h(bars[j])
                 if hj > max_high:
                     max_high = hj
@@ -801,7 +815,7 @@ def find_order_blocks(
             cand_high = _h(cand)
             confirm_at = None
             min_low = float("inf")
-            for j in range(i + 1, i + 1 + window):
+            for j in range(i + 1, j_end):
                 lj = _l(bars[j])
                 if lj < min_low:
                     min_low = lj

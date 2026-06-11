@@ -1,0 +1,119 @@
+# Price-action fade — MVP (2026-06-11).
+#
+# Fade a dragonfly_doji bullish-reversal signal that forms inside a
+# confirmed bearish Order Block.  When the bullish-reversal candle prints
+# in a zone where institutions sold (bearish OB), the rejection wick
+# typically fails and price drops → contrarian SHORT.
+#
+# Simulator findings (MES + MNQ + MGC 5m, Jan 2025 → present, contrarian,
+# 1R-SL / 2R-TP / 12-bar max hold, dragonfly_doji + OB filter):
+#   MES: n=108, mean R = +0.907, WR 64.8 %
+#   MNQ: n=72,  mean R = +0.723, WR 61.1 %
+#   MGC: n=73,  mean R = +0.452, WR 61.6 %
+# These metrics are CROSS-SYMBOL CONFIRMED.  The MVP commits MES-only with
+# the baseline (fixed 1R / 2R / 12-bar) exit mechanic.  Adaptive exits
+# (3R + 0.5×ATR trail after 1R MFE) tested at +1.327 R on MES (+46 %) but
+# deferred to v2 once the live path is proved.
+#
+# Stress-test artifacts: see CHANGELOG entry [Unreleased] (2026-06-11).
+
+# Executor wall-clock window (US/Eastern) — 24-hour because the
+# strongest edge pocket is the overnight Asia + London sessions.  The
+# strategy itself only fires when the pattern + OB confluence is
+# detected on a fresh 5m bar close.
+start_time     = "00:00"
+end_time       = "23:59"
+no_trade_start = ""
+no_trade_end   = ""
+
+[meta]
+enabled = false   # MVP — flip to true after walk-forward truth committed.
+live_breaker_enabled = true
+# MES-only at promotion.  MNQ + MGC have positive baseline edge in the
+# simulator but live-prove the framework with the strongest single symbol
+# first (MES +0.907 R, n=108).
+symbols    = ["MES"]
+timeframe  = "5m"
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 3   # rare signal — 0-2/day on MES historically
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = "5m"
+# 500-bar lookback is REQUIRED for OB detection at the edge.  Internally
+# find_order_blocks loops range(atr_period, len(bars) - window) — meaning
+# the last ``window=5`` bars can't be OB formation candidates.  At
+# lookback=300, OBs that confirm at or near the current bar are missed
+# (this is the most relevant population — they're the freshest).  Trace
+# evidence: with lookback=300, signal count over 5 months on MES = 2;
+# with lookback=500, signal count = 31 (matches global scan).
+lookback_bars     = 500
+session_timezone  = "America/New_York"
+
+# 24/5 enabled — the simulator's +0.907 R MES baseline (n=108) uses ALL
+# hours.  Session decomposition shows 53 % of dragonfly+OB signals fire
+# during Asia (7pm-3am ET), 19 % during London (3am-8am ET), only ~17 %
+# during NY hours.  Restricting to RTH-only cuts signal count by ~90 %
+# (~10 trades over 17 months — insufficient sample).  The bracket OCO
+# handles overnight execution; the consec-loss breaker handles risk.
+rth_only   = false
+rth_start  = "09:30"
+rth_end    = "15:55"
+
+# ATR-scaled bracket geometry — matches the simulator baseline.
+atr_period               = 14
+stop_atr_multiplier      = 1.0
+tp_r_multiple            = 2.0
+entry_offset_ticks       = 0
+
+# Order-block detector knobs.  ``2.0 × ATR`` impulse over a ``5``-bar
+# look-forward, computed against the 14-bar ATR.  These are the exact
+# values used in the simulator that produced the +0.907 R MES result.
+ob_impulse_threshold_atr = 2.0
+ob_window                = 5
+
+# MVP direction policy: short-only fade.  Add LONG (gravestone_doji +
+# bullish OB) in v2 after MES SHORT is live-proved.
+allow_short = true
+allow_long  = false
+
+# Time-based unwind — close any position held > 12 5m bars (60 min) at
+# market.  Mirrors the simulator's ``max_bars=12`` for the truth pin.
+max_hold_bars = 12
+
+# Per-symbol cooldown so a chop session doesn't fire repeatedly inside
+# the same OB zone.
+min_bars_between_signals = 6
+
+# Cross-session consec-loss breaker — off at MVP, enable once we have
+# enough live trades to calibrate streaks.
+max_consecutive_losses             = 0
+loss_streak_cooldown_sessions      = 0
+rolling_pnl_loss_threshold_dollars = 0
+
+[filters]
+# No weekday skip at MVP — the simulator findings hold across all
+# weekdays for this signal.  Friday under-performance is more pronounced
+# in trend-following strategies (overnight_range, ORB).
+skip_weekdays = []
+
+# ─────────────────── per-symbol overrides ────────────────────
+[symbols.MES.risk]
+position_size = 1
+[symbols.MES.signal]
+
+[symbols.MNQ.risk]
+# Disabled at MVP.  MNQ simulator edge = +0.723 R (n=72) — promote once MES is live-proved.
+position_size = 0
+[symbols.MNQ.signal]
+
+[symbols.MGC.risk]
+# Disabled at MVP.  MGC simulator edge = +0.452 R (n=73) — weakest of the three; promote last.
+position_size = 0
+[symbols.MGC.signal]
