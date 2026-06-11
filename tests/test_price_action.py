@@ -208,3 +208,301 @@ def test_detect_all_in_csv_returns_emitter_and_per_bar_detections():
     assert detections[0][1] == []
     snap = emitter.snapshot()
     assert snap[Pattern.BULLISH_ENGULFING]["n"] >= 1
+
+
+# ════════════════════════════════════════════════════════════════════
+# Expanded pattern library (2026-06-10) — doji / marubozu / outside bar /
+# tweezer / harami / piercing / dark cloud / star / soldiers / crows
+# ════════════════════════════════════════════════════════════════════
+
+
+# ─────────────────────── doji family ──────────────────────────────
+
+
+def test_generic_doji_positive():
+    # Goal: small body, wicks present but NEITHER ≥ 30 % (which would
+    # trigger long-legged) AND not gravestone (lower wick ≤ 10 %) AND not
+    # dragonfly (upper wick ≤ 10 %).  Geometry chosen to be deterministic
+    # under float arithmetic (no edge-of-threshold values):
+    #   body = 0.02 / range = 0.21 → body_frac ≈ 9.5 % (clearly < 10 %)
+    #   upper wick = 0.04 → 19 %  (between 10 and 30 — disqualifies all
+    #                              specific sub-classifiers but counts
+    #                              as "wick present" so still a doji)
+    #   lower wick = 0.15 → 71 %  (≥ 50 % but upper > 10 %, so NOT dragonfly)
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 100.06, 99.85, 100.02, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.DOJI in names
+    assert Pattern.LONG_LEGGED_DOJI not in names
+    assert Pattern.DRAGONFLY_DOJI not in names
+    assert Pattern.GRAVESTONE_DOJI not in names
+
+
+def test_long_legged_doji_positive():
+    # tall wicks on BOTH sides (≥30% of range each), tiny body
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 105, 95, 100.05, offset_min=5),  # body 0.05 / range 10 = 0.5%
+    ])
+    names = {e.name for e in events}
+    assert Pattern.LONG_LEGGED_DOJI in names
+    assert Pattern.DOJI not in names  # specificity: long-legged shadows generic
+
+
+def test_gravestone_doji_positive():
+    # body at bottom, tall top wick, tiny bottom wick
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 110, 99.95, 100.05, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.GRAVESTONE_DOJI in names
+
+
+def test_dragonfly_doji_positive():
+    # body at top, tall bottom wick, tiny top wick
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 100.05, 90, 99.95, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.DRAGONFLY_DOJI in names
+
+
+def test_doji_negative_when_body_large():
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 105, 99, 104, offset_min=5),  # body 4 / range 6 → 67% way over 10%
+    ])
+    names = {e.name for e in events}
+    assert not (names & {Pattern.DOJI, Pattern.LONG_LEGGED_DOJI,
+                          Pattern.GRAVESTONE_DOJI, Pattern.DRAGONFLY_DOJI})
+
+
+# ───────────────────────── marubozu ───────────────────────────────
+
+
+def test_bullish_marubozu_positive():
+    # No wicks: open == low, close == high
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 105, 100, 105, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BULLISH_MARUBOZU in names
+
+
+def test_bearish_marubozu_positive():
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(105, 105, 100, 100, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BEARISH_MARUBOZU in names
+
+
+def test_marubozu_negative_with_wicks():
+    # Even small wicks (>5% range) disqualify
+    events = detect_patterns([
+        _bar(100, 100.5, 99.5, 100, offset_min=0),
+        _bar(100, 106, 99, 105, offset_min=5),  # 1pt wick on top, 1pt on bottom → 14% of range
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BULLISH_MARUBOZU not in names
+
+
+# ──────────────────────── outside bar ─────────────────────────────
+
+
+def test_bullish_outside_bar_positive():
+    events = detect_patterns([
+        _bar(100, 102, 99, 101, offset_min=0),
+        _bar(101, 104, 98, 103, offset_min=5),  # high > 102, low < 99, close > open
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BULLISH_OUTSIDE_BAR in names
+
+
+def test_bearish_outside_bar_positive():
+    events = detect_patterns([
+        _bar(100, 102, 99, 101, offset_min=0),
+        _bar(101, 104, 98, 99, offset_min=5),  # range engulfs, close < open
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BEARISH_OUTSIDE_BAR in names
+
+
+def test_outside_bar_negative_when_inside():
+    events = detect_patterns([
+        _bar(100, 105, 95, 102, offset_min=0),
+        _bar(101, 103, 99, 102, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert not (names & {Pattern.BULLISH_OUTSIDE_BAR, Pattern.BEARISH_OUTSIDE_BAR})
+
+
+# ──────────────────────── tweezer ─────────────────────────────────
+
+
+def test_tweezer_top_positive():
+    # First bar bullish closing at high, second bar bearish opening near
+    # first high — equal highs within tolerance, opposite colors.
+    events = detect_patterns([
+        _bar(100, 110, 99, 109, offset_min=0),       # bull
+        _bar(108, 110.1, 102, 103, offset_min=5),    # bear, high within 0.1 of 110
+    ])
+    names = {e.name for e in events}
+    assert Pattern.TWEEZER_TOP in names
+
+
+def test_tweezer_bottom_positive():
+    events = detect_patterns([
+        _bar(110, 111, 100, 101, offset_min=0),      # bear
+        _bar(102, 108, 99.9, 107, offset_min=5),     # bull, low within 0.1 of 100
+    ])
+    names = {e.name for e in events}
+    assert Pattern.TWEEZER_BOTTOM in names
+
+
+def test_tweezer_negative_when_highs_too_far():
+    events = detect_patterns([
+        _bar(100, 110, 99, 109, offset_min=0),       # range = 11 → tol = 1.1
+        _bar(108, 113, 102, 103, offset_min=5),      # high diff = 3 > tol
+    ])
+    names = {e.name for e in events}
+    assert Pattern.TWEEZER_TOP not in names
+
+
+# ───────────────────────── harami ─────────────────────────────────
+
+
+def test_bullish_harami_positive():
+    # Prior bar: big bear body 110→100.  Current: small bull body 102→105 (INSIDE prev body).
+    events = detect_patterns([
+        _bar(110, 110.5, 99.5, 100, offset_min=0),   # body=10, range=11 → 91%
+        _bar(102, 105.2, 101.5, 105, offset_min=5),  # body=3, well inside [100,110]
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BULLISH_HARAMI in names
+
+
+def test_bearish_harami_positive():
+    events = detect_patterns([
+        _bar(100, 110.5, 99.5, 110, offset_min=0),   # big bull body
+        _bar(108, 109, 105, 106, offset_min=5),      # small bear inside
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BEARISH_HARAMI in names
+
+
+def test_harami_negative_when_curr_outside_prev_body():
+    events = detect_patterns([
+        _bar(110, 110.5, 99.5, 100, offset_min=0),
+        _bar(105, 115, 104, 112, offset_min=5),  # close above prev body top
+    ])
+    names = {e.name for e in events}
+    assert Pattern.BULLISH_HARAMI not in names
+
+
+# ────────────────── piercing / dark cloud cover ───────────────────
+
+
+def test_piercing_positive():
+    # Prior: bear 110→100 (body=10).  Mid = 105.
+    # Current: opens below 99.5, closes above 105 (penetrates >50% body).
+    events = detect_patterns([
+        _bar(110, 110.5, 99.5, 100, offset_min=0),
+        _bar(98, 108, 97, 107, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.PIERCING in names
+
+
+def test_dark_cloud_cover_positive():
+    # Prior: bull 100→110.  Mid = 105.
+    # Current: opens above 110.5, closes below 105.
+    events = detect_patterns([
+        _bar(100, 110.5, 99.5, 110, offset_min=0),
+        _bar(112, 113, 102, 103, offset_min=5),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.DARK_CLOUD_COVER in names
+
+
+def test_piercing_negative_when_no_penetration():
+    events = detect_patterns([
+        _bar(110, 110.5, 99.5, 100, offset_min=0),
+        _bar(98, 104, 97, 103, offset_min=5),   # close 103 < mid 105 → no piercing
+    ])
+    names = {e.name for e in events}
+    assert Pattern.PIERCING not in names
+
+
+# ─────────────────── morning / evening star ───────────────────────
+
+
+def test_morning_star_positive():
+    # Bar 1: big bear 110→100.  Bar 2: small body 99→99.5 (star).
+    # Bar 3: big bull closing above mid of bar 1 (105).
+    events = detect_patterns([
+        _bar(110, 110.5, 99.5, 100, offset_min=0),
+        _bar(99, 100, 98.5, 99.5, offset_min=5),
+        _bar(99.5, 108, 99, 107, offset_min=10),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.MORNING_STAR in names
+
+
+def test_evening_star_positive():
+    events = detect_patterns([
+        _bar(100, 110.5, 99.5, 110, offset_min=0),
+        _bar(110.5, 111, 110, 110.5, offset_min=5),
+        _bar(110, 110.5, 102, 103, offset_min=10),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.EVENING_STAR in names
+
+
+def test_morning_star_negative_when_middle_body_too_large():
+    events = detect_patterns([
+        _bar(110, 110.5, 99.5, 100, offset_min=0),
+        _bar(99, 105, 98, 104, offset_min=5),      # middle body = 5 (too big)
+        _bar(99.5, 108, 99, 107, offset_min=10),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.MORNING_STAR not in names
+
+
+# ─────────────── three white soldiers / black crows ───────────────
+
+
+def test_three_white_soldiers_positive():
+    events = detect_patterns([
+        _bar(100, 101, 99.5, 101, offset_min=0),
+        _bar(101, 102, 100.5, 102, offset_min=5),
+        _bar(102, 103.5, 101.5, 103, offset_min=10),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.THREE_WHITE_SOLDIERS in names
+
+
+def test_three_black_crows_positive():
+    events = detect_patterns([
+        _bar(103, 103.5, 102, 102, offset_min=0),
+        _bar(102, 102.5, 101, 101, offset_min=5),
+        _bar(101, 101.5, 100, 100, offset_min=10),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.THREE_BLACK_CROWS in names
+
+
+def test_three_white_soldiers_negative_when_not_all_bullish():
+    events = detect_patterns([
+        _bar(100, 101, 99.5, 101, offset_min=0),
+        _bar(102, 102.5, 100, 100.5, offset_min=5),  # bearish bar in the middle
+        _bar(101, 102.5, 100, 102, offset_min=10),
+    ])
+    names = {e.name for e in events}
+    assert Pattern.THREE_WHITE_SOLDIERS not in names

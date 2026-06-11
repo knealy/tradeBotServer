@@ -19,14 +19,21 @@ script SIMULATES the full trade lifecycle on each pattern detection:
 Then layers contextual filters so we surface where the edge LIVES:
 
     --time-buckets   split trades by ET hour (09-10, 10-11, ...)
-    --vwap           require pattern WITHIN ±vwap_band points of session VWAP
-    --rsi            split by RSI(14) bucket on the pattern bar
+    --session        only take patterns in a specific session bucket
+                     (asia, london, premarket, nyam, lunch, nypm, close, afterhours)
+    --vwap-band      require pattern WITHIN ±band points of session VWAP
+    --rsi-buckets    split by RSI(14) bucket on the pattern bar
+    --at-swing       require pattern within ±N points of most recent
+                     confirmed swing high (bearish patterns) or swing
+                     low (bullish patterns) — the "pattern at S/R" filter
+    --at-prior-day-hl  require pattern within ±N points of prior day H or L
 
 Usage:
     .venv/bin/python scripts/simulate_price_action_trades.py \\
         --csv historical_data/price/MES_5m_databento.csv \\
         --since 2025-01-01 --bias contrarian --max-bars 12 \\
-        --atr-period 14 --stop-atr 1.0 --tp-atr 2.0
+        --atr-period 14 --stop-atr 1.0 --tp-atr 2.0 \\
+        --session nyam --at-swing 5
 
 The "headline" output is per pattern (and per (pattern × time bucket))
 the **expected R per trade** — that's the directly tradeable metric.
@@ -50,6 +57,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.price_action import CandleBar, Pattern, detect_patterns
+from core.market_structure import (
+    Session,
+    SwingKind,
+    SwingTracker,
+    classify_session,
+    prior_session_levels,
+)
 
 
 # ──────────────────────── CSV reader ────────────────────────
@@ -223,24 +237,65 @@ def _simulate_trade(
 # ───────────────────── pattern → direction ──────────────────────
 
 
-# bias=continuation: bullish_pin → LONG, bearish_pin → SHORT, etc.
-# bias=contrarian:   bullish_pin → SHORT, bearish_pin → LONG, etc.
-# Engulfing + inside_bar default to continuation only (no contrarian standard).
-_DIRECTIONS = {
-    Pattern.BULLISH_ENGULFING: +1,
-    Pattern.BEARISH_ENGULFING: -1,
+# Direction policy.
+#
+# +1 = LONG under "continuation" bias (i.e., pattern is intrinsically
+#       bullish so continuation = long, contrarian = short).
+# -1 = SHORT under "continuation" bias (intrinsically bearish).
+#  0 = neutral pattern (doji, inside, marubozu, etc.) — handled below
+#      by treating LONG as the "continuation" direction so it surfaces
+#      in the table.
+#
+# Notes per pattern:
+#  - DOJI family + LONG_LEGGED: indecision; under contrarian bias we
+#    expect mean-reversion → fade the prior bar's direction (we use
+#    LONG as the placeholder "continuation"; meaning of contrarian
+#    will then be SHORT).  Inadequate without context, but useful to
+#    measure baseline.
+#  - GRAVESTONE: bearish-reversal-leaning (top wick rejected) → -1 base
+#  - DRAGONFLY:  bullish-reversal-leaning (bottom wick rejected) → +1 base
+#  - MARUBOZU bull/bear: strong directional → +1/-1 base (continuation)
+#  - OUTSIDE BAR: directional by close → +1/-1 base
+#  - TWEEZER top/bottom: 2-bar reversal → -1 / +1 base
+#  - HARAMI: small body after big body opposite color → reversal → +1/-1
+#  - PIERCING / DARK CLOUD: 2-bar reversal → +1 / -1
+#  - MORNING / EVENING STAR: 3-bar reversal → +1 / -1
+#  - THREE WHITE SOLDIERS / BLACK CROWS: continuation → +1 / -1
+_DIRECTIONS: Dict[str, int] = {
+    # single-bar
     Pattern.BULLISH_PIN: +1,
     Pattern.BEARISH_PIN: -1,
-    Pattern.INSIDE_BAR: 0,  # direction depends on bias (treat as "continuation = LONG")
+    Pattern.DOJI: 0,
+    Pattern.LONG_LEGGED_DOJI: 0,
+    Pattern.GRAVESTONE_DOJI: -1,
+    Pattern.DRAGONFLY_DOJI: +1,
+    Pattern.BULLISH_MARUBOZU: +1,
+    Pattern.BEARISH_MARUBOZU: -1,
+    # two-bar
+    Pattern.BULLISH_ENGULFING: +1,
+    Pattern.BEARISH_ENGULFING: -1,
+    Pattern.INSIDE_BAR: 0,
+    Pattern.BULLISH_OUTSIDE_BAR: +1,
+    Pattern.BEARISH_OUTSIDE_BAR: -1,
+    Pattern.TWEEZER_TOP: -1,
+    Pattern.TWEEZER_BOTTOM: +1,
+    Pattern.BULLISH_HARAMI: +1,
+    Pattern.BEARISH_HARAMI: -1,
+    Pattern.PIERCING: +1,
+    Pattern.DARK_CLOUD_COVER: -1,
+    # three-bar
+    Pattern.MORNING_STAR: +1,
+    Pattern.EVENING_STAR: -1,
+    Pattern.THREE_WHITE_SOLDIERS: +1,
+    Pattern.THREE_BLACK_CROWS: -1,
 }
 
 
 def _direction_for(pattern: str, bias: str) -> int:
     base = _DIRECTIONS.get(pattern, 0)
-    if pattern == Pattern.INSIDE_BAR:
-        # Inside bars on their own have no inherent direction; pick LONG for
-        # continuation, SHORT for contrarian — so it appears in the table
-        # consistently rather than being filtered out.
+    if base == 0:
+        # Neutral pattern: treat as LONG under "continuation" so it
+        # appears in tables.  contrarian flips to SHORT.
         base = +1
     if bias == "contrarian":
         return -base
@@ -312,6 +367,21 @@ def main():
                    help="If > 0, restrict to patterns within ±band points of session VWAP")
     p.add_argument("--rsi-buckets", action="store_true",
                    help="Show per (pattern × RSI quintile) breakdown")
+    p.add_argument("--session", choices=[s.value for s in Session], default=None,
+                   help="Restrict to patterns in this ET session bucket "
+                        "(asia/london/premarket/nyam/lunch/nypm/close/afterhours)")
+    p.add_argument("--at-swing", type=float, default=0.0,
+                   help="If > 0, require pattern within ±N points of the most recent "
+                        "confirmed swing low (bullish-base) or swing high (bearish-base). "
+                        "Implements the 'pattern at S/R' filter.")
+    p.add_argument("--at-prior-day-hl", type=float, default=0.0,
+                   help="If > 0, require pattern within ±N points of prior day's H or L. "
+                        "Major liquidity-magnet filter.")
+    p.add_argument("--swing-lookback", type=int, default=3,
+                   help="Williams-fractal lookback used by --at-swing (default 3)")
+    p.add_argument("--pattern", action="append", default=None,
+                   help="Restrict to specific pattern(s); repeat the flag. "
+                        "Default = all patterns from core.price_action.Pattern.ALL")
     args = p.parse_args()
 
     csv_path = Path(args.csv)
@@ -336,33 +406,82 @@ def main():
     atrs = _wilder_atr(bars, args.atr_period)
     rsis = _rsi(bars, 14) if args.rsi_buckets else [None] * len(bars)
     vwaps = _session_vwap(bars) if args.vwap_band > 0 else [None] * len(bars)
+    pdh_pdl = prior_session_levels(bars, session_zone="America/New_York") if args.at_prior_day_hl > 0 else {}
 
-    pattern_stats: Dict[str, _BucketStats] = {p: _BucketStats(label=p) for p in Pattern.ALL}
+    # Online swing tracker for the --at-swing filter.  Updated bar-by-bar
+    # so we only consult swings confirmed at or before the pattern bar
+    # (no look-ahead).
+    swing_tracker = SwingTracker(lookback=args.swing_lookback) if args.at_swing > 0 else None
+
+    # Pattern whitelist (CLI --pattern can repeat).
+    allowed_patterns = set(args.pattern) if args.pattern else set(Pattern.ALL)
+    target_session = Session(args.session) if args.session else None
+
+    pattern_stats: Dict[str, _BucketStats] = {p: _BucketStats(label=p) for p in sorted(allowed_patterns)}
     hour_stats: Dict[Tuple[str, int], _BucketStats] = {}
     rsi_stats: Dict[Tuple[str, str], _BucketStats] = {}
+    session_stats: Dict[Tuple[str, str], _BucketStats] = {}
 
     window: List[CandleBar] = []
     n_signals = 0
     n_filtered = 0
+    n_filtered_session = 0
+    n_filtered_swing = 0
+    n_filtered_pdh = 0
     for i, b in enumerate(bars):
         window.append(b)
         if len(window) > 5:
             window.pop(0)
+        if swing_tracker is not None:
+            swing_tracker.update(b)
         atr = atrs[i]
         if atr is None or atr <= 0:
             continue
         events = detect_patterns(window)
         if not events:
             continue
+        # ── Session filter (pre-pattern: applies to ALL events on this bar)
+        if target_session is not None:
+            if classify_session(b.timestamp) != target_session:
+                n_filtered_session += 1
+                continue
         for ev in events:
+            if ev.name not in allowed_patterns:
+                continue
             side = _direction_for(ev.name, args.bias)
             if side == 0:
                 continue
-            # Optional VWAP-confluence filter.
+            # ── VWAP confluence filter
             if args.vwap_band > 0:
                 v = vwaps[i]
                 if v is None or abs(b.close - v) > args.vwap_band:
                     n_filtered += 1
+                    continue
+            # ── At-swing (S/R proximity) filter.  For LONG signals require
+            # pattern's low within ±N of the most recent confirmed swing
+            # low (bullish-base trade off support); for SHORT, pattern's
+            # high within ±N of the most recent swing high (off resistance).
+            if swing_tracker is not None:
+                if side > 0:
+                    sw = swing_tracker.most_recent_low
+                    if sw is None or abs(b.low - sw.price) > args.at_swing:
+                        n_filtered_swing += 1
+                        continue
+                else:
+                    sw = swing_tracker.most_recent_high
+                    if sw is None or abs(b.high - sw.price) > args.at_swing:
+                        n_filtered_swing += 1
+                        continue
+            # ── Prior-day H/L filter
+            if args.at_prior_day_hl > 0:
+                lv = pdh_pdl.get(b.timestamp.date())
+                if lv is None:
+                    n_filtered_pdh += 1
+                    continue
+                near_pdh = abs(b.close - lv.high) <= args.at_prior_day_hl
+                near_pdl = abs(b.close - lv.low) <= args.at_prior_day_hl
+                if not (near_pdh or near_pdl):
+                    n_filtered_pdh += 1
                     continue
             stop_dist = atr * args.stop_atr
             tp_dist = atr * args.tp_atr
@@ -386,21 +505,26 @@ def main():
                     )
                     key2 = (ev.name, bucket)
                     rsi_stats.setdefault(key2, _BucketStats(label=f"{ev.name}@{bucket}")).add(r_pnl, exit_reason)
+            # ── Per (pattern × session) breakdown
+            sess = classify_session(b.timestamp).value
+            sk = (ev.name, sess)
+            session_stats.setdefault(sk, _BucketStats(label=f"{ev.name}@{sess}")).add(r_pnl, exit_reason)
 
-    print(f"  pattern signals taken: {n_signals:,}   filtered out: {n_filtered:,}")
+    print(f"  pattern signals taken: {n_signals:,}   filtered "
+          f"vwap={n_filtered:,} session={n_filtered_session:,} swing={n_filtered_swing:,} pdh={n_filtered_pdh:,}")
     print()
-    hdr = f"  {'pattern':<22}  {'n':>5}  {'WR%':>6}  {'meanR':>7}  {'stdR':>6}  {'totalR':>8}  {'sharpe':>7}  {'sl/tp/timed':>14}"
+    hdr = f"  {'pattern':<24}  {'n':>5}  {'WR%':>6}  {'meanR':>7}  {'stdR':>6}  {'totalR':>8}  {'sharpe':>7}  {'sl/tp/timed':>14}"
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     pattern_rows = []
-    for name in Pattern.ALL:
+    for name in [n for n in Pattern.ALL if n in pattern_stats]:
         s = pattern_stats[name]
         if s.n == 0:
-            print(f"  {name:<22}  {0:>5}  {'─':>6}  {'─':>7}  {'─':>6}  {'─':>8}  {'─':>7}  {'─':>14}")
+            print(f"  {name:<24}  {0:>5}  {'─':>6}  {'─':>7}  {'─':>6}  {'─':>8}  {'─':>7}  {'─':>14}")
             continue
         exits = f"{s.exits.get('stop_loss', 0)}/{s.exits.get('take_profit', 0)}/{s.exits.get('timed_exit', 0)}"
         pattern_rows.append((name, s))
-        print(f"  {name:<22}  {s.n:>5}  {s.wr_pct:>6.1f}  {s.mean_r:>+7.3f}  {s.std_r:>6.2f}  "
+        print(f"  {name:<24}  {s.n:>5}  {s.wr_pct:>6.1f}  {s.mean_r:>+7.3f}  {s.std_r:>6.2f}  "
                f"{s.r_total:>+8.1f}  {s.sharpe_ish:>+7.3f}  {exits:>14}")
 
     if not pattern_rows:
@@ -433,10 +557,22 @@ def main():
         print(f" Per (pattern × RSI bucket)  — sorted by mean R")
         print("─" * 100)
         rows = sorted(rsi_stats.values(), key=lambda s: s.mean_r, reverse=True)
-        print(f"  {'pattern@rsi':<32}  {'n':>5}  {'WR%':>6}  {'meanR':>7}  {'totalR':>8}")
+        print(f"  {'pattern@rsi':<34}  {'n':>5}  {'WR%':>6}  {'meanR':>7}  {'totalR':>8}")
         print("  " + "-" * 66)
         for s in rows[:15]:
-            print(f"  {s.label:<32}  {s.n:>5}  {s.wr_pct:>6.1f}  {s.mean_r:>+7.3f}  {s.r_total:>+8.1f}")
+            print(f"  {s.label:<34}  {s.n:>5}  {s.wr_pct:>6.1f}  {s.mean_r:>+7.3f}  {s.r_total:>+8.1f}")
+
+    if session_stats:
+        print()
+        print("─" * 100)
+        print(f" Per (pattern × session)  — sorted by mean R  (min n ≥ 30)")
+        print("─" * 100)
+        rows = [s for s in session_stats.values() if s.n >= 30]
+        rows.sort(key=lambda s: s.mean_r, reverse=True)
+        print(f"  {'pattern@session':<40}  {'n':>5}  {'WR%':>6}  {'meanR':>7}  {'totalR':>8}")
+        print("  " + "-" * 76)
+        for s in rows[:20]:
+            print(f"  {s.label:<40}  {s.n:>5}  {s.wr_pct:>6.1f}  {s.mean_r:>+7.3f}  {s.r_total:>+8.1f}")
 
     print()
 

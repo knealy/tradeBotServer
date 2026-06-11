@@ -7,6 +7,38 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Price-action engine: classical pattern library expansion (2026-06-10).** Added 17 new pure-function detectors to ``core/price_action.py``, bringing the total to 22 classical patterns:
+  - Single-bar: doji (4 sub-types: generic / long-legged / gravestone / dragonfly), bullish/bearish marubozu
+  - Two-bar: bullish/bearish outside bar (range-engulf vs body-engulf), tweezer top/bottom (equal H/L at reversal), bullish/bearish harami (small body inside prior big body), piercing line, dark cloud cover
+  - Three-bar: morning star, evening star (reversal), three white soldiers, three black crows (continuation)
+  Each pattern has thresholds documented inline and a positive + negative pinning test in ``tests/test_price_action.py``.  ``Pattern.ALL`` updated; ``ProbabilityEmitter`` automatically tracks all new patterns.  42 / 42 tests pass.
+- **Price-action engine: market-structure primitives (2026-06-10).** New ``core/market_structure.py`` module (~410 LoC) provides the structural-context layer that turns raw pattern detection into tradeable signals:
+  - ``find_swing_pivots(bars, lookback)`` — Williams-fractal pivot detector (offline / batch).
+  - ``SwingTracker`` — online stateful pivot tracker with bounded history; labels each new swing as HH/LH/HL/LL relative to the prior swing of the same kind.
+  - ``detect_break_of_structure(tracker, last_close)`` — returns BOS_UP / BOS_DOWN when the latest close exceeds the most recent swing high or breaks below the most recent swing low.
+  - ``detect_change_of_character(tracker)`` — flags trend reversals (LL→HL = CHoCH_UP, HH→LH = CHoCH_DOWN).
+  - ``classify_session(ts_et)`` — maps an ET timestamp to one of 8 session buckets (asia, london, premarket, nyam, lunch, nypm, close, afterhours).  Boundaries align with the intraday character documented in STRATEGY_ARSENAL.
+  - ``prior_session_levels(bars)`` — builds a {today_et_date → prior_session_levels} map; each live bar can be annotated with "yesterday's H / L / close" for liquidity-magnet filtering.
+  - ``find_equal_highs / find_equal_lows(swings, tol)`` — pair detector for stop-hunt setups.
+  35 / 35 tests pass.
+- **Price-action simulator: structural + session filters (2026-06-10).** Extended ``scripts/simulate_price_action_trades.py`` with four new flags: ``--session asia|london|nyam|...`` (restrict to ET session bucket), ``--at-swing N`` (require pattern within ±N points of nearest confirmed swing high/low), ``--at-prior-day-hl N`` (require pattern within ±N points of prior day H/L), ``--pattern foo`` (whitelist specific patterns).  Direction policy ``_DIRECTIONS`` extended to map every new pattern (e.g. ``dragonfly_doji`` → +1 bullish-reversal base; ``bearish_marubozu`` → -1).  New `Per (pattern × session)` breakdown added to the report.
+- **Headline findings on the expanded engine** (MES + MNQ + MGC 5m databento, Jan 2025 → present, contrarian / 1R-SL / 2R-TP / 12-bar horizon):
+  - **Marubozu + doji family CONSISTENTLY OUTPERFORM the original 5 patterns across all 3 instruments**:
+    | Pattern | MNQ mean R (n) | MGC mean R (n) | MES mean R (n) |
+    |---|---|---|---|
+    | `bearish_marubozu` (contrarian LONG) | **+0.270** (776) | **+0.175** (907) | **+0.280** (1093) |
+    | `gravestone_doji` (contrarian LONG)  | **+0.257** (630) | **+0.222** (663) | **+0.118** (714) |
+    | `dragonfly_doji`  (contrarian SHORT) | **+0.193** (755) | **+0.150** (829) | **+0.305** (945) |
+    | `bullish_marubozu` (contrarian SHORT)| **+0.146** (863) | **+0.131** (1049)| **+0.173** (1205)|
+
+    Original 5 patterns showed ±0.02 R noise levels; these new patterns are 5-15× stronger.  Interpretation: marubozu (full-body / no wick) and doji (zero-body / all wick) represent EXTREMES of bar shape — strong momentum and total indecision.  Fading both works.  Mechanism is **momentum exhaustion**.
+  - **Session decomposition surfaces even tighter edges**:
+    - `dragonfly_doji @ london` (3-8 AM ET): **+0.486 R/trade**, n=271, WR 57.9 % (MES)
+    - `bearish_marubozu @ london`: **+0.433 R/trade**, n=377, WR 54.1 % (MES)
+    - `dragonfly_doji @ asia`: **+0.433 R/trade**, n=308, WR 53.9 % (MES)
+  - **Structural filter (`--at-swing 5`) further concentrates** — `dragonfly_doji @ asia + at swing high`: **+0.659 R/trade**, n=161, WR 60.2 %.
+
+These are now directly tradeable edges.  Next step (queued): spawn ``price_action_fade`` strategy targeting the top (pattern × session × structure) combinations, walk-forward MNQ + MGC + MES separately, promote if RF beats existing tier-5 (`opening_range_breakout` 3m RF 4.67).
 - **`opening_range_breakout` strategy SPAWNED + PROMOTED to Production tier #5 (2026-06-09 evening).** The previous session's ORB sweep produced 0 trades on 15/30-min windows. Root-cause analysis revealed `OvernightRangeStrategy.track_overnight_range` hard-codes `timeframe='1m'` with a 10-bar minimum — for short same-day windows + a 5m backtest CSV, only 3-6 bars are available, so the strategy rejects with `Insufficient overnight bars: 0 bars`. **Not a cross-vs-same-day mechanic limitation, a code design constraint.** Built `strategies/opening_range_breakout_strategy.py` (~530 LoC) as a purpose-built standalone strategy: mirrors `morning_range_reversion`'s same-day lifecycle (range_start / range_end_open / flat_before, iterate bars in analyze instead of separate fetch) with `overnight_range`'s symmetric stop-bracket entries (BUY stop above box high + SELL stop below box low, OCO via per-session signaled marker). Configurable bracket geometry (range-width fraction OR ATR multiplier). Registered in `strategies/strategy_manager.py` + `core/backtest_executor.py`. Default config + new TOML at `config/strategies/opening_range_breakout.toml`. R1 sweep on MNQ (4 windows × 3 variants × 9m/6m/3m) found:
   - Best window: **60-min (09:30 → 10:30)**
   - Best direction: **LONG ONLY** (short side RF 0.47 vs long-only 0.86 on 9m)

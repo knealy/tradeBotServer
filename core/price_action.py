@@ -112,19 +112,57 @@ class CandleBar:
 
 # Canonical names — kept short, lowercase_with_underscores, stable
 # because the probability emitter and downstream strategies key on them.
+#
+# Grouping (informational):
+#   Single-bar  : pin (bull/bear), doji (4 sub-types), marubozu (bull/bear)
+#   Two-bar     : engulfing, inside_bar, outside_bar (bull/bear),
+#                 tweezer_top/bottom, harami (bull/bear),
+#                 piercing, dark_cloud_cover
+#   Three-bar   : morning_star, evening_star,
+#                 three_white_soldiers, three_black_crows
 class Pattern:
+    # ── single-bar ──────────────────────────────────────────────────
+    BULLISH_PIN = "bullish_pin"
+    BEARISH_PIN = "bearish_pin"
+    DOJI = "doji"
+    LONG_LEGGED_DOJI = "long_legged_doji"
+    GRAVESTONE_DOJI = "gravestone_doji"
+    DRAGONFLY_DOJI = "dragonfly_doji"
+    BULLISH_MARUBOZU = "bullish_marubozu"
+    BEARISH_MARUBOZU = "bearish_marubozu"
+    # ── two-bar ─────────────────────────────────────────────────────
     BULLISH_ENGULFING = "bullish_engulfing"
     BEARISH_ENGULFING = "bearish_engulfing"
     INSIDE_BAR = "inside_bar"
-    BULLISH_PIN = "bullish_pin"
-    BEARISH_PIN = "bearish_pin"
+    BULLISH_OUTSIDE_BAR = "bullish_outside_bar"
+    BEARISH_OUTSIDE_BAR = "bearish_outside_bar"
+    TWEEZER_TOP = "tweezer_top"
+    TWEEZER_BOTTOM = "tweezer_bottom"
+    BULLISH_HARAMI = "bullish_harami"
+    BEARISH_HARAMI = "bearish_harami"
+    PIERCING = "piercing"
+    DARK_CLOUD_COVER = "dark_cloud_cover"
+    # ── three-bar ──────────────────────────────────────────────────
+    MORNING_STAR = "morning_star"
+    EVENING_STAR = "evening_star"
+    THREE_WHITE_SOLDIERS = "three_white_soldiers"
+    THREE_BLACK_CROWS = "three_black_crows"
 
     ALL: Tuple[str, ...] = (
-        BULLISH_ENGULFING,
-        BEARISH_ENGULFING,
+        # single-bar
+        BULLISH_PIN, BEARISH_PIN,
+        DOJI, LONG_LEGGED_DOJI, GRAVESTONE_DOJI, DRAGONFLY_DOJI,
+        BULLISH_MARUBOZU, BEARISH_MARUBOZU,
+        # two-bar
+        BULLISH_ENGULFING, BEARISH_ENGULFING,
         INSIDE_BAR,
-        BULLISH_PIN,
-        BEARISH_PIN,
+        BULLISH_OUTSIDE_BAR, BEARISH_OUTSIDE_BAR,
+        TWEEZER_TOP, TWEEZER_BOTTOM,
+        BULLISH_HARAMI, BEARISH_HARAMI,
+        PIERCING, DARK_CLOUD_COVER,
+        # three-bar
+        MORNING_STAR, EVENING_STAR,
+        THREE_WHITE_SOLDIERS, THREE_BLACK_CROWS,
     )
 
 
@@ -145,6 +183,43 @@ class PatternEvent:
 DEFAULT_PIN_WICK_BODY_MULTIPLE = 2.0  # wick must be ≥ 2× body
 DEFAULT_PIN_OPPOSITE_WICK_MAX_BODY = 1.0  # opposite wick ≤ 1× body
 DEFAULT_PIN_BODY_RANGE_MAX = 0.4  # body must be ≤ 40 % of total range
+
+# Doji: body must be very small relative to total range.  Standard is
+# 5 %; tweaking up to 10 % captures more "near-doji" bars in noisy data.
+DEFAULT_DOJI_BODY_RANGE_MAX = 0.10
+# Doji shape sub-classifiers (relative to total range):
+#   gravestone — body at bottom, all wick on top
+#   dragonfly  — body at top, all wick on bottom
+#   long-legged — body in middle, both wicks long
+DEFAULT_DOJI_GRAVESTONE_BOTTOM_WICK_MAX = 0.10  # bottom wick ≤ 10 % range
+DEFAULT_DOJI_DRAGONFLY_TOP_WICK_MAX = 0.10  # top wick ≤ 10 % range
+DEFAULT_DOJI_LONGLEG_MIN_BOTH_WICKS = 0.30  # both wicks ≥ 30 % range
+
+# Marubozu: full-body bar with negligible wicks (≤ 5 % of range either side).
+DEFAULT_MARUBOZU_WICK_RANGE_MAX = 0.05
+
+# Tweezer tolerance: highs (or lows) considered "equal" when within this
+# fraction of the **first bar's range** (so a 10pt-range bar tolerates
+# ~1pt of slack).  Robust across instruments without per-symbol tuning.
+DEFAULT_TWEEZER_TOL_RANGE_FRAC = 0.10
+
+# Harami: prior bar must have a meaningful body for the small-body-inside
+# to mean compression.  Skip if prior body is tiny (likely a doji itself).
+DEFAULT_HARAMI_PRIOR_BODY_RANGE_MIN = 0.40
+# Current bar's body must be < this fraction of prior bar's body to count.
+DEFAULT_HARAMI_BODY_RATIO_MAX = 0.60
+
+# Piercing / dark-cloud-cover: current bar must close beyond the 50 %
+# midpoint of the prior bar's body (the canonical Steve Nison threshold).
+DEFAULT_PIERCING_PENETRATION = 0.50
+
+# Morning/evening star: middle bar must be a small body (≤ this fraction
+# of either flanking bar's body).
+DEFAULT_STAR_MIDDLE_BODY_MAX = 0.50
+
+# Three-soldier/crow progression: each bar's body must be ≥ this fraction
+# of the prior bar's body (avoids tiny → tiny → tiny noise candles).
+DEFAULT_THREE_BAR_MIN_BODY_PROGRESSION = 0.50
 
 
 def _engulfing(prev: CandleBar, curr: CandleBar, bullish: bool) -> Optional[PatternEvent]:
@@ -213,6 +288,220 @@ def _pin(curr: CandleBar, bullish: bool) -> Optional[PatternEvent]:
     )
 
 
+def _doji_family(curr: CandleBar) -> Optional[PatternEvent]:
+    """Classify a small-body bar into one of four doji sub-types.
+
+    Returns the most-specific match (long-legged > gravestone > dragonfly
+    > generic doji) so a bar is never tagged with multiple doji variants
+    on the same pass.
+    """
+    if curr.range <= 0:
+        return None
+    body_frac = curr.body / curr.range
+    if body_frac > DEFAULT_DOJI_BODY_RANGE_MAX:
+        return None
+    upper_frac = curr.upper_wick / curr.range
+    lower_frac = curr.lower_wick / curr.range
+    # Long-legged: both wicks meaningful — body sits in the middle.
+    if upper_frac >= DEFAULT_DOJI_LONGLEG_MIN_BOTH_WICKS and lower_frac >= DEFAULT_DOJI_LONGLEG_MIN_BOTH_WICKS:
+        return PatternEvent(
+            name=Pattern.LONG_LEGGED_DOJI, bar=curr,
+            extras={"body_range_ratio": body_frac, "upper_wick_frac": upper_frac, "lower_wick_frac": lower_frac},
+        )
+    # Gravestone: body at the bottom, top wick dominates.
+    if lower_frac <= DEFAULT_DOJI_GRAVESTONE_BOTTOM_WICK_MAX and upper_frac >= 0.50:
+        return PatternEvent(
+            name=Pattern.GRAVESTONE_DOJI, bar=curr,
+            extras={"body_range_ratio": body_frac, "upper_wick_frac": upper_frac},
+        )
+    # Dragonfly: body at the top, bottom wick dominates.
+    if upper_frac <= DEFAULT_DOJI_DRAGONFLY_TOP_WICK_MAX and lower_frac >= 0.50:
+        return PatternEvent(
+            name=Pattern.DRAGONFLY_DOJI, bar=curr,
+            extras={"body_range_ratio": body_frac, "lower_wick_frac": lower_frac},
+        )
+    # Generic doji — small body, no specific wick concentration.
+    return PatternEvent(
+        name=Pattern.DOJI, bar=curr,
+        extras={"body_range_ratio": body_frac, "upper_wick_frac": upper_frac, "lower_wick_frac": lower_frac},
+    )
+
+
+def _marubozu(curr: CandleBar) -> Optional[PatternEvent]:
+    if curr.range <= 0 or curr.body <= 0:
+        return None
+    upper_frac = curr.upper_wick / curr.range
+    lower_frac = curr.lower_wick / curr.range
+    if upper_frac > DEFAULT_MARUBOZU_WICK_RANGE_MAX or lower_frac > DEFAULT_MARUBOZU_WICK_RANGE_MAX:
+        return None
+    name = Pattern.BULLISH_MARUBOZU if curr.is_bullish else Pattern.BEARISH_MARUBOZU
+    return PatternEvent(
+        name=name, bar=curr,
+        extras={"body_range_ratio": curr.body / curr.range,
+                "upper_wick_frac": upper_frac, "lower_wick_frac": lower_frac},
+    )
+
+
+def _outside_bar(prev: CandleBar, curr: CandleBar) -> Optional[PatternEvent]:
+    """High > prev.high AND low < prev.low (current bar engulfs prev range).
+
+    Classified bull/bear by current close direction.  Distinct from
+    engulfing — engulfing is BODY containment with opposite color; outside
+    bar is RANGE containment, color-agnostic on the prior bar.
+    """
+    if not (curr.high > prev.high and curr.low < prev.low):
+        return None
+    if curr.range <= 0:
+        return None
+    name = Pattern.BULLISH_OUTSIDE_BAR if curr.is_bullish else Pattern.BEARISH_OUTSIDE_BAR
+    return PatternEvent(
+        name=name, bar=curr,
+        extras={"range_ratio": curr.range / max(prev.range, 1e-9)},
+    )
+
+
+def _tweezer(prev: CandleBar, curr: CandleBar) -> Optional[PatternEvent]:
+    """Two-bar pattern: equal highs (top) or equal lows (bottom).
+
+    Tweezer top = matching highs after an up-move → reversal signal.
+    Tweezer bottom = matching lows after a down-move → reversal signal.
+    """
+    tol = DEFAULT_TWEEZER_TOL_RANGE_FRAC * max(prev.range, 1e-9)
+    if abs(curr.high - prev.high) <= tol and prev.is_bullish and curr.is_bearish:
+        return PatternEvent(
+            name=Pattern.TWEEZER_TOP, bar=curr,
+            extras={"high_diff": abs(curr.high - prev.high), "tolerance": tol},
+        )
+    if abs(curr.low - prev.low) <= tol and prev.is_bearish and curr.is_bullish:
+        return PatternEvent(
+            name=Pattern.TWEEZER_BOTTOM, bar=curr,
+            extras={"low_diff": abs(curr.low - prev.low), "tolerance": tol},
+        )
+    return None
+
+
+def _harami(prev: CandleBar, curr: CandleBar, bullish: bool) -> Optional[PatternEvent]:
+    """Small current body inside prior (opposite-color, large) body.
+
+    Bullish harami: prior bearish big body, current small body INSIDE
+    the prior body.  Bearish harami: opposite.
+    """
+    if prev.range <= 0 or prev.body / prev.range < DEFAULT_HARAMI_PRIOR_BODY_RANGE_MIN:
+        return None
+    if curr.body > DEFAULT_HARAMI_BODY_RATIO_MAX * prev.body:
+        return None
+    if not (curr.body_top <= prev.body_top and curr.body_bottom >= prev.body_bottom):
+        return None
+    if bullish:
+        if not prev.is_bearish:
+            return None
+        name = Pattern.BULLISH_HARAMI
+    else:
+        if not prev.is_bullish:
+            return None
+        name = Pattern.BEARISH_HARAMI
+    return PatternEvent(
+        name=name, bar=curr,
+        extras={"body_ratio": curr.body / max(prev.body, 1e-9)},
+    )
+
+
+def _piercing_or_dark_cloud(prev: CandleBar, curr: CandleBar) -> Optional[PatternEvent]:
+    """Piercing line (bullish reversal) or dark cloud cover (bearish).
+
+    Piercing: prev bearish, curr bullish, curr opens below prev low and
+    closes above the 50 % midpoint of prev's body.
+
+    Dark cloud cover: prev bullish, curr bearish, curr opens above prev
+    high and closes below the 50 % midpoint of prev's body.
+    """
+    if prev.body <= 0 or curr.body <= 0:
+        return None
+    if prev.is_bearish and curr.is_bullish:
+        mid = (prev.body_top + prev.body_bottom) / 2.0
+        if curr.open < prev.low and curr.close > mid and curr.close < prev.body_top:
+            penetration = (curr.close - prev.body_bottom) / max(prev.body, 1e-9)
+            return PatternEvent(
+                name=Pattern.PIERCING, bar=curr,
+                extras={"penetration": penetration},
+            )
+    if prev.is_bullish and curr.is_bearish:
+        mid = (prev.body_top + prev.body_bottom) / 2.0
+        if curr.open > prev.high and curr.close < mid and curr.close > prev.body_bottom:
+            penetration = (prev.body_top - curr.close) / max(prev.body, 1e-9)
+            return PatternEvent(
+                name=Pattern.DARK_CLOUD_COVER, bar=curr,
+                extras={"penetration": penetration},
+            )
+    return None
+
+
+def _star(prev2: CandleBar, prev1: CandleBar, curr: CandleBar) -> Optional[PatternEvent]:
+    """Morning star (bullish) or evening star (bearish) — 3-bar reversal.
+
+    Morning star: bear big body → small body (gap-down ok) → bull big
+    body closing above the midpoint of bar 1.
+    Evening star: mirror — bull → small → bear closing below midpoint.
+    """
+    if prev2.body <= 0 or curr.body <= 0:
+        return None
+    star_max = DEFAULT_STAR_MIDDLE_BODY_MAX * min(prev2.body, curr.body)
+    if prev1.body > star_max:
+        return None
+    if prev2.is_bearish and curr.is_bullish:
+        mid = (prev2.body_top + prev2.body_bottom) / 2.0
+        if curr.close > mid:
+            return PatternEvent(
+                name=Pattern.MORNING_STAR, bar=curr,
+                extras={"prev2_body": prev2.body, "star_body": prev1.body, "curr_body": curr.body},
+            )
+    if prev2.is_bullish and curr.is_bearish:
+        mid = (prev2.body_top + prev2.body_bottom) / 2.0
+        if curr.close < mid:
+            return PatternEvent(
+                name=Pattern.EVENING_STAR, bar=curr,
+                extras={"prev2_body": prev2.body, "star_body": prev1.body, "curr_body": curr.body},
+            )
+    return None
+
+
+def _three_in_a_row(prev2: CandleBar, prev1: CandleBar, curr: CandleBar, bullish: bool) -> Optional[PatternEvent]:
+    """Three-white-soldiers or three-black-crows — 3-bar continuation.
+
+    Bullish: three consecutive bullish bars, each closing higher than
+    the prior, each body ≥ DEFAULT_THREE_BAR_MIN_BODY_PROGRESSION × the
+    prior's body (no dwindling-momentum tails).
+
+    Bearish: mirror.
+    """
+    if any(b.body <= 0 for b in (prev2, prev1, curr)):
+        return None
+    if bullish:
+        if not (prev2.is_bullish and prev1.is_bullish and curr.is_bullish):
+            return None
+        if not (prev1.close > prev2.close and curr.close > prev1.close):
+            return None
+        if prev1.body < DEFAULT_THREE_BAR_MIN_BODY_PROGRESSION * prev2.body:
+            return None
+        if curr.body < DEFAULT_THREE_BAR_MIN_BODY_PROGRESSION * prev1.body:
+            return None
+        name = Pattern.THREE_WHITE_SOLDIERS
+    else:
+        if not (prev2.is_bearish and prev1.is_bearish and curr.is_bearish):
+            return None
+        if not (prev1.close < prev2.close and curr.close < prev1.close):
+            return None
+        if prev1.body < DEFAULT_THREE_BAR_MIN_BODY_PROGRESSION * prev2.body:
+            return None
+        if curr.body < DEFAULT_THREE_BAR_MIN_BODY_PROGRESSION * prev1.body:
+            return None
+        name = Pattern.THREE_BLACK_CROWS
+    return PatternEvent(
+        name=name, bar=curr,
+        extras={"total_move": abs(curr.close - prev2.close)},
+    )
+
+
 def detect_patterns(
     history: Sequence[CandleBar],
     *,
@@ -231,7 +520,25 @@ def detect_patterns(
         return out
     curr = history[-1]
     prev = history[-2] if len(history) >= 2 else None
+    prev2 = history[-3] if len(history) >= 3 else None
 
+    # ── single-bar ──────────────────────────────────────────────────
+    e = _pin(curr, bullish=True)
+    if e:
+        out.append(e)
+    e = _pin(curr, bullish=False)
+    if e:
+        out.append(e)
+    # Doji + marubozu are mutually exclusive with pin via the body/range
+    # gate so we list them all — only the matching one (if any) fires.
+    e = _doji_family(curr)
+    if e:
+        out.append(e)
+    e = _marubozu(curr)
+    if e:
+        out.append(e)
+
+    # ── two-bar ────────────────────────────────────────────────────
     if prev is not None:
         e = _engulfing(prev, curr, bullish=True)
         if e:
@@ -242,13 +549,33 @@ def detect_patterns(
         e = _inside(prev, curr)
         if e:
             out.append(e)
+        e = _outside_bar(prev, curr)
+        if e:
+            out.append(e)
+        e = _tweezer(prev, curr)
+        if e:
+            out.append(e)
+        e = _harami(prev, curr, bullish=True)
+        if e:
+            out.append(e)
+        e = _harami(prev, curr, bullish=False)
+        if e:
+            out.append(e)
+        e = _piercing_or_dark_cloud(prev, curr)
+        if e:
+            out.append(e)
 
-    e = _pin(curr, bullish=True)
-    if e:
-        out.append(e)
-    e = _pin(curr, bullish=False)
-    if e:
-        out.append(e)
+    # ── three-bar ──────────────────────────────────────────────────
+    if prev2 is not None and prev is not None:
+        e = _star(prev2, prev, curr)
+        if e:
+            out.append(e)
+        e = _three_in_a_row(prev2, prev, curr, bullish=True)
+        if e:
+            out.append(e)
+        e = _three_in_a_row(prev2, prev, curr, bullish=False)
+        if e:
+            out.append(e)
 
     return out
 
@@ -375,10 +702,11 @@ def detect_all_in_csv(
     detections: List[Tuple[CandleBar, List[str]]] = []
     emitter = ProbabilityEmitter()
     window: List[CandleBar] = []
-    # Engulfing / inside need 2-bar lookback so we keep a small window.
+    # Three-bar patterns (morning_star, three_white_soldiers) need a
+    # 3-bar lookback.  Keep 5 to give the emitter slack on edge cases.
     for bar in bars:
         window.append(bar)
-        if len(window) > 4:
+        if len(window) > 5:
             window.pop(0)
         names = emitter.update(window)
         detections.append((bar, names))
