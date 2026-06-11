@@ -58,10 +58,17 @@ sys.path.insert(0, str(ROOT))
 
 from core.price_action import CandleBar, Pattern, detect_patterns
 from core.market_structure import (
+    LiquiditySweep,
     Session,
     SwingKind,
     SwingTracker,
     classify_session,
+    find_fair_value_gaps,
+    find_liquidity_sweeps,
+    find_order_blocks,
+    find_swing_pivots,
+    is_inside_fvg,
+    is_inside_order_block,
     prior_session_levels,
 )
 
@@ -382,6 +389,23 @@ def main():
     p.add_argument("--pattern", action="append", default=None,
                    help="Restrict to specific pattern(s); repeat the flag. "
                         "Default = all patterns from core.price_action.Pattern.ALL")
+    # ── SMC / ICT structural filters ────────────────────────────────
+    p.add_argument("--require-fvg", action="store_true",
+                   help="Require pattern bar's close to lie inside an unmitigated "
+                        "Fair Value Gap in the direction of the intended trade")
+    p.add_argument("--require-order-block", action="store_true",
+                   help="Require pattern bar's close to lie inside an unmitigated "
+                        "Order Block in the direction of the intended trade")
+    p.add_argument("--ob-impulse-atr", type=float, default=2.0,
+                   help="Order block impulse threshold in ATR multiples (default 2.0)")
+    p.add_argument("--ob-window", type=int, default=5,
+                   help="Order block impulse window in bars (default 5)")
+    p.add_argument("--include-sweep-as-pattern", action="store_true",
+                   help="Treat liquidity sweeps as standalone patterns "
+                        "(bullish_sweep / bearish_sweep); simulator trades them "
+                        "with the contrarian-fade convention")
+    p.add_argument("--sweep-min-poke", type=float, default=0.0,
+                   help="Minimum poke distance (points) for sweep detection")
     args = p.parse_args()
 
     csv_path = Path(args.csv)
@@ -413,8 +437,34 @@ def main():
     # (no look-ahead).
     swing_tracker = SwingTracker(lookback=args.swing_lookback) if args.at_swing > 0 else None
 
-    # Pattern whitelist (CLI --pattern can repeat).
-    allowed_patterns = set(args.pattern) if args.pattern else set(Pattern.ALL)
+    # ── SMC structures (pre-computed over the full history) ────────
+    # FVGs and order blocks include a mitigation pass after the fact;
+    # is_inside_*() takes a ``bar_index`` arg so we never consult a
+    # structure formed AFTER the current bar (no look-ahead).
+    fvgs = find_fair_value_gaps(bars) if args.require_fvg else []
+    order_blocks = (
+        find_order_blocks(bars, impulse_threshold_atr=args.ob_impulse_atr,
+                          window=args.ob_window, atr_period=args.atr_period)
+        if args.require_order_block else []
+    )
+
+    # Optional standalone-sweep pattern: detect sweeps over the whole
+    # series (offline) and index by bar to merge into the per-bar event
+    # stream below.  Same look-ahead-safe semantics as patterns.
+    sweep_events_by_bar: Dict[int, List[LiquiditySweep]] = {}
+    if args.include_sweep_as_pattern:
+        all_swings = find_swing_pivots(bars, lookback=args.swing_lookback)
+        for sw in find_liquidity_sweeps(
+            bars, all_swings, min_poke_points=args.sweep_min_poke,
+            require_close_back_inside=True,
+        ):
+            sweep_events_by_bar.setdefault(sw.bar_index, []).append(sw)
+
+    # Pattern whitelist (CLI --pattern can repeat).  Sweep names are
+    # accepted alongside core Pattern.ALL when --include-sweep-as-pattern.
+    sweep_names = {"bullish_sweep", "bearish_sweep"} if args.include_sweep_as_pattern else set()
+    all_pattern_names = set(Pattern.ALL) | sweep_names
+    allowed_patterns = set(args.pattern) if args.pattern else all_pattern_names
     target_session = Session(args.session) if args.session else None
 
     pattern_stats: Dict[str, _BucketStats] = {p: _BucketStats(label=p) for p in sorted(allowed_patterns)}
@@ -422,12 +472,22 @@ def main():
     rsi_stats: Dict[Tuple[str, str], _BucketStats] = {}
     session_stats: Dict[Tuple[str, str], _BucketStats] = {}
 
+    # Lightweight shim mimicking a PatternEvent for sweep-as-pattern.
+    class _SweepEvent:
+        __slots__ = ("name", "bar", "extras")
+        def __init__(self, name: str, bar: CandleBar):
+            self.name = name
+            self.bar = bar
+            self.extras = {}
+
     window: List[CandleBar] = []
     n_signals = 0
     n_filtered = 0
     n_filtered_session = 0
     n_filtered_swing = 0
     n_filtered_pdh = 0
+    n_filtered_fvg = 0
+    n_filtered_ob = 0
     for i, b in enumerate(bars):
         window.append(b)
         if len(window) > 5:
@@ -437,7 +497,11 @@ def main():
         atr = atrs[i]
         if atr is None or atr <= 0:
             continue
-        events = detect_patterns(window)
+        events = list(detect_patterns(window))
+        # Merge sweep-as-pattern events for this bar (if enabled).
+        for sw in sweep_events_by_bar.get(i, []):
+            name = "bearish_sweep" if sw.direction == -1 else "bullish_sweep"
+            events.append(_SweepEvent(name, b))
         if not events:
             continue
         # ── Session filter (pre-pattern: applies to ALL events on this bar)
@@ -448,7 +512,16 @@ def main():
         for ev in events:
             if ev.name not in allowed_patterns:
                 continue
-            side = _direction_for(ev.name, args.bias)
+            # Sweep-as-pattern: a bearish sweep (price poked above swing
+            # high then closed back below) is the classic stop-hunt
+            # reversal — trade SHORT.  A bullish sweep (poke below low,
+            # close back above) → trade LONG.  Independent of --bias.
+            if ev.name == "bearish_sweep":
+                side = -1
+            elif ev.name == "bullish_sweep":
+                side = +1
+            else:
+                side = _direction_for(ev.name, args.bias)
             if side == 0:
                 continue
             # ── VWAP confluence filter
@@ -483,6 +556,21 @@ def main():
                 if not (near_pdh or near_pdl):
                     n_filtered_pdh += 1
                     continue
+            # ── Fair-Value-Gap filter: pattern close must be inside an
+            # unmitigated FVG in the direction of the trade.
+            if args.require_fvg:
+                hit = is_inside_fvg(fvgs, bar_index=i, price=b.close,
+                                     direction=side, require_unmitigated=True)
+                if hit is None:
+                    n_filtered_fvg += 1
+                    continue
+            # ── Order-Block filter
+            if args.require_order_block:
+                hit_ob = is_inside_order_block(order_blocks, bar_index=i, price=b.close,
+                                                direction=side, require_unmitigated=True)
+                if hit_ob is None:
+                    n_filtered_ob += 1
+                    continue
             stop_dist = atr * args.stop_atr
             tp_dist = atr * args.tp_atr
             r_pnl, exit_reason, _ = _simulate_trade(
@@ -511,13 +599,18 @@ def main():
             session_stats.setdefault(sk, _BucketStats(label=f"{ev.name}@{sess}")).add(r_pnl, exit_reason)
 
     print(f"  pattern signals taken: {n_signals:,}   filtered "
-          f"vwap={n_filtered:,} session={n_filtered_session:,} swing={n_filtered_swing:,} pdh={n_filtered_pdh:,}")
+          f"vwap={n_filtered:,} session={n_filtered_session:,} swing={n_filtered_swing:,} "
+          f"pdh={n_filtered_pdh:,} fvg={n_filtered_fvg:,} ob={n_filtered_ob:,}")
     print()
     hdr = f"  {'pattern':<24}  {'n':>5}  {'WR%':>6}  {'meanR':>7}  {'stdR':>6}  {'totalR':>8}  {'sharpe':>7}  {'sl/tp/timed':>14}"
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     pattern_rows = []
-    for name in [n for n in Pattern.ALL if n in pattern_stats]:
+    # Pattern.ALL canonical order first, then any sweep-as-pattern names appended.
+    extra_names = sorted([n for n in pattern_stats.keys() if n not in Pattern.ALL])
+    for name in list(Pattern.ALL) + extra_names:
+        if name not in pattern_stats:
+            continue
         s = pattern_stats[name]
         if s.n == 0:
             print(f"  {name:<24}  {0:>5}  {'─':>6}  {'─':>7}  {'─':>6}  {'─':>8}  {'─':>7}  {'─':>14}")

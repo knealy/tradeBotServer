@@ -69,6 +69,7 @@ except ImportError:  # pragma: no cover
 
 
 __all__ = [
+    # swings + structure
     "SwingKind",
     "SwingPoint",
     "find_swing_pivots",
@@ -81,6 +82,15 @@ __all__ = [
     "prior_session_levels",
     "find_equal_highs",
     "find_equal_lows",
+    # SMC / ICT primitives
+    "FairValueGap",
+    "find_fair_value_gaps",
+    "OrderBlock",
+    "find_order_blocks",
+    "LiquiditySweep",
+    "find_liquidity_sweeps",
+    "is_inside_fvg",
+    "is_inside_order_block",
 ]
 
 
@@ -528,3 +538,422 @@ def prior_session_levels(
             session_date=prior, high=agg["high"], low=agg["low"], close=agg["close"],
         )
     return out
+
+
+# ════════════════════════════════════════════════════════════════════
+# SMC / ICT primitives (2026-06-10)
+#
+# Three structural concepts that turn raw pattern detection into
+# higher-conviction trade setups by adding **institutional context**:
+#
+#   - Fair Value Gap (FVG / Imbalance)  — 3-bar gap; price tends to return
+#     to fill it (mean-revert magnet).
+#   - Order Block (OB)                  — last opposite-color bar before
+#     a strong impulsive move; future S/R level (institutional footprint).
+#   - Liquidity Sweep (Stop Hunt)       — wick that pokes through a prior
+#     swing high/low then closes back inside; classic stop-run reversal
+#     signature.
+#
+# All three are stateful in the sense that they evolve over time — a FVG
+# forms on bar i+2, may be tested on bar i+50.  The detectors emit
+# **formation events** (when the structure forms) and the consumer
+# typically maintains a per-bar "active / unfilled" list for trade
+# filtering.  ``is_inside_fvg`` / ``is_inside_order_block`` are the cheap
+# point-in-zone helpers the simulator uses.
+# ════════════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────── Fair Value Gap ────────────────────────────
+
+
+@dataclass
+class FairValueGap:
+    """A 3-bar imbalance.
+
+    Bullish FVG: ``bars[i-2].high < bars[i].low`` — the middle bar (i-1)
+    moved so quickly upward that no trading happened in the gap zone
+    ``[bars[i-2].high, bars[i].low]``.  Price tends to RETURN to this
+    zone to "fill the gap" — making it a magnet for mean-reversion
+    setups.  When a future bar's low touches ``upper`` from above, the
+    FVG is considered mitigated.
+
+    Bearish FVG is the mirror — gap zone ``[bars[i].high, bars[i-2].low]``.
+
+    ``mitigated`` toggles to True once price returns to the zone.  The
+    typical SMC trade is to enter when price first touches an unmitigated
+    FVG (long for bullish, short for bearish) with stop on the far side.
+    """
+
+    formation_index: int   # bar i where the gap was confirmed (3-bar pattern)
+    direction: int          # +1 bullish, -1 bearish
+    upper: float            # top edge of the gap zone
+    lower: float            # bottom edge of the gap zone
+    formation_ts: Optional[datetime] = None
+    mitigated: bool = False
+    mitigation_index: Optional[int] = None
+
+    @property
+    def width(self) -> float:
+        return self.upper - self.lower
+
+    def contains(self, price: float) -> bool:
+        return self.lower <= price <= self.upper
+
+
+def find_fair_value_gaps(bars: Sequence) -> List[FairValueGap]:
+    """Walk ``bars`` and collect every formed FVG with mitigation state.
+
+    Marks each FVG as ``mitigated=True`` if any subsequent bar's high/low
+    re-enters the gap zone, recording the first mitigation index.  This
+    gives the caller a complete history; for live "is bar X inside an
+    unmitigated FVG?" queries use ``is_inside_fvg(fvgs, bar_index, price)``.
+
+    ``bars`` must expose ``.high`` and ``.low`` (and optionally
+    ``.timestamp``).  Indices in the returned list are positions in the
+    input sequence.
+    """
+    if len(bars) < 3:
+        return []
+
+    def _h(b) -> float: return float(getattr(b, "high"))
+    def _l(b) -> float: return float(getattr(b, "low"))
+    def _ts(b): return getattr(b, "timestamp", None)
+
+    gaps: List[FairValueGap] = []
+    for i in range(2, len(bars)):
+        b_prev2 = bars[i - 2]
+        b_curr = bars[i]
+        # Bullish FVG
+        if _h(b_prev2) < _l(b_curr):
+            gaps.append(FairValueGap(
+                formation_index=i, direction=+1,
+                upper=_l(b_curr), lower=_h(b_prev2),
+                formation_ts=_ts(b_curr),
+            ))
+        # Bearish FVG
+        elif _l(b_prev2) > _h(b_curr):
+            gaps.append(FairValueGap(
+                formation_index=i, direction=-1,
+                upper=_l(b_prev2), lower=_h(b_curr),
+                formation_ts=_ts(b_curr),
+            ))
+
+    # Mitigation pass — for each gap, find the first subsequent bar
+    # whose high/low pierces the zone.
+    for g in gaps:
+        for j in range(g.formation_index + 1, len(bars)):
+            hi = _h(bars[j])
+            lo = _l(bars[j])
+            # Any overlap with [lower, upper] counts as mitigation.
+            if hi >= g.lower and lo <= g.upper:
+                g.mitigated = True
+                g.mitigation_index = j
+                break
+    return gaps
+
+
+def is_inside_fvg(
+    fvgs: Sequence[FairValueGap],
+    bar_index: int,
+    price: float,
+    *,
+    direction: Optional[int] = None,
+    require_unmitigated: bool = True,
+) -> Optional[FairValueGap]:
+    """Return the first FVG that contains ``price`` at ``bar_index``.
+
+    Filters:
+      - ``direction``: if set (+1 / -1), only that FVG kind is considered.
+      - ``require_unmitigated``: when True, ignore FVGs whose mitigation
+        index is at or before ``bar_index`` (they've already been filled).
+
+    O(N) over the gap list per call — fine for batch validation; for
+    live use, maintain a separate "active" list keyed by recency.
+    """
+    for g in fvgs:
+        if g.formation_index > bar_index:
+            continue  # not formed yet
+        if direction is not None and g.direction != direction:
+            continue
+        if require_unmitigated and g.mitigated and g.mitigation_index is not None and g.mitigation_index <= bar_index:
+            continue
+        if g.contains(price):
+            return g
+    return None
+
+
+# ───────────────────────────── Order Block ──────────────────────────────
+
+
+@dataclass
+class OrderBlock:
+    """The last opposite-color bar before a strong impulsive move.
+
+    Bullish OB: the last BEARISH bar before a strong up-move (≥
+    ``impulse_threshold`` × ATR within the next ``window`` bars).  The
+    bar's high/low define a zone that often acts as future support.
+
+    Bearish OB: the last BULLISH bar before a strong down-move.
+
+    ``formation_index`` is the OB BAR ITSELF.  ``confirmation_index``
+    is the bar at which the impulse threshold was met — i.e. the
+    EARLIEST bar at which the OB is observable without look-ahead.
+    Consumers MUST gate on ``confirmation_index`` (not formation) when
+    deciding whether the OB is "known" at a given live bar.
+
+    ``mitigated`` toggles when price re-enters the OB zone — the
+    standard SMC trade is to enter ON the first retest of an
+    unmitigated OB in the impulse direction.
+    """
+
+    formation_index: int       # the OB bar itself (last opposite-color before impulse)
+    confirmation_index: int    # earliest bar at which the impulse is observable
+    direction: int             # +1 bullish OB (long-bias), -1 bearish OB
+    upper: float               # zone top (formation bar's high)
+    lower: float               # zone bottom (formation bar's low)
+    impulse_size: float        # how strong the move that followed was (in points)
+    formation_ts: Optional[datetime] = None
+    mitigated: bool = False
+    mitigation_index: Optional[int] = None
+
+    def contains(self, price: float) -> bool:
+        return self.lower <= price <= self.upper
+
+
+def find_order_blocks(
+    bars: Sequence,
+    *,
+    impulse_threshold_atr: float = 2.0,
+    window: int = 5,
+    atr_period: int = 14,
+) -> List[OrderBlock]:
+    """Detect order blocks across ``bars``.
+
+    Algorithm: walk forward, maintain a rolling ATR.  For each bar that
+    is BEARISH (close < open), check whether the next ``window`` bars
+    achieve a high ≥ bar.low + ``impulse_threshold_atr`` × ATR (this is
+    a "strong up-move" — a bullish OB).  Mirror for bullish bars +
+    down-moves.  When a candidate qualifies, emit an OB whose zone is
+    the candidate bar's [low, high].
+
+    Mitigation pass tags each OB with the first subsequent bar that
+    re-enters its zone.
+    """
+    if len(bars) < window + atr_period + 1:
+        return []
+
+    def _h(b) -> float: return float(getattr(b, "high"))
+    def _l(b) -> float: return float(getattr(b, "low"))
+    def _c(b) -> float: return float(getattr(b, "close"))
+    def _o(b) -> float: return float(getattr(b, "open"))
+    def _ts(b): return getattr(b, "timestamp", None)
+    def _is_bullish(b) -> bool: return _c(b) > _o(b)
+    def _is_bearish(b) -> bool: return _c(b) < _o(b)
+
+    # Pre-compute rolling Wilder ATR.
+    atrs: List[Optional[float]] = [None] * len(bars)
+    trs: List[float] = []
+    prev_close = _c(bars[0])
+    for i in range(len(bars)):
+        h = _h(bars[i]); l = _l(bars[i]); c = _c(bars[i])
+        tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+        trs.append(tr)
+        prev_close = c
+        if i + 1 < atr_period:
+            continue
+        if i + 1 == atr_period:
+            atrs[i] = sum(trs[:atr_period]) / atr_period
+        else:
+            atrs[i] = (atrs[i - 1] * (atr_period - 1) + tr) / atr_period
+
+    blocks: List[OrderBlock] = []
+    for i in range(atr_period, len(bars) - window):
+        atr = atrs[i]
+        if atr is None or atr <= 0:
+            continue
+        impulse = impulse_threshold_atr * atr
+        cand = bars[i]
+
+        # Bullish OB: last bearish bar before impulse-up.
+        # confirmation_index is the FIRST bar within the window whose
+        # high crosses the impulse threshold (the earliest bar at
+        # which the OB is observable in real time, no look-ahead).
+        if _is_bearish(cand):
+            cand_low = _l(cand)
+            confirm_at: Optional[int] = None
+            max_high = -float("inf")
+            for j in range(i + 1, i + 1 + window):
+                hj = _h(bars[j])
+                if hj > max_high:
+                    max_high = hj
+                if hj - cand_low >= impulse:
+                    confirm_at = j
+                    break
+            if confirm_at is not None:
+                blocks.append(OrderBlock(
+                    formation_index=i, confirmation_index=confirm_at, direction=+1,
+                    upper=_h(cand), lower=cand_low,
+                    impulse_size=max_high - cand_low,
+                    formation_ts=_ts(cand),
+                ))
+        # Bearish OB: last bullish bar before impulse-down.
+        if _is_bullish(cand):
+            cand_high = _h(cand)
+            confirm_at = None
+            min_low = float("inf")
+            for j in range(i + 1, i + 1 + window):
+                lj = _l(bars[j])
+                if lj < min_low:
+                    min_low = lj
+                if cand_high - lj >= impulse:
+                    confirm_at = j
+                    break
+            if confirm_at is not None:
+                blocks.append(OrderBlock(
+                    formation_index=i, confirmation_index=confirm_at, direction=-1,
+                    upper=cand_high, lower=_l(cand),
+                    impulse_size=cand_high - min_low,
+                    formation_ts=_ts(cand),
+                ))
+
+    # Mitigation pass — only count retests AFTER confirmation (no
+    # look-ahead) and we explicitly skip the impulse bars themselves
+    # since they're what created the OB.
+    for ob in blocks:
+        for j in range(ob.confirmation_index + 1, len(bars)):
+            if _h(bars[j]) >= ob.lower and _l(bars[j]) <= ob.upper:
+                ob.mitigated = True
+                ob.mitigation_index = j
+                break
+    return blocks
+
+
+def is_inside_order_block(
+    blocks: Sequence[OrderBlock],
+    bar_index: int,
+    price: float,
+    *,
+    direction: Optional[int] = None,
+    require_unmitigated: bool = True,
+) -> Optional[OrderBlock]:
+    """Point-in-OB-zone query.
+
+    A bar at ``bar_index`` may only see OBs whose IMPULSE has already
+    been confirmed (``confirmation_index <= bar_index``) — using
+    formation_index would leak the impulse-window into the live signal
+    and produce inflated edge measurements.
+    """
+    for ob in blocks:
+        if ob.confirmation_index > bar_index:
+            continue  # impulse not yet confirmed — would be look-ahead
+        if direction is not None and ob.direction != direction:
+            continue
+        if require_unmitigated and ob.mitigated and ob.mitigation_index is not None and ob.mitigation_index <= bar_index:
+            continue
+        if ob.contains(price):
+            return ob
+    return None
+
+
+# ──────────────────────── Liquidity Sweep ───────────────────────────
+
+
+@dataclass
+class LiquiditySweep:
+    """A wick that pokes through a prior swing high/low then closes back inside.
+
+    The classic stop-hunt signature.  When price spikes above a recent
+    swing high, the cluster of stop-losses just above that high are
+    triggered (long stops + short entries on breakout).  If price then
+    immediately reverses and closes BACK BELOW the swing high, the
+    breakout was a fake — institutions used retail's stops as their
+    liquidity to enter the OPPOSITE direction.  The trade is to SHORT
+    in the direction of the reversal (or LONG on the mirror — sweep
+    below swing low then close back above).
+    """
+
+    bar_index: int          # the sweeping bar
+    direction: int          # -1 = swept high (short bias), +1 = swept low (long bias)
+    swept_price: float      # the swing high/low that was pierced
+    poke_amount: float      # how far past the swing level the wick went
+    close_distance: float   # |close - swept_price|; larger = stronger reversal
+    timestamp: Optional[datetime] = None
+
+
+def find_liquidity_sweeps(
+    bars: Sequence,
+    swings: Sequence[SwingPoint],
+    *,
+    min_poke_points: float = 0.0,
+    require_close_back_inside: bool = True,
+) -> List[LiquiditySweep]:
+    """Walk ``bars`` and emit sweep events.
+
+    For each bar, check whether its wick pierced the most recent
+    confirmed swing high (or low) and whether its close returned to the
+    "inside" of that level.  Uses ``swings`` (caller computes via
+    ``find_swing_pivots``) to identify levels — only swings whose
+    ``index`` is strictly less than the current bar index are eligible
+    (no look-ahead).
+
+    ``min_poke_points``: minimum pierce distance to count.
+    ``require_close_back_inside``: when False, any wick that exceeds the
+    level counts even if the bar closed beyond — useful for measuring
+    raw sweep frequency vs reversal-confirmed sweeps separately.
+    """
+    if not bars or not swings:
+        return []
+
+    def _h(b) -> float: return float(getattr(b, "high"))
+    def _l(b) -> float: return float(getattr(b, "low"))
+    def _c(b) -> float: return float(getattr(b, "close"))
+    def _ts(b): return getattr(b, "timestamp", None)
+
+    # Sort swings by index for efficient "most recent before bar i" lookup.
+    sorted_swings = sorted(swings, key=lambda s: s.index)
+    sweeps: List[LiquiditySweep] = []
+
+    # Walk bars; for each bar i, find the most recent swing high + swing
+    # low whose index < i and check the sweep conditions.
+    last_high: Optional[SwingPoint] = None
+    last_low: Optional[SwingPoint] = None
+    swing_ptr = 0
+    for i in range(len(bars)):
+        # Advance swing pointer to include all swings with index < i.
+        while swing_ptr < len(sorted_swings) and sorted_swings[swing_ptr].index < i:
+            s = sorted_swings[swing_ptr]
+            if s.kind == SwingKind.HIGH:
+                last_high = s
+            else:
+                last_low = s
+            swing_ptr += 1
+
+        b = bars[i]
+        # Sweep of swing HIGH: wick pierces above, close back below.
+        if last_high is not None:
+            poke = _h(b) - last_high.price
+            if poke > min_poke_points:
+                closed_inside = _c(b) < last_high.price
+                if not require_close_back_inside or closed_inside:
+                    sweeps.append(LiquiditySweep(
+                        bar_index=i, direction=-1,
+                        swept_price=last_high.price,
+                        poke_amount=poke,
+                        close_distance=last_high.price - _c(b),
+                        timestamp=_ts(b),
+                    ))
+        # Sweep of swing LOW: wick pierces below, close back above.
+        if last_low is not None:
+            poke = last_low.price - _l(b)
+            if poke > min_poke_points:
+                closed_inside = _c(b) > last_low.price
+                if not require_close_back_inside or closed_inside:
+                    sweeps.append(LiquiditySweep(
+                        bar_index=i, direction=+1,
+                        swept_price=last_low.price,
+                        poke_amount=poke,
+                        close_distance=_c(b) - last_low.price,
+                        timestamp=_ts(b),
+                    ))
+
+    return sweeps

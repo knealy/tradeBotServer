@@ -8,6 +8,9 @@ from typing import List
 import pytest
 
 from core.market_structure import (
+    FairValueGap,
+    LiquiditySweep,
+    OrderBlock,
     Session,
     StructureEvent,
     SwingKind,
@@ -19,7 +22,12 @@ from core.market_structure import (
     detect_change_of_character,
     find_equal_highs,
     find_equal_lows,
+    find_fair_value_gaps,
+    find_liquidity_sweeps,
+    find_order_blocks,
     find_swing_pivots,
+    is_inside_fvg,
+    is_inside_order_block,
     prior_session_levels,
 )
 
@@ -334,3 +342,215 @@ def test_prior_session_levels_handles_naive_timestamps():
     # The 2026-06-10 ET date (which equals UTC date here) should map to
     # 2026-06-09's high/low.
     assert any(lv.high == 100 and lv.low == 90 for lv in levels.values())
+
+
+# ════════════════════════════════════════════════════════════════════
+# SMC / ICT primitives — FVG, Order Block, Liquidity Sweep
+# ════════════════════════════════════════════════════════════════════
+
+
+# ───────────────────────── Fair Value Gap ──────────────────────────
+
+
+def test_bullish_fvg_detected_when_gap_present():
+    # Bar 0 high = 100, Bar 1 (gap up) low = 101, Bar 2 low = 105
+    # → bullish FVG: bar0.high (100) < bar2.low (105)
+    bars = [
+        _Bar(100, 95, close=99),
+        _Bar(110, 101, close=108),  # the impulsive middle bar
+        _Bar(115, 105, close=112),
+    ]
+    fvgs = find_fair_value_gaps(bars)
+    assert len(fvgs) == 1
+    g = fvgs[0]
+    assert g.direction == +1
+    assert g.upper == 105
+    assert g.lower == 100
+
+
+def test_bearish_fvg_detected_when_gap_present():
+    # Bar 0 low = 100, Bar 2 high = 95 → bar0.low (100) > bar2.high (95)
+    bars = [
+        _Bar(105, 100, close=101),
+        _Bar(99, 92, close=93),
+        _Bar(95, 90, close=92),
+    ]
+    fvgs = find_fair_value_gaps(bars)
+    assert len(fvgs) == 1
+    g = fvgs[0]
+    assert g.direction == -1
+    assert g.upper == 100
+    assert g.lower == 95
+
+
+def test_no_fvg_when_bars_overlap():
+    bars = [
+        _Bar(100, 95, close=99),
+        _Bar(102, 98, close=101),
+        _Bar(105, 99, close=104),   # bar0.high=100 > bar2.low=99 → no gap
+    ]
+    fvgs = find_fair_value_gaps(bars)
+    assert fvgs == []
+
+
+def test_fvg_mitigation_recorded_when_price_returns():
+    # Bullish FVG forms on bar 2: bar0.high=100, bar2.low=105 → zone [100,105].
+    # Subsequent bars overlap (no new FVGs) until bar 5 dips its low to
+    # 102 — inside the gap zone.
+    bars = [
+        _Bar(100, 95, close=99),
+        _Bar(110, 101, close=108),
+        _Bar(115, 105, close=112),
+        _Bar(114, 109, close=111),
+        _Bar(112, 108, close=110),
+        _Bar(109, 102, close=104),   # mitigation: low=102 inside [100, 105]
+        _Bar(106, 101, close=102),
+    ]
+    fvgs = find_fair_value_gaps(bars)
+    bullish = [g for g in fvgs if g.direction == +1 and g.formation_index == 2]
+    assert len(bullish) == 1
+    g = bullish[0]
+    assert g.mitigated is True
+    assert g.mitigation_index == 5
+
+
+def test_is_inside_fvg_respects_direction_and_mitigation():
+    bars = [
+        _Bar(100, 95, close=99),
+        _Bar(110, 101, close=108),
+        _Bar(115, 105, close=112),
+    ]
+    fvgs = find_fair_value_gaps(bars)
+    # Inside the bullish FVG zone [100, 105], direction +1, not yet mitigated.
+    assert is_inside_fvg(fvgs, bar_index=3, price=103, direction=+1) is not None
+    # Wrong direction filter returns None.
+    assert is_inside_fvg(fvgs, bar_index=3, price=103, direction=-1) is None
+    # Price outside zone returns None.
+    assert is_inside_fvg(fvgs, bar_index=3, price=120, direction=+1) is None
+
+
+# ───────────────────────────── Order Block ─────────────────────────────
+
+
+def test_bullish_order_block_detected_before_strong_up_move():
+    """Need ≥ atr_period (default 14) bars first for ATR + a bearish OB
+    candidate followed by a strong up-move within ``window`` bars."""
+    # 15 bars to warm up ATR (using small ranges so ATR ≈ 1)
+    bars = [_Bar(100 + i*0.1, 99 + i*0.1, open=99.5 + i*0.1, close=100 + i*0.1) for i in range(15)]
+    # Bar 15: BEARISH candidate — close < open
+    bars.append(_Bar(102, 98, open=102, close=98.5))  # bearish bar; low=98, high=102
+    # Bars 16-20: strong impulse up — high reaches ≥ 98 + 2*ATR ≈ 100
+    for i in range(5):
+        bars.append(_Bar(108 + i, 102 + i, open=102 + i, close=107 + i))
+
+    blocks = find_order_blocks(bars, impulse_threshold_atr=2.0, window=5, atr_period=14)
+    bull_obs = [b for b in blocks if b.direction == +1]
+    assert any(b.formation_index == 15 for b in bull_obs)
+
+
+def test_bearish_order_block_detected_before_strong_down_move():
+    bars = [_Bar(100 + i*0.1, 99 + i*0.1, open=99.5 + i*0.1, close=100 + i*0.1) for i in range(15)]
+    # Bar 15: BULLISH candidate
+    bars.append(_Bar(102, 98, open=98.5, close=102))
+    # Bars 16-20: impulse down
+    for i in range(5):
+        bars.append(_Bar(98 - i, 92 - i, open=98 - i, close=93 - i))
+    blocks = find_order_blocks(bars, impulse_threshold_atr=2.0, window=5, atr_period=14)
+    bear_obs = [b for b in blocks if b.direction == -1]
+    assert any(b.formation_index == 15 for b in bear_obs)
+
+
+def test_no_order_block_when_no_impulse():
+    bars = [_Bar(100 + i*0.1, 99 + i*0.1, open=99.5 + i*0.1, close=100 + i*0.1) for i in range(15)]
+    # Bearish candidate then SLOW move up — no impulse threshold met.
+    bars.append(_Bar(102, 98, open=102, close=98.5))
+    for i in range(5):
+        bars.append(_Bar(99 + i*0.1, 98 + i*0.1, open=98.5 + i*0.1, close=99 + i*0.1))
+    blocks = find_order_blocks(bars, impulse_threshold_atr=2.0, window=5, atr_period=14)
+    assert all(b.formation_index != 15 for b in blocks)
+
+
+def test_is_inside_order_block_basic():
+    ob = OrderBlock(formation_index=10, confirmation_index=15, direction=+1,
+                    upper=105, lower=100, impulse_size=10)
+    # At bar 20: confirmation has happened (15 ≤ 20), price inside zone → match.
+    assert is_inside_order_block([ob], bar_index=20, price=103, direction=+1) is not None
+    assert is_inside_order_block([ob], bar_index=20, price=110, direction=+1) is None
+    # Not yet formed at bar 5.
+    assert is_inside_order_block([ob], bar_index=5, price=103, direction=+1) is None
+
+
+def test_is_inside_order_block_blocks_lookahead_before_confirmation():
+    """A pattern bar BETWEEN formation and confirmation must NOT see
+    the OB — that would be look-ahead bias (we'd be 'predicting' the
+    impulse that hasn't happened yet)."""
+    ob = OrderBlock(formation_index=10, confirmation_index=15, direction=+1,
+                    upper=105, lower=100, impulse_size=10)
+    # Bar 12 is AFTER formation but BEFORE confirmation: must return None.
+    assert is_inside_order_block([ob], bar_index=12, price=103, direction=+1) is None
+    # Bar 14: still pre-confirmation.
+    assert is_inside_order_block([ob], bar_index=14, price=103, direction=+1) is None
+    # Bar 15: confirmation bar itself — OK.
+    assert is_inside_order_block([ob], bar_index=15, price=103, direction=+1) is not None
+
+
+# ──────────────────────── Liquidity Sweep ──────────────────────────
+
+
+def test_liquidity_sweep_above_swing_high():
+    # Build bars with a clear swing high at price 110, then later a bar
+    # that wicks above to 112 but closes back below at 108.
+    bars = _bars([
+        (105, 100), (107, 102), (110, 105),  # swing high at idx 2 (price 110)
+        (108, 104), (107, 103), (106, 102),
+        (112, 105),  # sweeper: high = 112 (poke +2), close should be < 110
+    ])
+    # Set the sweeper's close explicitly.
+    bars[-1].close = 108
+    swings = find_swing_pivots(bars, lookback=2)
+    sweeps = find_liquidity_sweeps(bars, swings, min_poke_points=0.5)
+    assert any(s.direction == -1 and s.bar_index == 6 for s in sweeps)
+
+
+def test_liquidity_sweep_below_swing_low():
+    bars = _bars([
+        (105, 100), (104, 95), (103, 90),  # swing low at idx 2 (price 90)
+        (105, 95), (106, 96), (107, 97),
+        (108, 88),  # sweeper: low = 88 (poke +2), close should be > 90
+    ])
+    bars[-1].close = 92
+    swings = find_swing_pivots(bars, lookback=2)
+    sweeps = find_liquidity_sweeps(bars, swings, min_poke_points=0.5)
+    assert any(s.direction == +1 and s.bar_index == 6 for s in sweeps)
+
+
+def test_no_sweep_when_close_outside():
+    # Wick AND close both above the swept level — that's a real
+    # breakout, not a sweep.
+    bars = _bars([
+        (105, 100), (107, 102), (110, 105),
+        (108, 104), (107, 103), (106, 102),
+        (112, 105),
+    ])
+    bars[-1].close = 111  # closed above 110 → no sweep when require_close_back_inside
+    swings = find_swing_pivots(bars, lookback=2)
+    sweeps = find_liquidity_sweeps(bars, swings, min_poke_points=0.5,
+                                     require_close_back_inside=True)
+    assert all(s.bar_index != 6 for s in sweeps)
+    # But with the gate disabled, we DO get a sweep event.
+    sweeps2 = find_liquidity_sweeps(bars, swings, min_poke_points=0.5,
+                                      require_close_back_inside=False)
+    assert any(s.bar_index == 6 for s in sweeps2)
+
+
+def test_sweep_respects_min_poke_threshold():
+    # A 0.1pt poke shouldn't fire if min_poke_points = 1.0.
+    bars = _bars([
+        (105, 100), (107, 102), (110, 105),
+        (108, 104), (107, 103), (106, 102),
+        (110.1, 105),
+    ])
+    bars[-1].close = 108
+    swings = find_swing_pivots(bars, lookback=2)
+    sweeps = find_liquidity_sweeps(bars, swings, min_poke_points=1.0)
+    assert sweeps == []

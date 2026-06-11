@@ -7,6 +7,28 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **SMC / ICT primitives (2026-06-11): Fair Value Gap, Order Block, Liquidity Sweep.**  Added the three core institutional-trading structural concepts to ``core/market_structure.py`` (now ~700 LoC total):
+  - ``FairValueGap`` dataclass + ``find_fair_value_gaps(bars)`` — detects 3-bar imbalances where ``bar[i-2].high < bar[i].low`` (bullish FVG) or mirror (bearish). Mitigation pass tags each FVG with the first subsequent bar that re-enters the zone.  ``is_inside_fvg(fvgs, bar_index, price, direction, require_unmitigated)`` is the point-in-zone helper with no-look-ahead semantics.
+  - ``OrderBlock`` dataclass + ``find_order_blocks(bars, impulse_threshold_atr, window, atr_period)`` — detects the last opposite-color bar before a strong impulsive move (≥ ``impulse_threshold_atr`` × ATR within ``window`` bars).  **CRITICAL**: the dataclass stores BOTH ``formation_index`` (the OB bar itself) AND ``confirmation_index`` (the EARLIEST bar at which the impulse threshold was breached).  ``is_inside_order_block`` gates on ``confirmation_index`` — using ``formation_index`` would leak the impulse window into the live signal (look-ahead bias).  Initial pass without this gate produced suspiciously high edges (WR 76-87 %, mean R +1.0 to +1.6); the corrected gate brings results to realistic +0.7 to +0.9 R with n in the 60-110 range.
+  - ``LiquiditySweep`` dataclass + ``find_liquidity_sweeps(bars, swings, min_poke_points, require_close_back_inside)`` — detects stop-hunt setups (wick pokes through a prior swing high or low then closes back inside).  Bullish sweep = poke below swing low + close above → LONG.  Bearish sweep = poke above swing high + close below → SHORT.
+  - 13 new tests added (5 FVG + 5 OB + 4 sweep + 1 OB look-ahead-safety) → 49 / 49 market_structure tests pass.
+- **Simulator: SMC integration (``scripts/simulate_price_action_trades.py``).**  Four new flags:
+  - ``--require-fvg`` — pattern's close must lie inside an unmitigated FVG in the trade's intended direction.
+  - ``--require-order-block`` — pattern's close must lie inside a CONFIRMED, unmitigated Order Block.
+  - ``--ob-impulse-atr N``, ``--ob-window M`` — tune the OB detector's impulse threshold (default 2.0 × ATR over 5 bars).
+  - ``--include-sweep-as-pattern`` + ``--sweep-min-poke N`` — treat liquidity sweeps as standalone patterns (``bullish_sweep`` / ``bearish_sweep``) trading the stop-run reversal.
+- **Headline SMC findings (MES + MNQ + MGC 5m, Jan 2025 → present, contrarian, 1R-SL / 2R-TP, 12-bar horizon)**:
+  - **Order Block confluence ~3× the edge of the same patterns without OB**:
+    | Pattern | No OB filter | + OB filter | Lift |
+    |---|---|---|---|
+    | `dragonfly_doji` (MES) | +0.305 R (n=945) | **+0.907 R (n=108)** | **2.97×** |
+    | `dragonfly_doji` (MNQ) | +0.193 R (n=755) | **+0.723 R (n=72)** | **3.75×** |
+    | `dragonfly_doji` (MGC) | +0.150 R (n=829) | **+0.452 R (n=73)** | **3.01×** |
+  - **Session-concentrated**: `dragonfly_doji @ asia + OB` (MES) = +1.417 R/trade, n=42, WR 83.3 %.  Tiny sample but extreme edge.
+  - **FVG filter is too restrictive standalone**: 0.8 % pass rate (855 / 106 k signals) — most bars never sit inside an unmitigated FVG.  Some patterns DO show big lift in the tiny survivor pool (e.g. `bearish_marubozu + FVG` = +0.797 R, n=16) but samples are too small to commit on.  FVG works better as a TIE-BREAKER on top of session + OB filters than as a primary gate.
+  - **Standalone sweep patterns LOSE**: `bullish_sweep` -0.153 R (n=1843), `bearish_sweep` -0.079 R (n=1691).  The naked stop-hunt is not enough to trade — needs context (session, pattern confluence, or structural confluence).  `bullish_sweep @ close` shows +0.161 R in a small pocket but not robust enough to build a strategy on alone.
+
+Next step (queued): spawn ``price_action_fade`` strategy targeting the top-confluence combinations.  Primary candidate: ``dragonfly_doji + OB`` on MNQ + MGC + MES — three-instrument-confirmed edge in the +0.45 to +0.90 R range, n=70-110 per symbol.
 - **Price-action engine: classical pattern library expansion (2026-06-10).** Added 17 new pure-function detectors to ``core/price_action.py``, bringing the total to 22 classical patterns:
   - Single-bar: doji (4 sub-types: generic / long-legged / gravestone / dragonfly), bullish/bearish marubozu
   - Two-bar: bullish/bearish outside bar (range-engulf vs body-engulf), tweezer top/bottom (equal H/L at reversal), bullish/bearish harami (small body inside prior big body), piercing line, dark cloud cover
