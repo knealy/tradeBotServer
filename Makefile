@@ -14,7 +14,8 @@
 #         make backtest STRATEGY=overnight_range DAYS=180 FOLDS=6 SYMBOLS=MNQ,MES,MGC
 
 .PHONY: help test verify map bench backtest summary smoke verify-fast \
-        backtest-recap backtest-competition
+        backtest-recap backtest-competition refresh-data refresh-data-check \
+        allocate probe
 
 # Defaults — override on the command line: ``make backtest STRATEGY=...``
 PY            ?= .venv/bin/python
@@ -99,3 +100,20 @@ smoke: ## Run the byte-identical parity test for STRATEGY (4-month + 1-month win
 	@printf '[smoke] %s fast-loop parity (1m + 4m windows)\n' "$(STRATEGY)"
 	$(PY) -m pytest tests/test_backtest_fast_loop_parity.py -v \
 		-k "$(STRATEGY)"
+
+refresh-data: ## Pull fresh 1m + 5m bars from TopStepX onto canonical *_databento.csv files (MES/MNQ/MGC).
+	@printf '[refresh-data] stitching fresh 1m + 5m bars onto canonical CSVs\n'
+	bash scripts/refresh_historical.sh
+
+refresh-data-check: ## Report current staleness of every *_databento.csv (no API calls; offline-safe).
+	@bash scripts/refresh_historical.sh --check
+
+allocate: ## Run portfolio allocator (rank production strategies + suggest per-account assignment).
+	@$(PY) scripts/portfolio_allocator.py
+
+probe: ## Truth-mode-always pattern edge probe. Usage: make probe PATTERN=dragonfly_doji BIAS=contrarian [OB=1]
+	@$(PY) scripts/probe_pattern_edge.py \
+		--pattern $(if $(PATTERN),$(PATTERN),dragonfly_doji) \
+		--bias $(if $(BIAS),$(BIAS),contrarian) \
+		$(if $(OB),--require-ob) \
+		$(if $(SYMBOLS),--symbols $(SYMBOLS))

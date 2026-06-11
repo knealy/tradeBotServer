@@ -82,6 +82,97 @@ def test_extended_insights_breakeven_and_recovery():
     assert ext["recovery_factor_pnl_vs_seq_dd"] is not None
 
 
+def test_extended_insights_r_outlier_cap():
+    """Variable-stop strategies (overnight_reversion, MGC vs MNQ size
+    deltas) can produce trades whose ``initial_risk_dollars`` is
+    near-zero, blowing up the per-trade R multiple to absurd values.
+
+    The 2026-06-11 arsenal sanity check found ``overnight_reversion``
+    showing ``avg_r_winners=+850`` from a single trade with tiny
+    recorded risk dollars and a normal-sized win.  The recap now
+    clips per-trade R at ±10R before averaging, plus surfaces median
+    and the unclipped raw mean for transparency.
+
+    This pins the contract: with one trade at +850R (tiny risk) and
+    one trade at +2R (normal risk), the CLIPPED avg_r_winners must
+    be (10 + 2) / 2 = 6.0 (NOT 426 which is the unclipped mean).
+    The unclipped mean must still be available via
+    ``avg_r_winners_unclipped`` for transparency.
+    """
+    # Trade A: $850 win on $1 of recorded risk → +850R (pathological)
+    # Trade B: $200 win on $100 of recorded risk → +2R (normal)
+    trades = [
+        _trade(
+            entry_iso="2026-01-01T10:00:00+00:00",
+            exit_iso="2026-01-01T11:00:00+00:00",
+            pnl=850.0, risk=1.0,
+        ),
+        _trade(
+            entry_iso="2026-01-02T10:00:00+00:00",
+            exit_iso="2026-01-02T11:00:00+00:00",
+            pnl=200.0, risk=100.0,
+        ),
+    ]
+    ext = extended_performance_insights(trades)
+    # Primary metric: clipped mean = (10 + 2) / 2 = 6.0
+    assert ext["avg_r_winners"] == 6.0, ext
+    # Unclipped diagnostic: (850 + 2) / 2 = 426.0
+    assert ext["avg_r_winners_unclipped"] == 426.0, ext
+    # Median is unaffected by single tail: median of {850, 2} = 426.
+    # Note: median of 2 values is the mean of the two — so median == unclipped mean here.
+    # The point of MEDIAN is to be robust as N grows.
+    assert ext["median_r_winners"] == 426.0, ext
+    # Exactly one trade was clipped.
+    assert ext["n_clipped_r_winners"] == 1, ext
+    assert ext["n_clipped_r_losers"] == 0, ext
+    # No losses → losers field is None (None < anything is undefined; just check no crash).
+    assert ext["avg_r_losers"] is None, ext
+    assert ext["r_cap"] == 10.0
+
+
+def test_extended_insights_r_cap_symmetric_for_losers():
+    """A loser whose initial_risk_dollars was tiny shows up as huge
+    negative R.  Cap must apply symmetrically at -10R."""
+    trades = [
+        _trade(
+            entry_iso="2026-01-01T10:00:00+00:00",
+            exit_iso="2026-01-01T11:00:00+00:00",
+            pnl=-500.0, risk=2.0,  # -250R, capped to -10R
+        ),
+        _trade(
+            entry_iso="2026-01-02T10:00:00+00:00",
+            exit_iso="2026-01-02T11:00:00+00:00",
+            pnl=-100.0, risk=100.0,  # -1R normal
+        ),
+    ]
+    ext = extended_performance_insights(trades)
+    # Clipped mean: (-10 + -1) / 2 = -5.5
+    assert ext["avg_r_losers"] == -5.5, ext
+    # Unclipped: (-250 + -1) / 2 = -125.5
+    assert ext["avg_r_losers_unclipped"] == -125.5, ext
+    assert ext["n_clipped_r_losers"] == 1, ext
+    assert ext["n_clipped_r_winners"] == 0, ext
+
+
+def test_extended_insights_r_metrics_unchanged_when_no_outliers():
+    """For well-behaved strategies (every trade has reasonable
+    initial_risk_dollars), clipped == unclipped — no behavioural
+    change from the cap, so existing dashboards see identical values."""
+    trades = [
+        _trade(entry_iso="2026-01-01T10:00:00+00:00", exit_iso="2026-01-01T11:00:00+00:00",
+               pnl=200.0, risk=100.0),  # +2R
+        _trade(entry_iso="2026-01-02T10:00:00+00:00", exit_iso="2026-01-02T11:00:00+00:00",
+               pnl=-100.0, risk=100.0),  # -1R
+        _trade(entry_iso="2026-01-03T10:00:00+00:00", exit_iso="2026-01-03T11:00:00+00:00",
+               pnl=300.0, risk=150.0),  # +2R
+    ]
+    ext = extended_performance_insights(trades)
+    assert ext["avg_r_winners"] == ext["avg_r_winners_unclipped"], ext
+    assert ext["avg_r_losers"] == ext["avg_r_losers_unclipped"], ext
+    assert ext["n_clipped_r_winners"] == 0
+    assert ext["n_clipped_r_losers"] == 0
+
+
 def test_loss_patterns_exit_reason_and_side():
     trades = [
         _trade(

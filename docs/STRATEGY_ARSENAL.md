@@ -1,5 +1,9 @@
 # Strategy Arsenal
 
+Last refresh: 2026-06-11 — **Price-action research stack DE-RATED via truth-mode (no production tier change)**.  The 2026-06-11 truth-mode work (see ``docs/CHANGELOG.md``) proved the legacy ``scripts/simulate_price_action_trades.py`` was over-optimistic by ~+0.79 R on average — the entire PA research stack (``dragonfly_doji + OB``, ``gravestone_doji + OB``, ``sweep_into_fvg``, etc.) does NOT contain a productionizable edge under realistic execution.  ``price_action_fade`` MVP REMAINS ``meta.enabled = false`` and is **NOT** in any production tier.  Production tiers #1-5 below are UNCHANGED and were each validated against the engine's truth-mode-equivalent fill model — see "Arsenal truth-effects sanity check (2026-06-11)" in CHANGELOG for the per-strategy proof.  Use ``scripts/probe_pattern_edge.py --truth-mode-always`` for any new PA edge measurement going forward.
+
+---
+
 Last refresh: 2026-06-09 evening **`opening_range_breakout` SPAWNED as Production tier #5 — beats overnight_range R24 on 3m truth by 2.1×**. While investigating why the 2026-06-09 `OvernightRangeStrategy`-as-ORB sweep produced 0 trades on 15/30-min windows, the root cause turned out to be a `track_overnight_range` design constraint (hard-coded `timeframe='1m'` + 10-bar minimum) rather than a true ORB-edge absence. Built a purpose-built `OpeningRangeBreakoutStrategy` (530 LoC, mirrors MRR's same-day lifecycle with overnight_range's stop-bracket entry logic).  R1 MNQ-focused sweep result on the committed config (60-min window 09:30 → 10:30, long-only, skip Friday):
 
 | Window | RF | Return | DD | WR | n |

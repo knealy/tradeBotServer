@@ -198,6 +198,18 @@ def extended_performance_insights(trades: List[Dict[str, Any]]) -> Dict[str, Any
         int(t.get("bars_held") or 0) for t in trades if _trade_pnl(t) < 0 and t.get("bars_held") is not None
     ]
 
+    # Per-trade R-multiples = pnl / initial_risk_dollars.  For
+    # variable-stop strategies (ATR-scaled stops on overnight gaps,
+    # MGC vs MNQ position-size differences), trades with very small
+    # initial_risk_dollars can dominate the mean (overnight_reversion
+    # 2026-06-11 audit found avg_r_winners=+850 because one trade
+    # had near-zero recorded risk).  Cap each trade's R at ±MAX_R_CAP
+    # before averaging so the mean is robust; surface BOTH the clipped
+    # mean (the "fair" measurement) AND the unclipped raw mean (so
+    # the variable-stop pathology is visible in the recap), plus
+    # MEDIAN as a non-parametric central tendency.  See CHANGELOG
+    # 2026-06-11 "Arsenal truth-effects sanity check" for context.
+    MAX_R_CAP = 10.0
     r_w: List[float] = []
     r_l: List[float] = []
     for t in trades:
@@ -208,6 +220,22 @@ def extended_performance_insights(trades: List[Dict[str, Any]]) -> Dict[str, Any
                 r_w.append(p / r)
             elif p < 0:
                 r_l.append(p / r)
+    r_w_clipped = [min(MAX_R_CAP, v) for v in r_w]
+    r_l_clipped = [max(-MAX_R_CAP, v) for v in r_l]
+    n_w_clip = sum(1 for v in r_w if v > MAX_R_CAP)
+    n_l_clip = sum(1 for v in r_l if v < -MAX_R_CAP)
+
+    def _safe_mean(xs: List[float]) -> Optional[float]:
+        if not xs:
+            return None
+        if len(xs) == 1:
+            return round(xs[0], 3)
+        return round(statistics.fmean(xs), 3)
+
+    def _safe_median(xs: List[float]) -> Optional[float]:
+        if not xs:
+            return None
+        return round(statistics.median(xs), 3)
 
     return {
         "n_trades": n,
@@ -232,8 +260,18 @@ def extended_performance_insights(trades: List[Dict[str, Any]]) -> Dict[str, Any
         )
         if wins
         else None,
-        "avg_r_winners": round(statistics.fmean(r_w), 3) if len(r_w) > 1 else (round(r_w[0], 3) if r_w else None),
-        "avg_r_losers": round(statistics.fmean(r_l), 3) if len(r_l) > 1 else (round(r_l[0], 3) if r_l else None),
+        # PRIMARY: clipped mean — robust to variable-stop pathology.
+        "avg_r_winners": _safe_mean(r_w_clipped),
+        "avg_r_losers": _safe_mean(r_l_clipped),
+        # DIAGNOSTICS: median (robust central tendency) + unclipped
+        # raw mean (surfaces variable-stop pathology) + clip counts.
+        "median_r_winners": _safe_median(r_w),
+        "median_r_losers": _safe_median(r_l),
+        "avg_r_winners_unclipped": _safe_mean(r_w),
+        "avg_r_losers_unclipped": _safe_mean(r_l),
+        "n_clipped_r_winners": n_w_clip,
+        "n_clipped_r_losers": n_l_clip,
+        "r_cap": MAX_R_CAP,
     }
 
 
@@ -411,9 +449,25 @@ def format_insights_html(
         )
         arw = extended.get("avg_r_winners")
         arl = extended.get("avg_r_losers")
+        cap = extended.get("r_cap")
+        mrw = extended.get("median_r_winners")
+        mrl = extended.get("median_r_losers")
+        nwc = extended.get("n_clipped_r_winners") or 0
+        nlc = extended.get("n_clipped_r_losers") or 0
+        clip_note = (
+            f" ({nwc + nlc} trade(s) clipped at ±{cap}R)" if (nwc + nlc) > 0 else ""
+        )
         rows_ext.append(
-            f"<tr><td>Avg R multiples</td><td class='num'>win:{arw if arw is not None else '—'} "
-            f"loss:{arl if arl is not None else '—'}</td><td>Where initial_risk_dollars recorded</td></tr>"
+            f"<tr><td>Avg R multiples (clipped ±{cap}R)</td>"
+            f"<td class='num'>win:{arw if arw is not None else '—'} "
+            f"loss:{arl if arl is not None else '—'}</td>"
+            f"<td>Clipped mean is robust to variable-stop outliers{clip_note}</td></tr>"
+        )
+        rows_ext.append(
+            f"<tr><td>Median R multiples</td>"
+            f"<td class='num'>win:{mrw if mrw is not None else '—'} "
+            f"loss:{mrl if mrl is not None else '—'}</td>"
+            f"<td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr>"
         )
 
     reason_rows: List[str] = []
