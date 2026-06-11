@@ -7,6 +7,34 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Exit-mechanics stress test (2026-06-11): multi-R / multi-horizon matrix + trailing stop + partial profit.**  Extended ``scripts/simulate_price_action_trades.py`` with three new exit mechanic modes:
+  - **``--stress-test``** with ``--stress-tp-list`` and ``--stress-bars-list`` — runs the full (TP-ATR × max-bars) cross-product per pattern in a single pass and emits a heatmap.  Quickly answers "does my edge depend on the specific 2R / 12-bar choice or is it stable across exit configurations?"
+  - **``--trail-atr N --trail-trigger-r M``** — activates a trailing stop at ``N × ATR`` once unrealised profit reaches ``M × stop_dist`` (default 1R).  SL only moves favorably.
+  - **``--partial-r N --partial-frac F``** — closes ``F`` fraction of position at ``N × R`` then moves the runner's SL to breakeven.  Final pnl = partial fill + runner outcome.
+  - Trailing + partial can be combined; runner gets trailed after partial fill.
+  - **Critical intra-bar fix found via tests**: initial implementation updated SL within the same bar that produced the favorable MFE, allowing single-bar feedback loops (bar simultaneously creates MFE, raises SL, and stops at the new SL).  Corrected ordering: hit-check uses start-of-bar SL/TP; trailing/partial updates apply at END of bar (effective NEXT bar).  Inflated MES dragonfly+OB+trailing from +1.395 R to a realistic +1.327 R (+46 % vs baseline rather than +54 %).
+- **9 new tests** in ``tests/test_simulate_price_action_trades.py`` covering fixed-TP / SL / timed-exit paths + 3 trailing-stop scenarios + 2 partial-profit scenarios + 1 combined mode.
+- **Headline stress-test findings (MES + MNQ + MGC 5m, Jan 2025 → present)**:
+  - **``dragonfly_doji + OB`` is ROBUST across (TP-ATR × max-bars) matrix** — every cell in the (TP ∈ {1, 1.5, 2, 2.5, 3} R) × (max-bars ∈ {6, 12, 24, 48}) grid is positive.  The current 2R / 12-bar default sits MID-MATRIX (not over-fit to a specific config).
+    | max-bars | TP=1R | TP=2R | TP=3R |
+    |---|---|---|---|
+    | 12 | +0.544 | **+0.907** | +0.966 |
+    | 48 | +0.602 | +0.998 | **+1.225** |
+    Best cell: TP=3R + 48-bar hold = **+1.225 R/trade**.  Edge grows with both TP and horizon → strong directional runners common.
+  - **``sweep_into_fvg @ premarket`` PLATEAUS at +0.21 R** — edge stable around +0.19-0.21 R for TP=2R+ and max-bars 12+.  Different mechanic: mean-revert (no runner upside) vs dragonfly's directional drive.
+  - **Trailing stop wins for MES + MNQ; neutral on MGC**:
+    | Symbol | Baseline (2R/12) | Trailing (3R/24/0.5×ATR) | Delta |
+    |---|---|---|---|
+    | MES | +0.907 R (n=108) | **+1.327 R** (n=108, WR 75 %) | **+46 %** |
+    | MNQ | +0.723 R (n=72)  | +0.854 R (n=72, WR 61 %) | +18 % |
+    | MGC | +0.452 R (n=73)  | +0.414 R (n=73, WR 62 %) | −8 % |
+    MGC's volatility character causes premature stop-outs under trailing.
+  - **Partial-profit + BE-runner HURTS overall edge** — clips upside (50 % of position capped at 1R).  WR rises to 78 % but mean R drops to +0.329 R.  Not a useful exit mechanic for this signal.
+
+  **Strategy implication**: a future ``price_action_fade`` strategy should use:
+  - **MES + MNQ**: TP=3R + trailing-stop after 1R MFE, max 24-bar hold
+  - **MGC** (optional 3rd instrument): fixed TP=2R, max 12-bar hold (or drop MGC entirely since its baseline edge is weakest and trailing doesn't help)
+
 - **Compound SMC setups (2026-06-11): sweep_into_fvg, fvg_in_ob, choch_then_ob_retest.**  New module ``core/smc_setups.py`` (~360 LoC) provides the multi-primitive CONFLUENCES that practitioners actually trade:
   - **``sweep_into_fvg``** — a liquidity sweep (stop-hunt) followed by price re-entering an unmitigated FVG on the reversal side.  Sweep proves stops were run; FVG is the high-probability entry zone.  Trade direction = sweep's implied reversal direction.  Includes the sweep bar itself in the search window (sweep-bar-into-FVG entries fire immediately) and uses sweep-bar-aware FVG mitigation gating so the sweep's own intrusion into the FVG doesn't disqualify the trade.
   - **``fvg_in_ob``** — an FVG whose zone OVERLAPS an unmitigated Order Block in the same direction.  Double-confluence entry zone is the OVERLAP rectangle.  Mitigation-aware: signal blocked if FVG or OB was mitigated before the trigger bar.

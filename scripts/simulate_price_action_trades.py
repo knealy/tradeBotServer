@@ -208,6 +208,11 @@ def _simulate_trade(
     stop_dist: float,
     tp_dist: float,
     max_bars: int,
+    *,
+    trail_atr_dist: Optional[float] = None,
+    trail_trigger_r: float = 1.0,
+    partial_tp_r: Optional[float] = None,
+    partial_frac: float = 0.5,
 ) -> Tuple[float, str, int]:
     """Walk forward up to ``max_bars`` and return (r_pnl, exit_reason, bars_held).
 
@@ -215,7 +220,26 @@ def _simulate_trade(
     absolute price points.  Conservative tie-break: if a bar's high/low spans
     BOTH stop and TP, count stop (worst case — common assumption in price-only
     simulators where intra-bar order is unknown).
+
+    Adaptive-exit modes (optional, additive — all default off):
+
+    1. **Trailing stop**: when set, once unrealised profit reaches
+       ``trail_trigger_r × stop_dist`` (default 1R), the SL begins
+       trailing the close by ``trail_atr_dist`` points.  SL only moves
+       in the favorable direction (never against the position).  This
+       is the "lock in profit + let runner ride" mechanic.
+
+    2. **Partial profit + breakeven**: when set, a fraction
+       ``partial_frac`` of the position is closed at
+       ``partial_tp_r × stop_dist`` (default 0.5 closed at 1R), and the
+       SL on the remaining ``(1 - partial_frac)`` is moved to breakeven.
+       Final r_pnl = partial_tp_r × partial_frac + runner_pnl × (1 - frac).
+
+    Trailing and partial-profit can be enabled simultaneously; the
+    runner (after partial close) is what gets trailed.
     """
+    if stop_dist <= 0:
+        return 0.0, "invalid", 0
     entry = bars[entry_idx].close
     if side > 0:
         sl_px = entry - stop_dist
@@ -223,23 +247,96 @@ def _simulate_trade(
     else:
         sl_px = entry + stop_dist
         tp_px = entry - tp_dist
+
     end_idx = min(entry_idx + max_bars, len(bars) - 1)
+
+    # Adaptive-exit state.
+    partial_taken = False
+    partial_pnl_r = 0.0
+    runner_frac = 1.0
+    trailing_active = False
+
     for j in range(entry_idx + 1, end_idx + 1):
         b = bars[j]
+
+        # Intra-bar logic order (matters for realism):
+        #   1. Partial-profit check is INTRA-BAR — once the bar's high/low
+        #      touches the partial target, the partial fill executes (we
+        #      assume good fill in backtest land).
+        #   2. SL / TP hit check uses sl_px / tp_px AS OF END OF PRIOR
+        #      BAR.  Trailing SL updates do NOT apply within the same
+        #      bar that produced the favorable MFE — otherwise a single
+        #      bar could simultaneously create MFE, raise SL, and stop
+        #      out at the new SL (an unrealistic same-bar feedback loop).
+        #   3. At END of bar, the trailing SL is updated based on this
+        #      bar's close (effective for NEXT bar).
+        if partial_tp_r is not None and not partial_taken:
+            partial_target = (
+                entry + partial_tp_r * stop_dist if side > 0
+                else entry - partial_tp_r * stop_dist
+            )
+            partial_hit = (
+                b.high >= partial_target if side > 0
+                else b.low <= partial_target
+            )
+            if partial_hit:
+                partial_taken = True
+                partial_pnl_r = partial_tp_r * partial_frac
+                runner_frac = 1.0 - partial_frac
+                # BE-SL move is deferred until END of bar so this bar's
+                # remaining range can't trigger the new BE-SL.  We do it
+                # below in the end-of-bar block.
+
+        # Hit checks using start-of-bar sl_px / tp_px.
         sl_hit = (b.low <= sl_px) if side > 0 else (b.high >= sl_px)
         tp_hit = (b.high >= tp_px) if side > 0 else (b.low <= tp_px)
         if sl_hit:
-            return -1.0, "stop_loss", j - entry_idx
+            if side > 0:
+                runner_r = (sl_px - entry) / stop_dist
+            else:
+                runner_r = (entry - sl_px) / stop_dist
+            total_r = partial_pnl_r + runner_r * runner_frac
+            if trailing_active:
+                reason = "trailed_out"
+            elif partial_taken:
+                reason = "breakeven_out"
+            else:
+                reason = "stop_loss"
+            return total_r, reason, j - entry_idx
         if tp_hit:
-            r_mult = tp_dist / stop_dist if stop_dist > 0 else 0.0
-            return r_mult, "take_profit", j - entry_idx
+            r_mult = tp_dist / stop_dist
+            runner_r = r_mult
+            total_r = partial_pnl_r + runner_r * runner_frac
+            return total_r, "take_profit", j - entry_idx
+
+        # End-of-bar SL adjustments (effective NEXT bar).
+        if partial_taken:
+            # Move runner to breakeven exactly once (subsequent iterations
+            # detect this by sl_px == entry).
+            if (side > 0 and sl_px < entry) or (side < 0 and sl_px > entry):
+                sl_px = entry
+        if trail_atr_dist is not None and trail_atr_dist > 0:
+            mfe = (b.high - entry) if side > 0 else (entry - b.low)
+            if not trailing_active and mfe >= trail_trigger_r * stop_dist:
+                trailing_active = True
+            if trailing_active:
+                new_sl_candidate = (
+                    b.close - trail_atr_dist if side > 0
+                    else b.close + trail_atr_dist
+                )
+                if side > 0:
+                    sl_px = max(sl_px, new_sl_candidate)
+                else:
+                    sl_px = min(sl_px, new_sl_candidate)
+
     # Timed exit at last bar's close.
     exit_px = bars[end_idx].close
     if side > 0:
-        r_pnl = (exit_px - entry) / stop_dist if stop_dist > 0 else 0.0
+        runner_r = (exit_px - entry) / stop_dist
     else:
-        r_pnl = (entry - exit_px) / stop_dist if stop_dist > 0 else 0.0
-    return r_pnl, "timed_exit", end_idx - entry_idx
+        runner_r = (entry - exit_px) / stop_dist
+    total_r = partial_pnl_r + runner_r * runner_frac
+    return total_r, "timed_exit", end_idx - entry_idx
 
 
 # ───────────────────── pattern → direction ──────────────────────
@@ -418,6 +515,25 @@ def main():
                    help="Max bars after a sweep to look for FVG return (default 20)")
     p.add_argument("--smc-choch-max-retest-bars", type=int, default=50,
                    help="Max bars after CHoCH's first OB to wait for retest (default 50)")
+    # ── Adaptive-exit modes ─────────────────────────────────────────
+    p.add_argument("--trail-atr", type=float, default=0.0,
+                   help="If > 0, enable trailing stop at this ATR-distance "
+                        "after MFE reaches --trail-trigger-r × stop_dist")
+    p.add_argument("--trail-trigger-r", type=float, default=1.0,
+                   help="MFE threshold (R) at which trailing activates (default 1.0)")
+    p.add_argument("--partial-r", type=float, default=0.0,
+                   help="If > 0, close --partial-frac of position at this R "
+                        "and move runner SL to breakeven")
+    p.add_argument("--partial-frac", type=float, default=0.5,
+                   help="Fraction of position to close at partial-r (default 0.5)")
+    # ── Stress-test mode ────────────────────────────────────────────
+    p.add_argument("--stress-test", action="store_true",
+                   help="Run a (TP-ATR × max-bars) matrix per pattern instead "
+                        "of single config; outputs a heatmap of mean R / n per cell")
+    p.add_argument("--stress-tp-list", default="1.0,1.5,2.0,3.0",
+                   help="Comma-separated TP-ATR ratios for stress test (default 1,1.5,2,3)")
+    p.add_argument("--stress-bars-list", default="12,24,48",
+                   help="Comma-separated max-bars values for stress test (default 12,24,48)")
     args = p.parse_args()
 
     csv_path = Path(args.csv)
@@ -502,6 +618,24 @@ def main():
     hour_stats: Dict[Tuple[str, int], _BucketStats] = {}
     rsi_stats: Dict[Tuple[str, str], _BucketStats] = {}
     session_stats: Dict[Tuple[str, str], _BucketStats] = {}
+
+    # ── Stress-test (TP × max-bars) matrix ──────────────────────────
+    stress_tps: List[float] = []
+    stress_bars: List[int] = []
+    stress_stats: Dict[str, Dict[Tuple[float, int], _BucketStats]] = {}
+    if args.stress_test:
+        stress_tps = [float(x.strip()) for x in args.stress_tp_list.split(",") if x.strip()]
+        stress_bars = [int(x.strip()) for x in args.stress_bars_list.split(",") if x.strip()]
+        for name in allowed_patterns:
+            stress_stats[name] = {
+                (tp, mb): _BucketStats(label=f"{name} TP={tp}R MB={mb}")
+                for tp in stress_tps for mb in stress_bars
+            }
+
+    # Adaptive-exit args resolved once per main call (atr-dependent values
+    # are still recomputed per-bar inside the loop).
+    trail_atr_mult = args.trail_atr if args.trail_atr > 0 else None
+    partial_tp_r_val = args.partial_r if args.partial_r > 0 else None
 
     # Lightweight shim mimicking a PatternEvent for sweep-as-pattern.
     class _SweepEvent:
@@ -621,11 +755,28 @@ def main():
                     continue
             stop_dist = atr * args.stop_atr
             tp_dist = atr * args.tp_atr
+            trail_dist = (atr * trail_atr_mult) if trail_atr_mult is not None else None
             r_pnl, exit_reason, _ = _simulate_trade(
                 bars, i, side, stop_dist, tp_dist, args.max_bars,
+                trail_atr_dist=trail_dist,
+                trail_trigger_r=args.trail_trigger_r,
+                partial_tp_r=partial_tp_r_val,
+                partial_frac=args.partial_frac,
             )
             pattern_stats[ev.name].add(r_pnl, exit_reason)
             n_signals += 1
+
+            # ── Stress-test matrix: same event, multiple (TP × max-bars).
+            if args.stress_test:
+                cell_map = stress_stats.get(ev.name)
+                if cell_map:
+                    for tp_mult in stress_tps:
+                        cell_tp_dist = atr * tp_mult
+                        for mb in stress_bars:
+                            cr, cre, _ = _simulate_trade(
+                                bars, i, side, stop_dist, cell_tp_dist, mb,
+                            )
+                            cell_map[(tp_mult, mb)].add(cr, cre)
             if args.time_buckets:
                 key = (ev.name, b.timestamp.hour)
                 hour_stats.setdefault(key, _BucketStats(label=f"{ev.name}@{b.timestamp.hour:02d}h")).add(r_pnl, exit_reason)
@@ -714,6 +865,39 @@ def main():
         print("  " + "-" * 76)
         for s in rows[:20]:
             print(f"  {s.label:<40}  {s.n:>5}  {s.wr_pct:>6.1f}  {s.mean_r:>+7.3f}  {s.r_total:>+8.1f}")
+
+    # ── Stress-test matrix (only patterns with enough samples) ─────
+    if args.stress_test:
+        print()
+        print("═" * 100)
+        print(f" Stress-test: (TP-ATR × max-bars) matrix per pattern")
+        print(f"   stop_atr={args.stop_atr}  ATR_period={args.atr_period}")
+        print(f"   TP-ATR list = {stress_tps}    max-bars list = {stress_bars}")
+        print("═" * 100)
+        # Sort patterns by best-cell mean R to surface the strongest ones first.
+        def _pattern_best_cell(name: str) -> float:
+            cells = stress_stats.get(name, {})
+            best = max((c.mean_r for c in cells.values() if c.n >= 30), default=-99.0)
+            return best
+        sorted_names = sorted(
+            (n for n in stress_stats if any(c.n >= 30 for c in stress_stats[n].values())),
+            key=_pattern_best_cell, reverse=True,
+        )
+        for name in sorted_names[:10]:
+            cells = stress_stats[name]
+            print(f"\n  ── {name}  (best mean R = {_pattern_best_cell(name):+.3f}) ──")
+            # Header
+            hdr = f"  {'max-bars':<10}" + "".join(f"  {'TP=' + str(tp) + 'R':>14}" for tp in stress_tps)
+            print(hdr)
+            for mb in stress_bars:
+                row = f"  {mb:<10}"
+                for tp in stress_tps:
+                    s = cells.get((tp, mb))
+                    if s is None or s.n < 30:
+                        row += f"  {'─':>14}"
+                    else:
+                        row += f"  {s.mean_r:+.3f} n={s.n:<4}".rjust(16)
+                print(row)
 
     print()
 
