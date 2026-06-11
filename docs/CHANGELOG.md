@@ -7,6 +7,28 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Compound SMC setups (2026-06-11): sweep_into_fvg, fvg_in_ob, choch_then_ob_retest.**  New module ``core/smc_setups.py`` (~360 LoC) provides the multi-primitive CONFLUENCES that practitioners actually trade:
+  - **``sweep_into_fvg``** — a liquidity sweep (stop-hunt) followed by price re-entering an unmitigated FVG on the reversal side.  Sweep proves stops were run; FVG is the high-probability entry zone.  Trade direction = sweep's implied reversal direction.  Includes the sweep bar itself in the search window (sweep-bar-into-FVG entries fire immediately) and uses sweep-bar-aware FVG mitigation gating so the sweep's own intrusion into the FVG doesn't disqualify the trade.
+  - **``fvg_in_ob``** — an FVG whose zone OVERLAPS an unmitigated Order Block in the same direction.  Double-confluence entry zone is the OVERLAP rectangle.  Mitigation-aware: signal blocked if FVG or OB was mitigated before the trigger bar.
+  - **``choch_then_ob_retest``** — Change-of-Character (trend flip) followed by retest of the FIRST Order Block formed in the new trend's first impulse.  Canonical SMC trend-reversal entry.  Each CHoCH event consumes at most one OB.
+  - All three emit ``SetupSignal`` events at the trigger bar with ``entry_zone_upper / entry_zone_lower / invalidation`` for clean risk anchoring.  No look-ahead: every detector consults primitives whose confirmation index is ≤ the trigger bar.
+  - ``find_all_smc_setups(bars, ...)`` is the one-call runner.
+  - 7 new tests added (3 sweep + 2 fvg-ob + 1 choch + 1 runner) → 108 / 108 tests pass across the price-action stack.
+- **Simulator: SMC compound integration.**  New flags ``--include-smc-setups`` (turns on all 3 detectors), ``--smc-sweep-max-bars``, ``--smc-choch-max-retest-bars``.  Compound signals carry their own direction (no ``--bias`` flip applied because the setup IS the direction).  Signals merge into the per-bar event stream alongside ordinary patterns + sweep-as-pattern.
+- **Headline SMC-compound findings (MES + MNQ + MGC 5m, Jan 2025 → present, contrarian, 1R-SL / 2R-TP, 12-bar horizon)**:
+  - **Baselines (no session filter)**:
+    | Setup | MES | MNQ | MGC |
+    |---|---|---|---|
+    | `sweep_into_fvg` | +0.039 R (n=1598) | +0.081 R (n=1736) | +0.060 R (n=1584) |
+    | `fvg_in_ob` | +0.065 R (n=699) | +0.016 R (n=534) | −0.001 R (n=625) |
+    | `choch_then_ob_retest` | −0.009 R (n=5114) | −0.036 R (n=5744) | −0.046 R (n=5858) |
+  - **`sweep_into_fvg @ premarket` is the cross-symbol-confirmed standout**: MES +0.193 R (n=132), MNQ implicit (top by sym), MGC +0.324 R (n=101).  Premarket (08:00-09:30 ET) = thin liquidity + institutional positioning → sweeps + FVGs hold.
+  - **`fvg_in_ob @ premarket` (MNQ)**: +0.477 R, n=49 — strongest single pocket but small sample.
+  - **`choch_then_ob_retest` doesn't survive standalone on 5m**: negative across all 3 symbols.  CHoCH on intraday TF is too noisy without HTF (1h/4h) trend gating.
+
+  **Comparison to the existing winning confluence**: ``dragonfly_doji + OB`` posts +0.45 to +0.91 R cross-symbol (n=70-110).  ``sweep_into_fvg @ premarket`` is a smaller edge (+0.19 to +0.32 R) but fires FAR more often (n=132+).  These are complementary: ``dragonfly_doji + OB`` = rare-but-strong; ``sweep_into_fvg @ premarket`` = frequent-but-modest.  A live ``price_action_fade`` strategy can run both as orthogonal entries.
+
+  Next step (queued): spawn ``price_action_fade`` strategy with two signal modes (1) dragonfly_doji + OB confluence (primary), (2) sweep_into_fvg @ premarket (secondary).  Walk-forward separately per symbol.
 - **SMC / ICT primitives (2026-06-11): Fair Value Gap, Order Block, Liquidity Sweep.**  Added the three core institutional-trading structural concepts to ``core/market_structure.py`` (now ~700 LoC total):
   - ``FairValueGap`` dataclass + ``find_fair_value_gaps(bars)`` — detects 3-bar imbalances where ``bar[i-2].high < bar[i].low`` (bullish FVG) or mirror (bearish). Mitigation pass tags each FVG with the first subsequent bar that re-enters the zone.  ``is_inside_fvg(fvgs, bar_index, price, direction, require_unmitigated)`` is the point-in-zone helper with no-look-ahead semantics.
   - ``OrderBlock`` dataclass + ``find_order_blocks(bars, impulse_threshold_atr, window, atr_period)`` — detects the last opposite-color bar before a strong impulsive move (≥ ``impulse_threshold_atr`` × ATR within ``window`` bars).  **CRITICAL**: the dataclass stores BOTH ``formation_index`` (the OB bar itself) AND ``confirmation_index`` (the EARLIEST bar at which the impulse threshold was breached).  ``is_inside_order_block`` gates on ``confirmation_index`` — using ``formation_index`` would leak the impulse window into the live signal (look-ahead bias).  Initial pass without this gate produced suspiciously high edges (WR 76-87 %, mean R +1.0 to +1.6); the corrected gate brings results to realistic +0.7 to +0.9 R with n in the 60-110 range.

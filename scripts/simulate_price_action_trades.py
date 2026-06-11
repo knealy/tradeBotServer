@@ -71,6 +71,7 @@ from core.market_structure import (
     is_inside_order_block,
     prior_session_levels,
 )
+from core.smc_setups import find_all_smc_setups
 
 
 # ──────────────────────── CSV reader ────────────────────────
@@ -406,6 +407,17 @@ def main():
                         "with the contrarian-fade convention")
     p.add_argument("--sweep-min-poke", type=float, default=0.0,
                    help="Minimum poke distance (points) for sweep detection")
+    # ── Compound SMC setups ────────────────────────────────────────
+    p.add_argument("--include-smc-setups", action="store_true",
+                   help="Run the three compound SMC setup detectors "
+                        "(sweep_into_fvg, fvg_in_ob, choch_then_ob_retest) "
+                        "and merge their signals into the simulator as "
+                        "standalone 'patterns' with direction set by the "
+                        "setup itself (overrides --bias)")
+    p.add_argument("--smc-sweep-max-bars", type=int, default=20,
+                   help="Max bars after a sweep to look for FVG return (default 20)")
+    p.add_argument("--smc-choch-max-retest-bars", type=int, default=50,
+                   help="Max bars after CHoCH's first OB to wait for retest (default 50)")
     args = p.parse_args()
 
     csv_path = Path(args.csv)
@@ -460,10 +472,29 @@ def main():
         ):
             sweep_events_by_bar.setdefault(sw.bar_index, []).append(sw)
 
+    # Compound SMC setups: pre-compute and index by trigger bar.  Each
+    # setup carries its own direction (NO --bias flip applied), so they
+    # flow through the simulator as direction-locked "patterns".
+    smc_setup_events_by_bar: Dict[int, list] = {}
+    smc_setup_names = set()
+    if args.include_smc_setups:
+        setups = find_all_smc_setups(
+            bars, swing_lookback=args.swing_lookback,
+            sweep_max_bars=args.smc_sweep_max_bars,
+            sweep_min_poke=args.sweep_min_poke,
+            ob_impulse_atr=args.ob_impulse_atr,
+            ob_window=args.ob_window, atr_period=args.atr_period,
+            choch_max_retest_bars=args.smc_choch_max_retest_bars,
+        )
+        for name, sigs in setups.items():
+            smc_setup_names.add(name)
+            for s in sigs:
+                smc_setup_events_by_bar.setdefault(s.bar_index, []).append(s)
+
     # Pattern whitelist (CLI --pattern can repeat).  Sweep names are
     # accepted alongside core Pattern.ALL when --include-sweep-as-pattern.
     sweep_names = {"bullish_sweep", "bearish_sweep"} if args.include_sweep_as_pattern else set()
-    all_pattern_names = set(Pattern.ALL) | sweep_names
+    all_pattern_names = set(Pattern.ALL) | sweep_names | smc_setup_names
     allowed_patterns = set(args.pattern) if args.pattern else all_pattern_names
     target_session = Session(args.session) if args.session else None
 
@@ -479,6 +510,16 @@ def main():
             self.name = name
             self.bar = bar
             self.extras = {}
+
+    # Shim for compound SMC setups — carries a fixed direction (no
+    # --bias flip applied because the setup already has a direction).
+    class _SmcEvent:
+        __slots__ = ("name", "bar", "extras", "direction")
+        def __init__(self, name: str, bar: CandleBar, direction: int):
+            self.name = name
+            self.bar = bar
+            self.extras = {}
+            self.direction = direction
 
     window: List[CandleBar] = []
     n_signals = 0
@@ -502,6 +543,9 @@ def main():
         for sw in sweep_events_by_bar.get(i, []):
             name = "bearish_sweep" if sw.direction == -1 else "bullish_sweep"
             events.append(_SweepEvent(name, b))
+        # Merge compound SMC setup events for this bar.
+        for setup in smc_setup_events_by_bar.get(i, []):
+            events.append(_SmcEvent(setup.name, b, setup.direction))
         if not events:
             continue
         # ── Session filter (pre-pattern: applies to ALL events on this bar)
@@ -520,6 +564,10 @@ def main():
                 side = -1
             elif ev.name == "bullish_sweep":
                 side = +1
+            elif hasattr(ev, "direction"):
+                # SMC setup events carry their own direction; --bias does
+                # not apply (the setup already has a direction by design).
+                side = ev.direction
             else:
                 side = _direction_for(ev.name, args.bias)
             if side == 0:
