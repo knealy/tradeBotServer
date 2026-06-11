@@ -339,6 +339,217 @@ def _simulate_trade(
     return total_r, "timed_exit", end_idx - entry_idx
 
 
+# ─────────────────────── truth-mode trade simulator ───────────────────────
+#
+# Mirrors ``core.backtest.engine._check_order_fill`` semantics so the
+# simulator's per-trade R matches what a real ``StrategyReplayEngine`` run
+# would produce.  Three engine effects modelled (all on by default):
+#
+#   1. **Entry slippage / next-bar-open fill** — engine MARKET orders fill
+#      at ``bar.open ± slip`` on the bar AFTER the strategy fires. Simulator
+#      mode entered at the pattern bar's close → over-optimistic when the
+#      next bar gaps unfavorably.
+#
+#   2. **Stop gap-through** — engine STOP fills at
+#      ``max(stop_px, bar.open) ± slip`` (BUY) or ``min(stop_px, bar.open) ± slip``
+#      (SELL).  When a bar GAPS past the stop, the fill is at the gap,
+#      not at the stop price.  This is the smoking gun for the
+#      engine's median-R of -1.146 (losses larger than 1R).
+#
+#   3. **Commission** — engine charges round-trip commission per contract
+#      (default $2.50 × 2 = $5/trade).  Subtracted from per-trade dollar
+#      PnL then re-expressed in R units (commission_r = commission /
+#      (stop_dist × point_value)).
+#
+# Optional: ``intrabar_1m_bars`` if provided, walks 1m sub-bars within
+# each aggregate bar for SL/TP fills.  Aligns with the engine's
+# ``intrabar_series_iter`` so the simulator can see TP-before-SL (or
+# vice versa) when both touch within the same 5m bar.
+
+
+def _intrabar_subbars(
+    bars_1m_by_ns: Optional[Dict[int, CandleBar]],
+    bar_open_ns: int,
+    bar_close_ns: int,
+) -> List[CandleBar]:
+    """Return the 1m bars whose open timestamps fall in
+    ``[bar_open_ns, bar_close_ns)``.  Empty list if no intrabar data."""
+    if not bars_1m_by_ns:
+        return []
+    out: List[CandleBar] = []
+    for ns in sorted(bars_1m_by_ns.keys()):
+        if ns < bar_open_ns:
+            continue
+        if ns >= bar_close_ns:
+            break
+        out.append(bars_1m_by_ns[ns])
+    return out
+
+
+def _check_intrabar_hit(
+    sub: CandleBar,
+    side: int,
+    sl_px: float,
+    tp_px: float,
+    *,
+    slippage_amount: float,
+) -> Optional[Tuple[float, str]]:
+    """If this 1m sub-bar's hi/lo touches SL or TP, return ``(fill_px, reason)``.
+
+    Mirrors engine ``_check_order_fill`` STOP semantics for the SL leg
+    (gap-through clamp) and LIMIT semantics for the TP leg (fills at
+    limit price exactly, no slip — engine limit fills are tick-perfect).
+    Conservative tie-break: if both hit in the same sub-bar, SL wins
+    (no intra-1m order resolution).
+    """
+    if side > 0:
+        sl_hit = sub.low <= sl_px
+        tp_hit = sub.high >= tp_px
+        if sl_hit:
+            effective_trigger = min(sl_px, sub.open)
+            return (effective_trigger - slippage_amount, "stop_loss")
+        if tp_hit:
+            return (tp_px, "take_profit")
+    else:
+        sl_hit = sub.high >= sl_px
+        tp_hit = sub.low <= tp_px
+        if sl_hit:
+            effective_trigger = max(sl_px, sub.open)
+            return (effective_trigger + slippage_amount, "stop_loss")
+        if tp_hit:
+            return (tp_px, "take_profit")
+    return None
+
+
+def _simulate_trade_truth(
+    bars: Sequence[CandleBar],
+    entry_idx: int,
+    side: int,
+    stop_dist: float,
+    tp_dist: float,
+    max_bars: int,
+    *,
+    commission_per_trade: float = 5.0,
+    slippage_ticks: float = 0.5,
+    tick_size: float = 0.25,
+    point_value: float = 5.0,
+    bars_1m_by_ns: Optional[Dict[int, CandleBar]] = None,
+    agg_minutes: int = 5,
+    force_flat_et_minutes: Optional[int] = None,
+) -> Tuple[float, str, int]:
+    """Truth-mode trade simulation that mirrors engine fill semantics.
+
+    Returns ``(r_pnl, exit_reason, bars_held)`` — same shape as
+    ``_simulate_trade`` so the caller is unchanged.  ``r_pnl`` is the
+    NET R after commission and slippage (so a -1R simulator loss might
+    show up as -1.15 R here for MES with $5 commission on a 4-point
+    stop = 4 × $5 = $20 per R, so $5 commission = 0.25 R erosion).
+
+    ``point_value`` is used to convert commission dollars → R.  Defaults
+    to 5 (MES); set 2 for MNQ, 10 for MGC.
+    """
+    if stop_dist <= 0:
+        return 0.0, "invalid", 0
+
+    slippage_amount = slippage_ticks * tick_size
+    # Engine R-cost of commission: commission / (stop_dist × point_value).
+    # ($5 commission, 4-pt stop on MES with $5/pt) = $5 / $20 = 0.25 R.
+    commission_r = commission_per_trade / max(stop_dist * point_value, 1e-9)
+
+    # ── Entry (mirror engine MARKET-order fill at next bar's OPEN) ──
+    # If there's no next bar to fill against, the strategy could never
+    # have entered in live either — treat as invalid.
+    if entry_idx + 1 >= len(bars):
+        return 0.0, "invalid", 0
+    entry_bar = bars[entry_idx + 1]
+    if side > 0:
+        entry_px = entry_bar.open + slippage_amount
+        sl_px = entry_px - stop_dist
+        tp_px = entry_px + tp_dist
+    else:
+        entry_px = entry_bar.open - slippage_amount
+        sl_px = entry_px + stop_dist
+        tp_px = entry_px - tp_dist
+
+    start_idx = entry_idx + 1
+    end_idx = min(start_idx + max_bars, len(bars) - 1)
+
+    # ── Walk forward checking SL/TP fills ─────────────────────────────
+    # First bar (entry bar) is fully eligible for SL/TP since the entry
+    # filled at its OPEN — its hi/lo range after entry is fair game.
+    aggregate_minutes = max(1, int(agg_minutes))
+
+    # Force-flat detection: if force_flat_et_minutes is set, any bar
+    # whose ET wall-clock equals/exceeds the cutoff triggers a synthetic
+    # market exit at THAT bar's open (mirrors engine
+    # ``_maybe_replay_force_flat_et``).  We resolve ET time lazily so
+    # the no-flat path stays zero-cost.
+    if force_flat_et_minutes is not None:
+        try:
+            from zoneinfo import ZoneInfo
+            _et = ZoneInfo("America/New_York")
+        except Exception:
+            _et = None
+    else:
+        _et = None
+
+    for j in range(start_idx, end_idx + 1):
+        b = bars[j]
+        # ── Force-flat check: if THIS bar's open clock is at/past the
+        # cutoff and we already crossed it (or this is a different ET
+        # date from entry), close at bar.open with slip.
+        if _et is not None and force_flat_et_minutes is not None:
+            ts_et = b.timestamp.astimezone(_et)
+            bar_minutes = ts_et.hour * 60 + ts_et.minute
+            entry_ts_et = bars[start_idx].timestamp.astimezone(_et)
+            crossed_date = ts_et.date() != entry_ts_et.date()
+            if bar_minutes >= force_flat_et_minutes or crossed_date:
+                # Market exit at bar.open ± slip (BUY-to-close LONG
+                # adds slip; SELL-to-close SHORT subtracts slip).
+                if side > 0:
+                    exit_px = b.open - slippage_amount  # selling at bid
+                    r_pnl = (exit_px - entry_px) / stop_dist
+                else:
+                    exit_px = b.open + slippage_amount  # buying at ask
+                    r_pnl = (entry_px - exit_px) / stop_dist
+                return r_pnl - commission_r, "replay_force_flat_et", j - entry_idx
+        # Walk 1m sub-bars if available, else fall back to the aggregate.
+        bar_open_ns = int(b.timestamp.timestamp() * 1e9)
+        bar_close_ns = bar_open_ns + aggregate_minutes * 60 * 1_000_000_000
+        subs = _intrabar_subbars(bars_1m_by_ns, bar_open_ns, bar_close_ns)
+        if subs:
+            for sub in subs:
+                hit = _check_intrabar_hit(sub, side, sl_px, tp_px,
+                                          slippage_amount=slippage_amount)
+                if hit is not None:
+                    fill_px, reason = hit
+                    if side > 0:
+                        r_pnl = (fill_px - entry_px) / stop_dist
+                    else:
+                        r_pnl = (entry_px - fill_px) / stop_dist
+                    return r_pnl - commission_r, reason, j - entry_idx
+            continue
+        # No intrabar data → fall back to aggregate-bar tie-break.
+        hit = _check_intrabar_hit(b, side, sl_px, tp_px,
+                                  slippage_amount=slippage_amount)
+        if hit is not None:
+            fill_px, reason = hit
+            if side > 0:
+                r_pnl = (fill_px - entry_px) / stop_dist
+            else:
+                r_pnl = (entry_px - fill_px) / stop_dist
+            return r_pnl - commission_r, reason, j - entry_idx
+
+    # ── Timed exit at last bar's close (mirror simulator's behaviour
+    # rather than engine's force-flat, which is strategy-specific) ──
+    exit_px = bars[end_idx].close
+    if side > 0:
+        r_pnl = (exit_px - entry_px) / stop_dist
+    else:
+        r_pnl = (entry_px - exit_px) / stop_dist
+    return r_pnl - commission_r, "timed_exit", end_idx - entry_idx
+
+
 # ───────────────────── pattern → direction ──────────────────────
 
 
@@ -534,6 +745,31 @@ def main():
                    help="Comma-separated TP-ATR ratios for stress test (default 1,1.5,2,3)")
     p.add_argument("--stress-bars-list", default="12,24,48",
                    help="Comma-separated max-bars values for stress test (default 12,24,48)")
+    # ── Truth-mode (mirror engine fill semantics) ──────────────────
+    p.add_argument("--truth-mode", action="store_true",
+                   help="Use engine-accurate trade simulation: entry at next-bar "
+                        "open + slip, stop gap-through clamp, commissions, slip. "
+                        "Compatible with --csv-1m for intrabar fill resolution.")
+    p.add_argument("--csv-1m",
+                   help="Path to a 1m bars CSV for intrabar SL/TP fill resolution "
+                        "(truth-mode only; falls back to aggregate-bar tie-break "
+                        "when omitted)")
+    p.add_argument("--commission-per-trade", type=float, default=5.0,
+                   help="Round-trip commission $/trade in truth-mode (default $5)")
+    p.add_argument("--slippage-ticks", type=float, default=0.5,
+                   help="Slippage in ticks per side in truth-mode (default 0.5)")
+    p.add_argument("--tick-size", type=float, default=0.25,
+                   help="Tick size for the symbol (MES/MNQ=0.25, MGC=0.10)")
+    p.add_argument("--point-value", type=float, default=5.0,
+                   help="Dollar per point: MES=5, MNQ=2, MGC=10 (default 5)")
+    p.add_argument("--agg-minutes", type=int, default=5,
+                   help="Aggregate-bar timeframe in minutes (default 5) — used "
+                        "to align 1m intrabar windows in truth-mode")
+    p.add_argument("--force-flat-et", default="",
+                   help="ET wall-clock cutoff (HH:MM) for synthetic same-session "
+                        "market flat; mirrors engine ``timing.replay_force_flat_et`` "
+                        "(default 16:00 in engine).  Empty / 'off' disables. "
+                        "Truth-mode only.")
     args = p.parse_args()
 
     csv_path = Path(args.csv)
@@ -554,6 +790,35 @@ def main():
     if len(bars) < 100:
         sys.exit(f"❌ Too few bars: {len(bars)}")
     print(f"  bars loaded: {len(bars):,}  ({bars[0].timestamp.date()} → {bars[-1].timestamp.date()})")
+
+    # ── Truth-mode setup ──────────────────────────────────────────────
+    # Load 1m bars indexed by open-ns for ``_intrabar_subbars`` lookup.
+    bars_1m_by_ns: Optional[Dict[int, CandleBar]] = None
+    force_flat_minutes: Optional[int] = None
+    if args.truth_mode:
+        if args.csv_1m:
+            csv_1m_path = Path(args.csv_1m)
+            if not csv_1m_path.exists():
+                sys.exit(f"❌ --csv-1m not found: {csv_1m_path}")
+            bars_1m = _read_csv(csv_1m_path, since, until)
+            bars_1m_by_ns = {int(b.timestamp.timestamp() * 1e9): b for b in bars_1m}
+            print(f"  truth-mode: {len(bars_1m):,} 1m bars loaded for intrabar fills")
+        else:
+            print(f"  truth-mode: NO intrabar 1m bars (aggregate-bar tie-break fallback)")
+        # Parse --force-flat-et "HH:MM"
+        ff_raw = (args.force_flat_et or "").strip()
+        if ff_raw and ff_raw.lower() not in ("off", "none", "false", "0"):
+            try:
+                hh, mm = ff_raw.split(":")
+                force_flat_minutes = int(hh) * 60 + int(mm)
+            except (ValueError, AttributeError):
+                sys.exit(f"❌ --force-flat-et must be HH:MM (got {ff_raw!r})")
+            print(f"  truth-mode: force-flat at {ff_raw} ET "
+                  f"(or any cross-session held position)")
+        print(f"  truth-mode params: commission=${args.commission_per_trade:.2f}/trade  "
+              f"slip={args.slippage_ticks} ticks × {args.tick_size} = "
+              f"{args.slippage_ticks * args.tick_size:.3f} pts each side  "
+              f"point_value=${args.point_value:.2f}")
 
     atrs = _wilder_atr(bars, args.atr_period)
     rsis = _rsi(bars, 14) if args.rsi_buckets else [None] * len(bars)
@@ -756,13 +1021,29 @@ def main():
             stop_dist = atr * args.stop_atr
             tp_dist = atr * args.tp_atr
             trail_dist = (atr * trail_atr_mult) if trail_atr_mult is not None else None
-            r_pnl, exit_reason, _ = _simulate_trade(
-                bars, i, side, stop_dist, tp_dist, args.max_bars,
-                trail_atr_dist=trail_dist,
-                trail_trigger_r=args.trail_trigger_r,
-                partial_tp_r=partial_tp_r_val,
-                partial_frac=args.partial_frac,
-            )
+            if args.truth_mode:
+                # Truth-mode ignores trailing/partial for now — those add
+                # second-order complexity that's better validated AFTER the
+                # baseline fill semantics are confirmed correct.  Document
+                # this in the warning header (printed once above).
+                r_pnl, exit_reason, _ = _simulate_trade_truth(
+                    bars, i, side, stop_dist, tp_dist, args.max_bars,
+                    commission_per_trade=args.commission_per_trade,
+                    slippage_ticks=args.slippage_ticks,
+                    tick_size=args.tick_size,
+                    point_value=args.point_value,
+                    bars_1m_by_ns=bars_1m_by_ns,
+                    agg_minutes=args.agg_minutes,
+                    force_flat_et_minutes=force_flat_minutes,
+                )
+            else:
+                r_pnl, exit_reason, _ = _simulate_trade(
+                    bars, i, side, stop_dist, tp_dist, args.max_bars,
+                    trail_atr_dist=trail_dist,
+                    trail_trigger_r=args.trail_trigger_r,
+                    partial_tp_r=partial_tp_r_val,
+                    partial_frac=args.partial_frac,
+                )
             pattern_stats[ev.name].add(r_pnl, exit_reason)
             n_signals += 1
 
@@ -773,9 +1054,21 @@ def main():
                     for tp_mult in stress_tps:
                         cell_tp_dist = atr * tp_mult
                         for mb in stress_bars:
-                            cr, cre, _ = _simulate_trade(
-                                bars, i, side, stop_dist, cell_tp_dist, mb,
-                            )
+                            if args.truth_mode:
+                                cr, cre, _ = _simulate_trade_truth(
+                                    bars, i, side, stop_dist, cell_tp_dist, mb,
+                                    commission_per_trade=args.commission_per_trade,
+                                    slippage_ticks=args.slippage_ticks,
+                                    tick_size=args.tick_size,
+                                    point_value=args.point_value,
+                                    bars_1m_by_ns=bars_1m_by_ns,
+                                    agg_minutes=args.agg_minutes,
+                                    force_flat_et_minutes=force_flat_minutes,
+                                )
+                            else:
+                                cr, cre, _ = _simulate_trade(
+                                    bars, i, side, stop_dist, cell_tp_dist, mb,
+                                )
                             cell_map[(tp_mult, mb)].add(cr, cre)
             if args.time_buckets:
                 key = (ev.name, b.timestamp.hour)

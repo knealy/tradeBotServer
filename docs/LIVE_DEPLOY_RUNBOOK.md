@@ -1,4 +1,4 @@
-<!-- Last updated: 2026-06-09 — alongside MRR live-readiness audit (commit 5af1635d5). -->
+<!-- Last updated: 2026-06-11 — preflight automation added (scripts/preflight_live_deploy.sh + scripts/preflight_dryrun.py). -->
 
 # Live Deploy Runbook — MRR + overnight_range R24
 
@@ -8,23 +8,49 @@ This is the concrete, copy-paste-able execution path. The "why" lives in [`docs/
 
 ---
 
-## Pre-flight (do this once, today)
+## Pre-flight (single command — do this once, today)
+
+Run the automated pre-flight:
+
+```bash
+cd /Users/risu/tradeBotServer
+bash scripts/preflight_live_deploy.sh
+```
+
+It performs **15 checks** across 5 categories and prints either `ALL CHECKS PASSED — clear to deploy` (exit 0), `READY with warnings` (exit 0, review), or `BLOCKED — do NOT deploy live` (exit 1) with a numbered failure list:
+
+1. **Env vars** — `PROJECT_X_*`/`TOPSTEPX_*` creds, `DATABASE_URL`, `DAILY_LOSS_LIMIT`, `INITIAL_BALANCE`, `PORTFOLIO_DAILY_LOSS_CAP`, `ENABLE_SIGNALR` not disabled
+2. **TOML pinning** — both production configs have `meta.enabled=true`, `live_breaker_enabled=true`, valid `symbols` list
+3. **Smoke tests** — `test_morning_range_reversion_smoke`, `test_overnight_range_*`, `test_portfolio_daily_breaker`, `test_regime` (125 tests)
+4. **Risk infra wiring** — verifies `portfolio_daily_breaker`, `regime`, `consec_loss_breaker`, and event bus all importable with the expected API surface
+5. **Dry-run analyze()** — instantiates both strategies against the last 1500 bars of `MNQ`/`MGC`/`MES` CSVs and confirms `analyze()` executes end-to-end without exceptions (catches mock/import/signature regressions before live)
+
+Pass `--verbose` to see the per-check ✓/✗ tree on success; `--skip-dryrun` if the dry-run step is slow.
+
+**This is the AUTHORITATIVE pre-flight.** The historical manual checks below remain as a fallback diagnostic for when an individual category fails:
+
+<details>
+<summary>Manual pre-flight (fallback diagnostic)</summary>
 
 1. **Confirm committed configs are intact**:
 
    ```bash
-   cd /Users/risu/tradeBotServer
    .venv/bin/python -m pytest \
        tests/test_morning_range_reversion_smoke.py \
        tests/test_overnight_range_symbol_risk_signal_overrides.py
-   # Expect: 76 passed
    ```
 
 2. **Confirm `.env` is current** — `TOPSTEPX_USERNAME` + `TOPSTEPX_API_KEY` (or `PROJECT_X_*` aliases) populated; `DATABASE_URL` reachable; `DAILY_LOSS_LIMIT` + `INITIAL_BALANCE` set; `PORTFOLIO_DAILY_LOSS_CAP` set (default $1000 if unset).
 
 3. **Confirm "Auto OCO Brackets" enabled on BOTH accounts** in TopStepX dashboard. Without this, `place_oco_bracket_with_stop_entry` will fail silently with a phantom orderId. **This is the #1 cause of "strategy looks like it placed an order but nothing happened" in this codebase.**
 
-4. **Identify the two accounts you'll use** — they need to be DIFFERENT TopStepX prop accounts (different account IDs). Pick the higher-balance one for MRR (it does most of the work).
+</details>
+
+### Manual-only checks (NOT automated; you must verify)
+
+1. **"Auto OCO Brackets" enabled on BOTH accounts** in TopStepX dashboard. Pre-flight cannot reach the TopStepX UI to verify this. Without it, `place_oco_bracket_with_stop_entry` fails silently with a phantom orderId.
+
+2. **Identify the two accounts you'll use** — they need to be DIFFERENT TopStepX prop accounts (different account IDs). Pick the higher-balance one for MRR (it does most of the work).
 
    ```bash
    # List accounts to find the --account_select indices:
@@ -40,7 +66,7 @@ This is the concrete, copy-paste-able execution path. The "why" lives in [`docs/
    "
    ```
 
-5. **Note the timing**:
+3. **Note the timing**:
    - `morning_range_reversion` builds its anchor between **07:00 – 08:00 ET** and fades after **08:00 ET** until `flat_before = 16:00 ET`. **You can launch the wrapper script the night before** — it sleeps with a countdown until 06:53 ET.
    - `overnight_range` builds its range between **19:00 ET (prior day) – 10:00 ET** and arms the breakout monitor after **10:00 ET**. The wrapper has NO countdown — it expects to be launched well before the range window (or it'll just sit until the next session).
 

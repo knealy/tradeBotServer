@@ -7,6 +7,95 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **RTH-only truth-mode re-test of legacy PA edges (2026-06-11)** — Hypothesis: since force-flat at 16:00 ET was the DOMINANT optimism source (~+0.45 R), restricting to RTH-only sessions (nyam + nypm) might revive the PA stack.  Tested 6 candidate edges on MES 9m with full truth-mode (``--truth-mode --csv-1m --force-flat-et 16:00 --session nyam|nypm|lunch|premarket``):
+
+  | Pattern | bias | filter | n | WR | Mean R | survives? |
+  |---|---|---|---|---|---|---|
+  | dragonfly_doji | contrarian | OB + RTH (nyam+nypm) | 12 | 41.7% | **+0.117** | marginal, n too small |
+  | dragonfly_doji | contrarian | OB + lunch | 4 | 25.0% | -0.738 | no |
+  | dragonfly_doji | contrarian | OB + premarket | 2 | 0.0% | -0.806 | no |
+  | gravestone_doji | contrarian | OB | 26 | 30.8% | -0.397 | **no** (was +0.257 legacy) |
+  | bullish_marubozu | contrarian | OB | 11 | 45.5% | **+0.419** | promising but n=11 |
+  | bullish_marubozu | continuation | OB | 9 | 11.1% | -0.458 | no |
+  | bearish_marubozu | contrarian | OB | 6 | 16.7% | -0.845 | no |
+  | bullish_engulfing | contrarian | OB | 40 | 40.0% | -0.087 | neutral |
+  | bearish_engulfing | contrarian | OB | 41 | 22.0% | -0.487 | no |
+  | sweep_into_fvg | contrarian | premarket | 82 | 42.7% | -0.075 | **no** (was +0.19-0.32 legacy) |
+
+  **CONCLUSION: the PA research stack at this geometry does NOT contain a productionizable edge.**  Only two candidates have positive Mean R (``dragonfly_doji + OB`` in RTH and ``bullish_marubozu + OB`` contrarian) and both have n ≤ 12 — sample sizes far too small for production deployment.  The marubozu+OB result (+0.419 R, n=11) is worth tracking with more data but the broader stack should be considered exhausted at the current 1×ATR stop / 2R TP / 12-bar hold geometry.
+
+  Implication: the previously-queued "Re-run legacy winning PA edges with truth-mode" line item is **CLOSED** — the survivors are tracked above; no edge meets the bar for spawning another MVP.  The remaining queued work (``probe_pattern_edge.py``, ``[LEGACY-SIM]`` tagging) becomes hygiene rather than primary research.
+
+- **Anti-bypass risk-infra audit (2026-06-11)** — Net-new ``tests/test_strategy_risk_infra_wiring.py`` (33 tests across 16 strategies).  Closes the bug class that produced the silent consec-loss-breaker bypass in ``opening_range_breakout`` + ``price_action_fade`` (discovered by the 2026-06-11 preflight, not by any existing test).  Two invariants enforced for every strategy in ``BUILTIN_STRATEGY_SPECS``:
+
+  1. **AST static scan** — every ``from core.consec_loss_breaker import X`` may only import names in the canonical API surface ``{BreakerConfig, evaluate, trade_iter_for_strategy}``.  Catches misspelled / out-of-date / invented names that ``try / except`` swallows at runtime.
+  2. **Instantiation + canonical-method audit** — every strategy must instantiate against a minimal mock bot AND, if it declares ``_breaker_config_for_symbol``, that method must return a valid ``BreakerConfig`` instance for any symbol.  Catches the case where a strategy DEFINES the bridge method but mis-builds the config inside.
+
+  Also pins ``CANONICAL_CONSEC_LOSS_API`` as the single source of truth.  Adds ``test_canonical_consec_loss_api_is_exported`` to fail the suite if the canonical set goes stale.  **Result on the existing arsenal: 33/33 PASS** — no other strategy has the silent-bypass bug pattern.  Future strategy authors get a hard CI failure if they invent helper names.
+
+- **Arsenal truth-effects sanity check (2026-06-11)** — Verified the backtest engine's gap-through / force-flat / commission modeling IS firing for the production-tier strategies that are about to be live-deployed.  Audit of ``docs/perf/*_truth_3m/metrics_insights.json`` + exit-reason distributions:
+
+  | Strategy | avg_r_losers | Gap-through? | force-flat exits? | Verdict |
+  |---|---|---|---|---|
+  | morning_range_reversion R28 | -1.043 | ✓ mild | n/a (internal flat) | clean |
+  | overnight_range R24 | -1.161 | ✓ moderate | n/a (intraday) | clean (overnight gap risk real) |
+  | overnight_reversion | -11.617 | recap-metric anomaly | ✓ replay_force_flat_et present | engine OK, see note |
+  | vwap_zscore_reversion | -0.993 | ✓ slight | ✓ replay_force_flat_et present | clean |
+
+  **CAVEAT — ``overnight_reversion`` R-multiple metrics are misleading**, NOT broken.  ``avg_r_winners=+850.080`` and ``avg_r_losers=-11.617`` come from the recap's ``pnl / initial_risk_dollars`` formula in ``core/backtest/recap_metrics.py:235``; because overnight_reversion uses ATR-scaled stops, per-trade ``initial_risk_dollars`` varies 10× across the 30-trade sample, so the straight-mean R is dominated by tail trades.  Absolute PnL ($1397 / 30 trades, RF 2.47) is sane.  Recap metric needs an outlier-cap (or per-trade R-distribution display) for variable-stop strategies — filed as future work; engine itself is correct.
+
+- **Truth-mode simulator + convergence with backtest engine (2026-06-11)** — Major finding that **DE-RATES the entire price-action research stack's headline numbers**.  Added ``_simulate_trade_truth()`` to ``scripts/simulate_price_action_trades.py`` plus 8 new CLI flags (``--truth-mode``, ``--csv-1m``, ``--commission-per-trade``, ``--slippage-ticks``, ``--tick-size``, ``--point-value``, ``--agg-minutes``, ``--force-flat-et``).  Truth-mode mirrors the FOUR engine effects that the legacy simulator was ignoring:
+
+  1. **Entry slippage** — engine MARKET orders fill at NEXT bar's OPEN ± slip, not at the pattern bar's close.  Legacy sim's "enter at pattern close" was systematically optimistic when the next bar's open was unfavorable.
+  2. **Stop gap-through clamp** — engine fills SL at ``max(stop_px, bar.open) ± slip`` (BUY) / ``min(stop_px, bar.open) ± slip`` (SELL).  Bars that GAP THROUGH the stop fill at the gap, not at the stop price.  This is THE smoking gun for the engine's median R of -1.146 (losses larger than -1R).  Mirrors the 2026-06-03 engine fix that already caught 25.2% gap-through fills.
+  3. **Commission** — engine charges round-trip commission per contract (default $5/trade).  Truth-mode converts to R units: ``commission_r = commission / (stop_dist × point_value)``.
+  4. **Force-flat at session boundary** — engine's ``timing.replay_force_flat_et`` defaults to "16:00" ET; any position held across that ET wall-clock OR across a calendar-date boundary gets synthetically market-closed at the bar's open.  This was the BIGGEST hidden effect: 24/5 strategies (like ``price_action_fade``) have many trades fire outside RTH and get force-flat'd at unfavorable mid-day prices.
+
+  Optionally accepts ``--csv-1m`` for 1m intrabar fill resolution that mirrors the engine's ``intrabar_series_iter`` — without 1m data, falls back to aggregate-bar conservative tie-break (SL wins same-bar SL+TP).
+
+  **CONVERGENCE VALIDATED on the canonical divergent edge** (``dragonfly_doji + bearish OB`` on MES, 9 months, contrarian short):
+
+  | Mode | Mean R | WR | Gap vs engine |
+  |---|---|---|---|
+  | Legacy simulator | +0.885 | 60.0% | **+0.788 over** |
+  | Truth-mode (no intrabar, no force-flat) | +0.577 | 58.2% | +0.480 over |
+  | Truth-mode + 1m intrabar | +0.389 | 58.2% | +0.292 over |
+  | **Truth-mode + intrabar + force-flat 16:00 ET** | **-0.058** | **32.7%** | **-0.155 under (within noise)** |
+  | Backtest engine reference (CHANGELOG) | +0.097 | 35.3% | (reference) |
+
+  Truth-mode WR is within **2.6 percentage points** of engine WR; Mean R is within **0.155 R** (vs +0.788 R gap originally).  Decomposing the cumulative correction:
+
+  - **~+0.31 R** of legacy-simulator optimism from ignoring entry slippage / pattern-close-vs-next-open fill
+  - **~+0.19 R** from ignoring stop gap-through penalty
+  - **~+0.45 R** from ignoring force-flat at 16:00 ET (DOMINANT effect — 24/5 strategies suffer disproportionately)
+  - **~+0.04 R** from ignoring commissions
+
+  **CRITICAL IMPLICATION — the entire PA research stack's headline numbers are de-rated.**  The dragonfly+OB "edge" of +0.885 R from the legacy simulator is ~0 R under realistic execution.  The original ``price_action_fade`` MVP backtest result of -$613 on 34 trades is now CONSISTENT with truth — no bug, the edge just isn't there at this geometry.  Other edges from the legacy stack (gravestone+OB +0.257 R, sweep_into_fvg @ premarket +0.19-0.32 R, etc.) need to be re-evaluated with ``--truth-mode --csv-1m --force-flat-et 16:00`` before any further productionization work.
+
+  **17 pinning tests** in ``tests/test_simulate_price_action_trades.py`` covering:  
+    • Legacy simulator (baseline + trailing + partial-profit + combined) — 8 tests, unchanged  
+    • Truth-mode: TP includes slip + commission; SHORT stop gap-through; LONG clean stop; intrabar TP-wins-over-SL when 1m data shows favorable order; no-next-bar → invalid; commission inverse-scales-with-stop-dist; force-flat at 16:00 ET; force-flat disabled → timed exit — 9 tests, ALL pinning concrete arithmetic.
+
+  Full repo: **209/209 tests pass; 0 lints.**
+
+  Next steps (queued):
+  1. Re-run ``gravestone_doji + OB``, ``sweep_into_fvg @ premarket``, and other legacy "winning" PA edges with ``--truth-mode --csv-1m --force-flat-et 16:00`` to see what survives realistic execution
+  2. Update ``CHANGELOG.md`` price-action sections to flag the legacy R numbers as ``[LEGACY-SIM]`` (over-optimistic) where they appear
+  3. Promote any pattern that maintains positive truth-R AFTER full friction modeling
+  4. Consider building a ``probe_pattern_edge.py`` tool that ALWAYS uses truth-mode (deprecating legacy mode entirely for forward research)
+
+- **Automated live-deploy pre-flight (2026-06-11)** — Net-new ``scripts/preflight_live_deploy.sh`` (15 checks across 5 categories) + Python helper ``scripts/preflight_dryrun.py``.  Single-command sanity check before flipping MRR + overnight_range to two prop accounts.  Categories:
+  1. **Env vars** — broker creds (``PROJECT_X_*``/``TOPSTEPX_*`` aliases), ``DATABASE_URL``, ``DAILY_LOSS_LIMIT``, ``INITIAL_BALANCE``, ``PORTFOLIO_DAILY_LOSS_CAP``, ``ENABLE_SIGNALR`` not disabled
+  2. **TOML pinning** — ``meta.enabled=true``, ``live_breaker_enabled=true``, valid ``symbols`` on both production configs
+  3. **Smoke tests** — runs the 5 prereq test files in one shot (125 tests)
+  4. **Risk infra wiring** — imports ``portfolio_daily_breaker``, ``regime``, ``consec_loss_breaker`` (with the correct ``BreakerConfig``/``evaluate``/``trade_iter_for_strategy`` API surface), and verifies ``EventType.TRADE_CLOSED``/``PORTFOLIO_KILL`` exist
+  5. **Dry-run ``analyze()``** — instantiates MRR + overnight_range against the last 1500 bars of MNQ/MGC/MES CSVs with a minimal mock bot and confirms ``analyze()`` runs end-to-end without exceptions (catches mock/import/signature regressions before live)
+
+  The script prints a colorised ✓/⚠/✗ tree, exits non-zero on any failure, and on success ends with the exact launch commands.  Runbook updated at ``docs/LIVE_DEPLOY_RUNBOOK.md`` to make this the AUTHORITATIVE pre-flight; the historical manual checks remain as a fallback diagnostic in a collapsed section.  All 15 checks pass on HEAD (one expected warning: ``PORTFOLIO_DAILY_LOSS_CAP`` defaults to \$1000 if unset).
+
+### Fixed
+- **Silent consec-loss breaker bypass on ``opening_range_breakout`` + ``price_action_fade`` (2026-06-11)** — While building the pre-flight, the risk-infra wiring check caught that BOTH strategies were importing non-existent functions ``register_strategy_breaker`` and ``evaluate_breaker`` from ``core.consec_loss_breaker``.  The imports were wrapped in ``try/except`` so they failed SILENTLY — the consec-loss breaker for these strategies was never operative.  The canonical API (used by ``overnight_range`` / ``body_reversion`` / MRR) is ``BreakerConfig`` + ``evaluate`` + ``trade_iter_for_strategy``.  Replaced both strategies' ``_maybe_register_breaker`` / ``_evaluate_breaker`` implementations with the canonical pattern that MRR and overnight_range use (per-symbol resolution via ``self._cfg.symbol_override``, falling back to ``self._cfg.get_*``).  20 / 20 ORB + PAF smoke tests still pass; full repo suite 209 / 209 green.  Impact: ORB now actually has a consec-loss breaker bridge (even though the committed TOML has ``max_consecutive_losses=0`` so it's a no-op until tuned); PAF inherits the same bridge for when its MVP is eventually promoted.
+
 - **price_action_fade MVP spawned (2026-06-11) + CRITICAL simulator-vs-engine divergence found.**  Built ``strategies/price_action_fade_strategy.py`` (~470 LoC) as the minimum-viable productionization of the cross-symbol ``dragonfly_doji + Order Block`` edge characterised in earlier sessions.  Signal mechanic: a bullish-reversal doji formed inside a CONFIRMED unmitigated BEARISH order block → contrarian SHORT fade.  Geometry: ATR(14)-scaled SL = 1×ATR, TP = 2R, max 12-bar hold.  MES-only at MVP (the strongest simulator pocket).  TOML at ``config/strategies/price_action_fade.toml``; 10 pinning tests at ``tests/test_price_action_fade_smoke.py``.
 
   **THREE BUGS CAUGHT during the walk-from-simulator-to-strategy transition**:

@@ -179,46 +179,52 @@ class PriceActionFadeStrategy(BaseStrategy):
         self.daily_trades: int = 0
         self._daily_trades_date: Optional[date] = None
 
-        self._breaker_registered: bool = False
-        self._maybe_register_breaker()
 
     # ─────────────────── consec-loss breaker bridge ────────────────────
+    # Mirrors overnight_range / body_reversion / MRR — all delegate to the
+    # shared helper in ``core/consec_loss_breaker.py``.  Per-symbol
+    # overrides supported under ``[symbols.<SYM>.signal]``.
 
-    def _maybe_register_breaker(self) -> None:
-        try:
-            from core.consec_loss_breaker import register_strategy_breaker
-        except Exception:
-            return
-        try:
-            max_losses = int(self._cfg.get_int("signal.max_consecutive_losses", 0) or 0)
-            cooldown = int(self._cfg.get_int("signal.loss_streak_cooldown_sessions", 0) or 0)
-            threshold = float(
-                self._cfg.get_float("signal.rolling_pnl_loss_threshold_dollars", 0.0) or 0.0
-            )
-            if max_losses <= 0:
-                return
-            register_strategy_breaker(
-                strategy_name=self.NAME,
-                max_consecutive_losses=max_losses,
-                cooldown_sessions=cooldown,
-                loss_threshold_dollars=threshold,
-            )
-            self._breaker_registered = True
-        except Exception as exc:
-            logger.debug("price_action_fade: breaker registration skipped: %s", exc)
+    def _breaker_config_for_symbol(self, symbol: str):
+        from core.consec_loss_breaker import BreakerConfig
+        sym_upper = str(symbol).upper()
+
+        def _resolve_int(key: str, default: int = 0) -> int:
+            v = self._cfg.symbol_override(sym_upper, key, default=None)
+            if v is None:
+                v = self._cfg.get_int(key, default)
+            try:
+                return max(0, int(v or 0))
+            except (TypeError, ValueError):
+                return default
+
+        def _resolve_float(key: str, default: float = 0.0) -> float:
+            v = self._cfg.symbol_override(sym_upper, key, default=None)
+            if v is None:
+                v = self._cfg.get_float(key, default)
+            try:
+                return max(0.0, float(v or 0.0))
+            except (TypeError, ValueError):
+                return default
+
+        return BreakerConfig(
+            max_losses=_resolve_int("signal.max_consecutive_losses", 0),
+            cooldown_sessions=_resolve_int("signal.loss_streak_cooldown_sessions", 0),
+            magnitude_dollars=_resolve_float("signal.rolling_pnl_loss_threshold_dollars", 0.0),
+        )
 
     def _evaluate_breaker(self, symbol: str, sess_date: date) -> Dict[str, Any]:
-        if not self._breaker_registered:
-            return {"blocked": False}
-        try:
-            from core.consec_loss_breaker import evaluate_breaker
-            return evaluate_breaker(
-                strategy_name=self.NAME, symbol=symbol, bar_session_date=sess_date,
-                trading_bot=self.trading_bot,
-            )
-        except Exception as exc:
-            logger.debug("price_action_fade: breaker eval failed: %s", exc)
-            return {"blocked": False}
+        from core.consec_loss_breaker import evaluate, trade_iter_for_strategy
+        cfg = self._breaker_config_for_symbol(symbol)
+        if not cfg.enabled:
+            return {"blocked": False, "streak": 0, "reason": "ok"}
+        trade_iter = trade_iter_for_strategy(self, symbol)
+        if trade_iter is None:
+            return {"blocked": False, "streak": 0, "reason": "no_engine"}
+        return evaluate(
+            symbol=symbol, bar_session_date=sess_date,
+            trade_iter=trade_iter, config=cfg,
+        )
 
     # ──────────────────────── helpers ───────────────────────────
 
