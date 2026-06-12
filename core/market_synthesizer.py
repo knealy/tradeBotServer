@@ -1,4 +1,4 @@
-"""PA/SMC Synthesis Engine — "the brain".
+"""PA/SMC Synthesis Engine — "the brain" (v2).
 
 User vision (2026-06-12):
 
@@ -7,10 +7,40 @@ User vision (2026-06-12):
     potential setups as they occur and of course be useful to other
     strategies as confluence for signals."
 
-This module is the MINIMUM VIABLE implementation of that vision.  It
-composes the existing primitive detectors (``core/market_structure.py``,
-``core/price_action.py``, ``core/smc_setups.py``) into a single perception
-layer that:
+v1 → v2 (2026-06-12 PM):
+v1 weighted BoS heavily (0.40) and treated bearish bias symmetrically.  The
+empirical probe (``scripts/probe_brain_predictive_power.py`` on 9m × 3
+symbols) proved that approach was anti-predictive: BoS is a LAGGING signal
+on these mean-reverting 5m bars, and SHORT-side signals don't work due to
+the upward-drift bias of these futures.  The probe identified ONE primitive
+with marginal but consistent cross-symbol signal: **liquidity sweep BELOW
+swing low → fade LONG** (WR 51.7-52.9% on MGC/MNQ/MES on 6-bar forward).
+
+v2 reflects that finding:
+* BoS / CHoCH / swing-trend labels: REMOVED from bias scoring (zero isolated
+  signal in either direction per the probe).  Still emitted in the snapshot
+  as structural FACTS so the dashboard / future research can see them.
+* Sweep above swing high: REMOVED from bias scoring (anti-predictive in
+  isolation).  Snapshot still reports the sweep so strategies that
+  empirically validate a different exit / hold rule on the short side can
+  consume it.
+* Sweep below swing low: PROMOTED to the sole driver of the ``bias`` field
+  with weight 1.0 (any fresh long-side sweep → bullish).  Confidence reflects
+  freshness: a sweep on bars[-1] → 1.0, on bars[-2] → 0.7, etc., decaying
+  to 0.0 outside the freshness window.
+* New typed event ``LIQUIDITY_SWEEP_DETECTED`` fires alongside the
+  ``MARKET_CONTEXT_UPDATED`` event whenever a fresh long-side sweep is
+  detected on the closing bar — strategies can subscribe directly without
+  parsing the whole snapshot.
+* New module-level helper ``confluence_for_long_signal(snapshot)`` returns
+  a [0, 1] confluence boost a strategy can ADD to its own conviction when
+  building a LONG signal.  Currently this just exposes the sweep-driven
+  bullish confidence; future iterations can layer additional confluence
+  factors as they're validated.
+
+This module composes the existing primitive detectors
+(``core/market_structure.py``, ``core/price_action.py``, ``core/smc_setups.py``)
+into a single perception layer that:
 
 1. Subscribes to ``EventType.BAR_COMPLETED`` on the bot's event bus.
 2. On each bar close, runs ALL primitive detectors against a rolling
@@ -155,44 +185,63 @@ _BIAS_BEARISH = "bearish"
 _BIAS_NEUTRAL = "neutral"
 
 
+# v2: only sweep_low fade has empirical edge.  All other primitives carry
+# zero or negative isolated signal and are NOT used for bias scoring.  See
+# the module docstring for the data-driven justification.
+SWEEP_FRESHNESS_WINDOW_BARS = 3
+"""Within how many bars of the snapshot a sweep is considered 'fresh'.
+
+A long-side sweep on the closing bar (bars_ago == 0) gets the full bullish
+confidence; older sweeps decay linearly to zero past this window.  Chosen
+to match the 1- to 6-bar forward-return horizons the probe validated on.
+"""
+
+
+def _sweep_freshness_weight(bars_ago: Optional[int]) -> float:
+    """Map ``bars_ago`` to a [0, 1] freshness weight.
+
+    Returns 1.0 when bars_ago == 0 (sweep on the just-closed bar) and decays
+    linearly to 0.0 at the freshness window boundary.  None or out-of-window
+    → 0.0.
+    """
+    if bars_ago is None or bars_ago < 0:
+        return 0.0
+    if bars_ago > SWEEP_FRESHNESS_WINDOW_BARS:
+        return 0.0
+    # Linear decay: 0 → 1.0, 1 → 2/3, 2 → 1/3, 3 → 0
+    return max(0.0, 1.0 - (bars_ago / SWEEP_FRESHNESS_WINDOW_BARS))
+
+
 def _bias_factor_scores(
     *,
-    structure_event: StructureEvent,
-    recent_high_label: Optional[str],
-    recent_low_label: Optional[str],
     recent_sweep_direction: Optional[int],
+    recent_sweep_bars_ago: Optional[int] = None,
+    # Kept as kwargs for API compat with v1 callers; deliberately ignored.
+    structure_event: Any = None,
+    recent_high_label: Any = None,
+    recent_low_label: Any = None,
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Return (bullish_factors, bearish_factors) → (factor_name, weight).
+    """Return (bullish_factors, bearish_factors) for the v2 brain.
 
-    Weights sum to 1.0 across all factors for each side BEFORE any factor
-    fires.  ``compute_bias`` sums the side that fires; the difference is
-    the bias's net confidence.
+    v2 weights (data-driven; see module docstring for justification):
+
+    * Sweep BELOW swing low (direction = +1)  →  bullish, weight =
+      ``_sweep_freshness_weight(bars_ago)``.
+    * Sweep ABOVE swing high (direction = -1) →  NO bias contribution.
+      SHORT-side sweep fades were empirically anti-predictive (probe found
+      WR 45-50 % on this signal in isolation).
+    * Everything else: zero contribution.
+
+    Future iterations can layer additional empirically-validated factors
+    here, but every new factor MUST be probe-validated before it gets weight.
     """
     bull: Dict[str, float] = {}
     bear: Dict[str, float] = {}
 
-    # Structure event — strongest single signal (weight 0.40)
-    if structure_event == StructureEvent.BOS_UP:
-        bull["bos_up"] = 0.40
-    elif structure_event == StructureEvent.BOS_DOWN:
-        bear["bos_down"] = 0.40
-    elif structure_event == StructureEvent.CHOCH_UP:
-        bull["choch_up"] = 0.35
-    elif structure_event == StructureEvent.CHOCH_DOWN:
-        bear["choch_down"] = 0.35
-
-    # Swing label trend (weight 0.20 each side, but only one can fire)
-    if recent_high_label == "HH" and recent_low_label == "HL":
-        bull["swing_trend_up"] = 0.20
-    elif recent_high_label == "LH" and recent_low_label == "LL":
-        bear["swing_trend_down"] = 0.20
-
-    # Recent sweep — sweep below swing low → long bias (+1);
-    # sweep above swing high → short bias (-1).  Weight 0.25.
     if recent_sweep_direction == +1:
-        bull["recent_sweep_low_fade"] = 0.25
-    elif recent_sweep_direction == -1:
-        bear["recent_sweep_high_fade"] = 0.25
+        weight = _sweep_freshness_weight(recent_sweep_bars_ago)
+        if weight > 0.0:
+            bull["sweep_low_fade"] = round(weight, 4)
 
     return bull, bear
 
@@ -200,16 +249,14 @@ def _bias_factor_scores(
 def compute_bias(snapshot: "MarketContextSnapshot") -> Tuple[str, float]:
     """Compute (bias_label, confidence) from snapshot primitive observations.
 
+    v2: only sweep_low fade drives bias.  Returns ('neutral', 0.0) when no
+    fresh long-side sweep is present.
+
     Pure function (no I/O, no clock); deterministic for any given snapshot.
-    The synthesizer uses this internally to populate ``snapshot.bias`` /
-    ``snapshot.confidence``, and downstream consumers can re-derive if they
-    want to apply different weights.
     """
     bull, bear = _bias_factor_scores(
-        structure_event=StructureEvent(snapshot.structure_event),
-        recent_high_label=snapshot.recent_swing_high_label,
-        recent_low_label=snapshot.recent_swing_low_label,
         recent_sweep_direction=snapshot.recent_sweep_direction,
+        recent_sweep_bars_ago=snapshot.recent_sweep_bars_ago,
     )
     bull_total = sum(bull.values())
     bear_total = sum(bear.values())
@@ -226,24 +273,33 @@ def confluence_score(snapshot: "MarketContextSnapshot", side: int) -> float:
     """Score in [-1.0, +1.0] of PA/SMC agreement with a proposed trade direction.
 
     ``side`` is +1 for LONG, -1 for SHORT.  Score > 0 means the brain
-    AGREES (favourable confluence); < 0 means the brain DISAGREES
-    (counter-trend / counter-structural).
+    AGREES (favourable confluence); < 0 means it DISAGREES.
 
-    Magnitude is ``snapshot.confidence`` signed by whether the snapshot
-    bias matches the proposed side.
-
-    Strategies typically use this to either:
-    * boost their own size when |score| ≥ some threshold and sign matches, or
-    * skip the trade when score < -threshold.
+    v2: only fires for LONG signals (the only side with empirical edge).
+    For SHORT signals returns 0.0 — the brain has nothing useful to say
+    about shorts at present.
     """
-    if side == 0:
+    if side != +1:
         return 0.0
-    if snapshot.bias == _BIAS_NEUTRAL:
+    if snapshot.bias != _BIAS_BULLISH:
         return 0.0
-    bias_dir = +1 if snapshot.bias == _BIAS_BULLISH else -1
-    if bias_dir == side:
-        return float(snapshot.confidence)
-    return -float(snapshot.confidence)
+    return float(snapshot.confidence)
+
+
+def confluence_for_long_signal(snapshot: "MarketContextSnapshot") -> float:
+    """Confluence boost a strategy can ADD to its conviction for a LONG signal.
+
+    Returns 0.0 when no fresh long-side liquidity sweep is detected.
+    Returns up to 1.0 when a sweep fired on the just-closed bar.  Decays
+    linearly with sweep age (see ``_sweep_freshness_weight``).
+
+    Strategies typically use this in one of two ways:
+    * Size boost: ``size_multiplier += brain_boost * 0.25`` (when LONG)
+    * Confidence gate: ``if brain_boost >= 0.5: skip_marginal_signal_filter()``
+
+    Returns 0.0 for SHORT signals — the brain has no validated SHORT edge.
+    """
+    return confluence_score(snapshot, side=+1)
 
 
 # ═══════════════════════════ snapshot construction ═══════════════════════════
@@ -402,13 +458,11 @@ def build_snapshot(
         recent_low.label.value if recent_low is not None else None
     )
 
-    # Compute bias via the pure helper (need the structure_event + labels
-    # + sweep dir; sweep is the strongest sign).
+    # Compute v2 bias via the pure helper.  Only fresh long-side sweeps
+    # produce a non-neutral bias — see _bias_factor_scores docstring.
     bull_factors, bear_factors = _bias_factor_scores(
-        structure_event=structure_event,
-        recent_high_label=high_label,
-        recent_low_label=low_label,
         recent_sweep_direction=recent_sweep_direction,
+        recent_sweep_bars_ago=recent_sweep_bars_ago,
     )
     bull_total = sum(bull_factors.values())
     bear_total = sum(bear_factors.values())
@@ -630,6 +684,44 @@ class MarketSynthesizerService:
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("MarketSynthesizer publish failed: %s", exc, exc_info=True)
+        # v2: also emit a typed LIQUIDITY_SWEEP_DETECTED event when the
+        # snapshot carries a fresh long-side sweep.  This is the brain's
+        # headline edge signal — strategies that just want the sweep
+        # boost can subscribe directly without parsing the full snapshot.
+        if (
+            snap.recent_sweep_direction == +1
+            and snap.recent_sweep_bars_ago is not None
+            and snap.recent_sweep_bars_ago <= SWEEP_FRESHNESS_WINDOW_BARS
+            and snap.bias == _BIAS_BULLISH
+        ):
+            try:
+                # Reconstruct sweep level/poke from the stored ratio.  The
+                # snapshot only retains the strength ratio (close_distance /
+                # poke_amount) and the bar index, so we re-derive from
+                # the most recent swing low (the only level a +1 sweep
+                # could have pierced).
+                sweep_level = snap.recent_swing_low
+                payload: Dict[str, Any] = {
+                    "symbol": snap.symbol,
+                    "timeframe": snap.timeframe,
+                    "timestamp": snap.as_of.isoformat() if snap.as_of else None,
+                    "sweep_level": sweep_level,
+                    "strength": snap.recent_sweep_strength,
+                    "bars_ago": snap.recent_sweep_bars_ago,
+                    "confidence": snap.confidence,
+                }
+                await self._bus.publish(
+                    Event(
+                        type=EventType.LIQUIDITY_SWEEP_DETECTED,
+                        data=payload,
+                        source="market_synthesizer",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "MarketSynthesizer LIQ_SWEEP publish failed: %s",
+                    exc, exc_info=True,
+                )
 
 
 # ═══════════════════════════════ boot helper ═════════════════════════════════

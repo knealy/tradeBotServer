@@ -67,8 +67,27 @@ class EventType(Enum):
     # in ``data["snapshot"]`` describing the current PA/SMC interpretation
     # (active levels, recent sweeps, structure events, derived bias /
     # confidence).  Strategies consume this as confluence; the dashboard
-    # visualises it.  Subscribers: TBD as the brain matures.
+    # visualises it.
     MARKET_CONTEXT_UPDATED = "market_context_updated"
+
+    # ``LIQUIDITY_SWEEP_DETECTED`` is the v2 brain's headline edge signal —
+    # emitted ALONGSIDE ``MARKET_CONTEXT_UPDATED`` whenever a fresh LONG-side
+    # liquidity sweep (price wicked below recent swing low and closed back
+    # inside, on or near the just-closed bar) is detected.  Per the
+    # 2026-06-12 PM primitives probe, this is the ONLY isolated PA/SMC
+    # primitive with consistent cross-symbol predictive lift (~ 52 % WR on
+    # 6-bar forward).  Strategies subscribe directly to this event for a
+    # lightweight long-side confluence boost without parsing the full
+    # snapshot.  Payload:
+    #   ``data["symbol"]``       — uppercase symbol
+    #   ``data["timeframe"]``    — e.g. "5m"
+    #   ``data["timestamp"]``    — ISO close timestamp of the sweep-confirming bar
+    #   ``data["sweep_level"]``  — swing-low price the wick pierced
+    #   ``data["poke_amount"]``  — how far past the level the wick went (points)
+    #   ``data["close_distance"]`` — close - sweep_level (points; positive)
+    #   ``data["bars_ago"]``     — sweep bar age (0 = on just-closed bar)
+    #   ``data["confidence"]``   — freshness-decayed weight in [0, 1]
+    LIQUIDITY_SWEEP_DETECTED = "liquidity_sweep_detected"
 
     # GUI events
     GUI_REFRESH_REQUESTED = "gui_refresh_requested"
