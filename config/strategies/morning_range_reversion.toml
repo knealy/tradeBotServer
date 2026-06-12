@@ -158,10 +158,18 @@ skip_weekdays = ["Fri"]
 
 # ── Live data-freshness guard ─────────────────────────────────────────────────
 # Maximum age (seconds) of the most recent bar before ``analyze()`` aborts with
-# a loud ``⛔ STALE DATA`` error. 
-# Recommended: 600 (10 min) for 5m bars; raise on slower timeframes.
+# a loud ``⛔ STALE DATA`` error.
+#
+# 2026-06-12 update: bumped from 600 → 900 (10min → 15min) as a defensive
+# relaxation alongside the new periodic-bar-completion safety net in
+# ``core/bar_aggregator.py``. The aggregator now force-closes builders whose
+# ``bar_end`` has passed even without a fresh tick (closes the quote
+# dead-zone race), so the live cache should stay fresh.  The bumped threshold
+# adds belt-and-suspenders coverage for genuine broker-side publication
+# latency (~5-10 min during the morning hours per 2026-06-11 / 2026-06-12 logs)
+# without weakening true "broken feed" detection (still trips at 15+ min stale).
 # 0 = disable the guard entirely (legacy behaviour, not recommended live).
-max_bar_staleness_seconds = 600
+max_bar_staleness_seconds = 900
 
 # atr regime settings (not done)
 require_high_atr       = false
@@ -358,11 +366,43 @@ loss_streak_cooldown_sessions    = 10
 sl_fixed_pts = 0
 sl_mult      = 3.30
 sl_max_pts   = 29
+# 2026-06-12 post-mortem (debug session f635c2): the 2026-06-11 trade exposed
+# fragility at the SL boundary. Live anchor width was 16.18 pt (live SL 26.70)
+# while the backtest computed 16.70 pt (sim SL 27.55). The actual price low of
+# 4073.10 hit live SL by 0.30 pt and missed sim SL by 0.60 pt — a coin-flip on
+# anchor noise. A modest floor at 28 pt absorbs ~1 pt of anchor disagreement
+# (the empirical max from the diff-tool checks) and brings live/backtest
+# behavior into agreement on narrow-anchor MGC days. Combined with the
+# sl_max_pts=29 cap, the SL distance now sits in a tight [28, 29] band on
+# wider-than-narrow anchors. The widening costs ~1 pt of risk per trade on
+# the affected sessions; the corresponding dollar-cap auto-trim absorbs any
+# blow-up of $ risk per trade.
+sl_min_pts   = 28.0
 tp_mult      = 1.85
 # MGC range similarly compact; legacy candle-close mode is the safer default
 # until a per-symbol threshold sweep produces a positive-expectancy value.
 reentry_threshold_points = 0.0
 min_range_width_points = 4
+
+# ── 2026-06-12 setup-decomposition fix (scripts/mrr_setup_decomposition.py) ──
+# 6-month walk-forward (n=119 trades, $15.8 k PnL) found a strong asymmetric
+# losing cell in MGC BUYs on Tuesday:
+#
+#     MGC BUY on Tuesday : 33 % WR / -$203 expectancy (n=9, -$1823 total)
+#     MGC SELL on Tuesday: 89 % WR / +$306 expectancy (n=9, +$2756 total)
+#
+# Tuesday MGC has a structural fade-the-rip downside bias; LONG fades die
+# because the market keeps grinding lower on Tuesday opens. Filter applied
+# ONLY to the LONG side so the strong SELL cell keeps harvesting.
+#
+# A directional width filter (``min_range_width_long_points = 25``) was
+# tested alongside this skip but REJECTED on validation. The original Q3
+# anchor-width cell looked like a loser (-$118 exp) but the analysis was
+# confounded: most of the losing MGC BUYs in that cell were the *Tuesday*
+# cohort. Once we drop Tue separately, the remaining narrow-width MGC BUYs
+# are 85% WR / +$141 avg (n=20) — the width filter was killing winners.
+# See docs/CHANGELOG.md (2026-06-12) for the post-mortem evidence.
+skip_weekdays_long           = ["Tue"]
 # 2026-06-05 R28 (HEADLINE FIX — material PnL lift):
 # MGC max_range_width_points TIGHTENED 65 → 46.  The prior 65pt ceiling
 # admitted ~3 wide-range MGC sessions per 9-month fold that consistently
@@ -453,6 +493,13 @@ position_size = 4
 # Tue/Wed.  ``skip_thu_fri`` alone was a weaker variant (3m RF 2.40,
 # 6m RF 2.29); the Mon-Thu-Fri triple was the clear cross-window winner.
 skip_weekdays                    = ["Mon", "Thu", "Fri"]
+# 2026-06-12 setup-decomposition fix (scripts/mrr_setup_decomposition.py):
+# MNQ BUY on Wednesday: 22 % WR / -$51 expectancy (n=9, -$463) vs
+# MNQ SELL on Wednesday: 69 % WR / +$30 expectancy (n=16, +$483).
+# Wed has a SELL-biased structure on MNQ — fade the upside breakout works,
+# fade the downside sweep fails. Block LONG fades only on Wed; SELL stays.
+# After this filter MNQ BUY only runs on Tuesday (n=15, 60 % WR, +$80/trade).
+skip_weekdays_long               = ["Wed"]
 # 2026-05-29 walk-forward fine-tune (MNQ alone, 90d, 6 folds):
 # slfix=50 + tp_mult=1.25 lifted MNQ composite from 1350 (root slfix=35,
 # tp=1.5) to 7208 (+5.3×); return 45% → 101%; RF 0.46 → 1.79.  Wider stop

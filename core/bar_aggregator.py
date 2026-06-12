@@ -113,6 +113,24 @@ class BarAggregator:
         self._last_partial_emit: Dict[str, float] = {}
         self._aggregator_loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
+        # ── Periodic bar-completion safety net (2026-06-12 fix) ───────────────
+        # Force-closes builders whose ``bar_end`` has elapsed even when no fresh
+        # tick has arrived. This eliminates the "quote dead-zone race" where
+        # SignalR pauses for a few seconds right at a bar boundary and the
+        # builder stays "open" indefinitely until the next tick fires. Without
+        # this loop the live-bar cache in ``trading_bot`` can stay 10+ minutes
+        # behind real time even though hundreds of thousands of quotes are
+        # flowing — the events update the in-progress bar without ever
+        # crossing the strict ``current_time >= bar_end`` boundary inside
+        # ``add_quote``. See ``docs/CHANGELOG.md`` 2026-06-12 entry.
+        self._periodic_completion_task: Optional[asyncio.Task] = None
+        try:
+            self._periodic_completion_interval: float = float(
+                os.getenv("BAR_PERIODIC_COMPLETION_INTERVAL", "10.0")
+            )
+        except (TypeError, ValueError):
+            self._periodic_completion_interval = 10.0
+        self._periodic_completions_total: int = 0
         # Determine default timeframes (support env override)
         env_frames = os.getenv('BAR_DEFAULT_TIMEFRAMES')
         frames: Iterable[str]
@@ -131,7 +149,7 @@ class BarAggregator:
         self.symbol_timeframes: Dict[str, Set[str]] = defaultdict(set)
         
     async def start(self):
-        """Start the bar aggregator (event-driven broadcasts; no periodic poll)."""
+        """Start the bar aggregator (event-driven broadcasts + boundary safety net)."""
         if self._running:
             logger.warning("⚠️  Bar aggregator already running")
             return
@@ -145,12 +163,39 @@ class BarAggregator:
             len(self.default_timeframes),
             ", ".join(self.default_timeframes),
         )
+        if (
+            self._periodic_completion_interval > 0
+            and self._periodic_completion_task is None
+        ):
+            try:
+                self._periodic_completion_task = asyncio.create_task(
+                    self._periodic_bar_completion_loop(),
+                    name="bar_periodic_completion",
+                )
+                logger.info(
+                    "🛡️  Periodic bar-completion safety net active (interval=%.1fs)",
+                    self._periodic_completion_interval,
+                )
+            except RuntimeError:
+                # No running loop (e.g. in some tests) — skip safety net silently.
+                self._periodic_completion_task = None
 
     async def stop(self):
-        """Stop the bar aggregator."""
+        """Stop the bar aggregator (and its periodic-completion safety net)."""
         self._running = False
+        task = self._periodic_completion_task
+        self._periodic_completion_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         self._aggregator_loop = None
-        logger.info("📊 Bar aggregator stopped")
+        logger.info(
+            "📊 Bar aggregator stopped (%d periodic force-completion(s) this run)",
+            self._periodic_completions_total,
+        )
 
     def _partial_min_interval(self) -> float:
         try:
@@ -256,6 +301,80 @@ class BarAggregator:
                     cb(bar)
                 except Exception as exc:
                     logger.debug("completed-bar callback %r failed: %s", cb, exc)
+
+    async def _periodic_bar_completion_loop(self) -> None:
+        """Force-close builders whose ``bar_end`` has elapsed, even without a fresh tick.
+
+        Closes the quote dead-zone race: ``add_quote`` is the ONLY path that
+        rolls over a bar via ``_should_start_new_bar(current_time >= bar_end)``.
+        If the SignalR quote stream has even a brief pause right at the
+        boundary, the in-progress bar stays open until the next tick — which
+        can be many seconds (or minutes, on a quiet symbol). The live-bar
+        cache in ``trading_bot`` then stays stuck at the previous tail and
+        strategies see false ``⛔ STALE DATA`` errors.
+
+        This task runs on the aggregator event loop at
+        ``BAR_PERIODIC_COMPLETION_INTERVAL`` seconds (default 10) and walks
+        all live builders. Any builder that has at least one tick AND whose
+        ``bar_end`` is in the past is force-completed; a fresh empty builder
+        is opened for the current boundary.
+
+        Builders with no ticks yet (``builder.open is None``) are skipped —
+        we only emit bars with real OHLCV data.
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(self._periodic_completion_interval)
+                if not self._running:
+                    break
+                try:
+                    self._sweep_force_complete()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "periodic-bar-completion sweep error (continuing): %s",
+                        exc,
+                    )
+        except asyncio.CancelledError:
+            pass
+
+    def _sweep_force_complete(self) -> None:
+        """Single pass of the periodic-completion logic (extracted for tests)."""
+        now = datetime.now(timezone.utc)
+        # Snapshot to avoid mutation during iteration (other threads call
+        # ``add_quote`` which may insert new symbol/timeframe entries).
+        for symbol_key in list(self.bar_builders.keys()):
+            tfs = self.bar_builders.get(symbol_key)
+            if not tfs:
+                continue
+            for timeframe in list(tfs.keys()):
+                builder = tfs.get(timeframe)
+                if builder is None or builder.open is None:
+                    continue
+                if builder.bar_start is None:
+                    continue
+                bar_end = self._get_bar_end_time(builder.bar_start, timeframe)
+                if now < bar_end:
+                    continue
+                # Bar end has elapsed but no new tick rolled it over.
+                try:
+                    completed = builder.to_bar()
+                except ValueError:
+                    continue
+                self.completed_bars[symbol_key][timeframe] = completed
+                self._periodic_completions_total += 1
+                logger.debug(
+                    "🛡️  periodic force-close %s %s "
+                    "(bar_start=%s bar_end=%s now=%s, %d total)",
+                    symbol_key, timeframe,
+                    builder.bar_start.isoformat(),
+                    bar_end.isoformat(),
+                    now.isoformat(),
+                    self._periodic_completions_total,
+                )
+                self._emit_completed_bar(completed)
+                # Open a fresh builder for the current boundary.
+                new_start = self._get_bar_start_time(now, timeframe)
+                tfs[timeframe] = BarBuilder(symbol_key, timeframe, new_start)
 
     def register_completed_bar_callback(self, callback: Callable[[Bar], None]) -> None:
         """Register a callback invoked synchronously whenever a bar closes.

@@ -94,7 +94,9 @@ orders.json
 
 # Backup files
 *.bak
+*.bak.*
 *.backup
+*.backup.*
 *.tmp
 
 # Test coverage

@@ -1,5 +1,56 @@
 # Strategy Arsenal
 
+Last refresh: 2026-06-12 PM — **Per-concept PA/SMC thesis review** (user request before deciding what to keep). The
+2026-06-11 de-rating banner below stays in force: NONE of the explored PA/SMC concepts contain a productionizable
+standalone edge. This new section evaluates each concept on its own merits and flags the three primitives that have
+real second-order value (as features other strategies consume, NOT as standalone strategies) and the single concept
+worth extending into a new standalone strategy.
+
+### PA / SMC concept review (2026-06-12)
+
+| # | Concept | Where built | Standalone edge? | Second-order use | Verdict |
+| -- | -- | -- | -- | -- | -- |
+| 1 | **Swing Pivots** (`pa_pivots`) | `core/pivot_detector.py` | No — symmetric, edge dilutes | Level primitive: skip MRR entries facing an opposing prior-day swing pivot; or anchor TP to next pivot | **Keep as feature** |
+| 2 | **Break of Structure / CHoCH** | `core/structure_detector.py` | No — too late as entry signal; whipsaw-prone | Exit-trigger primitive: "exit MRR if BoS against us" — smarter than the blunt `max_hold_bars` | **Keep as feature** |
+| 3 | **Fair Value Gap (FVG)** | `core/fvg_detector.py` | No — ~52% WR, poor R:R standalone | TP-magnet primitive: 5m FVG below MRR LONG entry as interim partial-TP target | **Keep as feature** |
+| 4 | **Order Block (OB)** | `core/order_block_detector.py` | No — essentially a higher-quality pivot, same problems | Same use as pivots (level primitive) | **Marginal — pivots cover ~80% of OB use with simpler logic** |
+| 5 | **Liquidity Sweep** ⭐ | `core/liquidity_sweep_detector.py` + `morning_range_reversion_strategy.py` | **YES** — this is the strongest single PA concept in our data; MRR's 72% MGC WR validates the thesis | N/A — already standalone | **KEEP and EXTEND** — see "Standalone candidate" below |
+| 6 | **Multi-TF Confluence** (`pa_multitf`) | `core/multitf_aggregator.py` | No — added complexity without verified edge; dilutes signal counts faster than it improves WR | Speculative regime filter at best | **Deletable** |
+| 7 | **Classical Candle Patterns** (`pa_classical`) | `core/classical_patterns.py` | No — individually too low-information, edge dilutes quickly, many false positives | Possible entry-quality tiebreaker (e.g. "pin bar at sweep = take, doji = skip") — unproven | **Deletable; possibly revisit as filter** |
+| 8 | **Price-Action Fade** (`pa_fade`) | `scripts/simulate_price_action_trades.py`-derived MVP | No — too vague without specific level/timing rules; user said "not very actionable" at the time | None concrete | **Deletable** |
+
+### Standalone candidate worth building: prior-day high/low sweep-fade
+
+Liquidity Sweep (#5) is the only concept above with a robust standalone edge in our data. MRR is essentially a
+7-8 AM-ET liquidity-sweep strategy on the morning range. The natural extension that gives **real diversification
+without requiring a separate prediction engine** is a sister strategy that trades the same sweep mechanic against
+a different level on a different session:
+
+- **Prior-day RTH high/low sweep-fade** (afternoon session): wait for the European session to set a high/low,
+  detect a NY-afternoon sweep above/below that level, fade the close back inside.
+- **Why this is the best "second strategy" candidate**: structurally identical signal/risk logic to MRR (sweep
+  detection, fade on reversion, identical SL/TP geometry primitives) so the implementation cost is low, but it
+  trades a DIFFERENT session and DIFFERENT level → equity curves should have low correlation → real portfolio
+  benefit. Most other ideas (regime classifier + cross-strategy picker) require building infrastructure that
+  doesn't yet exist.
+
+User has explicitly **deferred this decision** (selected "keep everything for now, write thesis to
+``docs/STRATEGY_ARSENAL.md`` for future reference"). The thesis is preserved here for the next decision point.
+
+### What "keep as feature" means concretely
+
+For #1, #2, #3: the detectors exist in ``core/`` and are imported only by the de-rated
+``price_action_fade`` MVP. Three options when the deletion question reopens:
+- **(a) Promote them**: move detectors out of the PA stack into a generic ``core/levels/`` module and have MRR
+  optionally consume them (e.g. ``signal.use_swing_pivot_filter = true``).
+- **(b) Park them**: leave the detectors in place but mark the importing strategy ``_LEGACY``. Cheap.
+- **(c) Delete**: remove the detectors AND the importing strategy. Re-derive from git history if needed.
+
+When the deletion question is next reopened, prefer (a) for #1/#2/#3 only if there's a concrete MRR refinement
+they unlock. Otherwise (b) for those three + (c) for #6/#7/#8.
+
+---
+
 Last refresh: 2026-06-11 — **Price-action research stack DE-RATED via truth-mode (no production tier change)**.  The 2026-06-11 truth-mode work (see ``docs/CHANGELOG.md``) proved the legacy ``scripts/simulate_price_action_trades.py`` was over-optimistic by ~+0.79 R on average — the entire PA research stack (``dragonfly_doji + OB``, ``gravestone_doji + OB``, ``sweep_into_fvg``, etc.) does NOT contain a productionizable edge under realistic execution.  ``price_action_fade`` MVP REMAINS ``meta.enabled = false`` and is **NOT** in any production tier.  Production tiers #1-5 below are UNCHANGED and were each validated against the engine's truth-mode-equivalent fill model — see "Arsenal truth-effects sanity check (2026-06-11)" in CHANGELOG for the per-strategy proof.  Use ``scripts/probe_pattern_edge.py --truth-mode-always`` for any new PA edge measurement going forward.
 
 ---

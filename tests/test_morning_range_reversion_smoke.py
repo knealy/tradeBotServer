@@ -247,6 +247,100 @@ def test_per_symbol_skip_weekdays_committed_defaults():
     assert strat._skip_weekdays("MES") == frozenset({Fri})
 
 
+def test_per_symbol_directional_skip_weekdays_committed_defaults():
+    """Directional (LONG-only / SHORT-only) weekday filters added by the
+    2026-06-12 setup-decomposition fix (scripts/mrr_setup_decomposition.py).
+
+    * MGC.skip_weekdays_long = ["Tue"]  — MGC BUY-Tue: 33% WR / -$203 exp
+    * MNQ.skip_weekdays_long = ["Wed"]  — MNQ BUY-Wed: 22% WR / -$51 exp
+    * Both SHORT skip lists default to empty (the SELL side wins on those days).
+
+    This test pins the per-symbol directional override semantics so a future
+    TOML edit that drops the filter is loudly caught.
+    """
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    strat = MorningRangeReversionStrategy(_MockBot([]), None)
+    Mon, Tue, Wed, Thu, Fri = 0, 1, 2, 3, 4
+    assert strat._skip_weekdays_directional("MGC", "LONG") == frozenset({Tue})
+    assert strat._skip_weekdays_directional("MGC", "BUY") == frozenset({Tue})  # alias for LONG
+    assert strat._skip_weekdays_directional("MGC", "SHORT") == frozenset()
+    assert strat._skip_weekdays_directional("MGC", "SELL") == frozenset()
+    assert strat._skip_weekdays_directional("MNQ", "LONG") == frozenset({Wed})
+    assert strat._skip_weekdays_directional("MNQ", "BUY") == frozenset({Wed})
+    assert strat._skip_weekdays_directional("MNQ", "SHORT") == frozenset()
+    # MES has no per-symbol directional override; falls back to root (empty).
+    assert strat._skip_weekdays_directional("MES", "LONG") == frozenset()
+    assert strat._skip_weekdays_directional("MES", "SHORT") == frozenset()
+
+
+def test_per_symbol_directional_min_range_width_defaults_to_zero():
+    """Directional minimum-anchor-width filter is wired and respects the
+    config precedence chain, but defaults to 0 (no extra floor) for every
+    committed symbol because the 2026-06-12 setup-decomposition validation
+    showed the cell-level evidence was confounded with the Tuesday cohort:
+
+      MGC BUY Q3 (18.7-30.7 pt) looked like a -$118/trade loser (n=10),
+      but most of those losing Q3 trades were the Tuesday cohort. Once
+      ``skip_weekdays_long = ["Tue"]`` removes them separately, the
+      remaining narrow-width MGC BUYs are 85% WR / +$141 avg (n=20) —
+      a directional width filter would kill winners.
+
+    The knob stays wired so a future per-symbol investigation (e.g. on a
+    different instrument or different regime) can flip it on without code
+    changes. This test pins the committed default of 0 across all symbols
+    and confirms both LONG and SHORT branches resolve cleanly.
+    """
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    strat = MorningRangeReversionStrategy(_MockBot([]), None)
+    for sym in ("MGC", "MNQ", "MES"):
+        for side in ("LONG", "BUY", "SHORT", "SELL"):
+            assert strat._min_range_width_directional(sym, side) == 0.0, (
+                f"{sym}/{side} should default to 0 (filter disabled)"
+            )
+
+
+def test_directional_min_range_width_honors_per_symbol_override(monkeypatch):
+    """When a per-symbol TOML override is present, ``_min_range_width_directional``
+    returns it. Uses ``monkeypatch.setattr`` on the cfg.symbol_override hook
+    to inject a value without touching the committed TOML."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    strat = MorningRangeReversionStrategy(_MockBot([]), None)
+    original = strat._cfg.symbol_override
+    def fake_override(sym, key, default=None):
+        if sym == "MGC" and key == "signal.min_range_width_long_points":
+            return 25.0
+        return original(sym, key, default=default)
+    monkeypatch.setattr(strat._cfg, "symbol_override", fake_override)
+    assert strat._min_range_width_directional("MGC", "LONG") == 25.0
+    # SHORT side unchanged
+    assert strat._min_range_width_directional("MGC", "SHORT") == 0.0
+    # other symbols unaffected
+    assert strat._min_range_width_directional("MNQ", "LONG") == 0.0
+
+
+def test_parse_weekday_tokens_robust_to_input_shapes():
+    """``_parse_weekday_tokens`` accepts the same input shapes as the legacy
+    ``_skip_weekdays`` parser (list-of-strings, list-of-ints, comma-or-space
+    separated string) and ignores unknown tokens with a logged warning."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    strat = MorningRangeReversionStrategy(_MockBot([]), None)
+    Mon, Tue, Wed, Thu, Fri = 0, 1, 2, 3, 4
+    # list of names
+    assert strat._parse_weekday_tokens(["Mon", "Wed"], "test_a") == frozenset({Mon, Wed})
+    # list of ints
+    assert strat._parse_weekday_tokens([0, 4], "test_b") == frozenset({Mon, Fri})
+    # space-separated string
+    assert strat._parse_weekday_tokens("Tue Thu", "test_c") == frozenset({Tue, Thu})
+    # comma-separated string
+    assert strat._parse_weekday_tokens("Tue,Thu", "test_d") == frozenset({Tue, Thu})
+    # empty / None / blank → empty frozenset
+    assert strat._parse_weekday_tokens(None, "test_e") == frozenset()
+    assert strat._parse_weekday_tokens([], "test_f") == frozenset()
+    assert strat._parse_weekday_tokens("", "test_g") == frozenset()
+    # unknown token silently dropped (and warned once)
+    assert strat._parse_weekday_tokens(["Mon", "Funday"], "test_h") == frozenset({Mon})
+
+
 def test_efficiency_ratio_computation():
     """KER over a perfect trend is 1.0; over a perfect oscillation 0.0."""
     from datetime import date as _date, datetime as _datetime

@@ -268,6 +268,7 @@ def _run_backtest_json(
     end: date,
     timeframe: str,
     extra_env: Dict[str, str],
+    csv_1m_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     cmd = [
         sys.executable,
@@ -282,6 +283,17 @@ def _run_backtest_json(
         "--format=json",
         "--include-trades",
     ]
+    # ── 2026-06-11 post-mortem (debug session f635c2): the recap previously ran
+    # the replay with **5m only**, so any single 5m bar that touched both legs of
+    # a bracket was resolved by OCO iteration order rather than intrabar truth,
+    # and the simulator's SL distance — being derived from anchor width —
+    # could silently disagree with the live bracket by enough to flip outcomes.
+    # Passing --csv-1m forces the engine to resolve fills 1m-aware. We auto-discover
+    # the 1m sibling next to the 5m CSV unless the caller passes ``csv_1m_path``.
+    if csv_1m_path is None:
+        csv_1m_path = _auto_discover_1m_sibling(csv_path)
+    if csv_1m_path is not None and csv_1m_path.is_file():
+        cmd.append(f"--csv-1m={csv_1m_path}")
     env = os.environ.copy()
     env.update(_REPLAY_BASE_ENV)
     env.update(extra_env)
@@ -303,6 +315,99 @@ def _run_backtest_json(
 
 def _resolve_csv(csv_dir: Path, csv_template: str, sym: str) -> Path:
     return Path(csv_template.format(csv_dir=str(csv_dir), sym=sym.lower(), SYM=sym))
+
+
+def compute_trade_margin(trade: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute the thin-margin metric for a single trade record.
+
+    Returns a dict with keys:
+        ``kind``  — one of ``"sl_consumed"`` (TP exits), ``"tp_run"`` (SL exits),
+                    or ``"n/a"`` when MAE/MFE/initial_risk are missing.
+        ``pct``   — float (percent of opposite-leg distance covered).
+        ``thin``  — bool flag: True iff a small bracket-price shift would have
+                    flipped the outcome (>= 85% consumed).
+
+    For TP exits, ``pct = abs(MAE) / initial_risk_dollars * 100``. A value near
+    100% means the SL came within a hair of firing — exactly the failure mode
+    that motivated this metric (the 2026-06-11 MGC trade returned 97.8%).
+
+    For SL exits, ``pct = MFE / initial_risk_dollars * 100``. We use initial_risk
+    as the denominator (not TP distance) because the trade JSON does not expose
+    the TP price; this gives a "fraction of stop distance reached in TP-direction"
+    proxy that's still comparable across trades within a symbol.
+    """
+    reason = str(trade.get("exit_reason") or "").lower()
+    try:
+        risk = float(trade.get("initial_risk_dollars") or 0)
+    except (TypeError, ValueError):
+        risk = 0.0
+    try:
+        mae = float(trade.get("max_adverse_excursion") or 0)
+    except (TypeError, ValueError):
+        mae = 0.0
+    try:
+        mfe = float(trade.get("max_favorable_excursion") or 0)
+    except (TypeError, ValueError):
+        mfe = 0.0
+    if risk <= 0:
+        return {"kind": "n/a", "pct": 0.0, "thin": False}
+    if reason == "take_profit":
+        pct = abs(mae) / risk * 100.0
+        return {"kind": "sl_consumed", "pct": pct, "thin": pct >= 85.0}
+    if reason == "stop_loss":
+        pct = abs(mfe) / risk * 100.0
+        return {"kind": "tp_run", "pct": pct, "thin": pct >= 85.0}
+    return {"kind": "n/a", "pct": 0.0, "thin": False}
+
+
+def _format_trade_margin_cell(trade: Dict[str, Any]) -> str:
+    """Render the margin column for the trade table. Thin trades get a red badge."""
+    m = compute_trade_margin(trade)
+    if m["kind"] == "n/a":
+        return "<span class='muted'>—</span>"
+    label = "SL→" if m["kind"] == "sl_consumed" else "TP→"
+    body = f"{label} {m['pct']:.1f}%"
+    if m["thin"]:
+        return (
+            f"<span style='color:#b00020;font-weight:600' "
+            f"title='Razor-thin margin: a small bracket shift would have flipped this outcome'>"
+            f"⚠ {body}</span>"
+        )
+    return body
+
+
+def _auto_discover_1m_sibling(csv_5m_path: Path) -> Optional[Path]:
+    """Given a 5m CSV path like ``MGC_5m_databento.csv`` (or ``mgc_5m.csv``), return
+    the matching 1m sibling if one exists on disk. Returns ``None`` when no sibling
+    can be found — the caller will then run the replay without intrabar truth.
+
+    Patterns probed (in order):
+        ``{stem-with-_5m-replaced-by-_1m}.csv``  → preserves vendor suffix
+        ``{prefix}_1m_databento.csv`` / ``{prefix}_1m.csv`` next to the 5m file
+    """
+    if csv_5m_path is None:
+        return None
+    p = Path(csv_5m_path)
+    if not p.is_file():
+        return None
+    parent = p.parent
+    stem = p.stem
+    candidates: List[Path] = []
+    if "_5m_" in stem:
+        candidates.append(parent / f"{stem.replace('_5m_', '_1m_')}{p.suffix}")
+    if "_5m" in stem:
+        candidates.append(parent / f"{stem.replace('_5m', '_1m')}{p.suffix}")
+    sym_lower = stem.split("_", 1)[0]
+    candidates.append(parent / f"{sym_lower}_1m_databento.csv")
+    candidates.append(parent / f"{sym_lower}_1m.csv")
+    seen = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if cand.is_file():
+            return cand
+    return None
 
 
 def _ohlcv_path_for_chart(symbol: str) -> Tuple[Path, str]:
@@ -442,6 +547,15 @@ def main() -> int:
         default="{csv_dir}/{sym}_5m_databento.csv",
         help="Path template: {csv_dir}, {sym}, {SYM}",
     )
+    ap.add_argument(
+        "--csv-1m-template",
+        type=str,
+        default="",
+        help=(
+            "Optional 1m CSV path template for intrabar truth resolution (placeholders: {csv_dir}, {sym}, {SYM}). "
+            "When empty, a 1m sibling next to --csv is auto-discovered."
+        ),
+    )
     ap.add_argument("--last-trades", type=int, default=8, help="Most recent trades per fold to chart")
     ap.add_argument("--padding-minutes", type=int, default=360, help="OHLC slice padding around entry/exit")
     ap.add_argument(
@@ -571,6 +685,7 @@ def main() -> int:
     )
 
     csv_paths: Dict[str, Path] = {}
+    csv_1m_paths: Dict[str, Optional[Path]] = {}
     anchor_dates: Dict[str, date] = {}
     for sym in symbols:
         p = _resolve_csv(args.csv_dir, args.csv_template, sym)
@@ -579,6 +694,17 @@ def main() -> int:
             return 2
         csv_paths[sym] = p
         anchor_dates[sym] = _csv_last_date(p)
+        if args.csv_1m_template:
+            p1 = _resolve_csv(args.csv_dir, args.csv_1m_template, sym)
+            csv_1m_paths[sym] = p1 if p1.is_file() else None
+            if csv_1m_paths[sym] is None:
+                print(
+                    f"warning: --csv-1m-template resolved to a missing file for {sym}: {p1} "
+                    f"— falling back to auto-discovery",
+                    file=sys.stderr,
+                )
+        else:
+            csv_1m_paths[sym] = _auto_discover_1m_sibling(p)
 
     anchor_end = min(anchor_dates.values())
     folds = _fold_ranges(anchor_end, total_days=args.days, folds=args.folds)
@@ -750,6 +876,7 @@ def main() -> int:
                     strategy=strat, symbol=sym, csv_path=csv_paths[sym],
                     start=fs_d, end=fe_d, timeframe=args.timeframe,
                     extra_env=extra_env,
+                    csv_1m_path=csv_1m_paths.get(sym),
                 )
             _cache_store(ck, payload, cache_dir_path=decision_cache_dir)
             return payload, False
@@ -759,6 +886,7 @@ def main() -> int:
             strategy=strat, symbol=sym, csv_path=csv_paths[sym],
             start=fs_d, end=fe_d, timeframe=args.timeframe,
             extra_env=extra_env,
+            csv_1m_path=csv_1m_paths.get(sym),
         ), False
 
     runner_label = "in-process" if use_inprocess else "subprocess"
@@ -937,7 +1065,7 @@ def main() -> int:
                         sub = df_idx.loc[(df_idx.index >= et - pad) & (df_idx.index <= xt + pad)]
                     if sub.empty:
                         fold_rows.append(
-                            f"<tr><td>{strat}</td><td>{sym}</td><td>—</td><td colspan='4'>empty OHLC slice</td></tr>"
+                            f"<tr><td>{strat}</td><td>{sym}</td><td>—</td><td colspan='6'>empty OHLC slice</td></tr>"
                         )
                         continue
                     bars, bar_times = dataframe_to_chart_bars_unix(sub)
@@ -970,6 +1098,7 @@ def main() -> int:
                     chart_count += 1
                     pnl = float(trade.get("pnl") or 0)
                     href = f"trades/{chart_name}"
+                    margin_html = _format_trade_margin_cell(trade)
                     fold_rows.append(
                         "<tr>"
                         f"<td><code>{_html_escape(strat)}</code></td><td><code>{_html_escape(sym)}</code></td>"
@@ -978,6 +1107,7 @@ def main() -> int:
                         f"<td>{_html_escape(str(trade.get('exit_time','')))}</td>"
                         f"<td>{pnl:.2f}</td>"
                         f"<td>{_html_escape(str(trade.get('exit_reason','')))}</td>"
+                        f"<td>{margin_html}</td>"
                         f'<td><a href="{href}">trade_chart</a></td>'
                         "</tr>"
                     )
@@ -985,8 +1115,11 @@ def main() -> int:
         fold_sections.append(
             f"<h2 id='fold{fold_ix}'>Fold {fold_ix}: {fs} → {fe}</h2>"
             "<table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th>"
-            "<th>pnl</th><th>exit_reason</th><th>chart</th></tr></thead><tbody>"
-            f"{''.join(fold_rows) if fold_rows else '<tr><td colspan=8>No rows</td></tr>'}"
+            "<th>pnl</th><th>exit_reason</th>"
+            "<th title='For take_profit: how much of the SL distance was consumed by MAE (closer to 100% = nearly stopped out). "
+            "For stop_loss: how far the trade ran in TP-direction relative to the SL distance.'>margin</th>"
+            "<th>chart</th></tr></thead><tbody>"
+            f"{''.join(fold_rows) if fold_rows else '<tr><td colspan=9>No rows</td></tr>'}"
             "</tbody></table>"
         )
 

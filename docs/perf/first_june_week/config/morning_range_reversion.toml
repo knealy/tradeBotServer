@@ -363,7 +363,51 @@ tp_mult      = 1.85
 # until a per-symbol threshold sweep produces a positive-expectancy value.
 reentry_threshold_points = 0.0
 min_range_width_points = 4
-max_range_width_points = 65
+# 2026-06-05 R28 (HEADLINE FIX — material PnL lift):
+# MGC max_range_width_points TIGHTENED 65 → 46.  The prior 65pt ceiling
+# admitted ~3 wide-range MGC sessions per 9-month fold that consistently
+# produced the user-reported worst losers (e.g. 2025-11-13 BUY -$526,
+# 2025-11-18 SELL -$554).  Those sessions exhibit a "trended through the
+# anchor box" regime where the fade thesis breaks down structurally —
+# price keeps moving in the sweep direction long after the close back into
+# the box, hitting the 29pt SL cap.
+#
+# Fresh-cache walk-forward sweep (max_range_width_points ∈ {40,42,…,55}):
+#   max=40-44: +20% 6m ret, +20% 9m ret (one trade skipped, RF + WR improve)
+#   max=45-48: +17% 9m / +20% 6m / +19% 3m — local OPTIMUM (one additional
+#              profitable trade picked up vs 40-44 at no DD cost)
+#   max=50:    falls back toward baseline; max=55+: identical to baseline
+# Cross-window deltas vs R27 baseline (mgc_max46 final):
+#   3m: ret +558% → +666%  (+19.3%)  RF 11.27 → 13.45 (+19%)  WR 74.6→76.9 (+2.3pp)
+#   6m: ret +666% → +803%  (+20.6%)  RF  7.51 →  9.06 (+21%)  WR 67.0→68.9 (+2.0pp)
+#   9m: ret +777% → +915%  (+17.7%)  RF  8.77 → 10.32 (+18%)  WR 67.0→68.3 (+1.3pp)
+# MGC-standalone PnL: +585% → +722% on 9m (+23.4%).  Drawdown identical.
+#
+# Why 46 not 40: at MGC's typical 17-22pt morning range, the empirical
+# >40pt regime correlates with overnight gold news drivers (CPI prints,
+# rate-decision sessions, large physical-flow days).  Even single-trade
+# wide-range sessions can be profitable when the trend reverts, but the
+# 46-48pt cluster represents the cleanest cross-window Pareto frontier
+# (one extra trade vs <45, zero extra trades vs ≥50).
+#
+# REJECTED alternatives explored same sweep:
+#   - partial_tp_enabled=true (any scalp_r): MNQ catastrophic (-64..-124 vs
+#     +192 baseline), MGC -12..-17%.  Two-stage OCO interacts badly with
+#     the 5m fade tempo; engine fix for the strategy_name kwarg collision
+#     committed alongside this change but the geometry itself loses.
+#   - position_management.breakeven_enabled=true: -3..-17% ret on every
+#     trigger setting (1.5R least bad).  Breakeven defeats the fade
+#     thesis — winners that touch +1R routinely retrace and re-extend.
+#   - sl_from_tp_ratio knob (new lever): R:R-forcing variants all hurt
+#     because the strategy's edge IS the wide-stop / high-WR structure.
+#     Knob retained in code (default 0 = no-op) for future regime work.
+#   - max_sweep_distance_widths ≤1.75: no-op (current 2.0 cap rarely
+#     binds; user-reported losers were inside 1.0× width past anchor).
+#   - require_reentry_close=true (legacy candle-close mode): kills MGC
+#     to 2 trades.  NOT VIABLE.
+#   - mgc_skip_thu_fri / mgc_skip_mon_fri: both -34..-37% ret; MGC alpha
+#     is not day-of-week selective beyond the existing Fri skip.
+max_range_width_points = 46
 
 # [symbols.MGC.risk]
 # 2026-06-05 R27 — UNCOMMENT this block to switch MGC to 1 contract.

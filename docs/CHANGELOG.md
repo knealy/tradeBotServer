@@ -7,6 +7,214 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Periodic bar-completion safety net + staleness threshold relaxation (2026-06-12 PM)** —
+  Investigation of the 2026-06-11/2026-06-12 MRR run logs (5.5h, 543k quote
+  events, ZERO live-cache hits in ``get_historical_data``) traced the persistent
+  ``⛔ STALE DATA`` spam to a **quote dead-zone race** in ``core/bar_aggregator``.
+  ``add_quote`` is the ONLY path that rolls over a 5m bar via the strict
+  ``current_time >= bar_end`` check inside ``_should_start_new_bar``; if the
+  SignalR quote stream pauses for even a few seconds right at a boundary, the
+  in-progress builder stays "open" until the next tick fires (which can be
+  many seconds later). The live-bar cache in ``trading_bot`` then stays stuck
+  at the previous REST-warmup tail and strategies repeatedly fall through to
+  REST historical fetches that lag the broker by 5-10 min in morning hours.
+
+  **Two changes shipped together** to close the gap:
+
+  1. **``core/bar_aggregator.py``** — added ``_periodic_bar_completion_loop``,
+     an asyncio task started by ``BarAggregator.start()`` that runs every
+     ``BAR_PERIODIC_COMPLETION_INTERVAL`` seconds (default 10, env-tunable;
+     0 disables). Each tick walks all live builders and force-closes any whose
+     ``bar_end`` has passed AND that has at least one tick recorded — emits the
+     completed bar through the existing ``_emit_completed_bar`` path (broadcast
+     + ``_completed_bar_callbacks`` fan-out) and opens a fresh builder for the
+     current boundary. New ``_periodic_completions_total`` counter logged at
+     ``stop()``. Safe behavior on shutdown via ``CancelledError`` handling.
+     Pre-existing ``test_bar_aggregator.py`` tests that referenced removed
+     attributes (``update_interval``, ``_update_task``, ``_broadcast_updates``)
+     were rewritten against the current API as a side-effect.
+  2. **``config/strategies/morning_range_reversion.toml``** — bumped
+     ``max_bar_staleness_seconds`` ``600 → 900`` (10min → 15min). The
+     periodic-completion task should keep the live cache fresh, but this
+     belt-and-suspenders relaxation tolerates genuine broker-side publication
+     latency without weakening true "broken feed" detection (still trips at
+     15+ min stale). Comment in TOML explains both layers.
+
+  Documented in ``.env.example`` and STRATEGY_ARSENAL.md's audit section.
+  Tests: ``tests/test_bar_aggregator.py::TestPeriodicBarCompletion`` (12 new
+  tests covering env-var parsing, sweep behavior with no data / fresh / stale
+  builders, multi-symbol / multi-timeframe routing, idempotence, callback
+  exception isolation, async task lifecycle, and the disable-via-zero-interval
+  path). Full suite: **400/400 pass**.
+
+  Net effect: in the steady-state hot path, the live-bar cache stays current
+  even during quote dead-zones → ``_live_cache_can_serve`` short-circuits
+  REST → MRR's ``_bars_are_stale`` check passes → no more spurious 10-min-old
+  ``analyze()`` skips → fewer wasteful HTTP session rotations → cleaner logs.
+
+- **MRR parameter re-sweep (A + D) under new directional filters (2026-06-12)** —
+  After the directional-weekday filters landed (entry above), re-ran the MGC
+  ``sl_mult × tp_mult`` 3×3 grid + 2 single-axis probes (11 trials, 6m / 9
+  folds) and a separate 7-point ``reentry_threshold_points`` sweep
+  ``{0.00, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00}`` to check whether the
+  optimal geometry shifted now that the worst-cohort losers are filtered.
+
+  Both sweeps confirm **NO change is warranted** — the committed R27 stack
+  (sl_mult=3.30, tp_mult=1.85, sl_min_pts=28, sl_max_pts=29, reentry=0.0)
+  is already at the local optimum:
+
+  * **A. sl_mult × tp_mult sweep**: every ``sl_mult ∈ {3.20, 3.30, 3.40}``
+    produces an identical equity curve (within ±$0.40 across 6m) because the
+    ``[sl_min_pts=28, sl_max_pts=29]`` band fully dominates SL distance —
+    ``sl_mult × half_width`` only matters when its product lands inside the
+    1-pt band, which is rare. ``tp_mult=1.85`` is the local optimum; 1.80
+    costs ~$26 of total return, 1.90 costs ~$23, 1.70 raises WR (74.8% vs
+    72.97%) but costs $31, 2.00 crashes WR to 70.3% and return to +786%.
+  * **D. reentry_threshold_points sweep**: ``0.00`` (legacy candle-close
+    entry at the range extreme) is the global maximum; every +0.25 step
+    costs $11-15 of return monotonically. At 1.5+ the trade count drops
+    (some signals get filtered as the entry depth caps at half-width) and
+    DD shrinks slightly, but PnL drops more. The MGC edge depends on
+    getting the best entry price at the range extreme, not on widening
+    the stop room via a deeper re-entry.
+
+  These are **clean negative results** — the directional-filter lift didn't
+  expose any hidden parameter optima. Files: ``docs/perf/_opt_runs/mrr_a_resweep_6m/``,
+  ``docs/perf/_opt_runs/mrr_d_reentry_6m/``.
+
+- **Per-direction weekday filters for MRR (2026-06-12)** — Surfaced via the new
+  ``scripts/mrr_setup_decomposition.py`` tool, which parses an existing recap
+  directory's per-trade chart HTMLs and groups trades by ``(symbol × side ×
+  weekday × hour × anchor-width-quartile × prior-day-direction)`` to find
+  losing-cell asymmetries. Run over a 6m walk-forward (n=120, +$15.8k PnL),
+  it flagged two strong asymmetric losing cells:
+
+  * **MGC BUY on Tuesday**: 33% WR / -$203 expectancy (n=9, -$1,823 total)
+    vs MGC SELL on Tuesday: 89% WR / +$306 expectancy (n=9). Tuesday MGC
+    has a structural fade-the-rip downside bias — LONG fades die because
+    the market keeps grinding lower on Tuesday opens. **$509/trade
+    directional differential** inside the same session-symbol pair.
+  * **MNQ BUY on Wednesday**: 22% WR / -$51 expectancy (n=9, -$463 total)
+    vs MNQ SELL on Wednesday: 69% WR / +$30 expectancy (n=16, +$483).
+    Same asymmetry on MNQ, opposite weekday.
+
+  Codified via two new per-direction config knobs in
+  ``MorningRangeReversionStrategy``:
+
+  * ``signal.skip_weekdays_long`` — list of weekdays to suppress LONG entries
+    only (SHORT side stays armed). Per-symbol override supported.
+  * ``signal.skip_weekdays_short`` — symmetric, kept for completeness.
+  * ``signal.min_range_width_long_points`` / ``..._short_points`` — per-direction
+    minimum anchor width floor. **Tested and DEFAULTED TO 0**: a candidate
+    ``min_range_width_long_points=25`` for MGC dropped 20 narrow-width MGC
+    BUY trades that turned out to be 85% WR / +$2,831 PnL — the cell-level
+    decomposition was confounded with the Tuesday cohort, and once Tue is
+    skipped separately the remaining narrow-width BUYs are mostly winners.
+    The knob is wired and tested but defaulted to 0 so a future per-symbol
+    investigation can flip it on without code changes.
+
+  Committed TOML changes:
+
+  * ``[symbols.MGC.signal] skip_weekdays_long = ["Tue"]``
+  * ``[symbols.MNQ.signal] skip_weekdays_long = ["Wed"]``
+
+  Validation across two windows (no curve-fit risk, both improve):
+
+  | Window | ΔPnL | ΔWR | ΔAvg-fold PF | ΔDD-sum |
+  |--------|------|-----|--------------|---------|
+  | 6m | +$1,483 (+9.4%) | +3.8 pp | +2.72 | -$2,214 (-21%) |
+  | 9m | +$207 (+1.4%)   | +1.1 pp | +1.26 | -$1,816 (-12%) |
+
+  MNQ is the primary lift (+27% PnL on 9m, +93% on 6m); MGC is essentially
+  flat in $ terms but cleaner equity curve (worst trade unchanged at -$988).
+  The 9m generalization is what matters — only 8% of the 9m PnL is in the
+  most recent 6m sample, so the cross-window confirmation establishes this
+  isn't curve-fit to a recent regime.
+
+  Tests: 4 net-new in ``tests/test_morning_range_reversion_smoke.py`` (220 →
+  224 total in that file; 70 → 70 passed before, 70 → 74 after = ``+4 fully
+  pinned``). All committed defaults are pinned (Tue for MGC LONG, Wed for
+  MNQ LONG, empty SHORT lists, MES inherits root). The ``_parse_weekday_tokens``
+  refactor is tested for input-shape robustness (list-of-names, list-of-ints,
+  comma-separated string, space-separated string, empty, unknown tokens).
+
+- **Backtest-vs-live anchor diff + thin-margin diagnostics (2026-06-12)** — Direct response to the user's observation that the walk-forward report on 2026-06-11 showed the MGC ``morning_range_reversion`` trade as a +$297 ``take_profit``, while the live broker recorded a −$534 ``stop_loss`` on the same trade.  The post-mortem traced this to three compounding gaps:
+
+  1. The walk-forward recap was running ``core/backtest_executor.py`` *without* ``--csv-1m``, so SL/TP resolution was 5m-only — no intrabar truth.
+  2. The recap report had no way to surface a trade as "razor-thin" — a TP exit where MAE consumed 97.8% of the SL distance looks identical to a clean TP.
+  3. The live MGC anchor width was 16.18 pt while the databento walk-forward computed 16.70 pt — a 0.52 pt disagreement that translated (via ``half_width × sl_mult``) into a **0.90 pt** SL placement disagreement, enough to flip the trade outcome because the actual price low (4073.10) hit live SL but missed sim SL.
+
+  Four-part fix, all net-new and pinned by 47 new tests (411 / 411 total):
+
+  * **``scripts/walkforward_trade_recap_report.py``** — gains a new CLI flag ``--csv-1m-template`` plus an ``_auto_discover_1m_sibling`` helper that finds the matching ``{stem-with-_5m-replaced-by-_1m}.csv`` next to ``--csv``.  The flag is forwarded into the spawned ``backtest_executor.py`` subprocess as ``--csv-1m=...``.  Default behavior auto-discovers, so every existing recap run now resolves SL/TP with 1m intrabar truth without any operator action.
+  * **Recap "margin" column** — new ``compute_trade_margin(trade)`` helper computes ``abs(MAE) / initial_risk * 100`` for TP exits and ``MFE / initial_risk * 100`` for SL exits.  Trades ≥ 85% on either metric are flagged ⚠ in red in the HTML table.  The 2026-06-11 MGC trade now shows ``SL→ 97.8% ⚠`` — exactly the warning that would have surfaced this discrepancy before the live loss.
+  * **``core/anchor_persistence.py``** — new ``record_anchor()`` writes one JSON snapshot per ``(strategy, symbol, session_date_et)`` under ``data/anchors/`` containing the live H/L/width/mid, the anchor window provenance (n_bars_used, first/last bar UTC), and a stamped ``data_feed_health`` block from ``DataFeedHealthMonitor``.  Best-effort by design: every IOError is caught and logged at WARNING so persistence breakage can never take the strategy offline.  Wired into ``MorningRangeReversionStrategy.analyze`` immediately after the "📐 anchor range built" log fires, exactly once per session.
+  * **``scripts/diff_anchor_live_vs_databento.py``** — new operator-facing diff tool: re-computes the same anchor from a local databento 5m CSV and reports any ``|Δ| >= --threshold-pts`` (default 0.10) on H, L, or width.  Supports ``--anchor`` (single file) or ``--all`` (whole ``data/anchors/`` directory).  Exit code 1 on divergence so it can drop into CI / health checks.  ``--json`` for machine consumption.  Verified end-to-end on the synthetic 2026-06-11 anchor: catches the −0.52 pt width divergence, flags ``feed=STALE``, exits 1.
+  * **``config/strategies/morning_range_reversion.toml``** — adds ``sl_min_pts = 28.0`` for MGC.  This is the structural fix: combined with the existing ``sl_max_pts = 29`` cap, the MGC SL distance now sits in a tight ``[28, 29]`` band on any anchor wide enough to matter, absorbing the ~1 pt anchor disagreement empirically observed.  On the 2026-06-11 trade, this would have placed the live SL at 4072.10 (vs the actual 4073.40) — 1.0 pt below the price low of 4073.10, so the trade would have ridden to TP for ~+$534 instead of stopping out at −$534.  Net effect on this specific live trade: **+$1,068 swing**.  3-week walk-forward validation: 12 trades, 83% WR, +104.5% return, 16.1% DD, RF=3.65 — the floor doesn't crater win rate, it slightly inflates per-trade $ risk on narrow-anchor days, which the existing dollar-risk cap auto-trims.
+
+  Tests:
+
+  * ``tests/test_walkforward_recap_thin_margin.py`` — 18 tests covering sibling auto-discovery (databento preference, lowercase, missing siblings, None input), thin-margin math (TP vs SL exits, 85% boundary, missing-fields safety, the literal 2026-06-11 numbers), HTML cell formatting (thin-vs-safe rendering, color), CLI surface.
+  * ``tests/test_anchor_persistence.py`` — 14 tests covering path resolution (ISO date, env var, override precedence), payload shape (the exact 2026-06-11 databento anchor), no-overwrite-by-default, the ``overwrite=True`` escape hatch, inverted-range rejection, ``extra`` merge / collision-protect-core, IO failure → None (no raise), zero-width acceptance, round-trip via ``load_anchor``, corrupt-JSON resilience.
+  * ``tests/test_diff_anchor_live_vs_databento.py`` — 15 tests covering ``compute_databento_anchor`` (real 2026-06-11 rows, half-open [start, end) window, empty CSV, missing CSV), ``diff_one_anchor`` (perfect match → not diverged, the literal 2026-06-11 scenario → −0.52 pt flagged, threshold-respecting boundary, missing CSV → error row, corrupt JSON → error row, missing-bars-for-date → error row), CLI surface (help, mutually-exclusive ``--anchor``/``--all``, exit code 1 on divergence, exit code 0 on clean diff, ``--all`` walks the directory).
+
+  **Operator quick-reference:** the morning after a discrepancy event, run ``python scripts/diff_anchor_live_vs_databento.py --all`` to instantly see which symbol's live anchor diverged from databento and whether the data feed was stale during the anchor window.
+
+- **Per-trade $ loss cap + adaptive sizing (2026-06-11)** — Net-new equity-curve smoother that turns the 2026-06-11 MGC 2-ct $534 loss into a 1-ct $267 loss automatically.  New helper ``core.risk_sizer.cap_quantity_by_dollar_risk(symbol, entry_price, stop_loss_price, requested_quantity, max_dollar_risk, min_quantity=1, strict=False)`` returns ``(adjusted_qty, reason)`` after computing the actual $-risk via the canonical ``point_value()`` table (MGC = $10/pt, MES = $5/pt, MNQ = $2/pt, etc.) and trimming contracts until risk ≤ cap.  Wired into ``strategies/strategy_base.place_bracket_order`` between the income-brain check and the risk-manager check.
+
+  Configuration precedence (highest first):
+
+  1. ``StrategyConfig.params['max_dollar_risk_per_trade']`` (per-strategy TOML; opt-in)
+  2. ``MAX_DOLLAR_RISK_PER_TRADE`` env var (global default)
+
+  Modes: default ``warn`` — when even ``min_quantity=1`` over-risks, log a warning and place 1 ct anyway (the strategy decided to trade; we just shave the size).  ``MAX_DOLLAR_RISK_STRICT=true`` flips to refuse-the-order in that edge case.  Default ``0`` = cap disabled (no behavioural change unless explicitly turned on).
+
+  Tests: 16 net-new in ``tests/test_dollar_risk_cap.py`` covering disabled / within-budget / the literal 2026-06-11 MGC scenario at three cap thresholds / micro-futures sweep / strict-vs-warn behaviour at over-risk min-qty / defensive inputs (zero stop, negative qty, string qty, unknown symbol fallback).
+
+- **Health-gate softened to ``warn-and-proceed`` by default (2026-06-11)** — User clarification: the gate must NOT refuse trades the strategy decided to take.  Its job is to surface degraded data-feed conditions loudly while the rest of the safety net (watchdog, place-and-verify, cancel-on-staleness) protects the trade.  New env var ``DATA_FEED_HEALTH_GATE_MODE`` with values ``warn`` (default) / ``off`` / ``refuse``.  Legacy ``DATA_FEED_HEALTH_GATE=false`` still maps to ``off``.  4 net-new tests in ``tests/test_health_gate_integration.py`` pin all three modes.  333/333 → 349/349 after both changes.
+
+- **Cancel-on-staleness for working orders (2026-06-11)** — Closes the FOURTH and final P0/P1 item from the MGC post-mortem: the health-gate stops a *new* order from being placed during zombie conditions, but it cannot help an order that was placed *before* the feed went zombie and is still sitting on the broker as a working stop-entry.  That order can fill silently exactly as on 2026-06-11.
+
+  New module ``core/working_order_registry.py`` exposes a thread-safe singleton ``WorkingOrderRegistry`` that tracks every placed-but-unfilled entry order (with its OCO sibling order ids) plus an async helper ``cancel_all_working_orders(registry, broker_adapter, ...)``.  Terminal-status entries (Filled / Cancelled / Rejected / Expired — both string and numeric forms) are auto-dropped via ``mark_status``.
+
+  Wire-in points:
+
+  * **``strategies/strategy_base.place_bracket_order``** — after a successful place, registers the entry order_id along with any OCO siblings extracted from the broker response (``stopOrderId`` / ``limitOrderId`` / ``stopLossOrderId`` / ``takeProfitOrderId``).
+  * **``core/user_hub_handlers.on_order``** — calls ``registry.mark_status(order_id, status)`` on every User Hub order update so the registry's view stays consistent with the broker's view.
+  * **``core/data_feed_watchdog``** — gains ``broker_adapter`` + ``working_order_registry`` constructor args.  Before forcing a zombie reconnect, calls ``cancel_all_working_orders`` so no stop-entry can fill blind during the cycle.
+  * **``trading_bot.start_market_hub_for_strategies``** — passes both into the watchdog.
+
+  Tests: 23 net-new in ``tests/test_working_order_registry.py`` covering register/get, normalization, snapshot independence, per-symbol filtering, age, every terminal-status form (parameterized), idempotent unregister, singleton round-trip, and four cancel-all behaviours (entries + siblings, sibling opt-out, broker exception resilience, empty registry).  Plus 2 net-new in ``tests/test_data_feed_watchdog.py`` pinning that the watchdog cancels working orders BEFORE reconnecting and gracefully no-ops when no registry is wired.
+
+  **Net effect on a hypothetical 2026-06-11 replay where a MGC stop-entry was already working when the feed went zombie:** at the moment the watchdog detects staleness (30 s after the 120 s threshold), it pulls the entry + SL + TP via REST cancel calls so when SignalR reconnects there's nothing left on the broker that could have filled blind.
+
+- **P0/P1 data-feed safety net (2026-06-11)** — Net-new defensive infrastructure responding to the live ``morning_range_reversion`` MGC -$534 stop-out where BOTH SignalR hubs went zombie (connection "alive", zero data flowing) and the bot placed + lost a full -1R trade without seeing ANY of its own fills.  Broker statement confirmed entry 4100.1 → SL 4073.4, both filled, TP OCO-cancelled.
+
+  Three new modules + two wire-in points:
+
+  1. **``core/data_feed_health.py``** — ``DataFeedHealthMonitor`` singleton.  Records every Market Hub quote tick (per-symbol) and every User Hub account/position/order event (global counter).  Exposes ``is_safe_to_trade(symbol) -> HealthVerdict(ok, reason)`` consulted by strategies on every order placement.  Returns ``False`` when Market Hub has been silent for the symbol > 120 s (env: ``DATA_FEED_MARKET_HUB_MAX_SILENCE_S``) OR User Hub has stayed silent > 90 s after the most recent order (env: ``DATA_FEED_USER_HUB_MAX_SILENCE_AFTER_ORDER_S``).  Startup grace 60 s prevents false alarms during hub negotiation.  Thread-safe (``RLock``), zero allocations on the hot tick path.  Pause/resume hooks so backtest paths don't consult live feeds.
+
+     **GATE MODE** (env: ``DATA_FEED_HEALTH_GATE_MODE``): default ``warn`` — log a loud warning and PROCEED with the trade because the strategy's signal logic is the source of truth and the watchdog / verifier / cancel-on-staleness collectively protect the position.  ``refuse`` reverts to the original block-the-order behaviour (use when you trust feed health more than your strategy).  ``off`` silences the gate entirely.  Legacy ``DATA_FEED_HEALTH_GATE=false`` still maps to ``off``.
+
+  2. **``core/data_feed_watchdog.py``** — Async ``DataFeedWatchdog`` task started from ``trading_bot.start_market_hub_for_strategies``.  Polls every 30 s (env: ``DATA_FEED_WATCHDOG_POLL_S``); when ANY subscribed symbol's Market Hub age exceeds the threshold AND we're inside market hours (``is_within_market_hours`` — CME 18:00→17:00 ET with daily maintenance pause), forces ``stop()`` + ``start()`` + ``_resubscribe_all_symbols()`` on the WebSocketManager.  Exponential cooldown (60s → 120s → 240s → 480s cap) prevents thrash if the hub keeps coming up dead.  Resets the monitor's grace window after each reconnect so the next check waits for genuine data.  Disable via ``DATA_FEED_WATCHDOG=false``.
+
+  3. **``core/order_verifier.py``** — Fire-and-forget ``verify_order_landed()`` scheduled by ``strategy_base.place_bracket_order`` immediately after every successful place.  Waits ``soft_timeout_s=30 s`` for a User Hub event to confirm the order (via ``DataFeedHealthMonitor.user_event_received_since_last_order``).  If User Hub stays silent, falls back to REST polling ``broker_adapter.get_open_orders(account_id)`` for up to 20 s.  Verdicts: ``ok_user_hub`` (info log) / ``ok_rest`` (warning: "User Hub IS UNRELIABLE for this run") / ``missing`` (🚨 ERROR: "CHECK BROKER UI IMMEDIATELY").
+
+  Wire-in points:
+
+  * **``trading_bot.__init__``** — instantiates the singleton, registers ``record_market_tick_callback`` on the WebSocketManager and ``record_user_account/position/order_callback`` on the UserHubManager.  Now the monitor sees every event the bot sees.
+  * **``trading_bot.start_market_hub_for_strategies``** — starts the watchdog after the first symbol subscription succeeds.  Idempotent; safe across multiple strategies in the same process.
+  * **``strategies/strategy_base.place_bracket_order``** — calls ``monitor.is_safe_to_trade(symbol)`` BEFORE the broker call; rejects the order with ``method="gated_health"`` if unhealthy.  Then on successful place, calls ``monitor.record_order_placed()`` and schedules the verifier task.  Opt out via ``DATA_FEED_HEALTH_GATE=false`` (for replay paths).
+  * **``trading_bot.place_oco_bracket_with_stop_entry``** — same gate at the bot-level chokepoint so strategies bypassing ``strategy_base`` (e.g. overnight_range) are also covered.
+
+  Tests added: 39 net-new across 4 files:
+  * ``tests/test_data_feed_health.py`` (21 tests) — recording, age tracking, safe-to-trade verdicts (grace window, never-ticked, stale, per-symbol isolation, user-hub-silent-after-order), pause/reset, snapshot, market-hours helper.
+  * ``tests/test_data_feed_watchdog.py`` (8 tests) — grace bypass, outside-hours noop, zombie reconnect path, cooldown enforcement, backoff reset on healthy feed, fallback symbols getter, start/stop idempotency, never-ticked-triggers-reconnect.
+  * ``tests/test_order_verifier.py`` (6 tests) — ok_user_hub fast path, ok_rest fallback, missing-order ERROR log, REST exception retried, multiple order-id key forms, empty order id.
+  * ``tests/test_health_gate_integration.py`` (4 tests) — singleton round-trip + safety verdict contract.
+
+  Net effect of the safety net on the 2026-06-11 incident, replayed: (1) the bot would have REFUSED to place the MGC LONG order at 08:15:07 because the monitor would have flagged Market Hub silent for ≫120 s; (2) had the order somehow gone through, the verifier would have ERROR-logged "ORDER VERIFY FAILED" within 50 s; (3) the watchdog would have forced a reconnect within 30 s of zombie detection, restoring data flow so the consec_loss_breaker would correctly register the -1R loss when SL hit.
+
 - **RTH-only truth-mode re-test of legacy PA edges (2026-06-11)** — Hypothesis: since force-flat at 16:00 ET was the DOMINANT optimism source (~+0.45 R), restricting to RTH-only sessions (nyam + nypm) might revive the PA stack.  Tested 6 candidate edges on MES 9m with full truth-mode (``--truth-mode --csv-1m --force-flat-et 16:00 --session nyam|nypm|lunch|premarket``):
 
   | Pattern | bias | filter | n | WR | Mean R | survives? |

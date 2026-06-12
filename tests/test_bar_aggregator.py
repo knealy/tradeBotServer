@@ -105,9 +105,11 @@ class TestBarAggregator:
     def test_aggregator_initialization(self, aggregator):
         """Test aggregator initialization"""
         assert aggregator.broadcast_callback is None
-        assert aggregator.update_interval == 0.2
         assert aggregator._running is False
         assert len(aggregator.bar_builders) == 0
+        # Periodic-completion safety net wiring (2026-06-12)
+        assert aggregator._periodic_completion_task is None
+        assert aggregator._periodic_completions_total == 0
     
     def test_subscribe_timeframe(self, aggregator):
         """Test subscribing to a timeframe"""
@@ -218,41 +220,226 @@ class TestBarAggregator:
     
     @pytest.mark.asyncio
     async def test_start_stop(self, aggregator):
-        """Test starting and stopping aggregator"""
+        """Test starting and stopping aggregator (event-driven, no _update_task)."""
         assert aggregator._running is False
-        
+
         await aggregator.start()
         assert aggregator._running is True
-        assert aggregator._update_task is not None
-        
+        # 2026-06-12 update: the periodic-completion safety net is the only
+        # background task the aggregator owns now.
+        assert aggregator._periodic_completion_task is not None
+        assert not aggregator._periodic_completion_task.done()
+
         await aggregator.stop()
         assert aggregator._running is False
+        assert aggregator._periodic_completion_task is None
     
     @pytest.mark.asyncio
     async def test_broadcast_callback(self):
-        """Test broadcast callback is called with bar updates"""
+        """Test broadcast callback is called with partial-bar updates.
+
+        2026-06-12 update: rewrote against the current event-driven API.
+        ``_broadcast_updates`` no longer exists — broadcasts now fire from
+        ``add_quote`` via ``_enqueue_broadcast``/``_emit_partial_bar`` on the
+        aggregator's running event loop.
+        """
         callback_calls = []
-        
+
         def mock_callback(message):
             callback_calls.append(message)
-        
+
         aggregator = BarAggregator(broadcast_callback=mock_callback)
-        aggregator.subscribe_timeframe('MNQ', '5m')
-        aggregator.add_quote('MNQ', 15000.0, volume=100)
-        
-        # Trigger broadcast
-        await aggregator._broadcast_updates()
-        
-        # Wait a bit for async operations
-        await asyncio.sleep(0.1)
-        
-        # Callback should have been called
+        # Disable the periodic safety net so it doesn't add noise to this test.
+        aggregator._periodic_completion_interval = 0
+        await aggregator.start()
+        try:
+            aggregator.subscribe_timeframe('MNQ', '5m')
+            aggregator.add_quote('MNQ', 15000.0, volume=100)
+            # Yield so the loop.call_soon_threadsafe-scheduled broadcast can run.
+            await asyncio.sleep(0.05)
+        finally:
+            await aggregator.stop()
+
         assert len(callback_calls) > 0
         message = callback_calls[0]
         assert message['type'] == 'market_update'
         assert message['data']['symbol'] == 'MNQ'
         assert message['data']['timeframe'] == '5m'
         assert 'bar' in message['data']
+
+
+class TestPeriodicBarCompletion:
+    """Tests for the 2026-06-12 periodic-bar-completion safety net.
+
+    This safety net force-closes builders whose ``bar_end`` has elapsed even
+    when no fresh tick has arrived — closes the SignalR quote dead-zone race.
+    """
+
+    def _make_aggregator(self, interval: float = 10.0) -> BarAggregator:
+        """Build an aggregator with an explicit completion interval (no env)."""
+        agg = BarAggregator()
+        agg._periodic_completion_interval = interval
+        return agg
+
+    @staticmethod
+    def _seed_stale_builder(
+        agg: BarAggregator,
+        symbol: str,
+        timeframe: str,
+        price: float = 100.0,
+        minutes_ago: int = 30,
+    ) -> BarBuilder:
+        """Directly install a builder whose bar_start is well in the past.
+
+        We can't get this state via ``add_quote(timestamp=past)`` because
+        ``subscribe_timeframe`` initialises a builder rooted at NOW and
+        ``add_quote`` only rolls over the bar_start via the
+        ``_should_start_new_bar`` boundary check — a past timestamp won't
+        advance bar_start backwards. So we seed directly.
+        """
+        sym = symbol.upper()
+        past = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        bar_start = agg._get_bar_start_time(past, timeframe)
+        builder = BarBuilder(sym, timeframe, bar_start)
+        builder.add_tick(price, 1, past)
+        agg.symbol_timeframes[sym].add(timeframe)
+        agg.bar_builders[sym][timeframe] = builder
+        return builder
+
+    def test_init_reads_env_var(self, monkeypatch):
+        monkeypatch.setenv("BAR_PERIODIC_COMPLETION_INTERVAL", "3.5")
+        agg = BarAggregator()
+        assert agg._periodic_completion_interval == pytest.approx(3.5)
+
+    def test_init_handles_bad_env_var(self, monkeypatch):
+        monkeypatch.setenv("BAR_PERIODIC_COMPLETION_INTERVAL", "not-a-number")
+        agg = BarAggregator()
+        assert agg._periodic_completion_interval == 10.0
+
+    def test_init_defaults_to_10s(self, monkeypatch):
+        monkeypatch.delenv("BAR_PERIODIC_COMPLETION_INTERVAL", raising=False)
+        agg = BarAggregator()
+        assert agg._periodic_completion_interval == 10.0
+
+    def test_sweep_skips_builders_with_no_data(self):
+        agg = self._make_aggregator()
+        agg.subscribe_timeframe("MNQ", "5m")
+        # Builder exists but ``open`` is still None
+        agg._sweep_force_complete()
+        assert agg._periodic_completions_total == 0
+
+    def test_sweep_skips_builders_still_in_window(self):
+        agg = self._make_aggregator()
+        agg.subscribe_timeframe("MNQ", "5m")
+        # add_quote uses ``datetime.now(timezone.utc)`` internally so the
+        # builder's window is fresh — sweep should NOT close it.
+        agg.add_quote("MNQ", 15000.0, volume=10)
+        agg._sweep_force_complete()
+        assert agg._periodic_completions_total == 0
+
+    def test_sweep_force_closes_stale_builder(self):
+        """Builder whose bar_end is in the past gets force-closed."""
+        agg = self._make_aggregator()
+        completed_bars = []
+        agg.register_completed_bar_callback(lambda b: completed_bars.append(b))
+        builder_before = self._seed_stale_builder(agg, "MNQ", "5m", price=15000.0)
+
+        agg._sweep_force_complete()
+
+        assert agg._periodic_completions_total == 1
+        assert len(completed_bars) == 1
+        bar = completed_bars[0]
+        assert bar.symbol == "MNQ"
+        assert bar.timeframe == "5m"
+        assert bar.close == 15000.0
+        # A fresh empty builder should now sit on the current boundary.
+        builder_after = agg.bar_builders["MNQ"]["5m"]
+        assert builder_after.open is None
+        assert builder_after.bar_start > builder_before.bar_start
+
+    def test_sweep_handles_multiple_symbols_and_timeframes(self):
+        agg = self._make_aggregator()
+        seen = []
+        agg.register_completed_bar_callback(lambda b: seen.append((b.symbol, b.timeframe)))
+        self._seed_stale_builder(agg, "MNQ", "5m", price=15000.0)
+        self._seed_stale_builder(agg, "MGC", "5m", price=2050.0)
+        # MGC 1m subscribed but with no tick (builder.open is None) — should be skipped.
+        agg.subscribe_timeframe("MGC", "1m")
+
+        agg._sweep_force_complete()
+
+        assert agg._periodic_completions_total == 2
+        assert ("MNQ", "5m") in seen
+        assert ("MGC", "5m") in seen
+        assert ("MGC", "1m") not in seen
+
+    def test_sweep_is_idempotent_across_calls(self):
+        agg = self._make_aggregator()
+        self._seed_stale_builder(agg, "MNQ", "5m", price=15000.0)
+        agg._sweep_force_complete()
+        # Second sweep finds the fresh empty builder — should NOT re-close.
+        agg._sweep_force_complete()
+        assert agg._periodic_completions_total == 1
+
+    def test_sweep_isolates_callback_exceptions(self):
+        """A misbehaving subscriber must not break the sweep."""
+        agg = self._make_aggregator()
+        ok_seen = []
+
+        def bad_cb(_bar):
+            raise RuntimeError("subscriber crashed")
+
+        agg.register_completed_bar_callback(bad_cb)
+        agg.register_completed_bar_callback(lambda b: ok_seen.append(b))
+        self._seed_stale_builder(agg, "MNQ", "5m", price=15000.0)
+
+        agg._sweep_force_complete()
+        # Bad subscriber raised, but the sweep itself + the other subscriber
+        # still completed the bar.
+        assert len(ok_seen) == 1
+        assert agg._periodic_completions_total == 1
+
+    @pytest.mark.asyncio
+    async def test_periodic_task_starts_and_stops(self):
+        """``start()`` should spawn the task; ``stop()`` should cancel it."""
+        agg = self._make_aggregator(interval=0.05)
+        await agg.start()
+        try:
+            assert agg._periodic_completion_task is not None
+            assert not agg._periodic_completion_task.done()
+        finally:
+            await agg.stop()
+        assert agg._periodic_completion_task is None
+
+    @pytest.mark.asyncio
+    async def test_periodic_task_force_closes_stale_builder(self):
+        """End-to-end: run the periodic task and verify it closes a stale builder."""
+        agg = self._make_aggregator(interval=0.05)
+        seen: list[Bar] = []
+        agg.register_completed_bar_callback(lambda b: seen.append(b))
+
+        await agg.start()
+        try:
+            self._seed_stale_builder(agg, "MNQ", "5m", price=15000.0)
+            # Wait long enough for at least one periodic sweep.
+            await asyncio.sleep(0.20)
+        finally:
+            await agg.stop()
+
+        assert len(seen) >= 1
+        assert agg._periodic_completions_total >= 1
+        assert seen[0].symbol == "MNQ"
+        assert seen[0].timeframe == "5m"
+
+    @pytest.mark.asyncio
+    async def test_periodic_task_disabled_when_interval_zero(self):
+        """``BAR_PERIODIC_COMPLETION_INTERVAL=0`` disables the safety net."""
+        agg = self._make_aggregator(interval=0.0)
+        await agg.start()
+        try:
+            assert agg._periodic_completion_task is None
+        finally:
+            await agg.stop()
 
 
 if __name__ == '__main__':

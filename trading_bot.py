@@ -311,7 +311,17 @@ class TopStepXTradingBot:
         self.websocket_manager.register_quote_callback(self._on_websocket_quote)
         self.websocket_manager.register_depth_callback(self._on_websocket_depth)
         logger.debug("✅ WebSocketManager initialized")
-        
+
+        # Data-feed health monitor — single instance, wired into BOTH hubs.
+        # The post-2026-06-11 staleness gate strategies consult before placing
+        # orders.  Living instance + helper getters in core.data_feed_health.
+        from core.data_feed_health import get_monitor as _get_health_monitor
+        self.data_feed_monitor = _get_health_monitor()
+        self.websocket_manager.register_quote_callback(
+            self.data_feed_monitor.record_market_tick_callback
+        )
+        logger.debug("✅ DataFeedHealthMonitor wired to Market Hub")
+
         # Initialize UserHubManager (handles SignalR User Hub for account/position/order updates)
         self.user_hub_manager = UserHubManager(
             auth_manager=self.auth_manager
@@ -323,7 +333,17 @@ class TopStepXTradingBot:
         self.user_hub_manager.register_position_callback(self._user_hub_handlers.on_position)
         self.user_hub_manager.register_order_callback(self._user_hub_handlers.on_order)
         self.user_hub_manager.register_trade_callback(self._user_hub_handlers.on_trade)
-        logger.debug("✅ UserHubManager initialized")
+        # Wire data-feed monitor into User Hub events (any of these = "alive").
+        self.user_hub_manager.register_account_callback(
+            self.data_feed_monitor.record_user_account_callback
+        )
+        self.user_hub_manager.register_position_callback(
+            self.data_feed_monitor.record_user_position_callback
+        )
+        self.user_hub_manager.register_order_callback(
+            self.data_feed_monitor.record_user_order_callback
+        )
+        logger.debug("✅ UserHubManager initialized (+ DataFeedHealthMonitor wired)")
 
         from core.hub_deferred_queue import HubDeferredWorkQueue
 
@@ -1021,6 +1041,28 @@ class TopStepXTradingBot:
             "📡 Market Hub wired for %d symbol(s); timeframes registered: %s",
             attempted, ", ".join(tfs) or "(aggregator defaults)",
         )
+
+        # Start the SignalR zombie-connection watchdog now that we have
+        # symbols subscribed.  Idempotent — safe to call across multiple
+        # strategies in the same process.
+        if attempted > 0 and not getattr(self, "_data_feed_watchdog", None):
+            try:
+                from core.data_feed_watchdog import DataFeedWatchdog
+                from core.data_feed_health import get_monitor as _get_health_monitor
+                from core.working_order_registry import get_registry as _get_wo_registry
+                if os.getenv("DATA_FEED_WATCHDOG", "true").lower() not in ("false", "0", "no"):
+                    self._data_feed_watchdog = DataFeedWatchdog(
+                        monitor=_get_health_monitor(),
+                        market_hub_manager=self.websocket_manager,
+                        user_hub_manager=getattr(self, "user_hub_manager", None),
+                        broker_adapter=getattr(self, "broker_adapter", None),
+                        working_order_registry=_get_wo_registry(),
+                        subscribed_symbols_getter=lambda: list(self._subscribed_symbols),
+                    )
+                    self._data_feed_watchdog.start()
+            except Exception as exc:
+                logger.warning("DataFeedWatchdog failed to start (continuing): %s", exc)
+
         return attempted > 0
 
     async def _warmup_live_bar_cache(
@@ -4072,7 +4114,44 @@ class TopStepXTradingBot:
             
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
-            
+
+            # ── Data-feed health gate (bot-level chokepoint) ──────────────────
+            # Default mode is WARN — surface degraded conditions loudly but
+            # let the strategy's signal logic decide.  Watchdog + place-and-
+            # verify + cancel-on-staleness collectively protect the trade.
+            # Set ``DATA_FEED_HEALTH_GATE_MODE=refuse`` to restore the
+            # pre-2026-06-11-fix block-the-order behaviour.
+            try:
+                gate_mode = os.getenv("DATA_FEED_HEALTH_GATE_MODE", "warn").lower()
+                if os.getenv("DATA_FEED_HEALTH_GATE", "true").lower() in ("false", "0", "no"):
+                    gate_mode = "off"
+                if gate_mode != "off":
+                    monitor = getattr(self, "data_feed_monitor", None)
+                    if monitor is not None:
+                        verdict = monitor.is_safe_to_trade(symbol)
+                        if not verdict.ok:
+                            if gate_mode == "refuse":
+                                logger.error(
+                                    "🛑 place_oco_bracket_with_stop_entry: REFUSING %s %s order — "
+                                    "data feed unhealthy: %s",
+                                    side, symbol, verdict.reason,
+                                )
+                                return {
+                                    "error": f"data feed unhealthy: {verdict.reason}",
+                                    "orderId": None,
+                                    "method": "gated_health",
+                                }
+                            logger.warning(
+                                "⚠️  place_oco_bracket_with_stop_entry: data feed degraded "
+                                "(%s %s) — placing anyway: %s",
+                                side, symbol, verdict.reason,
+                            )
+            except Exception as _hg_exc:
+                logger.warning(
+                    "bot-level health gate raised %s — proceeding",
+                    type(_hg_exc).__name__,
+                )
+
             # Use TopStepXAdapter for bracket order placement (OCO brackets).
             # NOTE: Some accounts are configured for "Position Brackets" (not Auto OCO).
             # In that mode TopStepX can return HTTP 500 for OCO bracket placement.

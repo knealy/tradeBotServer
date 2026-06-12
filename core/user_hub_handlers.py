@@ -276,6 +276,19 @@ class UserHubHandlers:
                 self._bot.state_cache.invalidate_orders(account_id_str)
                 logger.debug("Invalidated orders cache for account %s", account_id_str)
 
+            # Keep the working-order registry in sync.  When an order
+            # reaches Filled/Cancelled/Rejected we drop it from the
+            # registry so the data-feed watchdog stops thinking it
+            # might still fill.  See core/working_order_registry.py.
+            try:
+                from core.working_order_registry import get_registry as _get_wo_registry
+                _oid = data.get("id") or data.get("orderId")
+                _status = data.get("status")
+                if _oid is not None and _status is not None:
+                    _get_wo_registry().mark_status(str(_oid), _status)
+            except Exception as _exc:
+                logger.debug("working_order_registry mark_status skipped: %s", _exc)
+
             self._defer_coro_from_sync(self._on_order_async_tail(dict(data), account_id_str))
         except Exception as e:
             logger.error("Error handling User Hub order update: %s", e)

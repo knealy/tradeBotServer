@@ -1391,6 +1391,28 @@ class MorningRangeReversionStrategy(BaseStrategy):
             return max(0.0, float(v))
         return max(0.0, float(self.max_range_width_points))
 
+    def _min_range_width_directional(self, symbol: str, side: str) -> float:
+        """Per-direction minimum anchor width (2026-06-12 setup-decomposition fix).
+
+        Reads ``signal.min_range_width_long_points`` for LONG/BUY and
+        ``signal.min_range_width_short_points`` for SHORT/SELL (per-symbol
+        override supported). When set, this is applied IN ADDITION to the
+        symmetric ``min_range_width_points`` — the trade is accepted only if
+        width meets BOTH thresholds.
+
+        Empirical motivation: 6m walk-forward decomposition showed MGC BUY
+        on Q3 (mid-narrow) anchor widths at 60% WR / -$118 expectancy (n=10),
+        while MGC BUY on Q4_wide produced 79% WR / +$209 expectancy (n=28).
+        Narrow-anchor BUY days are systematically losing for MGC; the SELL
+        side does not show the same asymmetry. Returns 0.0 = no extra floor.
+        """
+        sym_u = str(symbol).upper()
+        key = "min_range_width_long_points" if str(side).upper() in ("LONG", "BUY") else "min_range_width_short_points"
+        v = self._cfg.symbol_override(sym_u, f"signal.{key}", default=None)
+        if v is None:
+            v = self._cfg.get_float(f"signal.{key}", 0.0)
+        return max(0.0, float(v or 0))
+
     def _max_sweep_distance_widths(self, symbol: str) -> float:
         """Per-symbol ``signal.max_sweep_distance_widths`` override. 0 = no cap."""
         v = self._cfg.symbol_override(str(symbol).upper(), "signal.max_sweep_distance_widths", default=None)
@@ -1417,6 +1439,38 @@ class MorningRangeReversionStrategy(BaseStrategy):
     }
     _WEEKDAY_ALIASES_INV = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 
+    def _parse_weekday_tokens(self, raw: Any, key_for_log: str) -> frozenset[int]:
+        """Common parser for ``[skip_]weekdays_(long|short|all)`` config values.
+
+        Accepts list-of-strings, list-of-ints, or a single comma/space-separated
+        string. Empty / None → empty set. Unknown tokens logged once per key.
+        """
+        if raw is None or raw == "" or raw == []:
+            return frozenset()
+        tokens: List[str]
+        if isinstance(raw, (list, tuple)):
+            tokens = [str(x).strip() for x in raw]
+        else:
+            tokens = [t.strip() for t in str(raw).replace(",", " ").split() if t.strip()]
+        out: set[int] = set()
+        bad: list[str] = []
+        for tok in tokens:
+            tkey = tok.lower()
+            if tkey in self._WEEKDAY_ALIASES:
+                out.add(self._WEEKDAY_ALIASES[tkey])
+            else:
+                bad.append(tok)
+        if bad:
+            warn_flag = f"_warned_bad_weekday_{key_for_log}"
+            if not getattr(self, warn_flag, False):
+                logger.warning(
+                    "morning_range_reversion: ignoring unknown %s token(s) %r "
+                    "(accepts: Mon/Tue/.../Sun or 0..6)",
+                    key_for_log, bad,
+                )
+                setattr(self, warn_flag, True)
+        return frozenset(out)
+
     def _skip_weekdays(self, symbol: str) -> frozenset[int]:
         """Set of weekday ints (Mon=0..Sun=6) for which to suppress all anchor sessions.
 
@@ -1428,29 +1482,28 @@ class MorningRangeReversionStrategy(BaseStrategy):
         raw = self._cfg.symbol_override(str(symbol).upper(), "signal.skip_weekdays", default=None)
         if raw is None:
             raw = self._cfg.get("signal.skip_weekdays", default=None)
-        if raw is None or raw == "" or raw == []:
-            return frozenset()
-        tokens: List[str]
-        if isinstance(raw, (list, tuple)):
-            tokens = [str(x).strip() for x in raw]
-        else:
-            tokens = [t.strip() for t in str(raw).replace(",", " ").split() if t.strip()]
-        out: set[int] = set()
-        bad: list[str] = []
-        for tok in tokens:
-            key = tok.lower()
-            if key in self._WEEKDAY_ALIASES:
-                out.add(self._WEEKDAY_ALIASES[key])
-            else:
-                bad.append(tok)
-        if bad and not getattr(self, "_warned_bad_skip_weekday", False):
-            logger.warning(
-                "morning_range_reversion: ignoring unknown skip_weekdays token(s) %r "
-                "(accepts: Mon/Tue/.../Sun or 0..6)",
-                bad,
-            )
-            self._warned_bad_skip_weekday = True
-        return frozenset(out)
+        return self._parse_weekday_tokens(raw, "skip_weekdays")
+
+    def _skip_weekdays_directional(self, symbol: str, side: str) -> frozenset[int]:
+        """Directional weekday filter (2026-06-12 setup-decomposition fix).
+
+        Reads ``signal.skip_weekdays_long`` / ``signal.skip_weekdays_short``
+        (per-symbol override supported). UNLIKE ``_skip_weekdays`` (which kills
+        the whole anchor session), this only blocks ONE direction — so a
+        symbol whose LONG side loses on Tuesday but whose SHORT side wins on
+        Tuesday can keep harvesting the short edge.
+
+        Empirical motivation: 6m walk-forward decomposition found MGC BUY-Tue
+        at 33% WR / -$203 expectancy (n=9) while MGC SELL-Tue is 89% WR /
+        +$306 expectancy (n=9) — a $509/trade differential within the same
+        session-symbol pair.
+        """
+        sym_u = str(symbol).upper()
+        key = "skip_weekdays_long" if str(side).upper() in ("LONG", "BUY") else "skip_weekdays_short"
+        raw = self._cfg.symbol_override(sym_u, f"signal.{key}", default=None)
+        if raw is None:
+            raw = self._cfg.get(f"signal.{key}", default=None)
+        return self._parse_weekday_tokens(raw, key)
 
     def _bars_are_stale(self, symbol: str, bars: List[Dict[str, Any]]) -> bool:
         """Return True if the most recent bar is older than the configured guard.
@@ -1545,6 +1598,79 @@ class MorningRangeReversionStrategy(BaseStrategy):
         return _et_datetime_combine(self._tz, anchor_et_date, self.range_end_open) + timedelta(
             hours=float(self.range_effectiveness_hours or 0.0)
         )
+
+    def _persist_anchor_snapshot(
+        self,
+        *,
+        symbol: str,
+        session_date_et: date,
+        high: float,
+        low: float,
+        n_bars_used: int,
+        first_bar_ts_utc: Optional[datetime],
+        last_bar_ts_utc: Optional[datetime],
+    ) -> None:
+        """Best-effort: record the finalised anchor + a data-feed-health flag.
+
+        Crash-safe by construction:
+          - import errors are caught (the persistence module is optional)
+          - the underlying :func:`record_anchor` swallows IOError internally
+          - no exception from this helper should ever propagate into ``analyze``
+        """
+        try:
+            from core import anchor_persistence
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("anchor_persistence import failed: %s", exc)
+            return
+        # ── 2026-06-11 (debug session f635c2): also stamp data-feed health for the
+        # anchor window. The live MGC anchor on 2026-06-11 differed from databento
+        # by 0.52 pt; the bot had STALE DATA warnings during 07:00-08:00 ET.
+        # Capturing the health verdict here is what gives the diff tool an
+        # unambiguous "blame stale data" answer when widths diverge.
+        df_health: Dict[str, Any] = {"available": False}
+        try:
+            from core.data_feed_health import get_monitor
+            monitor = get_monitor()
+            verdict = monitor.is_safe_to_trade(symbol)
+            df_health = {
+                "available": True,
+                "safe": bool(getattr(verdict, "ok", False)),
+                "reason": getattr(verdict, "reason", None) or None,
+            }
+        except Exception as exc:  # pragma: no cover - defensive: backtest has no monitor
+            df_health = {"available": False, "error": type(exc).__name__}
+        try:
+            anchor_persistence.record_anchor(
+                strategy=self.name,
+                symbol=str(symbol),
+                session_date_et=session_date_et,
+                high=float(high),
+                low=float(low),
+                window_start_et=self.range_start.strftime("%H:%M"),
+                window_end_et=self.range_end_open.strftime("%H:%M"),
+                n_bars_used=n_bars_used,
+                first_bar_ts_utc=first_bar_ts_utc,
+                last_bar_ts_utc=last_bar_ts_utc,
+                extra={"data_feed_health": df_health},
+            )
+            # ── 2026-06-11 fix (debug session f635c2): loud warning when the
+            # health monitor says the feed was NOT safe at anchor finalisation.
+            # We intentionally do NOT refuse the trade (per operator preference):
+            # warn-and-proceed, then let the diff tool flag the trade post-hoc.
+            if df_health.get("available") and df_health.get("safe") is False:
+                logger.warning(
+                    "🛑 %s %s anchor finalised with data-feed health = UNSAFE (%s). "
+                    "Trade will proceed but the anchor extremes may be wrong; "
+                    "see data/anchors/%s_%s_%s.json and run scripts/diff_anchor_live_vs_databento.py.",
+                    self.name, symbol,
+                    df_health.get("reason") or "n/a",
+                    self.name, symbol, session_date_et.isoformat(),
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "anchor_persistence: record_anchor raised %s for %s/%s — ignoring",
+                type(exc).__name__, symbol, session_date_et,
+            )
 
     def _bar_timestamp_eastern(self, bar: Dict[str, Any]) -> Optional[datetime]:
         ts = bar.get("timestamp") or bar.get("time") or bar.get("t")
@@ -2022,6 +2148,33 @@ class MorningRangeReversionStrategy(BaseStrategy):
             )
             return None
 
+        # ── Directional filters (2026-06-12 setup-decomposition fix) ────────
+        # The sweep direction tells us the trade side BEFORE we compute prices:
+        #   sweep == "high" → SHORT (fade upside breakout)
+        #   else           → LONG  (fade downside sweep)
+        # We use that to apply per-direction weekday + min-width filters that
+        # would be too aggressive applied symmetrically.
+        prospective_side = "SHORT" if sweep == "high" else "LONG"
+        bar_weekday = bar_et.weekday()
+        skip_dir = self._skip_weekdays_directional(symbol, prospective_side)
+        if bar_weekday in skip_dir:
+            logger.debug(
+                "morning_range_reversion %s: skip %s — %s in skip_weekdays_%s=%s",
+                symbol, prospective_side, bar_et.strftime("%a"),
+                "long" if prospective_side == "LONG" else "short",
+                sorted(self._WEEKDAY_ALIASES_INV[i] for i in skip_dir),
+            )
+            return None
+        min_w_dir = self._min_range_width_directional(symbol, prospective_side)
+        if min_w_dir > 0 and width < min_w_dir:
+            logger.debug(
+                "morning_range_reversion %s: skip %s — width %.2f < min_range_width_%s=%.2f",
+                symbol, prospective_side, width,
+                "long" if prospective_side == "LONG" else "short",
+                min_w_dir,
+            )
+            return None
+
         sl_mult = self._sl_mult(symbol)
         tp_mult = self._tp_mult(symbol)
         sl_fp = self._sl_fixed_pts(symbol)
@@ -2163,6 +2316,9 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     st["_logged_range_ready"] = False
                     st["_logged_range_degenerate"] = False
                     st["_logged_deadline"] = False
+                    st["range_bars_used"] = 0
+                    st["range_first_bar_ts_utc"] = None
+                    st["range_last_bar_ts_utc"] = None
                     st["_logged_max_fades"] = False
                     st["_logged_entry_window_skip"] = False
                     st["_logged_breaker_session"] = None
@@ -2184,6 +2340,9 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 st["range_ready"] = False
                 st["phase"] = "build"
                 st["sweep_side"] = None
+                st["range_bars_used"] = 0
+                st["range_first_bar_ts_utc"] = None
+                st["range_last_bar_ts_utc"] = None
                 st["H"] = st["L"] = st["mid"] = st["width"] = None
                 st["immediate_block_until_inside"] = False
                 st["fades_this_session"] = 0
@@ -2248,6 +2407,17 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     else:
                         st["range_hi"] = max(float(st["range_hi"]), hi)
                         st["range_lo"] = min(float(st["range_lo"]), lo)
+                    # Track provenance so anchor persistence can record how many
+                    # bars contributed and what time range they spanned. This is
+                    # exclusively for the diff tool — no behavior depends on it.
+                    st["range_bars_used"] = int(st.get("range_bars_used", 0) or 0) + 1
+                    try:
+                        bar_ts_utc = bar_et.astimezone(timezone.utc)
+                        if st.get("range_first_bar_ts_utc") is None:
+                            st["range_first_bar_ts_utc"] = bar_ts_utc
+                        st["range_last_bar_ts_utc"] = bar_ts_utc
+                    except (AttributeError, ValueError):
+                        pass
                     return None
 
                 # Overnight / pre-07:00 ET bars: wait; do not mark idle (same bug as sieve).
@@ -2338,6 +2508,19 @@ class MorningRangeReversionStrategy(BaseStrategy):
                         symbol, d, H, L, width, (H + L) / 2.0, filter_desc, verdict,
                     )
                     st["_logged_range_ready"] = True
+                    # ── 2026-06-11 post-mortem (debug session f635c2): persist the
+                    # anchor so we can diff it against databento later. Also stamp
+                    # a data-feed health flag so we know if the bars feeding the
+                    # anchor came in cleanly or while SignalR was stale.
+                    self._persist_anchor_snapshot(
+                        symbol=symbol,
+                        session_date_et=d,
+                        high=H,
+                        low=L,
+                        n_bars_used=int(st.get("range_bars_used", 0) or 0),
+                        first_bar_ts_utc=st.get("range_first_bar_ts_utc"),
+                        last_bar_ts_utc=st.get("range_last_bar_ts_utc"),
+                    )
 
                 if min_w > 0 and width < min_w:
                     st["phase"] = "idle"

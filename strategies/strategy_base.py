@@ -796,6 +796,53 @@ class BaseStrategy(ABC):
         logger.info(f"📝 {self.config.name}: Placing bracket order via verified path")
         logger.info(f"   {side} {quantity} {symbol} @ {entry_price:.2f}, SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}")
 
+        # ── Data-feed health gate ─────────────────────────────────────────
+        # 2026-06-11 post-mortem: bot placed an order with both SignalR hubs
+        # zombied → had no idea it filled or stopped out.  We DO NOT block
+        # the trade by default — the strategy's signal logic is the source
+        # of truth, and the rest of the safety net (watchdog, place-and-
+        # verify, cancel-on-staleness) ensures the bot can SEE and MANAGE
+        # the trade even if SignalR is degraded.  This gate exists to
+        # surface the degraded condition loudly so the operator knows.
+        #
+        # Modes (env: ``DATA_FEED_HEALTH_GATE_MODE``):
+        #   * ``warn``   — log a WARNING and proceed (DEFAULT)
+        #   * ``off``    — silent
+        #   * ``refuse`` — log ERROR + return ``gated_health`` (legacy)
+        try:
+            import os as _os
+            _gate_mode = _os.getenv("DATA_FEED_HEALTH_GATE_MODE", "warn").lower()
+            # Back-compat with the original env var: ``DATA_FEED_HEALTH_GATE=false`` → off.
+            if _os.getenv("DATA_FEED_HEALTH_GATE", "true").lower() in ("false", "0", "no"):
+                _gate_mode = "off"
+            if _gate_mode != "off":
+                from core.data_feed_health import get_monitor as _get_health_monitor
+                _verdict = _get_health_monitor().is_safe_to_trade(symbol)
+                if not _verdict.ok:
+                    if _gate_mode == "refuse":
+                        logger.error(
+                            "🛑 %s: REFUSING to place %s %s order — data feed unhealthy: %s",
+                            self.config.name, side, symbol, _verdict.reason,
+                        )
+                        return {
+                            "error": f"data feed unhealthy: {_verdict.reason}",
+                            "orderId": None,
+                            "method": "gated_health",
+                        }
+                    # Default: warn and proceed.  The watchdog + verifier
+                    # + cancel-on-staleness collectively keep us safe.
+                    logger.warning(
+                        "⚠️  %s: data feed degraded but placing %s %s anyway "
+                        "(strategy logic is source of truth): %s",
+                        self.config.name, side, symbol, _verdict.reason,
+                    )
+        except Exception as _exc:
+            # Never let the gate ITSELF block a trade due to a bug.
+            logger.warning(
+                "%s: health-gate check raised %s — proceeding with order",
+                self.config.name, type(_exc).__name__,
+            )
+
         # Opt-in equity-tier sizing + daily halt (see core.income_brain, INCOME_BRAIN=true).
         bot = self.trading_bot
         if hasattr(bot, "income_brain_entry_quantity"):
@@ -821,6 +868,51 @@ class BaseStrategy(ABC):
                 )
             quantity = q_adj
         
+        # ── Per-trade $ loss cap + adaptive sizing ─────────────────────────
+        # Hard ceiling on $-at-risk independent of the strategy's internal
+        # sizing logic.  When the SL distance would push the trade above the
+        # cap, contracts get trimmed until risk ≤ cap (min 1 ct unless
+        # ``MAX_DOLLAR_RISK_STRICT=true``).  Default DISABLED (0 = no cap).
+        #
+        # Config precedence (highest first):
+        #   1. ``self.config.params['max_dollar_risk_per_trade']`` — per-strategy TOML
+        #   2. ``MAX_DOLLAR_RISK_PER_TRADE`` env var — global default
+        try:
+            import os as _os
+            from core.risk_sizer import cap_quantity_by_dollar_risk
+            _cap = 0.0
+            _params = getattr(self.config, "params", None) or {}
+            if isinstance(_params, dict):
+                _cap = float(_params.get("max_dollar_risk_per_trade", 0) or 0)
+            if _cap <= 0:
+                _cap = float(_os.getenv("MAX_DOLLAR_RISK_PER_TRADE", "0") or 0)
+            if _cap > 0:
+                _strict = _os.getenv("MAX_DOLLAR_RISK_STRICT", "false").lower() in ("true", "1", "yes")
+                _adj, _why = cap_quantity_by_dollar_risk(
+                    symbol=symbol,
+                    entry_price=float(entry_price),
+                    stop_loss_price=float(stop_loss_price),
+                    requested_quantity=int(quantity),
+                    max_dollar_risk=_cap,
+                    min_quantity=1,
+                    strict=_strict,
+                )
+                if _adj == 0:
+                    err = f"per-trade $ cap exceeded: {_why}"
+                    logger.warning("⚠️  %s: %s", self.config.name, err)
+                    return {"success": False, "error": err, "orderId": None}
+                if _adj != int(quantity):
+                    logger.info(
+                        "💵 %s: $-risk cap adjusted quantity %d → %d (%s)",
+                        self.config.name, int(quantity), _adj, _why,
+                    )
+                    quantity = _adj
+        except Exception as _exc:
+            logger.warning(
+                "%s: $-cap sizer raised %s — using strategy-requested quantity",
+                self.config.name, type(_exc).__name__,
+            )
+
         # CENTRALIZED RISK MANAGEMENT: Check if order is allowed
         allowed, reason = await self.risk_manager.check_order_allowed(
             symbol=symbol,
@@ -920,7 +1012,50 @@ class BaseStrategy(ABC):
             order_id = result.get('orderId')
             method = result.get('method', 'unknown')
             logger.info(f"✅ {self.config.name}: Bracket order placed - ID: {order_id}, Method: {method}")
-            
+
+            # Mark the moment on the health monitor + schedule REST verification.
+            # Both are no-ops in backtest/replay (monitor is paused or unused).
+            try:
+                from core.data_feed_health import get_monitor as _get_health_monitor
+                from core.order_verifier import schedule_order_verification
+                from core.working_order_registry import get_registry as _get_wo_registry
+                _monitor = _get_health_monitor()
+                _monitor.record_order_placed()
+                # Register the entry order so the data-feed watchdog can
+                # cancel-on-staleness if SignalR goes zombie AFTER the place.
+                _acct_id = (
+                    getattr(bot, "account_id", None)
+                    or (bot.selected_account or {}).get("id") if getattr(bot, "selected_account", None) else None
+                )
+                if order_id:
+                    _siblings = []
+                    for k in ("stopOrderId", "limitOrderId", "stopLossOrderId", "takeProfitOrderId"):
+                        v = result.get(k)
+                        if v:
+                            _siblings.append(str(v))
+                    _get_wo_registry().register(
+                        order_id=str(order_id),
+                        account_id=str(_acct_id) if _acct_id else "",
+                        symbol=symbol,
+                        side=side,
+                        strategy_name=self.config.name,
+                        oco_sibling_ids=_siblings,
+                    )
+                if order_id and getattr(bot, "broker_adapter", None) is not None:
+                    schedule_order_verification(
+                        order_id=str(order_id),
+                        account_id=_acct_id,
+                        broker_adapter=bot.broker_adapter,
+                        monitor=_monitor,
+                        strategy_name=self.config.name,
+                        symbol=symbol,
+                    )
+            except Exception as _exc:
+                logger.debug(
+                    "%s: post-place verification scheduling skipped: %s",
+                    self.config.name, _exc,
+                )
+
             # Record successful order placement for cooldown tracking
             if order_id:
                 await self.risk_manager.record_order_placement(symbol, side)

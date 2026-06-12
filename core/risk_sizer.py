@@ -117,3 +117,81 @@ def dollar_risk_at(symbol: str, *, stop_points: float, quantity: int) -> float:
     if stop_points <= 0 or quantity <= 0:
         return 0.0
     return float(stop_points) * point_value(symbol) * int(quantity)
+
+
+def cap_quantity_by_dollar_risk(
+    *,
+    symbol: str,
+    entry_price: float,
+    stop_loss_price: float,
+    requested_quantity: int,
+    max_dollar_risk: float,
+    min_quantity: int = 1,
+    strict: bool = False,
+) -> "tuple[int, str]":
+    """Adaptive-sizing: reduce ``requested_quantity`` until $-risk ≤ ``max_dollar_risk``.
+
+    The 2026-06-11 MGC stop-out went 26.70 pt × $10/pt × 2 ct = $534 — comfortably
+    inside what a 0.5%-of-equity strategy budget would allow, but a hard $-ceiling
+    on each trade gives equity-curve smoothness independent of the strategy's
+    internal sizing logic.  This function is the canonical helper for any caller
+    that wants "trim contracts when SL would over-risk" semantics.
+
+    Args:
+        symbol: Futures symbol (any form accepted by ``point_value``).
+        entry_price / stop_loss_price: Stop distance is the absolute difference.
+        requested_quantity: What the strategy / sizer asked for (must be ≥ 1).
+        max_dollar_risk: Hard ceiling in $.  ``≤ 0`` disables the cap and the
+            function returns ``(requested_quantity, "cap disabled")``.
+        min_quantity: Smallest contract count we're willing to trade.  When
+            even ``min_quantity`` exceeds the cap:
+              * ``strict=True``  → return ``(0, "exceeds cap at min qty")``.
+              * ``strict=False`` → return ``(min_quantity, "exceeds cap at min qty — overriding")``.
+        strict: See above.
+
+    Returns:
+        ``(adjusted_quantity, reason)``.  ``reason`` is human-readable.
+    """
+    try:
+        rq = int(requested_quantity)
+    except (TypeError, ValueError):
+        return 0, "invalid requested_quantity"
+    if rq < 1:
+        return 0, "requested_quantity < 1"
+    if max_dollar_risk is None or max_dollar_risk <= 0:
+        return rq, "cap disabled"
+
+    stop_pts = abs(float(entry_price) - float(stop_loss_price))
+    if stop_pts <= 0:
+        # Defensive: a zero/negative stop is a strategy bug; pass through.
+        return rq, "stop distance ≤ 0 (cap not applied)"
+
+    pv = point_value(symbol)
+    if pv <= 0:
+        return rq, f"unknown point value for {symbol} (cap not applied)"
+
+    risk_at_req = stop_pts * pv * rq
+    if risk_at_req <= max_dollar_risk:
+        return rq, f"within cap (${risk_at_req:.2f} ≤ ${max_dollar_risk:.2f})"
+
+    # Trim until we're under the cap.
+    risk_per_ct = stop_pts * pv
+    if risk_per_ct <= 0:
+        return rq, "per-contract risk ≤ 0 (cap not applied)"
+    max_qty_allowed = int(math.floor(max_dollar_risk / risk_per_ct))
+    if max_qty_allowed >= max(1, int(min_quantity)):
+        return max_qty_allowed, (
+            f"capped {rq} → {max_qty_allowed} ct (${risk_per_ct * max_qty_allowed:.2f} "
+            f"≤ ${max_dollar_risk:.2f} cap; per-ct risk ${risk_per_ct:.2f})"
+        )
+
+    # Even the min-quantity over-risks.
+    if strict:
+        return 0, (
+            f"REFUSED: even {min_quantity} ct risks ${risk_per_ct * min_quantity:.2f} "
+            f"> ${max_dollar_risk:.2f} cap"
+        )
+    return int(min_quantity), (
+        f"⚠️  min_quantity={min_quantity} risks ${risk_per_ct * min_quantity:.2f} "
+        f"> ${max_dollar_risk:.2f} cap — overriding (strict=False)"
+    )
