@@ -7,6 +7,59 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **PA/SMC vision pivot + prior-day RTH H/L sweep-fade viability probe (2026-06-12 PM)** —
+  User explicitly reframed the price-action research direction: instead of keeping individual PA/SMC
+  concepts as standalone features, the goal is now a single **synthesis engine** ("the brain") that knows
+  ALL of them and emits structured market interpretations (context tags + setup probabilities) for other
+  strategies to consume as confluence. Documented the architecture and design constraints in the new top
+  section of ``docs/STRATEGY_ARSENAL.md``.
+
+  Separately, user green-lit exploring **prior-day RTH high/low sweep-fade** as a standalone strategy
+  (the one liquidity-sweep extension that could in principle generalise MRR's edge to the afternoon
+  session without requiring a regime classifier).
+
+  **Built**: ``scripts/probe_prior_day_sweep_fade.py`` — truth-mode viability probe that scans
+  MGC/MNQ/MES historical 5m bars (with 1m intrabar resolution when available), computes prior-day RTH
+  H/L per ET trading date, detects sweep events (close-back-inside bars), simulates fade trades through
+  the canonical ``_simulate_trade_truth()`` helper (entry slippage + commission + force-flat-ET +
+  intrabar SL/TP resolution), and reports per-symbol summaries with a PRODUCTIONABLE / MARGINAL / NO EDGE
+  verdict. Decision rule: PRODUCTIONABLE requires ≥ 0.20 mean R, ≥ 40 trades, ≥ 50% WR on ≥ 2 of 3 symbols.
+
+  21 pinning tests in ``tests/test_probe_prior_day_sweep_fade.py``: RTH-window inclusion/exclusion
+  boundaries (15:59 in, 16:00 out), sweep-above/below detection, close-back-inside rejection logic,
+  min-penetration filter, entry-window filter, summary math (WR, mean R, $ PnL, long/short split),
+  verdict thresholds (PRODUCTIONABLE / MARGINAL / NO EDGE bands), and an E2E smoke test on the live
+  databento CSVs.
+
+  **Verdict: NO EDGE / NOT VIABLE as a standalone.** Naïve fade across all 3 symbols, all-day, 9m:
+
+      symbol    n  WR    meanR   medR   totR    $PnL
+      MGC      302  18.5% -0.020  -0.054  -6.14  -889.60
+      MNQ      505  16.4% -0.066  -0.046 -33.35 -1022.00
+      MES      437  13.3% -0.180  -0.102 -78.62 -2518.60
+
+  Strongest pocket = MGC SHORT in the morning window 10:00-12:00 ET (mean R +0.103, n=92) — falls short
+  of PRODUCTIONABLE bar AND is **anti-regime** (edge shrinking: 9m +0.103 → 6m +0.053 → 3m +0.031). Five
+  parameter variations (stronger penetration, tighter TP, wider SL+tight TP, morning-only, morning+MGC-
+  only) all land NO EDGE / MARGINAL at best.
+
+  **Why the standalone thesis fails**: WR 13-33% too low to be profitable on a 1R-loss/1.5R-win
+  expectancy; force-flat-ET dominates exits (~36% of MGC morning trades); asymmetric symbol response
+  (only MGC SHORT shows life); no compression context (unlike MRR's morning range, prior-day H/L is just
+  a level — many sweeps are legitimate trend continuation rather than reversal).
+
+  **What this validates about the synthesis-engine direction**: this probe ONLY tested the fade thesis
+  (close-back-inside). The opposite mechanic (sweep + close stays outside = breakout) wasn't tested and
+  may have edge in different regimes. A "brain" that can DECIDE which mode is appropriate given context
+  (regime / time-of-day / prior-day shape) is exactly what a standalone strategy can't do. The probe code
+  + detection helpers are kept as research infrastructure for the synthesis engine work.
+
+  Artifacts: ``docs/perf/_probe_prior_day_sweep_fade/baseline_9m.json``,
+  ``docs/perf/_probe_prior_day_sweep_fade/morning_only_9m.json``.
+
+  Test status: full suite 449/449 passing (added ``tests/test_bar_aggregator.py`` and
+  ``tests/test_probe_prior_day_sweep_fade.py`` to ``pytest.ini`` testpaths).
+
 - **Periodic bar-completion safety net + staleness threshold relaxation (2026-06-12 PM)** —
   Investigation of the 2026-06-11/2026-06-12 MRR run logs (5.5h, 543k quote
   events, ZERO live-cache hits in ``get_historical_data``) traced the persistent

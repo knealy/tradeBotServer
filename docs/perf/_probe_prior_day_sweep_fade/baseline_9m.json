@@ -1,0 +1,73 @@
+{
+  "verdict": "NO EDGE",
+  "params": {
+    "since": "2025-09-01",
+    "until": "2026-06-12",
+    "entry_window_start": "10:00",
+    "entry_window_end": "15:00",
+    "min_penetration_ticks": 2.0,
+    "sl_buffer_ticks": 2.0,
+    "tp_r": 1.5,
+    "max_hold_bars": 12,
+    "force_flat_et": "16:00"
+  },
+  "symbols": [
+    {
+      "symbol": "MGC",
+      "n": 302,
+      "n_long": 134,
+      "n_short": 168,
+      "wr_pct": 18.54,
+      "mean_r": -0.0203,
+      "median_r": -0.0543,
+      "total_r": -6.141,
+      "total_dollar": -889.6,
+      "mean_r_long": -0.0571,
+      "mean_r_short": 0.009,
+      "exit_reasons": {
+        "replay_force_flat_et": 196,
+        "timed_exit": 4,
+        "take_profit": 45,
+        "stop_loss": 57
+      }
+    },
+    {
+      "symbol": "MNQ",
+      "n": 505,
+      "n_long": 228,
+      "n_short": 277,
+      "wr_pct": 16.44,
+      "mean_r": -0.066,
+      "median_r": -0.0456,
+      "total_r": -33.347,
+      "total_dollar": -1022.0,
+      "mean_r_long": -0.024,
+      "mean_r_short": -0.1006,
+      "exit_reasons": {
+        "take_profit": 66,
+        "stop_loss": 100,
+        "replay_force_flat_et": 336,
+        "timed_exit": 3
+      }
+    },
+    {
+      "symbol": "MES",
+      "n": 437,
+      "n_long": 237,
+      "n_short": 200,
+      "wr_pct": 13.27,
+      "mean_r": -0.1799,
+      "median_r": -0.1018,
+      "total_r": -78.616,
+      "total_dollar": -2518.6,
+      "mean_r_long": -0.1955,
+      "mean_r_short": -0.1615,
+      "exit_reasons": {
+        "replay_force_flat_et": 297,
+        "stop_loss": 98,
+        "take_profit": 37,
+        "timed_exit": 5
+      }
+    }
+  ]
+}

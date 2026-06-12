@@ -1,53 +1,138 @@
 # Strategy Arsenal
 
-Last refresh: 2026-06-12 PM — **Per-concept PA/SMC thesis review** (user request before deciding what to keep). The
-2026-06-11 de-rating banner below stays in force: NONE of the explored PA/SMC concepts contain a productionizable
-standalone edge. This new section evaluates each concept on its own merits and flags the three primitives that have
-real second-order value (as features other strategies consume, NOT as standalone strategies) and the single concept
-worth extending into a new standalone strategy.
+Last refresh: 2026-06-12 PM — **PA/SMC vision pivot + prior-day RTH H/L sweep-fade exploration.** User
+explicitly **rejected** the previous "keep individual concepts as features" framing. The new direction:
 
-### PA / SMC concept review (2026-06-12)
+> *"we are not looking for a specific price action / SMC concept to be a standalone strategy — instead I want
+> a 'brain' that knows ALL of the price action / SMC concepts and can synthesize and utilize them to interpret
+> realtime price and infer potential setups as they occur and of course be useful to other strategies as
+> confluence for signals"*
 
-| # | Concept | Where built | Standalone edge? | Second-order use | Verdict |
-| -- | -- | -- | -- | -- | -- |
-| 1 | **Swing Pivots** (`pa_pivots`) | `core/pivot_detector.py` | No — symmetric, edge dilutes | Level primitive: skip MRR entries facing an opposing prior-day swing pivot; or anchor TP to next pivot | **Keep as feature** |
-| 2 | **Break of Structure / CHoCH** | `core/structure_detector.py` | No — too late as entry signal; whipsaw-prone | Exit-trigger primitive: "exit MRR if BoS against us" — smarter than the blunt `max_hold_bars` | **Keep as feature** |
-| 3 | **Fair Value Gap (FVG)** | `core/fvg_detector.py` | No — ~52% WR, poor R:R standalone | TP-magnet primitive: 5m FVG below MRR LONG entry as interim partial-TP target | **Keep as feature** |
-| 4 | **Order Block (OB)** | `core/order_block_detector.py` | No — essentially a higher-quality pivot, same problems | Same use as pivots (level primitive) | **Marginal — pivots cover ~80% of OB use with simpler logic** |
-| 5 | **Liquidity Sweep** ⭐ | `core/liquidity_sweep_detector.py` + `morning_range_reversion_strategy.py` | **YES** — this is the strongest single PA concept in our data; MRR's 72% MGC WR validates the thesis | N/A — already standalone | **KEEP and EXTEND** — see "Standalone candidate" below |
-| 6 | **Multi-TF Confluence** (`pa_multitf`) | `core/multitf_aggregator.py` | No — added complexity without verified edge; dilutes signal counts faster than it improves WR | Speculative regime filter at best | **Deletable** |
-| 7 | **Classical Candle Patterns** (`pa_classical`) | `core/classical_patterns.py` | No — individually too low-information, edge dilutes quickly, many false positives | Possible entry-quality tiebreaker (e.g. "pin bar at sweep = take, doji = skip") — unproven | **Deletable; possibly revisit as filter** |
-| 8 | **Price-Action Fade** (`pa_fade`) | `scripts/simulate_price_action_trades.py`-derived MVP | No — too vague without specific level/timing rules; user said "not very actionable" at the time | None concrete | **Deletable** |
+The 2026-06-11 de-rating banner below stays in force: NONE of the **individual** PA/SMC concepts contain a
+productionizable standalone edge. The new vision sidesteps that problem by **synthesizing** the concepts into
+a perception layer that emits structured market interpretations, not signals.
 
-### Standalone candidate worth building: prior-day high/low sweep-fade
+### Vision: PA/SMC Synthesis Engine ("the brain")
 
-Liquidity Sweep (#5) is the only concept above with a robust standalone edge in our data. MRR is essentially a
-7-8 AM-ET liquidity-sweep strategy on the morning range. The natural extension that gives **real diversification
-without requiring a separate prediction engine** is a sister strategy that trades the same sweep mechanic against
-a different level on a different session:
+Architectural sketch — to be refined when implementation starts:
 
-- **Prior-day RTH high/low sweep-fade** (afternoon session): wait for the European session to set a high/low,
-  detect a NY-afternoon sweep above/below that level, fade the close back inside.
-- **Why this is the best "second strategy" candidate**: structurally identical signal/risk logic to MRR (sweep
-  detection, fade on reversion, identical SL/TP geometry primitives) so the implementation cost is low, but it
-  trades a DIFFERENT session and DIFFERENT level → equity curves should have low correlation → real portfolio
-  benefit. Most other ideas (regime classifier + cross-strategy picker) require building infrastructure that
-  doesn't yet exist.
+```
+┌─────────────────────────── PA/SMC Synthesis Engine ───────────────────────────┐
+│                                                                               │
+│  Inputs (per symbol, per timeframe):                                          │
+│    • live OHLCV bars (from bar_aggregator)                                    │
+│    • prior-day H/L, overnight H/L, prior-session H/L                          │
+│    • current quote / spread                                                   │
+│                                                                               │
+│  Primitive detectors (single-bar or N-bar window, look-ahead-safe):           │
+│    • Swing Pivots          ─┐                                                 │
+│    • Break of Structure    ─┤                                                 │
+│    • Change of Character   ─┤                                                 │
+│    • Fair Value Gap        ─┼──→ Each emits typed events with                 │
+│    • Order Block           ─┤      provenance (which bar, which TF)           │
+│    • Liquidity Sweep       ─┤                                                 │
+│    • Classical Patterns    ─┘                                                 │
+│                                                                               │
+│  Synthesizer (combines events into market interpretation):                    │
+│    • Active context tags: e.g. {"phase": "post-sweep-fade",                   │
+│        "structure": "bullish-CHoCH", "liquidity_above": [pdh, ndh]}           │
+│    • Setup probabilities: e.g. {"liq_sweep_fade_short": 0.62,                 │
+│        "ob_reentry_long": 0.18, "trend_continuation": 0.05}                   │
+│    • Multi-TF confluence score: ratio of 1m/5m/15m primitives agreeing        │
+│                                                                               │
+│  Outputs (queryable by strategies + dashboard):                               │
+│    • SetupProbabilityEvent (published on event_bus)                           │
+│    • MarketContextSnapshot (snapshot reads for synchronous queries)           │
+│    • Per-strategy confluence_score() helper                                   │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+                            │
+              ┌─────────────┼─────────────┬─────────────────────────┐
+              ▼             ▼             ▼                         ▼
+        MRR confluence  Prior-day H/L  Future          MasterControl
+        (skip / size)   sweep strategy strategies      dashboard overlay
+        boost           (consumes liq  (consume the    (visualises the
+                        sweep + struct synthesizer)    brain's view)
+                        events)
+```
 
-User has explicitly **deferred this decision** (selected "keep everything for now, write thesis to
-``docs/STRATEGY_ARSENAL.md`` for future reference"). The thesis is preserved here for the next decision point.
+**Why this avoids the de-rating problem:** the de-rated stack failed because each individual concept's standalone
+edge was insufficient AND the legacy simulator was over-optimistic. The synthesis engine doesn't try to trade
+any single concept — it CONSUMES all of them to produce a higher-order interpretation. Strategies that use this
+interpretation as **confluence** (additive filter on top of their own edge) gain robustness without taking on
+the noise of any individual concept's marginal signal.
 
-### What "keep as feature" means concretely
+**Key design constraints**:
+1. **Look-ahead-safe per bar.** Each primitive consumes only data available at bar close. The 2026-06-11 truth-
+   mode work established this discipline; the synthesis engine inherits it.
+2. **Event-driven, not poll-driven.** Primitives emit on bar close; the synthesizer batches per bar.
+3. **Cheap synchronous queries.** Strategies must be able to call `synthesizer.market_context(symbol)` from
+   their `evaluate()` without blocking. Snapshot semantics via a thread-safe dict.
+4. **Composable, not monolithic.** Primitive detectors stay as separate modules. The synthesizer is just the
+   composition layer. This lets you swap / tune / disable individual primitives without rewriting the brain.
 
-For #1, #2, #3: the detectors exist in ``core/`` and are imported only by the de-rated
-``price_action_fade`` MVP. Three options when the deletion question reopens:
-- **(a) Promote them**: move detectors out of the PA stack into a generic ``core/levels/`` module and have MRR
-  optionally consume them (e.g. ``signal.use_swing_pivot_filter = true``).
-- **(b) Park them**: leave the detectors in place but mark the importing strategy ``_LEGACY``. Cheap.
-- **(c) Delete**: remove the detectors AND the importing strategy. Re-derive from git history if needed.
+**Status:** vision only — not yet built. The existing primitive modules (`core/market_structure.py`,
+`core/smc_setups.py`, etc.) are the raw material. The synthesizer + event types + per-strategy consumption
+glue are the new work.
 
-When the deletion question is next reopened, prefer (a) for #1/#2/#3 only if there's a concrete MRR refinement
-they unlock. Otherwise (b) for those three + (c) for #6/#7/#8.
+**Where to start when implementation begins:** wire up a minimum-viable synthesizer that emits exactly ONE
+useful event — e.g. `LiquiditySweepDetectedEvent(symbol, level_type=pdh|pdl|ndh|ndl|orh|orl, side, strength)`.
+Validate end-to-end on a backtest. Then expand the primitive set incrementally, gated by a useful-edge test.
+
+### Prior-day RTH high/low sweep-fade — viability probe complete: **NOT VIABLE as standalone**
+
+**Verdict (2026-06-12 PM):** the naïve sweep-fade thesis on prior-day RTH high/low **does not work**
+as a standalone strategy on MGC/MNQ/MES with current data. Truth-mode probe results across multiple
+parameter variations:
+
+| Config                            | MGC mean R | MNQ mean R | MES mean R | Verdict  |
+| --------------------------------- | ---------- | ---------- | ---------- | -------- |
+| baseline (all-day, 1.5R TP, 9m)   | **-0.020** | **-0.066** | **-0.180** | NO EDGE  |
+| stronger penetration (5 ticks)    | -0.012     | -0.074     | -0.175     | NO EDGE  |
+| tighter TP (1.0R)                 | -0.051     | -0.076     | -0.139     | NO EDGE  |
+| wider SL (5 ticks) + 1.0R TP      | -0.036     | -0.076     | -0.129     | NO EDGE  |
+| morning entries only (10-12 ET)   | **+0.032** | -0.063     | -0.242     | NO EDGE  |
+| morning + MGC SHORT only          | **+0.103** (n=92) | n/a | n/a | MARGINAL |
+
+The strongest pocket (**MGC SHORT in the morning window, n=92, mean R +0.103**) does not meet the
+PRODUCTIONABLE bar (+0.20 R, ≥40 trades, ≥50% WR). The edge is also fading over time:
+
+| Window | MGC SHORT mean R | n |
+| -- | -- | -- |
+| 9m | +0.103 | 92 |
+| 6m | +0.053 | 63 |
+| 3m | +0.031 | 33 |
+
+This is **anti-regime convergence** — the edge is shrinking, not strengthening. That kills the case for
+spawning a dedicated strategy now.
+
+**Why the standalone thesis fails**:
+1. **WR is 13-33% across symbols** — far too low for a mean-reverting 1R-loss / 1.5R-win profile to be
+   profitable on expectancy alone.
+2. **Force-flat-ET dominates exits** — 60 / 166 (~36%) of MGC morning trades exited via the 16:00 ET
+   force-flat with small/negative outcomes. The hold time is too long for the entry timing.
+3. **Asymmetric symbol response** — only MGC SHORT shows life; MNQ and MES are uniformly negative.
+   No basis for the cross-symbol arsenal that diversification needs.
+4. **No compression context** — unlike MRR's morning range (which provides "compression broken =
+   exhaustion" structural information), the prior-day H/L is just a level. Many sweeps are legitimate
+   trend continuation rather than reversal.
+
+**What this proves the synthesis-engine vision will need**:
+- This probe **only tested the FADE thesis** (close-back-inside). The opposite mechanic — sweep + close
+  STAYS OUTSIDE = breakout/continuation — wasn't tested and might have edge in some regimes.
+- A "brain" that can DECIDE which mode (fade vs continuation) given current context (regime, time of day,
+  prior-day shape) is exactly the kind of thing the synthesis engine should do. A standalone strategy is
+  unable to make that decision; the brain can.
+
+**What to do with the probe code**:
+- Keep ``scripts/probe_prior_day_sweep_fade.py`` + tests as research infrastructure — it's well-tested
+  (21 pinning tests, all green) and can be extended to test other sweep variants (overnight H/L,
+  Asian-session range, etc.) by parameterising the level source.
+- The detection helpers (``compute_prior_day_rth_hl``, ``find_sweep_events``) are reusable building blocks
+  for the synthesis engine when work on it begins.
+
+**Artifacts**: ``docs/perf/_probe_prior_day_sweep_fade/baseline_9m.json``,
+``docs/perf/_probe_prior_day_sweep_fade/morning_only_9m.json``.
 
 ---
 
