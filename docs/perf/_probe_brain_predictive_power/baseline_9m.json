@@ -1,0 +1,308 @@
+{
+  "verdict": "NO_SIGNAL",
+  "per_symbol_verdict": {
+    "MGC": "NO_SIGNAL",
+    "MNQ": "NO_SIGNAL",
+    "MES": "NO_SIGNAL"
+  },
+  "params": {
+    "since": "2025-09-01",
+    "until": "2026-06-12",
+    "window": 200,
+    "warmup_bars": 50,
+    "swing_lookback": 3
+  },
+  "symbols": [
+    {
+      "symbol": "MGC",
+      "snapshots": 55041,
+      "verdict": "NO_SIGNAL",
+      "groups": [
+        {
+          "group": "bearish_moderate",
+          "n": 5893,
+          "mean_fwd_1": 0.0074,
+          "mean_fwd_3": 0.0003,
+          "mean_fwd_6": 0.0118,
+          "wr_1": 47.4,
+          "wr_3": 46.68,
+          "wr_6": 46.28
+        },
+        {
+          "group": "bearish_neutral_low",
+          "n": 4204,
+          "mean_fwd_1": 0.0671,
+          "mean_fwd_3": 0.0382,
+          "mean_fwd_6": 0.1902,
+          "wr_1": 48.48,
+          "wr_3": 47.76,
+          "wr_6": 48.57
+        },
+        {
+          "group": "bearish_strong",
+          "n": 2812,
+          "mean_fwd_1": 0.1648,
+          "mean_fwd_3": 0.3905,
+          "mean_fwd_6": 0.1775,
+          "wr_1": 47.01,
+          "wr_3": 45.8,
+          "wr_6": 45.63
+        },
+        {
+          "group": "bearish_weak",
+          "n": 9822,
+          "mean_fwd_1": -0.0075,
+          "mean_fwd_3": -0.0251,
+          "mean_fwd_6": 0.0712,
+          "wr_1": 47.43,
+          "wr_3": 47.5,
+          "wr_6": 47.64
+        },
+        {
+          "group": "bullish_moderate",
+          "n": 6936,
+          "mean_fwd_1": -0.0768,
+          "mean_fwd_3": -0.107,
+          "mean_fwd_6": -0.0158,
+          "wr_1": 48.15,
+          "wr_3": 49.06,
+          "wr_6": 48.44
+        },
+        {
+          "group": "bullish_neutral_low",
+          "n": 4405,
+          "mean_fwd_1": 0.0183,
+          "mean_fwd_3": 0.0135,
+          "mean_fwd_6": -0.2952,
+          "wr_1": 51.28,
+          "wr_3": 51.19,
+          "wr_6": 50.42
+        },
+        {
+          "group": "bullish_strong",
+          "n": 4426,
+          "mean_fwd_1": 0.0507,
+          "mean_fwd_3": 0.2029,
+          "mean_fwd_6": 0.3293,
+          "wr_1": 49.14,
+          "wr_3": 49.62,
+          "wr_6": 50.52
+        },
+        {
+          "group": "bullish_weak",
+          "n": 11990,
+          "mean_fwd_1": 0.0196,
+          "mean_fwd_3": 0.0809,
+          "mean_fwd_6": 0.2031,
+          "wr_1": 49.22,
+          "wr_3": 50.91,
+          "wr_6": 52.04
+        },
+        {
+          "group": "neutral_neutral_low",
+          "n": 4553,
+          "mean_fwd_1": -0.0081,
+          "mean_fwd_3": -0.0309,
+          "mean_fwd_6": -0.09,
+          "wr_1": 0.0,
+          "wr_3": 0.0,
+          "wr_6": 0.0
+        }
+      ]
+    },
+    {
+      "symbol": "MNQ",
+      "snapshots": 55129,
+      "verdict": "NO_SIGNAL",
+      "groups": [
+        {
+          "group": "bearish_moderate",
+          "n": 5887,
+          "mean_fwd_1": 0.1935,
+          "mean_fwd_3": 0.8794,
+          "mean_fwd_6": 1.7048,
+          "wr_1": 48.56,
+          "wr_3": 48.43,
+          "wr_6": 48.07
+        },
+        {
+          "group": "bearish_neutral_low",
+          "n": 4423,
+          "mean_fwd_1": -0.235,
+          "mean_fwd_3": 0.2363,
+          "mean_fwd_6": -0.1335,
+          "wr_1": 48.97,
+          "wr_3": 48.27,
+          "wr_6": 47.03
+        },
+        {
+          "group": "bearish_strong",
+          "n": 2908,
+          "mean_fwd_1": 1.9652,
+          "mean_fwd_3": 2.6695,
+          "mean_fwd_6": 2.7456,
+          "wr_1": 47.76,
+          "wr_3": 47.42,
+          "wr_6": 48.42
+        },
+        {
+          "group": "bearish_weak",
+          "n": 9690,
+          "mean_fwd_1": 0.7359,
+          "mean_fwd_3": 1.2003,
+          "mean_fwd_6": 1.7132,
+          "wr_1": 47.84,
+          "wr_3": 47.07,
+          "wr_6": 46.42
+        },
+        {
+          "group": "bullish_moderate",
+          "n": 6764,
+          "mean_fwd_1": -0.2039,
+          "mean_fwd_3": 0.1787,
+          "mean_fwd_6": 1.3741,
+          "wr_1": 50.84,
+          "wr_3": 51.51,
+          "wr_6": 53.4
+        },
+        {
+          "group": "bullish_neutral_low",
+          "n": 4362,
+          "mean_fwd_1": -0.3624,
+          "mean_fwd_3": 0.298,
+          "mean_fwd_6": 1.0592,
+          "wr_1": 50.16,
+          "wr_3": 51.31,
+          "wr_6": 51.74
+        },
+        {
+          "group": "bullish_strong",
+          "n": 4101,
+          "mean_fwd_1": -0.7374,
+          "mean_fwd_3": -0.7497,
+          "mean_fwd_6": -0.6165,
+          "wr_1": 48.57,
+          "wr_3": 49.06,
+          "wr_6": 50.67
+        },
+        {
+          "group": "bullish_weak",
+          "n": 12364,
+          "mean_fwd_1": -0.0318,
+          "mean_fwd_3": -0.3313,
+          "mean_fwd_6": -0.255,
+          "wr_1": 49.99,
+          "wr_3": 50.58,
+          "wr_6": 51.75
+        },
+        {
+          "group": "neutral_neutral_low",
+          "n": 4630,
+          "mean_fwd_1": -0.1061,
+          "mean_fwd_3": -0.5842,
+          "mean_fwd_6": -1.227,
+          "wr_1": 0.0,
+          "wr_3": 0.0,
+          "wr_6": 0.0
+        }
+      ]
+    },
+    {
+      "symbol": "MES",
+      "snapshots": 55129,
+      "verdict": "NO_SIGNAL",
+      "groups": [
+        {
+          "group": "bearish_moderate",
+          "n": 6063,
+          "mean_fwd_1": 0.0983,
+          "mean_fwd_3": 0.1255,
+          "mean_fwd_6": 0.3339,
+          "wr_1": 46.05,
+          "wr_3": 46.66,
+          "wr_6": 46.36
+        },
+        {
+          "group": "bearish_neutral_low",
+          "n": 4103,
+          "mean_fwd_1": 0.178,
+          "mean_fwd_3": 0.1732,
+          "mean_fwd_6": 0.0528,
+          "wr_1": 46.72,
+          "wr_3": 46.7,
+          "wr_6": 45.92
+        },
+        {
+          "group": "bearish_strong",
+          "n": 3221,
+          "mean_fwd_1": 0.4142,
+          "mean_fwd_3": 0.6704,
+          "mean_fwd_6": 0.5949,
+          "wr_1": 44.92,
+          "wr_3": 46.32,
+          "wr_6": 46.45
+        },
+        {
+          "group": "bearish_weak",
+          "n": 9766,
+          "mean_fwd_1": -0.0006,
+          "mean_fwd_3": 0.0454,
+          "mean_fwd_6": 0.1082,
+          "wr_1": 47.42,
+          "wr_3": 47.57,
+          "wr_6": 47.2
+        },
+        {
+          "group": "bullish_moderate",
+          "n": 6994,
+          "mean_fwd_1": -0.0525,
+          "mean_fwd_3": -0.0814,
+          "mean_fwd_6": -0.019,
+          "wr_1": 46.97,
+          "wr_3": 49.3,
+          "wr_6": 51.02
+        },
+        {
+          "group": "bullish_neutral_low",
+          "n": 4270,
+          "mean_fwd_1": 0.0012,
+          "mean_fwd_3": 0.0416,
+          "mean_fwd_6": 0.1758,
+          "wr_1": 47.99,
+          "wr_3": 49.51,
+          "wr_6": 49.23
+        },
+        {
+          "group": "bullish_strong",
+          "n": 4338,
+          "mean_fwd_1": -0.0746,
+          "mean_fwd_3": 0.0485,
+          "mean_fwd_6": 0.1344,
+          "wr_1": 47.53,
+          "wr_3": 49.95,
+          "wr_6": 52.21
+        },
+        {
+          "group": "bullish_weak",
+          "n": 11503,
+          "mean_fwd_1": -0.1045,
+          "mean_fwd_3": -0.0691,
+          "mean_fwd_6": -0.0098,
+          "wr_1": 47.48,
+          "wr_3": 49.62,
+          "wr_6": 50.23
+        },
+        {
+          "group": "neutral_neutral_low",
+          "n": 4871,
+          "mean_fwd_1": 0.0357,
+          "mean_fwd_3": -0.0569,
+          "mean_fwd_6": -0.1342,
+          "wr_1": 0.0,
+          "wr_3": 0.0,
+          "wr_6": 0.0
+        }
+      ]
+    }
+  ]
+}

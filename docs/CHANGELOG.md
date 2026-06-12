@@ -7,6 +7,65 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Brain v1 predictive-power probe + EMPIRICAL FINDING: v1 weights are anti-predictive (2026-06-12 PM)** —
+  Built ``scripts/probe_brain_predictive_power.py`` + 19 pinning tests to validate
+  the synthesizer's bias signal BEFORE integrating it into any production strategy.
+  The probe walks historical 5m bars chronologically (look-ahead-safe — each
+  snapshot only sees bars up to and including the current close), builds a
+  snapshot at each bar, then measures forward returns at horizons 1 / 3 / 6 bars
+  bucketed by (bias_label, confidence_bucket).  Decision rule: SIGNAL_FOUND
+  when sign-agreement WR ≥ 55% on AT LEAST 2 of 3 symbols at the most-confident
+  bucket on at least one horizon.
+
+  **Result on 9-month MGC + MNQ + MES (2025-09-01 → 2026-06-12, ~55k snapshots
+  per symbol)**: ``OVERALL VERDICT: NO_SIGNAL``.
+
+  Headline numbers (strong-bucket = confidence ≥ 0.60):
+
+      symbol  bias_strong   n      mean_fwd_6   WR_6 (sign-agreement)
+      MGC     bullish     4426    +0.329 pts   50.5%
+      MGC     bearish     2812    +0.178 pts   45.6%   ← anti-predictive (bearish but fwd return positive)
+      MNQ     bullish     4101    -0.616 pts   50.7%   ← anti-predictive (bullish but fwd return negative)
+      MNQ     bearish     2908    +2.746 pts   48.4%   ← anti-predictive
+      MES     bullish     4338    +0.134 pts   52.2%
+      MES     bearish     3221    +0.595 pts   46.4%   ← anti-predictive
+
+  **Interpretation**: the v1 brain weights put BoS at 0.40 (strongest single
+  factor), which makes the brain a TREND-FOLLOWING signal.  But on intraday
+  5m bars for these instruments, the dominant mode is MEAN-REVERTING — BoS
+  signals fire AFTER the move has happened, marking the END of a leg rather
+  than its continuation.  Bearish signals are especially anti-predictive
+  (consistent with the upward-drift bias of these futures): a "bearish"
+  brain label tends to print at the BOTTOM of a pullback that's about to
+  reverse up.
+
+  **What this proves**:
+  1. The brain infrastructure is sound — 49k+ snapshots built across the
+     probe without errors, JSON serialisation round-trips, snapshots
+     monotonically advance per-bar.
+  2. The current scoring weights do NOT capture predictive signal on these
+     instruments and timeframes.
+  3. The right v2 design is one of:
+     a) **Asymmetric / regime-aware weights** — trust bullish bias signals
+        (they confirm the upward drift), treat bearish bias as contrarian.
+     b) **De-emphasise BoS, emphasise the lagging-detector counter-signal**
+        (e.g. liquidity sweeps + CHoCH are EARLIER signals).
+     c) **Drop the composite bias label entirely** and only export structured
+        features; let consuming strategies build their own scoring.
+
+  **Decision**: do NOT integrate the v1 brain into MRR yet.  Re-design the
+  scoring as a follow-up.  The probe + infrastructure is reusable and stays
+  in place to validate v2 / v3 / ... iterations.
+
+  Artifact: ``docs/perf/_probe_brain_predictive_power/baseline_9m.json``.
+
+  Tests: 19 new tests covering bucket boundaries, walk_symbol forward-return
+  accounting, per-symbol verdict thresholds (INSUFFICIENT_N / SIGNAL /
+  WEAK_SIGNAL / NO_SIGNAL), overall verdict aggregation (≥ 2 strong, mixed,
+  weak combinations), and an E2E smoke test against live CSVs.
+
+  Test status: 512/512 passing.
+
 - **PA/SMC Synthesis Engine MVP — the "brain" (2026-06-12 PM)** —
   First concrete step toward the user's PA/SMC vision pivot earlier today:
   build a single perception layer that composes ALL the primitive detectors

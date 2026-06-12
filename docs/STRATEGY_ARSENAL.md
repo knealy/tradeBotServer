@@ -71,13 +71,42 @@ the noise of any individual concept's marginal signal.
 4. **Composable, not monolithic.** Primitive detectors stay as separate modules. The synthesizer is just the
    composition layer. This lets you swap / tune / disable individual primitives without rewriting the brain.
 
-**Status:** vision only — not yet built. The existing primitive modules (`core/market_structure.py`,
-`core/smc_setups.py`, etc.) are the raw material. The synthesizer + event types + per-strategy consumption
-glue are the new work.
+**Status (2026-06-12 PM):** **v1 MVP built and FAILED predictive validation.** The infrastructure
+(``core/market_synthesizer.py``, ``EventType.MARKET_CONTEXT_UPDATED``, lazy boot hook in
+``trading_bot.ensure_market_synthesizer``) is in place and tested (44 tests). The validation
+probe (``scripts/probe_brain_predictive_power.py``, 19 tests) walked ~165k snapshots across MGC + MNQ +
+MES over 9 months and returned ``OVERALL VERDICT: NO_SIGNAL`` on the v1 scoring weights.
 
-**Where to start when implementation begins:** wire up a minimum-viable synthesizer that emits exactly ONE
-useful event — e.g. `LiquiditySweepDetectedEvent(symbol, level_type=pdh|pdl|ndh|ndl|orh|orl, side, strength)`.
-Validate end-to-end on a backtest. Then expand the primitive set incrementally, gated by a useful-edge test.
+**Root cause**: v1 weights are TREND-FOLLOWING (BoS=0.40, the strongest factor).  On intraday 5m
+bars these instruments are MEAN-REVERTING — BoS fires AFTER the move has happened, marking the
+END of a leg rather than its continuation.  Bearish bias is especially anti-predictive (consistent
+with the upward-drift bias of these futures).
+
+**Detailed numbers**: see ``docs/CHANGELOG.md`` 2026-06-12 PM "Brain v1 predictive-power probe"
+entry.  Per-bucket forward-return tables and per-symbol verdicts in
+``docs/perf/_probe_brain_predictive_power/baseline_9m.json``.
+
+**v2 design directions to evaluate (when work resumes)**:
+1. **Asymmetric / regime-aware weights.** Trust bullish bias signals (they confirm the upward
+   drift); treat bearish bias as a CONTRARIAN read.  Probe-confirmable: re-run probe with the
+   bearish-side WR inverted.  Quick first read on the v1 data: MGC bearish strong inverted →
+   WR 54.4%, MNQ bearish inverted → 51.6%, MES bearish inverted → 53.6%.  Marginal lift, not
+   enough to pass the 55% bar.
+2. **De-emphasise BoS, emphasise earlier signals.** Liquidity sweeps + CHoCH are by definition
+   earlier in the structural sequence than BoS (BoS is the CONFIRMATION; sweeps are the
+   ANTICIPATORY signal).  Tune weights to prefer the early-signal primitives.
+3. **Drop composite bias entirely.** The brain becomes an EVENTS publisher (snapshot has only
+   structural facts, no aggregate label).  Consuming strategies build their own scoring.  This
+   is more defensible — strategies can iterate scoring without round-tripping through the brain.
+
+**What the v1 work proves and what we keep**: the infrastructure is sound (snapshots built
+monotonically per bar, JSON round-trip, look-ahead-safe by construction, thread-safe queries).
+The primitive detectors themselves are unchanged — they already had unit tests pinning their
+no-look-ahead behaviour.  The v2 iteration is purely a scoring re-design.
+
+**Where to start when implementation resumes:** pick option 3 (drop composite bias) and ship that
+as v2 — strategies become responsible for their own scoring against the structured snapshot.
+That removes the centralised-misweighting risk that v1 hit.
 
 ### Prior-day RTH high/low sweep-fade — viability probe complete: **NOT VIABLE as standalone**
 
