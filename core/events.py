@@ -61,6 +61,15 @@ class EventType(Enum):
     REGIME_UPDATE = "regime_update"
     PORTFOLIO_KILL = "portfolio_kill"
 
+    # PA/SMC synthesis engine.
+    # ``MARKET_CONTEXT_UPDATED`` is emitted by ``core.market_synthesizer`` after
+    # each bar close it processes — carries a ``MarketContextSnapshot`` dict
+    # in ``data["snapshot"]`` describing the current PA/SMC interpretation
+    # (active levels, recent sweeps, structure events, derived bias /
+    # confidence).  Strategies consume this as confluence; the dashboard
+    # visualises it.  Subscribers: TBD as the brain matures.
+    MARKET_CONTEXT_UPDATED = "market_context_updated"
+
     # GUI events
     GUI_REFRESH_REQUESTED = "gui_refresh_requested"
     CHART_SYMBOL_CHANGED = "chart_symbol_changed"

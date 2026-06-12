@@ -7,6 +7,74 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **PA/SMC Synthesis Engine MVP — the "brain" (2026-06-12 PM)** —
+  First concrete step toward the user's PA/SMC vision pivot earlier today:
+  build a single perception layer that composes ALL the primitive detectors
+  (swing pivots, BoS/CHoCH, FVG, OB, liquidity sweeps, session classifier,
+  prior-session levels) into typed market interpretations strategies can
+  consume as confluence.
+
+  **Built**:
+  - ``core/market_synthesizer.py`` (~480 LoC) with three layers:
+    - ``MarketContextSnapshot`` (frozen dataclass): symbol, timeframe, as_of,
+      bar_count, session label, prior-session H/L, recent swing high/low + labels,
+      structure event (bos_up / bos_down / choch_up / choch_down / none), recent
+      liquidity sweep (bars_ago + direction + close/poke strength ratio), FVG /
+      OB counts, derived bias (bullish / bearish / neutral), confidence [0, 1],
+      and per-factor bias evidence tally. ``as_dict()`` returns a
+      JSON-serialisable view for event payloads + dashboard surfaces.
+    - Pure scoring helpers: ``compute_bias(snapshot) -> (bias, confidence)`` and
+      ``confluence_score(snapshot, side) -> float in [-1.0, +1.0]``. Bias scoring
+      weights: BoS = 0.40, CHoCH = 0.35, swing-trend agreement = 0.20, recent
+      sweep direction = 0.25. Conflicting signals partially cancel; full bull /
+      bear stack caps at 1.0.
+    - ``MarketSynthesizerService`` class: subscribes to ``BAR_COMPLETED`` events
+      on the bot's event bus, runs the primitives pipeline against a rolling
+      N-bar window (default 200), publishes ``MARKET_CONTEXT_UPDATED`` events,
+      maintains a thread-safe latest-snapshot cache for synchronous queries via
+      ``get_context(symbol, [timeframe])`` and a convenience
+      ``confluence_score(symbol, side)`` that delegates to the pure scorer.
+  - ``EventType.MARKET_CONTEXT_UPDATED`` added to ``core/events.py``.
+  - Bot wiring: new ``ensure_market_synthesizer()`` async method on
+    ``TopStepXTradingBot`` (mirrors ``ensure_regime_publisher`` — lazy, env-gated,
+    idempotent). Called from ``StrategyManager._start_strategy`` after the
+    regime publisher so chart-only / dashboard processes pay nothing.
+  - ``maybe_start_synthesizer()`` boot helper + process-global accessor
+    ``get_synthesizer()`` so strategies can opt-in via a soft dependency without
+    holding a direct service reference.
+
+  **Env vars (all off by default — opt-in)**:
+  - ``MARKET_SYNTHESIZER_ENABLED``       — "1" / "true" to enable.
+  - ``MARKET_SYNTHESIZER_SYMBOLS``       — CSV symbol filter; empty = all.
+  - ``MARKET_SYNTHESIZER_TIMEFRAMES``    — CSV timeframe filter; empty = all.
+  - ``MARKET_SYNTHESIZER_WINDOW_BARS``   — int, default 200.
+  - ``MARKET_SYNTHESIZER_SWING_LOOKBACK``— int, default 3.
+
+  **Tests**: 44 new tests in ``tests/test_market_synthesizer.py`` covering:
+  - Pure scoring helpers (9 tests): neutral on empty, single-factor weights,
+    conflicting-signal cancellation, cap-at-1.0 behaviour, side-zero / neutral-
+    bias guards.
+  - Snapshot construction (8 tests): empty-bars guard, flat-bars no-signal,
+    zigzag-up → bullish BoS_UP, zigzag-down → bearish BoS_DOWN, swing labels
+    emitted when pivots present, as_of carries last bar timestamp, JSON
+    serialisation round-trip, graceful handling of <2*lookback+1 bars, session
+    label resolution for tz-aware timestamps.
+  - Service lifecycle (13 tests): subscribe / unsubscribe, per-symbol filter,
+    per-timeframe filter, event payload shape, get_context (with / without
+    timeframe, case-insensitive, default-when-missing), confluence_score
+    default-when-missing, window trimming, fetch_history fallback when payload
+    has no bars, empty-payload short circuit, callback error isolation,
+    snapshots-built counter.
+  - Boot helper (6 tests): disabled by default, enabled via env, idempotent,
+    no-bus → None, symbols env parsing, invalid-int env falls back to default.
+
+  **Status**: no production strategy consumes the brain yet — that's the next
+  deliverable. The MVP is the publisher + cache + scoring helpers, all
+  wired through the existing event bus and ready for confluence-aware
+  strategies (and the dashboard overlay) to subscribe.
+
+  Test status: full suite 493/493 passing.
+
 - **PA/SMC vision pivot + prior-day RTH H/L sweep-fade viability probe (2026-06-12 PM)** —
   User explicitly reframed the price-action research direction: instead of keeping individual PA/SMC
   concepts as standalone features, the goal is now a single **synthesis engine** ("the brain") that knows

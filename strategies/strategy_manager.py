@@ -1177,6 +1177,20 @@ class StrategyManager:
         except Exception as exc:
             logger.debug("Regime-publisher wiring for %s raised: %s", n, exc)
 
+        # PA/SMC synthesis engine ("the brain").  Off by default; opt-in via
+        # ``MARKET_SYNTHESIZER_ENABLED=1``.  Idempotent.  Publishes
+        # ``EventType.MARKET_CONTEXT_UPDATED`` on each bar close with a typed
+        # PA/SMC snapshot (active levels, recent sweeps, structure events,
+        # derived bias).  No production strategy consumes it yet — this is
+        # forward-looking infrastructure that will be used for confluence in
+        # the next strategy-integration round.
+        try:
+            ensure_brain = getattr(self.trading_bot, "ensure_market_synthesizer", None)
+            if callable(ensure_brain):
+                await ensure_brain()
+        except Exception as exc:
+            logger.debug("MarketSynthesizer wiring for %s raised: %s", n, exc)
+
         # Strategies with their own event loop can implement an async start() or run() hook
         custom_start = getattr(strategy, 'start', None)
         custom_run = getattr(strategy, 'run', None)

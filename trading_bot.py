@@ -193,6 +193,17 @@ class TopStepXTradingBot:
         # ``EventType.REGIME_UPDATE`` once the publisher is enabled.
         self.regime_publisher = None
 
+        # PA/SMC synthesis engine (the "brain" — see core/market_synthesizer).
+        # Off by default; opt-in via ``MARKET_SYNTHESIZER_ENABLED=1``.  Same
+        # lazy boot path as the regime publisher: ``ensure_market_synthesizer``
+        # runs on first ``start_strategy`` so chart-only / dashboard processes
+        # pay nothing.  When enabled, subscribes to ``BAR_COMPLETED`` and
+        # publishes ``MARKET_CONTEXT_UPDATED`` events carrying a typed PA/SMC
+        # snapshot.  Strategies that want confluence can either subscribe to
+        # the event or call ``core.market_synthesizer.get_synthesizer()`` to
+        # query the latest cached snapshot synchronously.
+        self.market_synthesizer = None
+
         # Initialize bar aggregator for real-time chart updates
         from core.bar_aggregator import BarAggregator
         self.bar_aggregator = BarAggregator(broadcast_callback=None)  # Will be set by webhook server
@@ -2750,6 +2761,39 @@ class TopStepXTradingBot:
         except Exception as exc:
             logger.error("ensure_regime_publisher failed: %s", exc, exc_info=True)
             self.regime_publisher = None
+            return None
+
+    async def ensure_market_synthesizer(self) -> "Optional[Any]":
+        """Lazily construct + start the PA/SMC synthesis engine ("the brain").
+
+        Off by default — only constructs when ``MARKET_SYNTHESIZER_ENABLED``
+        env is truthy.  See ``core/market_synthesizer.py::maybe_start_synthesizer``
+        for the full env-var contract (symbols, timeframes, window, lookback).
+
+        Idempotent — multiple callers can call this safely.  When enabled,
+        the service subscribes to ``BAR_COMPLETED`` events on the bot's event
+        bus and publishes ``MARKET_CONTEXT_UPDATED`` events with the synthesized
+        PA/SMC snapshot.  Strategies can query the latest snapshot
+        synchronously via ``core.market_synthesizer.get_synthesizer()``.
+
+        No production strategy consumes the brain yet — this just installs the
+        publisher so the snapshots are available for opt-in consumers (the
+        dashboard, future confluence-aware strategies, the next-generation
+        liquidity-sweep work).
+        """
+        if self.market_synthesizer is not None:
+            return self.market_synthesizer
+        try:
+            from core.market_synthesizer import maybe_start_synthesizer
+            svc = maybe_start_synthesizer(self)
+            if svc is None:
+                return None
+            self.market_synthesizer = svc
+            await svc.start()
+            return svc
+        except Exception as exc:
+            logger.error("ensure_market_synthesizer failed: %s", exc, exc_info=True)
+            self.market_synthesizer = None
             return None
 
     async def ensure_portfolio_breaker(self) -> "Optional[Any]":
