@@ -1,0 +1,65 @@
+[MGC 5m] evaluating 10 combos on 99681 bars...
+[MNQ 5m] evaluating 10 combos on 99562 bars...
+[MES 5m] evaluating 10 combos on 99562 bars...
+
+══════════════ sweep_low_fade COMBO RESULTS ══════════════
+
+sweep_only (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES     255  28.2% -0.2694 -0.247
+  MGC     242  26.4% -0.2507 -0.240
+  MNQ     298  25.8% -0.3171 -0.304
+
+sweep+choch_up (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES      71  29.6% -0.2576 -0.231
+  MGC      78  23.1% -0.3116 -0.316
+  MNQ      78  25.6% -0.2316 -0.229
+
+sweep+choch_up+pdl (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES       5  40.0% -0.1669 -0.134 *insufficient n*
+  MGC       3  33.3% -0.4625 -0.804 *insufficient n*
+  MNQ       0   0.0% +0.0000 +0.000 *insufficient n*
+
+sweep+fvg (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES      21  33.3% -0.0305 -0.029 *insufficient n*
+  MGC      45  28.9% -0.1465 -0.142
+  MNQ       0   0.0% +0.0000 +0.000 *insufficient n*
+
+sweep+fvg+choch_up (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES      11  36.4% +0.0370 +0.036 *insufficient n*
+  MGC      16  31.2% -0.0852 -0.081 *insufficient n*
+  MNQ       0   0.0% +0.0000 +0.000 *insufficient n*
+
+sweep+fvg+pdl (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES       0   0.0% +0.0000 +0.000 *insufficient n*
+  MGC       1   0.0% -1.6833 +0.000 *insufficient n*
+  MNQ       0   0.0% +0.0000 +0.000 *insufficient n*
+
+sweep+pdl (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES      12  50.0% +0.2075 +0.169 *insufficient n*
+  MGC       9  33.3% -0.3725 -0.344 *insufficient n*
+  MNQ       2  50.0% +0.1750 +0.138 *insufficient n*
+
+sweep+rsi+choch_up (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES       2  50.0% -0.0239 -0.017 *insufficient n*
+  MGC       3   0.0% -0.7174 -1.496 *insufficient n*
+  MNQ       3  33.3% +0.4393 +0.605 *insufficient n*
+
+sweep+rsi+pdl (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES       1   0.0% -0.0496 +0.000 *insufficient n*
+  MGC       0   0.0% +0.0000 +0.000 *insufficient n*
+  MNQ       0   0.0% +0.0000 +0.000 *insufficient n*
+
+sweep+rsi_oversold (5m)  verdict=NO_EDGE
+  symbol     n     WR    meanR    shrp
+  MES      17  17.6% -0.4701 -0.483 *insufficient n*
+  MGC      21  14.3% -0.5231 -0.580 *insufficient n*
+  MNQ      27  33.3% -0.0569 -0.051

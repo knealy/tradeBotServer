@@ -7,6 +7,119 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **v2 brain build + sweep_low_fade optimization + primitive combos probe (2026-06-12 PM)** —
+  Three-phase delivery turning the v1 NO_SIGNAL finding into a data-driven v2.
+
+  **Phase 1 — v2 brain refactor** (``core/market_synthesizer.py``):
+
+  Driven by the empirical finding that BoS / CHoCH / swing-trend labels carry
+  zero isolated signal and SHORT-side sweeps are anti-predictive, the
+  synthesizer's bias scoring was completely rewritten:
+
+  * ``_bias_factor_scores`` now considers ONLY the long-side liquidity
+    sweep (``recent_sweep_direction == +1``).  BoS / CHoCH / swing labels
+    are still computed and emitted in the snapshot as structural FACTS
+    (visible on the dashboard and to research probes), but they no longer
+    drive bias.
+  * Bias confidence decays with sweep freshness via a new
+    ``_sweep_freshness_weight(bars_ago)`` helper:
+    ``0 → 1.0, 1 → 2/3, 2 → 1/3, ≥ 3 → 0.0`` — chosen to match the 1- to
+    6-bar forward-return horizons the primitive probe validated on.
+  * Short-side sweeps return ``("neutral", 0.0)`` — the brain has no
+    validated SHORT edge.
+  * New ``confluence_for_long_signal(snapshot) → float`` module-level
+    helper exposes the bullish confidence directly for strategies that
+    want to layer the brain as size/confidence boost on top of their
+    own LONG signal.
+  * New ``EventType.LIQUIDITY_SWEEP_DETECTED`` (``core/events.py``) fires
+    alongside ``MARKET_CONTEXT_UPDATED`` whenever a fresh long-side sweep
+    is detected.  Payload carries symbol / timeframe / sweep_level /
+    strength / bars_ago / confidence so subscribers can react without
+    parsing the full snapshot.
+
+  Tests: ``tests/test_market_synthesizer.py`` rewritten to pin v2
+  semantics — added ``TestSweepFreshnessWeight`` (4 tests),
+  ``TestComputeBiasV2`` (9 tests), ``TestConfluenceForLongSignal``
+  (3 tests), plus 2 new service-lifecycle tests for the
+  ``LIQUIDITY_SWEEP_DETECTED`` emission path.  53 / 53 passing.
+
+  **Phase 2 — sweep_low_fade optimization sweep**
+  (``scripts/probe_sweep_low_fade_optimize.py`` + 20 unit tests):
+
+  Truth-mode optimization probe that grids over (min_poke_ticks ×
+  min_strength × session × stop_policy × tp_r × max_hold_bars ×
+  swing_lookback × timeframe), reusing the canonical
+  ``_simulate_trade_truth`` fill model (slippage + commission + intrabar
+  1m resolution + force-flat at 16:00 ET).  Includes 1m-to-15m/30m
+  aggregator so the grid can probe timeframes without re-pulling data.
+
+  Sweep candidate detection is cached per (symbol, timeframe,
+  swing_lookback) — 1944-cell grid runs in ~7 s with ``--no-intrabar``.
+
+  Per-symbol best combo identified (extended history 2025-01-01 →
+  2026-06-01, 9 months):
+
+      symbol  tf    poke  strength  session  stop         tp_r  n    WR     mean R
+      MES     15m   8t    1.0       nyam     structural   1.5R  44   56.8%  +0.29  ← intrabar
+      MES     15m   8t    1.0       nyam     structural   2.0R  44   54.5%  +0.26
+      MES     15m   8t    0.5       nyam     structural   1.5R  58   51.7%  +0.22
+      MGC, MNQ — uniformly NEGATIVE across all configurations
+
+  Verdict: ``NO_EDGE`` cross-symbol; ``EDGE_FOUND`` on MES alone.  The
+  PA/SMC mechanic carries a real but isolated edge on the S&P futures
+  (MES) at higher timeframes with a structural stop and nyam session
+  filter, but does NOT generalise to MGC (gold) or MNQ (NASDAQ).  This
+  is consistent with MES being the most consistently mean-reverting of
+  the three on this timescale.
+
+  Saved artifacts: ``docs/perf/sweep_low_fade_optimize/grid_5m_15m_fast.json``,
+  ``docs/perf/sweep_low_fade_optimize/MES_15m_intrabar.json``.
+
+  **Phase 3 — multi-primitive combos probe**
+  (``scripts/probe_sweep_combos.py`` + 20 unit tests):
+
+  Layered other primitives on top of sweep_low to test whether
+  combinations produce stronger / more consistent edge than the bare
+  signal:
+
+  * **sweep + bullish FVG below close** (unmitigated, within distance
+    band) — no improvement; sample size too small to be conclusive.
+  * **sweep + recent CHoCH_up** (within ``--choch-lookback-bars``) —
+    BEST combo found.  On MES 15m nyam structural, 1.5R, lk=3 with
+    extended history (Jan-2025 → Jun-2026): ``n=40, WR=55.0%, meanR=+0.18``.
+    MNQ / MGC remain negative.  Verdict: MARGINAL (single-symbol edge).
+  * **sweep at prior-day-low** (``|swing_low - PDL| ≤ 3 pts``) —
+    insufficient samples; what samples exist show mixed results.
+  * **sweep + RSI(14) oversold** — anti-predictive on MES + MGC + MNQ,
+    likely because by the time RSI flags oversold the sweep has already
+    overshot and reversal is exhausted.
+  * **Triple combos** (e.g. sweep+choch+pdl) — universally have n < 5;
+    not statistically usable.
+
+  Verdict aggregate: every combo emerges as ``NO_EDGE`` or ``MARGINAL``
+  cross-symbol.  The sweep+CHoCH combo is the strongest finding but is
+  a SINGLE-SYMBOL edge on MES that does not transfer to MGC / MNQ.
+
+  Saved artifacts: ``docs/perf/sweep_low_fade_optimize/combos_15m_long_history.txt``,
+  ``docs/perf/sweep_low_fade_optimize/combos_5m_long_history.txt``,
+  ``docs/perf/sweep_low_fade_optimize/combos_full.json``.
+
+  **Operational implication**: the v2 brain's
+  ``confluence_for_long_signal`` helper IS now data-driven and safe to
+  use as a confluence boost, but:
+  * On MGC / MNQ it has no demonstrated edge in isolation — strategies
+    should treat it as informational, not as a size multiplier.
+  * On MES at 15m timeframes with strict filters
+    (poke ≥ 8 ticks, strength ≥ 1.0, nyam session, CHoCH within last 60
+    bars, structural stop) it represents a marginally profitable
+    discretionary setup; a standalone MVP strategy would need ≥ 100
+    trades to confirm statistical significance and is therefore deferred
+    until more data accumulates.
+
+  Tests: 40 new tests total (``tests/test_probe_sweep_low_fade_optimize.py``
+  20 tests; ``tests/test_probe_sweep_combos.py`` 20 tests).  Suite total
+  522 → 571.
+
 - **Brain primitives isolated probe + asymmetric-edge finding (2026-06-12 PM)** —
   Follow-up to the v1 NO_SIGNAL finding: extended ``scripts/probe_brain_predictive_power.py``
   with two new ``--group-by`` modes (``structure`` and ``sweep``) that bypass the composite

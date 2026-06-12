@@ -1,7 +1,13 @@
 # Strategy Arsenal
 
-Last refresh: 2026-06-12 PM — **PA/SMC vision pivot + prior-day RTH H/L sweep-fade exploration.** User
-explicitly **rejected** the previous "keep individual concepts as features" framing. The new direction:
+Last refresh: 2026-06-12 PM — **PA/SMC vision pivot + Brain v2 shipped + sweep_low_fade optimization +
+multi-primitive combos probe.**  Cycle complete: v1 brain failed predictive validation → primitive
+isolation found ONE lift signal (sweep_low_fade LONG) → v2 brain built on that signal alone → optimization
+sweep found best filters (MES 15m nyam structural 1.5R → 56.8% WR, +0.29R) → combo probe found that
+adding CHoCH_up boosts sample-stable edge on MES (40 trades, 55% WR, +0.18R) but does not generalise to
+MGC/MNQ.  See "Brain v2 — built and validated" section below for full details.
+
+User direction:
 
 > *"we are not looking for a specific price action / SMC concept to be a standalone strategy — instead I want
 > a 'brain' that knows ALL of the price action / SMC concepts and can synthesize and utilize them to interpret
@@ -133,6 +139,94 @@ no-look-ahead behaviour.  The v2 iteration is purely a scoring re-design.
 **Where to start when implementation resumes:** pick option 3 (drop composite bias) and ship that
 as v2 — strategies become responsible for their own scoring against the structured snapshot.
 That removes the centralised-misweighting risk that v1 hit.
+
+### Brain v2 — built and validated (2026-06-12 PM)
+
+**Status:** v2 has been **shipped**.  ``core/market_synthesizer.py``,
+``EventType.LIQUIDITY_SWEEP_DETECTED``, and the
+``confluence_for_long_signal(snapshot)`` helper are in place and tested.
+Bias scoring is now driven SOLELY by fresh long-side liquidity sweeps with
+linear freshness decay (bars_ago == 0 → confidence 1.0; bars_ago == 3 →
+confidence 0.0).  BoS / CHoCH / swing-trend labels are computed and emitted
+as structural facts but contribute nothing to bias.  Short-side sweeps
+contribute nothing to bias either.
+
+The empirical foundation for v2 is summarised below.
+
+**Sweep_low_fade optimization sweep** (Phase 2, ``scripts/probe_sweep_low_fade_optimize.py``):
+
+A 1944-cell grid over (poke_ticks × strength × session × stop_policy × tp_r ×
+max_hold_bars × swing_lookback × timeframe) — 5m + 15m × MGC + MNQ + MES,
+9 months of databento data, truth-mode fill model.
+
+Best per-symbol combos (intrabar-resolved):
+
+| Symbol | tf  | poke | strength | session | stop policy | tp  | n  | WR    | mean R |
+| ------ | --- | ---- | -------- | ------- | ----------- | --- | -- | ----- | ------ |
+| MES    | 15m | 8t   | 1.0      | nyam    | structural  | 1.5 | 44 | 56.8 % | **+0.29** |
+| MES    | 15m | 8t   | 1.0      | nyam    | structural  | 2.0 | 44 | 54.5 % | +0.26 |
+| MES    | 15m | 8t   | 0.5      | nyam    | structural  | 1.5 | 58 | 51.7 % | +0.22 |
+| MGC    | 15m | any  | any      | any     | any         | any | —  | —     | NEGATIVE |
+| MNQ    | 15m | any  | any      | any     | any         | any | —  | —     | NEGATIVE |
+
+**Cross-symbol verdict: NO_EDGE** — but a clear MES-only edge.  This is
+consistent with MES being the most consistently mean-reverting of the
+three on 15m bars.  MGC's gold-specific microstructure (heavier institutional
+sweeps for accumulation) and MNQ's NASDAQ momentum bias appear to make the
+sweep-fade mechanic counter-productive on those instruments.
+
+**Multi-primitive combo probe** (Phase 3, ``scripts/probe_sweep_combos.py``):
+
+Tested whether layering OTHER PA/SMC primitives on top of sweep_low produces
+stronger / more consistent edge:
+
+| Combo                          | Best symbol-tf-config                | n  | WR    | mean R | Verdict |
+| ------------------------------ | ------------------------------------ | -- | ----- | ------ | ------- |
+| sweep + bullish FVG below      | small n (≤45) cross-symbol           | —  | —     | —      | NO_EDGE |
+| **sweep + CHoCH_up (recent)**  | MES 15m nyam structural 1.5R         | 40 | 55.0 % | **+0.18** | MARGINAL (MES-only) |
+| sweep + prior-day-low          | small n (≤8) all symbols             | —  | —     | —      | NO_EDGE |
+| sweep + RSI(14) oversold       | anti-predictive on all symbols       | —  | —     | NEG    | NO_EDGE |
+| sweep + CHoCH + PDL (triple)   | n < 5 always                         | —  | —     | —      | NO_EDGE |
+
+**Best COMBO finding**: ``sweep + CHoCH_up within last 60 bars`` on MES 15m
+nyam (n=40, WR=55%, +0.18 R per trade with extended history Jan-2025 →
+Jun-2026).  Still single-symbol, still doesn't transfer to MGC / MNQ.
+
+**Operational implication for strategies:**
+
+* The v2 brain's ``confluence_for_long_signal(snapshot)`` helper IS
+  data-driven and safe to use, but consumers should know its
+  asymmetric edge — the brain has demonstrated LONG-side lift on MES
+  specifically, and is currently informational only on MGC / MNQ.
+* On MES with strict filters (poke ≥ 8 ticks, strength ≥ 1.0, nyam
+  session, CHoCH within last 60 bars, structural stop, 1.5R TP) this
+  represents a viable marginal-edge discretionary setup.  A standalone
+  MVP strategy would need ≥ 100 trades to confirm statistical
+  significance and is therefore **deferred** until more data accumulates.
+* MRR remains the production strategy with the strongest edge.  The
+  v2 brain is positioned as a **size / confidence boost** on top of MRR
+  LONG signals, NOT a standalone strategy.
+
+**Detailed numbers**: ``docs/perf/sweep_low_fade_optimize/{grid_5m_15m_fast,
+MES_15m_intrabar,combos_full}.json`` and the
+``combos_15m_long_history.txt`` / ``combos_5m_long_history.txt``
+human-readable reports.
+
+**v3 directions (deferred):**
+
+* **Source asymmetry**: dig into WHY MES works and MGC/MNQ don't.  Likely
+  candidate: volatility regime.  When MES is range-bound on 15m, sweeps
+  fade; when MNQ trends, sweeps continue.  Adding an ATR / volatility
+  regime filter to the brain may unify the edge across symbols.
+* **Longer holds**: explore 24+ bar holds with trailing stops — the
+  sweep mechanism may have longer-tail expectancy than 12 bars captures.
+* **Sweep-of-sweep (double-bottom liquidity grab)**: classic SMC
+  thesis that two adjacent sweeps within a tight band produce
+  cleaner reversals.  Worth probing as a Phase-4 combo.
+* **MRR + brain confluence integration**: gate MRR's signal on
+  ``confluence_for_long_signal ≥ 0.5`` and measure WR/R uplift in
+  walk-forward — the simplest immediate way to convert v2 brain into
+  real PnL.
 
 ### Prior-day RTH high/low sweep-fade — viability probe complete: **NOT VIABLE as standalone**
 
