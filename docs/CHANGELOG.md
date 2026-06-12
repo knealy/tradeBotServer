@@ -7,6 +7,64 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Brain primitives isolated probe + asymmetric-edge finding (2026-06-12 PM)** —
+  Follow-up to the v1 NO_SIGNAL finding: extended ``scripts/probe_brain_predictive_power.py``
+  with two new ``--group-by`` modes (``structure`` and ``sweep``) that bypass the composite
+  bias label and bucket snapshots by a SINGLE primitive in isolation.  Goal: figure out
+  whether ANY individual signal has predictive power even if the composite doesn't.
+
+  Run results on the same 9m of MGC + MNQ + MES:
+
+  **Structure events alone (BoS / CHoCH)** — ``OVERALL VERDICT: NO_SIGNAL``.
+
+      symbol  primitive    n      WR_3 (sign-agreement)
+      MGC     bos_up      10641   48.6%   (anti, as expected — lagging)
+      MGC     bos_down     8275   45.0%   (anti)
+      MGC     choch_up     8724   50.4%   (noise)
+      MGC     choch_down   6956   48.2%   (noise)
+      MNQ     bos_up      10925   50.2%   (noise)
+      MNQ     bos_down     8705   46.6%   (anti)
+      MES     bos_up      11090   49.4%   (noise)
+      MES     bos_down     8826   46.1%   (anti)
+
+  BoS and CHoCH are individually NOT directional signals on these instruments
+  / timeframes.  BoS_DOWN is consistently anti-predictive, consistent with
+  upward-drift bias.
+
+  **Liquidity sweep direction alone** — ``OVERALL VERDICT: WEAK_SIGNAL`` (1 SIGNAL, 1 WEAK).
+
+      symbol  primitive          n      WR_6 (sign-agreement)
+      MGC     sweep_low_fade   11542   52.1%   ← marginal LONG signal
+      MGC     sweep_high_fade  11144   49.7%   (no signal)
+      MNQ     sweep_low_fade   11229   52.9%   ← marginal LONG signal
+      MNQ     sweep_high_fade  12159   48.1%   (no signal)
+      MES     sweep_low_fade   10657   51.7%   (marginal but below threshold)
+      MES     sweep_high_fade  11158   45.8%   ← ANTI-predictive
+
+  **Headline finding**: only the LONG side of the liquidity sweep mechanic
+  (sweep below recent swing low → expect bounce up) has consistent
+  cross-symbol predictive lift.  The SHORT side does not work.  This is the
+  same asymmetry seen in the prior-day RTH H/L sweep probe earlier today and
+  is fully consistent with these futures' structural upward-drift bias.
+
+  **v2 brain implication**: the right next iteration is to drop the
+  composite bias label, drop BoS / CHoCH from the scoring, keep ONLY the
+  sweep-low-fade primitive, and emit it as a typed event (``LiquiditySweep
+  DetectedEvent`` with side=long-only) for strategies to consume as a
+  confluence boost.  A standalone "sweep-low-fade-LONG" strategy on its own
+  (52% WR at 1.5R/1.0SL) would be marginally profitable but unstable; it's
+  more valuable as a confluence filter on top of MRR's existing edge.
+
+  Tests: 10 new tests in ``tests/test_probe_brain_predictive_power.py``
+  (TestGroupKeyFor — 7 tests pinning all three modes; TestVerdictPerSymbol
+  WithGroupBy — 3 tests pinning the per-mode verdict aggregation).
+
+  Artifacts:
+  - ``docs/perf/_probe_brain_predictive_power/by_structure_9m.json``
+  - ``docs/perf/_probe_brain_predictive_power/by_sweep_9m.json``
+
+  Test status: 522/522 passing.
+
 - **Brain v1 predictive-power probe + EMPIRICAL FINDING: v1 weights are anti-predictive (2026-06-12 PM)** —
   Built ``scripts/probe_brain_predictive_power.py`` + 19 pinning tests to validate
   the synthesizer's bias signal BEFORE integrating it into any production strategy.

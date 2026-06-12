@@ -1,0 +1,129 @@
+{
+  "verdict": "WEAK_SIGNAL",
+  "per_symbol_verdict": {
+    "MGC": "WEAK_SIGNAL",
+    "MNQ": "WEAK_SIGNAL",
+    "MES": "NO_SIGNAL"
+  },
+  "params": {
+    "since": "2025-09-01",
+    "until": "2026-06-12",
+    "window": 200,
+    "warmup_bars": 50,
+    "swing_lookback": 3,
+    "group_by": "sweep"
+  },
+  "symbols": [
+    {
+      "symbol": "MGC",
+      "snapshots": 55041,
+      "verdict": "WEAK_SIGNAL",
+      "groups": [
+        {
+          "group": "no_sweep",
+          "n": 32355,
+          "mean_fwd_1": 0.0397,
+          "mean_fwd_3": 0.094,
+          "mean_fwd_6": 0.2081,
+          "wr_1": 0.0,
+          "wr_3": 0.0,
+          "wr_6": 0.0
+        },
+        {
+          "group": "sweep_high_fade",
+          "n": 11144,
+          "mean_fwd_1": -0.0243,
+          "mean_fwd_3": -0.0428,
+          "mean_fwd_6": -0.1447,
+          "wr_1": 48.99,
+          "wr_3": 48.86,
+          "wr_6": 49.69
+        },
+        {
+          "group": "sweep_low_fade",
+          "n": 11542,
+          "mean_fwd_1": -0.0284,
+          "mean_fwd_3": -0.044,
+          "mean_fwd_6": -0.0847,
+          "wr_1": 50.59,
+          "wr_3": 51.76,
+          "wr_6": 52.07
+        }
+      ]
+    },
+    {
+      "symbol": "MNQ",
+      "snapshots": 55129,
+      "verdict": "WEAK_SIGNAL",
+      "groups": [
+        {
+          "group": "no_sweep",
+          "n": 31741,
+          "mean_fwd_1": -0.0198,
+          "mean_fwd_3": -0.0352,
+          "mean_fwd_6": 0.2419,
+          "wr_1": 0.0,
+          "wr_3": 0.0,
+          "wr_6": 0.0
+        },
+        {
+          "group": "sweep_high_fade",
+          "n": 12159,
+          "mean_fwd_1": 0.2952,
+          "mean_fwd_3": 0.7818,
+          "mean_fwd_6": 0.8173,
+          "wr_1": 48.45,
+          "wr_3": 48.01,
+          "wr_6": 48.12
+        },
+        {
+          "group": "sweep_low_fade",
+          "n": 11229,
+          "mean_fwd_1": 0.2775,
+          "mean_fwd_3": 0.878,
+          "mean_fwd_6": 1.6891,
+          "wr_1": 50.87,
+          "wr_3": 51.88,
+          "wr_6": 52.94
+        }
+      ]
+    },
+    {
+      "symbol": "MES",
+      "snapshots": 55129,
+      "verdict": "NO_SIGNAL",
+      "groups": [
+        {
+          "group": "no_sweep",
+          "n": 33314,
+          "mean_fwd_1": -0.0236,
+          "mean_fwd_3": -0.068,
+          "mean_fwd_6": -0.0902,
+          "wr_1": 0.0,
+          "wr_3": 0.0,
+          "wr_6": 0.0
+        },
+        {
+          "group": "sweep_high_fade",
+          "n": 11158,
+          "mean_fwd_1": 0.1575,
+          "mean_fwd_3": 0.2666,
+          "mean_fwd_6": 0.3615,
+          "wr_1": 46.3,
+          "wr_3": 46.52,
+          "wr_6": 45.78
+        },
+        {
+          "group": "sweep_low_fade",
+          "n": 10657,
+          "mean_fwd_1": -0.0029,
+          "mean_fwd_3": 0.1981,
+          "mean_fwd_6": 0.4334,
+          "wr_1": 48.06,
+          "wr_3": 50.07,
+          "wr_6": 51.68
+        }
+      ]
+    }
+  ]
+}

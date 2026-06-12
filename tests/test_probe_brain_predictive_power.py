@@ -20,9 +20,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.probe_brain_predictive_power import (  # type: ignore
+    GROUP_BY_BIAS_BUCKET,
+    GROUP_BY_STRUCTURE,
+    GROUP_BY_SWEEP,
     BiasGroupStats,
     SymbolResult,
     _bucket_for,
+    _group_key_for,
     _overall_verdict,
     _verdict_per_symbol,
     walk_symbol,
@@ -110,6 +114,99 @@ class TestWalkSymbol:
             assert g.mean_fwd_1 == pytest.approx(1.0, abs=0.01)
             assert g.mean_fwd_3 == pytest.approx(3.0, abs=0.01)
             assert g.mean_fwd_6 == pytest.approx(6.0, abs=0.01)
+
+
+# ────────────────── group_key_for ──────────────────
+
+
+class _FakeSnap:
+    """Minimal duck-typed snapshot for _group_key_for testing."""
+    def __init__(self, **kw):
+        self.bias = kw.get("bias", "neutral")
+        self.confidence = kw.get("confidence", 0.0)
+        self.structure_event = kw.get("structure_event", "none")
+        self.recent_sweep_direction = kw.get("recent_sweep_direction", None)
+
+
+class TestGroupKeyFor:
+    def test_default_uses_bias_bucket(self):
+        snap = _FakeSnap(bias="bullish", confidence=0.75)
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_BIAS_BUCKET)
+        assert label == "bullish_strong"
+        assert sign == +1
+
+    def test_structure_mode_bos_up(self):
+        snap = _FakeSnap(structure_event="bos_up", bias="bearish", confidence=0.30)
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_STRUCTURE)
+        # group key ignores bias entirely in structure mode
+        assert label == "bos_up"
+        assert sign == +1
+
+    def test_structure_mode_choch_down(self):
+        snap = _FakeSnap(structure_event="choch_down")
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_STRUCTURE)
+        assert label == "choch_down"
+        assert sign == -1
+
+    def test_structure_mode_none_no_direction(self):
+        snap = _FakeSnap(structure_event="none")
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_STRUCTURE)
+        assert label == "none"
+        assert sign == 0
+
+    def test_sweep_mode_low_is_long_bias(self):
+        snap = _FakeSnap(recent_sweep_direction=+1)
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_SWEEP)
+        assert label == "sweep_low_fade"
+        assert sign == +1
+
+    def test_sweep_mode_high_is_short_bias(self):
+        snap = _FakeSnap(recent_sweep_direction=-1)
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_SWEEP)
+        assert label == "sweep_high_fade"
+        assert sign == -1
+
+    def test_sweep_mode_no_sweep_no_direction(self):
+        snap = _FakeSnap(recent_sweep_direction=None)
+        label, sign = _group_key_for(snap, group_by=GROUP_BY_SWEEP)
+        assert label == "no_sweep"
+        assert sign == 0
+
+
+# ────────────────── verdict aggregation by group_by mode ──────────────────
+
+
+class TestVerdictPerSymbolWithGroupBy:
+    def test_structure_mode_combines_bos_groups(self):
+        result = SymbolResult(symbol="MGC")
+        # bos_up: 20 samples, 13 wins fwd_1 (65 % WR)
+        # bos_down: 20 samples, 13 wins fwd_1 (65 % WR)
+        # → combined 40 samples, 26 wins, 65 % → SIGNAL
+        g_up = BiasGroupStats(label="bos_up")
+        g_up.count = 20; g_up.wins_1 = 13
+        g_dn = BiasGroupStats(label="bos_down")
+        g_dn.count = 20; g_dn.wins_1 = 13
+        result.groups["bos_up"] = g_up
+        result.groups["bos_down"] = g_dn
+        assert _verdict_per_symbol(result, group_by=GROUP_BY_STRUCTURE) == "SIGNAL"
+
+    def test_sweep_mode_combines_sweep_groups(self):
+        result = SymbolResult(symbol="MGC")
+        # Combined 40 samples, 22 wins (55 %) → SIGNAL boundary
+        g_lo = BiasGroupStats(label="sweep_low_fade")
+        g_lo.count = 20; g_lo.wins_1 = 11
+        g_hi = BiasGroupStats(label="sweep_high_fade")
+        g_hi.count = 20; g_hi.wins_1 = 11
+        result.groups["sweep_low_fade"] = g_lo
+        result.groups["sweep_high_fade"] = g_hi
+        assert _verdict_per_symbol(result, group_by=GROUP_BY_SWEEP) == "SIGNAL"
+
+    def test_structure_mode_ignores_bias_buckets(self):
+        """If structure groups are empty but bias buckets aren't, structure-
+        mode verdict must be INSUFFICIENT_N (it doesn't peek at bias buckets)."""
+        result = SymbolResult(symbol="MGC")
+        result.groups["bullish_strong"] = _grp("bullish_strong", count=40, wins_1=40)
+        assert _verdict_per_symbol(result, group_by=GROUP_BY_STRUCTURE) == "INSUFFICIENT_N"
 
 
 # ────────────────── verdict aggregation ──────────────────

@@ -141,6 +141,44 @@ def _bias_dir(bias: str) -> int:
 # ─────────────────────────── core walk ──────────────────────────
 
 
+# Group-by modes — selects which snapshot field(s) define the bucket.
+GROUP_BY_BIAS_BUCKET = "bias_bucket"     # default: bias × confidence bucket
+GROUP_BY_STRUCTURE = "structure"         # snap.structure_event alone (bos_up / bos_down / choch_up / choch_down / none)
+GROUP_BY_SWEEP = "sweep"                 # snap.recent_sweep_direction alone (sweep_low / sweep_high / no_sweep)
+
+
+def _group_key_for(snap: Any, *, group_by: str) -> Tuple[str, int]:
+    """Return (group_label, expected_sign).
+
+    expected_sign is +1 / -1 / 0 — the direction in which a predictive
+    primitive WOULD point.  walk_symbol uses this to compute sign-agreement
+    WR against the realised forward return.  expected_sign == 0 means
+    "no directional thesis" (e.g. the structure_event=='none' bucket) and
+    win counts stay at 0 for that group.
+    """
+    if group_by == GROUP_BY_STRUCTURE:
+        ev = snap.structure_event
+        if ev == "bos_up":
+            return "bos_up", +1
+        if ev == "bos_down":
+            return "bos_down", -1
+        if ev == "choch_up":
+            return "choch_up", +1
+        if ev == "choch_down":
+            return "choch_down", -1
+        return "none", 0
+    if group_by == GROUP_BY_SWEEP:
+        d = snap.recent_sweep_direction
+        if d == +1:
+            return "sweep_low_fade", +1  # liquidity sweep below swing low → long bias
+        if d == -1:
+            return "sweep_high_fade", -1  # liquidity sweep above swing high → short bias
+        return "no_sweep", 0
+    # Default: bias × confidence bucket (the brain's composite scoring)
+    bucket = _bucket_for(snap.confidence)
+    return f"{snap.bias}_{bucket}", _bias_dir(snap.bias)
+
+
 def walk_symbol(
     symbol: str,
     bars: Sequence[CandleBar],
@@ -148,6 +186,7 @@ def walk_symbol(
     window: int,
     warmup_bars: int,
     swing_lookback: int,
+    group_by: str = GROUP_BY_BIAS_BUCKET,
 ) -> SymbolResult:
     """Walk bars chronologically, build snapshots, accumulate forward-return stats.
 
@@ -155,6 +194,11 @@ def walk_symbol(
     Forward returns are bars[i+k].close - bars[i].close (in points) for
     k ∈ {1, 3, 6}.  Snapshots at the tail of the series with insufficient
     forward bars are skipped.
+
+    ``group_by`` selects the grouping dimension:
+      * ``"bias_bucket"`` — composite brain bias × confidence (default)
+      * ``"structure"``   — snap.structure_event only
+      * ``"sweep"``       — snap.recent_sweep_direction only
     """
     result = SymbolResult(symbol=symbol)
     n = len(bars)
@@ -176,22 +220,18 @@ def walk_symbol(
         fwd_3 = bars[i + 3].close - cur_close
         fwd_6 = bars[i + 6].close - cur_close
 
-        bias_dir = _bias_dir(snap.bias)
-        bucket = _bucket_for(snap.confidence)
-        group_key = f"{snap.bias}_{bucket}"
-        grp = result.groups.setdefault(group_key, BiasGroupStats(label=group_key))
+        group_label, expected_sign = _group_key_for(snap, group_by=group_by)
+        grp = result.groups.setdefault(group_label, BiasGroupStats(label=group_label))
         grp.count += 1
         grp.fwd_sum_1 += fwd_1
         grp.fwd_sum_3 += fwd_3
         grp.fwd_sum_6 += fwd_6
-        # Sign-agreement only meaningful when bias_dir != 0; for neutral we
-        # treat any forward direction as a "win" only if return == 0 (rare).
-        if bias_dir != 0:
-            if bias_dir * fwd_1 > 0:
+        if expected_sign != 0:
+            if expected_sign * fwd_1 > 0:
                 grp.wins_1 += 1
-            if bias_dir * fwd_3 > 0:
+            if expected_sign * fwd_3 > 0:
                 grp.wins_3 += 1
-            if bias_dir * fwd_6 > 0:
+            if expected_sign * fwd_6 > 0:
                 grp.wins_6 += 1
 
     return result
@@ -228,21 +268,37 @@ def _format_table(symbol: str, result: SymbolResult) -> str:
     return "\n".join(rows)
 
 
-def _verdict_per_symbol(result: SymbolResult, *, min_n: int = 30) -> str:
-    """Return per-symbol verdict: SIGNAL / WEAK / NONE based on the most-
-    confident (bullish_strong + bearish_strong) buckets' sign-agreement WR.
+def _verdict_per_symbol(
+    result: SymbolResult, *, min_n: int = 30, group_by: str = GROUP_BY_BIAS_BUCKET
+) -> str:
+    """Return per-symbol verdict: SIGNAL / WEAK / NONE / INSUFFICIENT_N.
 
-    Need at least ``min_n`` samples in the combined strong-bucket pool to
-    avoid noise-driven false positives.
+    For each grouping mode, picks the most-directional bucket combinations
+    (or the union of all directional buckets) and computes combined
+    sign-agreement WR across the three horizons.
+
+    Threshold: ≥ ``min_n`` samples in the combined pool to avoid
+    noise-driven false positives.
     """
-    bull = result.groups.get("bullish_strong", BiasGroupStats(label="bullish_strong"))
-    bear = result.groups.get("bearish_strong", BiasGroupStats(label="bearish_strong"))
-    combined_n = bull.count + bear.count
+    if group_by == GROUP_BY_STRUCTURE:
+        # Combine BoS_UP + BoS_DOWN + CHoCH_UP + CHoCH_DOWN groups.
+        directional_keys = ("bos_up", "bos_down", "choch_up", "choch_down")
+    elif group_by == GROUP_BY_SWEEP:
+        directional_keys = ("sweep_low_fade", "sweep_high_fade")
+    else:
+        directional_keys = ("bullish_strong", "bearish_strong")
+
+    pool = [
+        result.groups[k]
+        for k in directional_keys
+        if k in result.groups and result.groups[k].count > 0
+    ]
+    combined_n = sum(g.count for g in pool)
     if combined_n < min_n:
         return "INSUFFICIENT_N"
-    # Combine WRs weighted by count.
+
     def _combined_wr(w_attr: str) -> float:
-        wins = getattr(bull, w_attr) + getattr(bear, w_attr)
+        wins = sum(getattr(g, w_attr) for g in pool)
         return 100.0 * wins / combined_n if combined_n else 0.0
 
     best_wr = max(_combined_wr("wins_1"), _combined_wr("wins_3"), _combined_wr("wins_6"))
@@ -276,6 +332,17 @@ def main() -> int:
     p.add_argument("--window", type=int, default=200, help="Rolling window for snapshot pipeline")
     p.add_argument("--warmup-bars", type=int, default=50, help="Bars to skip before first snapshot")
     p.add_argument("--swing-lookback", type=int, default=3)
+    p.add_argument(
+        "--group-by",
+        choices=[GROUP_BY_BIAS_BUCKET, GROUP_BY_STRUCTURE, GROUP_BY_SWEEP],
+        default=GROUP_BY_BIAS_BUCKET,
+        help=(
+            "Grouping mode: 'bias_bucket' tests the composite brain bias, "
+            "'structure' isolates BoS/CHoCH events, 'sweep' isolates "
+            "liquidity-sweep direction.  Use the latter two to validate "
+            "individual primitives in isolation."
+        ),
+    )
     p.add_argument("--json", action="store_true")
     args = p.parse_args()
 
@@ -315,8 +382,11 @@ def main() -> int:
             window=args.window,
             warmup_bars=args.warmup_bars,
             swing_lookback=args.swing_lookback,
+            group_by=args.group_by,
         )
-        per_symbol_verdict[sym] = _verdict_per_symbol(results[sym])
+        per_symbol_verdict[sym] = _verdict_per_symbol(
+            results[sym], group_by=args.group_by
+        )
 
     overall = _overall_verdict(per_symbol_verdict)
 
@@ -330,6 +400,7 @@ def main() -> int:
                 "window": args.window,
                 "warmup_bars": args.warmup_bars,
                 "swing_lookback": args.swing_lookback,
+                "group_by": args.group_by,
             },
             "symbols": [],
         }
@@ -362,7 +433,10 @@ def main() -> int:
         print("PA/SMC synthesis engine — bias signal predictive-power probe")
         print("=" * 64)
         print(f"  range: {args.since or '(all)'} → {args.until or '(all)'}")
-        print(f"  window={args.window} warmup={args.warmup_bars} swing_lb={args.swing_lookback}")
+        print(
+            f"  window={args.window} warmup={args.warmup_bars} "
+            f"swing_lb={args.swing_lookback} group_by={args.group_by}"
+        )
         for sym in symbols:
             if sym in results:
                 print(_format_table(sym, results[sym]))

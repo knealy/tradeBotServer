@@ -86,18 +86,44 @@ with the upward-drift bias of these futures).
 entry.  Per-bucket forward-return tables and per-symbol verdicts in
 ``docs/perf/_probe_brain_predictive_power/baseline_9m.json``.
 
-**v2 design directions to evaluate (when work resumes)**:
-1. **Asymmetric / regime-aware weights.** Trust bullish bias signals (they confirm the upward
-   drift); treat bearish bias as a CONTRARIAN read.  Probe-confirmable: re-run probe with the
-   bearish-side WR inverted.  Quick first read on the v1 data: MGC bearish strong inverted →
-   WR 54.4%, MNQ bearish inverted → 51.6%, MES bearish inverted → 53.6%.  Marginal lift, not
-   enough to pass the 55% bar.
-2. **De-emphasise BoS, emphasise earlier signals.** Liquidity sweeps + CHoCH are by definition
-   earlier in the structural sequence than BoS (BoS is the CONFIRMATION; sweeps are the
-   ANTICIPATORY signal).  Tune weights to prefer the early-signal primitives.
-3. **Drop composite bias entirely.** The brain becomes an EVENTS publisher (snapshot has only
-   structural facts, no aggregate label).  Consuming strategies build their own scoring.  This
-   is more defensible — strategies can iterate scoring without round-tripping through the brain.
+**v2 design directions evaluated (2026-06-12 follow-up)**:
+
+The composite-bias probe is supplemented by **per-primitive isolation probes**
+(``--group-by structure`` and ``--group-by sweep`` modes added to
+``scripts/probe_brain_predictive_power.py``).  Per-primitive results:
+
+| Primitive | Cross-symbol WR_6 | Verdict |
+| -- | -- | -- |
+| BoS_UP | 49 - 52 % | Noise / lagging |
+| BoS_DOWN | 45 - 47 % | **Anti-predictive** |
+| CHoCH_UP | 50 - 51 % | Noise |
+| CHoCH_DOWN | 47 - 49 % | Noise |
+| **sweep_low_fade** (LONG) | **51.7 - 52.9 %** | **Marginal LONG-only signal** |
+| sweep_high_fade (SHORT) | 45.8 - 49.7 % | Noise / anti-predictive |
+
+**Headline finding**: only the LONG side of the liquidity sweep mechanic has
+consistent cross-symbol predictive lift (~52% WR).  The SHORT side does NOT
+work.  This is the SAME asymmetry observed in the prior-day RTH H/L sweep
+probe earlier today and is fully consistent with these futures' structural
+upward-drift bias.
+
+1. ~~Asymmetric / regime-aware weights.~~ Probe-tested via per-primitive
+   isolation — BoS/CHoCH have no isolated signal in either direction, so
+   re-weighting them won't help.
+2. ~~De-emphasise BoS, emphasise earlier signals.~~ Probe-tested — CHoCH +
+   sweeps individually don't pass the 55% bar either, even at the strongest
+   bucket.
+3. **Drop composite bias entirely.** Confirmed as the right direction.  v2
+   brain becomes an EVENTS publisher: snapshot exports STRUCTURAL FACTS
+   (active levels, recent sweep, structure event), but NO aggregate label.
+   Consuming strategies build their own scoring.
+
+**Sharper v2 recommendation**: the brain's headline output should be a
+``LiquiditySweepDetectedEvent`` with ``side="long"`` (no short side — the
+data says it doesn't work).  Strategies (MRR first) consume it as a
+confluence boost.  Standalone "sweep-low-fade-LONG" strategy on its own
+(52% WR at 1.5R/1.0SL) is marginally profitable but unstable; the value is
+as a confluence filter on top of MRR's existing edge.
 
 **What the v1 work proves and what we keep**: the infrastructure is sound (snapshots built
 monotonically per bar, JSON round-trip, look-ahead-safe by construction, thread-safe queries).
