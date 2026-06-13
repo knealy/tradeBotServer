@@ -2999,11 +2999,25 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 else:
                     account_id = str(trading_bot.selected_account)
             
-            # Get time period from query (default: 24 hours)
-            # Handle None request (when called from WebSocket broadcast loop)
+            # Time window. Accepts:
+            #   - period=N         (hours, legacy default)
+            #   - period_days=N    (days; converted to hours)
+            #   - since=ISO        (explicit start; overrides period*)
+            # Handle None request (when called from WebSocket broadcast loop).
             period_hours = 24
+            since_iso = None
             if request and hasattr(request, 'query'):
-                period_hours = int(request.query.get('period', 24))
+                try:
+                    period_hours = int(request.query.get('period', 24))
+                except (TypeError, ValueError):
+                    period_hours = 24
+                try:
+                    period_days_q = int(request.query.get('period_days', 0))
+                except (TypeError, ValueError):
+                    period_days_q = 0
+                if period_days_q > 0:
+                    period_hours = period_days_q * 24
+                since_iso = request.query.get('since') or None
             
             # Get current account state
             account_state_resp = await handle_account_state(None)
@@ -3022,7 +3036,17 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             if hasattr(trading_bot, 'database') and trading_bot.database:
                 try:
                     from datetime import datetime, timedelta, timezone
-                    start_time = datetime.now(timezone.utc) - timedelta(hours=period_hours)
+                    if since_iso:
+                        try:
+                            start_time = datetime.fromisoformat(
+                                since_iso.replace('Z', '+00:00')
+                            )
+                            if start_time.tzinfo is None:
+                                start_time = start_time.replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError):
+                            start_time = datetime.now(timezone.utc) - timedelta(hours=period_hours)
+                    else:
+                        start_time = datetime.now(timezone.utc) - timedelta(hours=period_hours)
                     
                     # Query trade history for realized P&L over time
                     with trading_bot.database.get_connection() as conn:
@@ -3106,7 +3130,13 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     
     # Performance metrics endpoint
     async def handle_performance_metrics(request):
-        """Get comprehensive performance metrics."""
+        """Get comprehensive performance metrics.
+
+        Window selection (in priority order):
+          - ?since=YYYY-MM-DD[&until=YYYY-MM-DD]   — explicit ISO range
+          - ?period=N                              — last N days (0 = current trading session/today)
+          - default                                — current trading session
+        """
         try:
             account_id = None
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
@@ -3114,12 +3144,30 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     account_id = trading_bot.selected_account.get('id')
                 else:
                     account_id = str(trading_bot.selected_account)
-            
-            # Get period from query (default: 30 days)
-            # Handle None request (when called from WebSocket broadcast loop)
-            period_days = 30
+
+            # Resolve window. period=0 means "current trading session" (legacy default behavior).
+            # Handle None request (called from WebSocket broadcast loop with no query).
+            period_days = 0
+            since_str = None
+            until_str = None
             if request and hasattr(request, 'query'):
-                period_days = int(request.query.get('period', 30))
+                try:
+                    period_days = int(request.query.get('period', 0))
+                except (TypeError, ValueError):
+                    period_days = 0
+                since_str = request.query.get('since') or None
+                until_str = request.query.get('until') or None
+
+            # Build trades_args for parser._handle_trades([start_date, end_date])
+            trades_args: List[str] = []
+            if since_str:
+                trades_args.append(since_str)
+                if until_str:
+                    trades_args.append(until_str)
+            elif period_days and period_days > 0:
+                from datetime import datetime, timedelta, timezone
+                start_dt = datetime.now(timezone.utc) - timedelta(days=period_days)
+                trades_args.append(start_dt.isoformat())
             
             # Get current account state
             account_state_resp = await handle_account_state(None)
@@ -3182,9 +3230,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 from core.cli_command_parser import CLICommandParser
                 parser = CLICommandParser(trading_bot)
                 
-                # Execute 'trades' command (uses current trading session by default)
-                # This will consolidate orders into trades and calculate statistics
-                trades_result = await parser._handle_trades([])
+                # Execute 'trades' command. trades_args is empty for the current session,
+                # or [start_iso] / [start_iso, end_iso] when the GUI requests a longer window.
+                trades_result = await parser._handle_trades(trades_args)
                 
                 if trades_result and 'statistics' in trades_result:
                     stats = trades_result['statistics']
@@ -3613,13 +3661,26 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             if not account_id:
                 return web.json_response({'trades': [], 'error': 'No account selected'})
-            
-            # Get date range from query params (optional)
+
+            # Date range. Accepts:
+            #   - start_date / end_date  (ISO or m/d/y, parsed by _handle_trades)
+            #   - since / until          (alias for start_date / end_date)
+            #   - period=N (days)        (last N days; ignored if since/start_date given)
             start_date = None
             end_date = None
             if request and hasattr(request, 'query'):
-                start_date = request.query.get('start_date')
-                end_date = request.query.get('end_date')
+                start_date = request.query.get('start_date') or request.query.get('since')
+                end_date = request.query.get('end_date') or request.query.get('until')
+                if not start_date:
+                    try:
+                        period_days = int(request.query.get('period', 0))
+                    except (TypeError, ValueError):
+                        period_days = 0
+                    if period_days > 0:
+                        from datetime import datetime, timedelta, timezone
+                        start_date = (
+                            datetime.now(timezone.utc) - timedelta(days=period_days)
+                        ).isoformat()
             
             # Get order history
             from core.cli_command_parser import CLICommandParser

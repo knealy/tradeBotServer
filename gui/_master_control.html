@@ -3,42 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <meta id="tb-config" data-server-port="{{SERVER_PORT}}" data-symbol="{{SYMBOL}}" data-timeframe="{{TIMEFRAME}}">
     <title>Master — Chart</title>
     <style>
-        /* Default theme — graphite · linen · muted moss. Low-saturation, museum-calm. (session Theme pop-up can override) */
+        /* Warm beige / brown + dusty blue — crisp contrast (session Theme pop-up can override) */
         :root {
-            /* Quietly dignified — soft graphite & linen with muted moss. Low-saturation, museum-calm. */
-            --bg-primary: #15171a;
-            --bg-secondary: #1b1e21;
-            --bg-tertiary: #23272b;
-            --text-primary: #e9e5dd;
-            --text-secondary: #8e8a82;
-            --border-color: #2c3034;
-            --accent-color: #8aa39b;
-            --positive-color: #9bb39a;
-            --negative-color: #b88a82;
-            --warning-color: #c9b387;
-            --chart-canvas-bg: #101214;
+            --bg-primary: #1c1814;
+            --bg-secondary: #2a241d;
+            --bg-tertiary: #3d352c;
+            --text-primary: #faf6f0;
+            --text-secondary: #c9b8a4;
+            --border-color: #6f5e4f;
+            --accent-color: #6a9fb8;
+            --positive-color: #7aab7f;
+            --negative-color: #c4877a;
+            --warning-color: #d4a84b;
+            --chart-canvas-bg: #000000;
             --font-size-base: 12px;
         }
-
         
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background:
-               radial-gradient(1200px 600px at 20% -10%, rgba(138, 163, 155, 0.05), transparent 60%),
-               radial-gradient(900px 500px at 110% 110%, rgba(201, 195, 180, 0.03), transparent 60%),
-                var(--bg-primary);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
             color: var(--text-primary);
             overflow-x: hidden;
             font-size: var(--font-size-base);
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
         }
         
         /* Single top bar: account strip … panel toggles … actions … WS / uptime */
@@ -1039,183 +1029,6 @@
             font-size: 9px !important;
             height: 22px !important;
         }
-
-        /* ============================================================
-         * ORGANIC MINIMAL REFINEMENT OVERLAY
-         * Preserves all classes/ids/layout. Refines chrome only.
-         * ============================================================ */
-        .status-value, .header-metric, .header-metric strong,
-        #chart-lastprice-countdown,
-        #legend-open, #legend-high, #legend-low, #legend-close, #legend-volume,
-        #legend-now, #legend-bar-date,
-        .chart-context-strip .strip-v, .strategy-card, td, th {
-            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-            font-feature-settings: 'tnum', 'zero';
-            letter-spacing: -0.01em;
-        }
-        .panel {
-            border-radius: 6px;
-            border-color: var(--border-color);
-            box-shadow:
-                inset 0 1px 0 rgba(255,240,220,0.02),
-                0 12px 32px -16px rgba(0,0,0,0.6),
-                0 2px 6px -2px rgba(0,0,0,0.35);
-            transition: border-color 200ms ease, box-shadow 250ms ease;
-        }
-        .panel:hover {
-            border-color: color-mix(in oklab, var(--border-color), var(--accent-color) 25%);
-        }
-        .panel.drag-over {
-            box-shadow: 0 0 0 1px var(--accent-color), 0 18px 40px -18px rgba(127,168,192,0.4);
-        }
-        .panel h2 {
-            font-family: 'Instrument Serif', Georgia, serif;
-            font-weight: 400;
-            font-size: 14px;
-            letter-spacing: 0.01em;
-            color: var(--text-primary);
-            padding: 10px 12px 8px;
-            margin-bottom: 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .panel h2::first-letter { color: var(--accent-color); }
-        .sub-section h3 {
-            font-family: 'Instrument Sans', sans-serif;
-            font-size: 9px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
-            color: var(--text-secondary);
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 6px;
-            margin-bottom: 8px;
-        }
-        .status-label {
-            font-size: 8px;
-            font-weight: 600;
-            letter-spacing: 0.14em;
-            color: var(--text-secondary);
-        }
-        .top-command-bar {
-            background:
-                linear-gradient(to bottom, rgba(255,240,220,0.015), transparent),
-                var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            backdrop-filter: blur(8px);
-            padding: 6px 14px;
-            min-height: 38px;
-        }
-        .chart-controls button, .customize-btn,
-        button.btn-primary, button.btn-buy, button.btn-sell,
-        button.btn-start, button.btn-stop, button.btn-danger {
-            border-radius: 5px;
-            font-family: 'Instrument Sans', sans-serif;
-            font-weight: 500;
-            letter-spacing: 0.02em;
-            transition: filter 180ms ease, transform 120ms ease, box-shadow 180ms ease;
-        }
-        .btn-primary {
-            background: var(--accent-color);
-            color: #0d0a07;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 12px -4px rgba(127,168,192,0.35);
-        }
-        .btn-buy   { background: var(--positive-color); color: #0d0a07; }
-        .btn-sell, .btn-danger { background: var(--negative-color); color: #0d0a07; }
-
-        .chart-controls select, .chart-controls input,
-        input[type="text"]:not([type="color"]), input[type="number"],
-        select, textarea {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            border-radius: 4px;
-            transition: border-color 160ms ease, box-shadow 160ms ease;
-        }
-        .chart-controls select:focus, .chart-controls input:focus,
-        input:focus, select:focus, textarea:focus {
-            outline: none;
-            border-color: var(--accent-color);
-            box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-color) 22%, transparent);
-        }
-        .strategy-card {
-            background:
-                linear-gradient(to bottom, rgba(255,240,220,0.018), transparent 60%),
-                var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            border-radius: 5px;
-            padding: 8px 10px;
-            font-size: 10px;
-        }
-        .chart-controls {
-            background: var(--bg-tertiary);
-            border-radius: 5px;
-            padding: 8px;
-        }
-        #chart-container {
-            border-radius: 6px;
-            box-shadow: inset 0 0 0 1px var(--border-color);
-        }
-        #chart-mount .tv-lightweight-charts {
-            border-color: transparent !important;
-            border-radius: 4px;
-        }
-        td, th {
-            border-color: var(--border-color) !important;
-            font-size: 11px !important;
-        }
-        tr:hover {
-            background: color-mix(in oklab, var(--accent-color) 6%, transparent);
-        }
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb {
-            background: color-mix(in oklab, var(--border-color) 80%, transparent);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
-        .status-value.positive {
-            color: var(--positive-color);
-            text-shadow: 0 0 18px color-mix(in oklab, var(--positive-color) 22%, transparent);
-        }
-        .status-value.negative {
-            color: var(--negative-color);
-            text-shadow: 0 0 18px color-mix(in oklab, var(--negative-color) 22%, transparent);
-        }
-        .widget-btn {
-            background: color-mix(in oklab, var(--bg-primary) 70%, transparent);
-            border: 1px solid var(--border-color);
-            border-radius: 5px;
-            backdrop-filter: blur(6px);
-        }
-        .connection-status::before {
-            content: '●';
-            margin-right: 4px;
-            color: var(--positive-color);
-            text-shadow: 0 0 8px var(--positive-color);
-        }
-        #theme-session-popout { border-radius: 10px; }
-        #theme-session-popout .theme-session-head {
-            font-family: 'Instrument Serif', Georgia, serif;
-            font-weight: 400;
-            font-size: 15px;
-        }
-        :focus-visible {
-            outline: 2px solid var(--accent-color);
-            outline-offset: 2px;
-            border-radius: 4px;
-        }
-        @keyframes panel-rise {
-            from { opacity: 0; transform: translateY(4px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-        .panel { animation: panel-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards; }
-        .panel:nth-child(1) { animation-delay: 0ms; }
-        .panel:nth-child(2) { animation-delay: 40ms; }
-        .panel:nth-child(3) { animation-delay: 80ms; }
-        .panel:nth-child(4) { animation-delay: 120ms; }
-        .panel:nth-child(5) { animation-delay: 160ms; }
-        .panel:nth-child(6) { animation-delay: 200ms; }
-
     </style>
 </head>
 <body>
@@ -1339,29 +1152,6 @@
                     <option value="auto" selected>Auto (API→file)</option>
                     <option value="api">API only</option>
                     <option value="databento">Databento file</option>
-                </select>
-                <label for="chart-range-select" style="font-size: 10px; color: #888; margin-left: 4px;">Range</label>
-                <select id="chart-range-select" onchange="onChartRangeChange()"
-                        title="How far back to load. Time-based ranges convert to bars using the current timeframe. Source cap (Bars) still applies; if the range exceeds the cap, the full cap is loaded and a toast notes the clamp."
-                        style="width: 116px; font-size: 10px;">
-                    <option value="auto" selected>Auto</option>
-                    <optgroup label="Time">
-                        <option value="1d">Last 1 day</option>
-                        <option value="3d">Last 3 days</option>
-                        <option value="1w">Last 1 week</option>
-                        <option value="2w">Last 2 weeks</option>
-                        <option value="1M">Last 1 month</option>
-                        <option value="3M">Last 3 months</option>
-                        <option value="6M">Last 6 months</option>
-                        <option value="1y">Last 1 year</option>
-                    </optgroup>
-                    <optgroup label="Bars">
-                        <option value="b500">500 bars</option>
-                        <option value="b1000">1000 bars</option>
-                        <option value="b2000">2000 bars</option>
-                        <option value="b5000">5000 bars</option>
-                        <option value="max">Max (source cap)</option>
-                    </optgroup>
                 </select>
                 <button class="btn-primary" onclick="refreshChart()">Refresh</button>
                 <button class="btn-primary" onclick="refreshAll()">Refresh All</button>
@@ -1619,26 +1409,11 @@
                 <span class="collapse-btn">−</span>
             </h2>
             <div class="panel-content">
-                <!-- Shared time-window selector — drives Performance Metrics, Equity Curve, and Trading Results. -->
-                <div style="display: flex; align-items: center; gap: 6px; padding: 6px 12px 4px 12px; flex-wrap: wrap;">
-                    <span style="font-size: 9px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Window:</span>
-                    <select id="perf-window-select" onchange="onPerfWindowChange()"
-                            title="Time window applied to Performance Metrics, Equity Curve, and Trading Results"
-                            style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 3px 6px; border-radius: 3px; font-size: 10px;">
-                        <option value="0">Today (session)</option>
-                        <option value="7">7 days</option>
-                        <option value="30" selected>30 days</option>
-                        <option value="90">90 days</option>
-                        <option value="365">1 year</option>
-                        <option value="3650">All</option>
-                    </select>
-                    <span id="perf-window-echo" style="font-size: 9px; color: var(--text-secondary); margin-left: auto;">30 days</span>
-                </div>
                 <div id="performance-metrics-widget" style="padding: 12px;">
                     <div style="color: var(--text-secondary); text-align: center;">Loading metrics...</div>
                 </div>
                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
-                    <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Equity Curve (<span id="pnl-chart-window-label">30d</span>)</div>
+                    <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Equity Curve (24h)</div>
                     <div id="pnl-chart" style="min-height: 60px; background: var(--bg-tertiary); border-radius: 4px; padding: 8px;">
                         <div style="color: var(--text-secondary); text-align: center; font-size: 10px;">Loading...</div>
                     </div>
@@ -1678,17 +1453,6 @@
                         <option value="all">All Sides</option>
                         <option value="LONG">LONG</option>
                         <option value="SHORT">SHORT</option>
-                    </select>
-                    <span style="font-size: 9px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Window:</span>
-                    <select id="trades-window-select" onchange="onPerfWindowChange(this.value)"
-                            title="Time window — synced with Performance panel"
-                            style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-size: 11px;">
-                        <option value="0">Today</option>
-                        <option value="7">7d</option>
-                        <option value="30" selected>30d</option>
-                        <option value="90">90d</option>
-                        <option value="365">1y</option>
-                        <option value="3650">All</option>
                     </select>
                     <button onclick="exportTradesCSV()" style="background: var(--accent-color); border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Export CSV</button>
                     <button onclick="refreshTradesTable()" style="background: var(--positive-color); border: none; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;">Refresh</button>
@@ -1750,69 +1514,6 @@
         function initialRecentVisibleBarCount(totalBars) {
             if (totalBars <= 0) return 0;
             return Math.min(totalBars, CHART_INITIAL_VISIBLE_MAX);
-        }
-
-        /**
-         * User-facing chart range presets. Time-based entries convert to bar counts via the
-         * current timeframe; bar-count entries pass through directly. The active source cap
-         * from `historyReloadBarLimit()` is always respected (clamps when exceeded).
-         */
-        const CHART_RANGE_LS_KEY = 'master-chart-range';
-        const CHART_RANGE_PRESETS = {
-            'auto':  null,
-            '1d':    { kind: 'time', seconds: 86400,        label: '1 day' },
-            '3d':    { kind: 'time', seconds: 86400 * 3,    label: '3 days' },
-            '1w':    { kind: 'time', seconds: 86400 * 7,    label: '1 week' },
-            '2w':    { kind: 'time', seconds: 86400 * 14,   label: '2 weeks' },
-            '1M':    { kind: 'time', seconds: 86400 * 30,   label: '1 month' },
-            '3M':    { kind: 'time', seconds: 86400 * 90,   label: '3 months' },
-            '6M':    { kind: 'time', seconds: 86400 * 180,  label: '6 months' },
-            '1y':    { kind: 'time', seconds: 86400 * 365,  label: '1 year' },
-            'b500':  { kind: 'bars', count: 500,            label: '500 bars' },
-            'b1000': { kind: 'bars', count: 1000,           label: '1000 bars' },
-            'b2000': { kind: 'bars', count: 2000,           label: '2000 bars' },
-            'b5000': { kind: 'bars', count: 5000,           label: '5000 bars' },
-            'max':   { kind: 'max',                          label: 'Max (source cap)' },
-        };
-        function getChartRangeKey() {
-            const sel = document.getElementById('chart-range-select');
-            const v = sel ? sel.value : null;
-            if (v && (v === 'auto' || CHART_RANGE_PRESETS[v] !== undefined)) return v;
-            const stored = localStorage.getItem(CHART_RANGE_LS_KEY);
-            if (stored && (stored === 'auto' || CHART_RANGE_PRESETS[stored] !== undefined)) return stored;
-            return 'auto';
-        }
-        /** Returns { limit, requested, capped } so callers can warn when the source cap clamped the request. */
-        function chartRangeBarLimit(rangeKey, tf, histSrc, symbol) {
-            const cap = historyReloadBarLimit(histSrc, symbol);
-            const preset = CHART_RANGE_PRESETS[rangeKey];
-            if (rangeKey === 'auto' || !preset) {
-                return { limit: cap, requested: cap, capped: false, source: 'auto' };
-            }
-            let requested;
-            if (preset.kind === 'time') {
-                const tfSec = timeframeToSeconds(tf) || 60;
-                requested = Math.max(1, Math.ceil(preset.seconds / tfSec));
-            } else if (preset.kind === 'bars') {
-                requested = preset.count;
-            } else if (preset.kind === 'max') {
-                requested = cap;
-            } else {
-                requested = cap;
-            }
-            const limit = Math.min(cap, requested);
-            return { limit, requested, capped: requested > cap, source: preset.kind };
-        }
-        /** When true, loadChartData fits the full loaded set into view instead of clamping to 200. */
-        function chartRangeFitsAll(rangeKey) {
-            return rangeKey && rangeKey !== 'auto' && CHART_RANGE_PRESETS[rangeKey];
-        }
-        function onChartRangeChange() {
-            const sel = document.getElementById('chart-range-select');
-            if (sel) {
-                try { localStorage.setItem(CHART_RANGE_LS_KEY, sel.value); } catch (e) { /* ignore */ }
-            }
-            if (typeof refreshChart === 'function') refreshChart();
         }
 
         /** Apply CSS variables from GET /api/chart/theme/page (template + optional config/page_theme.json). */
@@ -1884,62 +1585,8 @@
             }
         }
 
-        /** Reference swatches from user palettes (default graphite/linen/moss, beige+blue, earth tones, khaki/almond, apricot rose, modern neutral, boho, summer navy, lavender). */
+        /** Reference swatches from user palettes (earth tones, khaki/almond, apricot rose, modern neutral, boho, summer navy). */
         const MASTER_THEME_PRESETS = [
-            {
-                id: 'graphite-linen-moss',
-                name: 'Graphite · linen · moss (default)',
-                swatches: ['#15171a', '#23272b', '#8aa39b', '#c9b387', '#b88a82'],
-                vars: {
-                    '--bg-primary': '#15171a',
-                    '--bg-secondary': '#1b1e21',
-                    '--bg-tertiary': '#23272b',
-                    '--text-primary': '#e9e5dd',
-                    '--text-secondary': '#8e8a82',
-                    '--border-color': '#2c3034',
-                    '--accent-color': '#8aa39b',
-                    '--positive-color': '#9bb39a',
-                    '--negative-color': '#b88a82',
-                    '--warning-color': '#c9b387',
-                    '--chart-canvas-bg': '#101214',
-                },
-                chart: {
-                    layoutBg: '#101214',
-                    textColor: '#e9e5dd',
-                    crosshair: '#8e8a82',
-                    scaleBorder: '#2c3034',
-                    candleUp: '#9bb39a',
-                    candleDown: '#b88a82',
-                    volume: '#3a4047',
-                },
-            },
-            {
-                id: 'beige-dusty-blue',
-                name: 'Beige · dusty blue',
-                swatches: ['#1c1814', '#3d352c', '#6a9fb8', '#7aab7f', '#c4877a'],
-                vars: {
-                    '--bg-primary': '#1c1814',
-                    '--bg-secondary': '#2a241d',
-                    '--bg-tertiary': '#3d352c',
-                    '--text-primary': '#faf6f0',
-                    '--text-secondary': '#c9b8a4',
-                    '--border-color': '#6f5e4f',
-                    '--accent-color': '#6a9fb8',
-                    '--positive-color': '#7aab7f',
-                    '--negative-color': '#c4877a',
-                    '--warning-color': '#d4a84b',
-                    '--chart-canvas-bg': '#000000',
-                },
-                chart: {
-                    layoutBg: '#000000',
-                    textColor: '#f2ebe3',
-                    crosshair: '#a89988',
-                    scaleBorder: '#8b7765',
-                    candleUp: '#7da882',
-                    candleDown: '#bf7a6e',
-                    volume: '#5a6d78',
-                },
-            },
             {
                 id: 'earth-grid',
                 name: 'Earth grid',
@@ -3017,62 +2664,6 @@ Speed Trading Shortcuts:
         
         let lastMetricsLoadTime = 0;
         let metricsLoading = false;
-        // ===== Shared time window for Performance / Equity Curve / Trading Results =====
-        // Days. 0 = current trading session (default backend behavior). Persisted in localStorage.
-        const PERF_WINDOW_LS_KEY = 'master-perf-window-days';
-        function getPerfWindowDays() {
-            const v = parseInt(localStorage.getItem(PERF_WINDOW_LS_KEY), 10);
-            return Number.isFinite(v) && v >= 0 ? v : 30;
-        }
-        function setPerfWindowDays(days) {
-            const d = Math.max(0, parseInt(days, 10) || 0);
-            localStorage.setItem(PERF_WINDOW_LS_KEY, String(d));
-            return d;
-        }
-        function perfWindowQueryParam() {
-            const d = getPerfWindowDays();
-            return d > 0 ? `?period=${d}` : '';
-        }
-        function perfWindowLabel() {
-            const d = getPerfWindowDays();
-            if (d === 0) return 'Today';
-            if (d === 1) return '1d';
-            if (d % 365 === 0) return (d / 365) + 'y';
-            if (d % 30 === 0 && d <= 90) return d + 'd';
-            if (d >= 365) return Math.round(d / 365) + 'y';
-            return d + 'd';
-        }
-        function syncPerfWindowControls() {
-            const d = String(getPerfWindowDays());
-            const main = document.getElementById('perf-window-select');
-            if (main && main.value !== d) main.value = d;
-            const mirror = document.getElementById('trades-window-select');
-            if (mirror && mirror.value !== d) mirror.value = d;
-            const echo = document.getElementById('perf-window-echo');
-            if (echo) {
-                const dn = getPerfWindowDays();
-                echo.textContent = (dn === 0) ? 'Today (session)'
-                    : (dn === 1) ? '1 day'
-                    : (dn % 365 === 0 ? (dn / 365) + ' year' + (dn === 365 ? '' : 's') : dn + ' days');
-            }
-            const eqLabel = document.getElementById('pnl-chart-window-label');
-            if (eqLabel) eqLabel.textContent = perfWindowLabel();
-        }
-        function onPerfWindowChange(forceVal) {
-            const v = (typeof forceVal === 'string' || typeof forceVal === 'number')
-                ? forceVal
-                : (document.getElementById('perf-window-select')?.value);
-            setPerfWindowDays(v);
-            syncPerfWindowControls();
-            // Bypass throttles so the user gets immediate feedback after changing window.
-            lastMetricsLoadTime = 0;
-            lastPnlHistoryLoadTime = 0;
-            lastTradesJson = '';
-            loadPerformanceMetrics();
-            loadPnlHistory();
-            loadTradesTable();
-        }
-
         async function loadPerformanceMetrics() {
             if (metricsLoading) return;
             
@@ -3084,7 +2675,7 @@ Speed Trading Shortcuts:
             lastMetricsLoadTime = now;
 
             try {
-                const response = await fetch(`${BASE_URL}/api/chart/performance/metrics${perfWindowQueryParam()}`);
+                const response = await fetch(`${BASE_URL}/api/chart/performance/metrics`);
                 if (!response.ok) {
                     console.error('Performance metrics response not OK:', response.status, response.statusText);
                     return;
@@ -3117,11 +2708,7 @@ Speed Trading Shortcuts:
             lastPnlHistoryLoadTime = now;
 
             try {
-                // Equity curve uses days when the user has chosen a multi-day window;
-                // falls back to legacy 24-hour view when window = 0 (today/session).
-                const winDays = getPerfWindowDays();
-                const pnlQs = winDays > 0 ? `?period_days=${winDays}` : '?period=24';
-                const response = await fetch(`${BASE_URL}/api/chart/pnl/history${pnlQs}`);
+                const response = await fetch(`${BASE_URL}/api/chart/pnl/history?period=24`);
                 if (!response.ok) {
                     console.error('P&L history response not OK:', response.status, response.statusText);
                     return;
@@ -3232,7 +2819,7 @@ Speed Trading Shortcuts:
         let lastTradesJson = null;
         async function loadTradesTable() {
             try {
-                const response = await fetch(`${BASE_URL}/api/chart/trades${perfWindowQueryParam()}`);
+                const response = await fetch(`${BASE_URL}/api/chart/trades`);
                 if (!response.ok) {
                     console.error('Trades response not OK:', response.status, response.statusText);
                     return;
@@ -3588,8 +3175,6 @@ Speed Trading Shortcuts:
                 if (option12) option12.setAttribute('selected', 'selected');
             }
             
-            // Sync the shared time-window controls (Performance / Equity Curve / Trading Results) before first fetch.
-            syncPerfWindowControls();
             // Load performance metrics
             loadPerformanceMetrics();
             loadPnlHistory();
@@ -5089,16 +4674,7 @@ Speed Trading Shortcuts:
                 timeframeSelect.value = TIMEFRAME;
                 currentChartTimeframe = TIMEFRAME;
             }
-
-            // Restore persisted Range selection (defaults to 'auto').
-            const rangeSelect = document.getElementById('chart-range-select');
-            if (rangeSelect) {
-                const stored = localStorage.getItem(CHART_RANGE_LS_KEY);
-                if (stored && (stored === 'auto' || CHART_RANGE_PRESETS[stored] !== undefined)) {
-                    rangeSelect.value = stored;
-                }
-            }
-
+            
             loadChartData();
                 
             // Set up auto-refresh - FORCE 12x as default
@@ -5190,17 +4766,7 @@ Speed Trading Shortcuts:
                 const symbol = document.getElementById('chart-symbol-select')?.value || SYMBOL;
                 const timeframe = document.getElementById('chart-timeframe-select')?.value || '5m';
                 const histSrc = document.getElementById('chart-history-source')?.value || 'auto';
-                const rangeKey = getChartRangeKey();
-                const rangeInfo = chartRangeBarLimit(rangeKey, timeframe, histSrc, symbol);
-                const barLimit = rangeInfo.limit;
-                if (rangeInfo.capped && typeof showToast === 'function') {
-                    const preset = CHART_RANGE_PRESETS[rangeKey];
-                    showToast(
-                        `${preset?.label || rangeKey}: requested ${rangeInfo.requested} bars but '${histSrc}' source caps at ${rangeInfo.limit}. Switch to Databento for deeper history.`,
-                        'warning',
-                        5000
-                    );
-                }
+                const barLimit = historyReloadBarLimit(histSrc, symbol);
                 const q = new URLSearchParams({
                     symbol: String(symbol),
                     timeframe: String(timeframe),
@@ -5242,10 +4808,7 @@ Speed Trading Shortcuts:
                         const lastBar = bars[bars.length - 1];
                         window.__lastBarOpenSec = typeof lastBar.time === 'number' ? lastBar.time : null;
                         window.__lastBarClose = lastBar.close != null ? parseFloat(lastBar.close) : null;
-                        // When the user picked an explicit Range, fit the entire loaded set into view
-                        // (so the chosen 1w / 1M / Nbars window is fully visible, not clamped to last 200).
-                        const fitsAll = chartRangeFitsAll(rangeKey);
-                        const vis = fitsAll ? bars.length : initialRecentVisibleBarCount(bars.length);
+                        const vis = initialRecentVisibleBarCount(bars.length);
                         const firstVisibleBar = Math.max(0, bars.length - vis);
                         const firstBar = bars[firstVisibleBar];
                         chart.timeScale().setVisibleRange({
@@ -7033,7 +6596,7 @@ Speed Trading Shortcuts:
                     return;
                 }
                 if (kind === 'performance') {
-                    const response = await fetch(`${BASE_URL}/api/chart/performance/metrics${perfWindowQueryParam()}`);
+                    const response = await fetch(`${BASE_URL}/api/chart/performance/metrics`);
                     const data = await response.json();
                     if (data.error) {
                         body.innerHTML = '<div style="color:#f87171;">' + String(data.error) + '</div>';
@@ -7055,7 +6618,7 @@ Speed Trading Shortcuts:
                     return;
                 }
                 if (kind === 'tradeslog') {
-                    const response = await fetch(`${BASE_URL}/api/chart/trades${perfWindowQueryParam()}`);
+                    const response = await fetch(`${BASE_URL}/api/chart/trades`);
                     const data = await response.json();
                     const trades = (data && data.trades) ? data.trades.slice(0, 50) : [];
                     if (!trades.length) {
@@ -7175,8 +6738,6 @@ Speed Trading Shortcuts:
             closeMasterThemePopout,
             resetMasterSessionTheme,
             applyMasterThemePreset,
-            onPerfWindowChange,
-            onChartRangeChange,
         });
 })();
     </script>

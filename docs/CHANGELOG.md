@@ -7,6 +7,32 @@ changes runtime behavior or conventions adds an entry here AND updates
 ## [Unreleased]
 
 ### Added
+- **Master GUI — Chart Range selector (2026-06-12 PM)** —
+  New "Range" dropdown in the chart controls row (`gui/master_control.html`)
+  controls how far back / how many bars to load. Two `<optgroup>`s:
+  * **Time** — `Last 1 day / 3 days / 1 week / 2 weeks / 1 month / 3 months /
+    6 months / 1 year`. Time → bars converts via the current timeframe
+    (`ceil(seconds / tfSec)`).
+  * **Bars** — `500 / 1000 / 2000 / 5000` and `Max (source cap)`.
+
+  `Auto` (default) preserves existing behavior — server cap from
+  `historyReloadBarLimit(histSrc, symbol)` and most-recent 200 bars visible.
+  Any explicit Range fits the entire loaded set into view (instead of clamping
+  to `CHART_INITIAL_VISIBLE_MAX = 200`), so the user-picked window is fully
+  visible and they can pan within it.
+
+  When the requested span exceeds the active source cap (e.g. `Last 1 year` on
+  `API only` source = 105 120 wanted vs 900 cap), the request is clamped and a
+  `showToast(..., 'warning')` notes the clamp and recommends switching to the
+  Databento source for deeper history.
+
+  Selection persists in `localStorage` under key `master-chart-range`. The
+  handler (`onChartRangeChange`) is exposed on `window` for the inline
+  `onchange` attribute. Helpers (`CHART_RANGE_PRESETS`, `getChartRangeKey`,
+  `chartRangeBarLimit`, `chartRangeFitsAll`) live next to the existing
+  `historyReloadBarLimit` / `initialRecentVisibleBarCount` helpers and are
+  IIFE-scoped.
+
 - **v2 brain build + sweep_low_fade optimization + primitive combos probe (2026-06-12 PM)** —
   Three-phase delivery turning the v1 NO_SIGNAL finding into a data-driven v2.
 
