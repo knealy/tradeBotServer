@@ -236,7 +236,116 @@ class _FakeBroker:
 
 
 @pytest.mark.asyncio
+async def test_tick_no_reconnect_when_bar_path_still_fresh(setup, monkeypatch):
+    """Quote path stale but bar path fresh → NOT a zombie; no cancel/reconnect."""
+    monitor, hub, wd, clk = setup
+    monkeypatch.setattr(
+        "core.data_feed_watchdog.is_within_market_hours", lambda: True
+    )
+    clk.advance(20.0)
+    monitor.record_market_tick("MGC")
+    monitor.record_market_tick("MNQ")
+    clk.advance(75.0)  # quotes now stale
+    monitor.record_bar_activity("MGC")
+    monitor.record_bar_activity("MNQ")
+    await wd._tick()
+    assert hub.stops == 0
+    assert wd.reconnects_total == 0
+
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_cancel_when_bar_path_still_fresh(monkeypatch):
+    """Only cancel orders on symbols where BOTH paths are dead."""
+    monkeypatch.setenv("DATA_FEED_CANCEL_ON_STALENESS", "true")
+    monkeypatch.setattr(
+        "core.data_feed_watchdog.is_within_market_hours", lambda: True
+    )
+    clk = FakeClock(start=1000.0)
+    monitor = DataFeedHealthMonitor(
+        market_hub_max_silence_s=60.0,
+        startup_grace_s=10.0,
+        clock_mono=clk,
+    )
+    hub = FakeMarketHub()
+    registry = WorkingOrderRegistry()
+    registry.register(
+        order_id="ENTRY-MGC", account_id="acc-1", symbol="MGC",
+        side="BUY", strategy_name="mrr", oco_sibling_ids=[],
+    )
+    registry.register(
+        order_id="ENTRY-MNQ", account_id="acc-1", symbol="MNQ",
+        side="SELL", strategy_name="mrr", oco_sibling_ids=[],
+    )
+    broker = _FakeBroker()
+    wd = DataFeedWatchdog(
+        monitor=monitor,
+        market_hub_manager=hub,
+        broker_adapter=broker,
+        working_order_registry=registry,
+        subscribed_symbols_getter=lambda: list(hub._subscribed_symbols),
+        poll_interval_s=0.01,
+        reconnect_cooldown_s=60.0,
+        max_silence_s=60.0,
+        clock_mono=clk,
+    )
+    clk.advance(20.0)
+    monitor.record_market_tick("MGC")
+    monitor.record_market_tick("MNQ")
+    clk.advance(75.0)
+    # MGC fully dead; MNQ bar path still alive.
+    monitor.record_bar_activity("MNQ")
+    await wd._tick()
+
+    cancelled_ids = {c["order_id"] for c in broker.cancels}
+    assert cancelled_ids == {"ENTRY-MGC"}
+    assert registry.get("ENTRY-MNQ") is not None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_cancel_when_disabled_by_default(monkeypatch):
+    """Brackets stay on broker unless DATA_FEED_CANCEL_ON_STALENESS=true."""
+    monkeypatch.delenv("DATA_FEED_CANCEL_ON_STALENESS", raising=False)
+    monkeypatch.setattr(
+        "core.data_feed_watchdog.is_within_market_hours", lambda: True
+    )
+    clk = FakeClock(start=1000.0)
+    monitor = DataFeedHealthMonitor(
+        market_hub_max_silence_s=60.0,
+        startup_grace_s=10.0,
+        clock_mono=clk,
+    )
+    hub = FakeMarketHub()
+    registry = WorkingOrderRegistry()
+    registry.register(
+        order_id="ENTRY-1", account_id="acc-1", symbol="MGC",
+        side="BUY", strategy_name="mrr", oco_sibling_ids=[],
+    )
+    broker = _FakeBroker()
+    wd = DataFeedWatchdog(
+        monitor=monitor,
+        market_hub_manager=hub,
+        broker_adapter=broker,
+        working_order_registry=registry,
+        subscribed_symbols_getter=lambda: list(hub._subscribed_symbols),
+        poll_interval_s=0.01,
+        reconnect_cooldown_s=60.0,
+        max_silence_s=60.0,
+        clock_mono=clk,
+    )
+    clk.advance(20.0)
+    monitor.record_market_tick("MGC")
+    monitor.record_market_tick("MNQ")
+    clk.advance(75.0)
+    await wd._tick()
+
+    assert broker.cancels == []
+    assert registry.working_count() == 1
+    assert hub.stops == 1  # reconnect still happens
+
+
+@pytest.mark.asyncio
 async def test_watchdog_cancels_working_orders_before_reconnect(monkeypatch):
+    monkeypatch.setenv("DATA_FEED_CANCEL_ON_STALENESS", "true")
     monkeypatch.setattr(
         "core.data_feed_watchdog.is_within_market_hours", lambda: True
     )
@@ -272,7 +381,7 @@ async def test_watchdog_cancels_working_orders_before_reconnect(monkeypatch):
     clk.advance(20.0)  # past grace
     monitor.record_market_tick("MGC")
     monitor.record_market_tick("MNQ")
-    clk.advance(75.0)  # zombie threshold exceeded
+    clk.advance(75.0)  # both quote and bar paths stale (no bar activity recorded)
     await wd._tick()
 
     # Both entries + the one OCO sibling pair = 3 cancel requests.
@@ -321,3 +430,86 @@ async def test_watchdog_without_registry_does_not_cancel(monkeypatch):
 
     assert broker.cancels == []        # nothing to cancel
     assert hub.stops == 1              # reconnect still fired
+
+
+class _FakeDiscord:
+  def __init__(self) -> None:
+      self.enabled = True
+      self.alerts: list = []
+
+  async def send_data_feed_alert(self, **kwargs):
+      self.alerts.append(kwargs)
+      return True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_sends_discord_feed_down_alert(monkeypatch):
+    monkeypatch.setenv("DATA_FEED_DISCORD_ALERTS", "true")
+    monkeypatch.setenv("DATA_FEED_DISCORD_ALERT_COOLDOWN_S", "0")
+    monkeypatch.setattr(
+        "core.data_feed_watchdog.is_within_market_hours", lambda: True
+    )
+    clk = FakeClock(start=1000.0)
+    monitor = DataFeedHealthMonitor(
+        market_hub_max_silence_s=60.0,
+        startup_grace_s=10.0,
+        clock_mono=clk,
+    )
+    hub = FakeMarketHub()
+    hub._subscribed_symbols = {"MGC"}
+    discord = _FakeDiscord()
+    wd = DataFeedWatchdog(
+        monitor=monitor,
+        market_hub_manager=hub,
+        discord_notifier=discord,
+        account_name_getter=lambda: "prac-1",
+        subscribed_symbols_getter=lambda: list(hub._subscribed_symbols),
+        poll_interval_s=0.01,
+        reconnect_cooldown_s=60.0,
+        max_silence_s=60.0,
+        clock_mono=clk,
+    )
+    clk.advance(20.0)
+    monitor.record_market_tick("MGC")
+    clk.advance(75.0)
+    await wd._tick()
+
+    assert len(discord.alerts) == 1
+    assert discord.alerts[0]["status"] == "down"
+    assert discord.alerts[0]["symbol"] == "MGC"
+    assert wd._feed_alert_active is True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_sends_discord_recovered_alert(monkeypatch):
+    monkeypatch.setenv("DATA_FEED_DISCORD_ALERTS", "true")
+    monkeypatch.setattr(
+        "core.data_feed_watchdog.is_within_market_hours", lambda: True
+    )
+    clk = FakeClock(start=1000.0)
+    monitor = DataFeedHealthMonitor(
+        market_hub_max_silence_s=60.0,
+        startup_grace_s=10.0,
+        clock_mono=clk,
+    )
+    hub = FakeMarketHub()
+    hub._subscribed_symbols = {"MGC"}
+    discord = _FakeDiscord()
+    wd = DataFeedWatchdog(
+        monitor=monitor,
+        market_hub_manager=hub,
+        discord_notifier=discord,
+        subscribed_symbols_getter=lambda: list(hub._subscribed_symbols),
+        poll_interval_s=0.01,
+        reconnect_cooldown_s=60.0,
+        max_silence_s=60.0,
+        clock_mono=clk,
+    )
+    wd._feed_alert_active = True
+    clk.advance(20.0)  # past startup grace
+    monitor.record_market_tick("MGC")
+    monitor.record_bar_activity("MGC")
+    await wd._tick()
+
+    assert any(a["status"] == "recovered" for a in discord.alerts)
+    assert wd._feed_alert_active is False

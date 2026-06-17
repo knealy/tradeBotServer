@@ -122,7 +122,19 @@ def test_market_hub_never_ticked_blocks_trade_after_grace(monitor):
     clk.advance(15.0)  # past grace window
     v = m.is_safe_to_trade("MGC")
     assert v.ok is False
-    assert "NEVER delivered a tick" in v.reason
+    assert "No quote ticks or bar activity" in v.reason
+
+
+def test_bar_activity_allows_trade_when_quotes_stale(monitor):
+    """REST/bar path keeps feed alive when SignalR quotes pause."""
+    m, clk = monitor
+    clk.advance(15.0)
+    m.record_market_tick("MGC")
+    m.record_bar_activity("MGC")
+    clk.advance(75.0)  # quotes stale
+    m.record_bar_activity("MGC")  # bar path still fresh
+    v = m.is_safe_to_trade("MGC")
+    assert v.ok is True
 
 
 def test_market_hub_fresh_tick_allows_trade(monitor):
@@ -137,10 +149,10 @@ def test_market_hub_stale_tick_blocks_trade(monitor):
     m, clk = monitor
     clk.advance(15.0)
     m.record_market_tick("MGC")
-    clk.advance(75.0)  # past 60 s silence threshold
+    clk.advance(75.0)  # past 60 s silence threshold; no bar path
     v = m.is_safe_to_trade("MGC")
     assert v.ok is False
-    assert "Market Hub silent" in v.reason
+    assert "Both data paths stale" in v.reason
     assert "MGC" in v.reason
 
 

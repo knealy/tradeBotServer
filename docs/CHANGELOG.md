@@ -6,7 +6,1478 @@ changes runtime behavior or conventions adds an entry here AND updates
 
 ## [Unreleased]
 
+### Changed / Fixed
+- **MRR production reliability: SignalR resubscribe bug + dual-path feed health + 15m thresholds + headless GUI-WS disable (2026-06-17)** —
+  Root-cause fix for today's "orders placed then immediately cancelled"
+  incident and the underlying morning-long SignalR zombie.
+
+  **SignalR root cause (permanent zombie after watchdog reconnect)**
+
+  ``WebSocketManager.stop()`` cleared ``_subscribed_symbols`` before
+  ``_resubscribe_all_symbols()`` ran, so every watchdog reconnect
+  reported "reconnect OK" but re-subscribed **zero** symbols — quotes
+  never flowed again for the rest of the session.  Fix: preserve the
+  subscription intent set across ``stop()``; null ``_hub`` after
+  ``hub.stop()``; watchdog snapshots symbols before stop as backup.
+
+  **Dual-path feed health (quote OR bar)**
+
+  Health monitor tracked quote ticks only.  When SignalR quotes paused
+  but REST polls + periodic bar-completion still delivered fresh bars,
+  the system falsely declared zombie → blocked analyze OR placed then
+  cancelled brackets.  New ``record_bar_activity(symbol)`` wired from
+  ``trading_bot._on_live_bar_close`` and REST ``get_historical_data``.
+  ``is_safe_to_trade`` returns OK when **either** path is fresh.
+  Watchdog + cancel-on-staleness only fire when **both** paths are
+  stale for a symbol.
+
+  **15-minute thresholds (operator request)**
+
+  Defaults raised to match MRR ``max_bar_staleness_seconds = 900``:
+  ``DATA_FEED_MARKET_HUB_MAX_SILENCE_S=900``,
+  ``DATA_FEED_HEALTH_SEVERE_SILENCE_S=900``.  Wrapper exports both.
+
+  **Headless GUI WebSocket fix**
+
+  ``strategy_executor`` GUI WS keepalive spawned recursive reconnect
+  loops + leaked ``aiohttp`` sessions (07:13 ET storm in today's log).
+  Fixed: single keepalive task, close-before-reconnect, disabled by
+  default in ``run_morning_reversion.sh`` via ``STRATEGY_EXECUTOR_GUI_WS=0``.
+
+  **Discord + feed-down alerts (2026-06-17)**
+
+  ``run_morning_reversion.sh`` and ``run_overnight.sh`` source ``.env`` and
+  export ``DISCORD_STATUS_INTERVAL_SECONDS`` (default 1800),
+  ``DATA_FEED_DISCORD_ALERTS``, and ``DATA_FEED_DISCORD_ALERT_COOLDOWN_S``.
+  ``DataFeedWatchdog`` posts Discord embeds when both quote+bar paths go
+  zombie and when they recover.
+
+  **MRR production hardening round 2 (2026-06-17)**
+
+  - **Restart re-fire fix**: ``session_activity`` persisted in anchor JSON
+    (``sweep_fired_high/low``, ``fades_this_session``, ``immediate_block``).
+    Restored on anchor finalize + startup reconcile; price-outside-range guard
+    after backfill; adopted same-session orders register in
+    ``working_order_registry`` and block duplicate sweeps.
+  - **GUI WS log storm**: reconnect/connect lines demoted to DEBUG; WARNING
+    rate-limited to 1/min; stale port cleared after 5 failures.
+  - **Log volume**: ``LOG_SUPPRESS_ASYNCIO_SESSION_ERRORS=1`` silences aiohttp
+    leak spam; ``LOG_MAX_BYTES`` env override for size rotation.
+  - **Execute health gate**: removed redundant MRR ``execute()`` double-gate;
+    analyze stale-bar check + ``place_bracket`` tiered gate remain.
+  - **Reconcile**: skip terminal-status orders (cancelled/filled) when adopting.
+
+  **Selective cancel-on-staleness (opt-in)**
+
+  New ``cancel_working_orders_for_stale_symbols`` — only pulls brackets
+  when both quote AND bar paths are dead for that symbol.  **Default OFF**
+  via ``DATA_FEED_CANCEL_ON_STALENESS=false`` (operator 2026-06-17):
+  range-breakout brackets stay on the broker until filled or session-end
+  flatten.  Set ``true`` only for continuous-monitoring strategies needing
+  2026-06-11 blind-fill protection.
+
+  **Tests**: +5 (bar-path liveness, selective cancel, no reconnect when
+  bar fresh, stop preserves subscriptions, bar-activity trade allow).
+  Full suite green.
+
+- **MRR orders cancelled seconds after placement — tiered health gate + post-reconnect grace fix (2026-06-17)** —
+  Field incident on prac account 1: MGC + MNQ OCO brackets placed at
+  09:23 ET (order ids 3143088042, 3143090337) then cancelled at 09:26:46
+  with broker label "Cancelled by trader" (the bot's
+  ``cancel_all_working_orders`` REST path — operator did not cancel).
+
+  **Root cause chain (from ``morning_range_reversion_account1_20260617_065000_444.log``)**:
+
+  1. SignalR Market Hub went zombie ~07:14 ET (connection alive, zero
+     ticks).  Watchdog fired 17+ reconnects through the morning; most
+     returned "reconnect OK" but ticks never resumed.
+  2. MRR correctly logged ``⛔ STALE DATA`` and skipped analyze from
+     ~08:20–09:22 ET.
+  3. At 09:23 ET, MGC analyze briefly passed (REST bar cache) and fired
+     SHORT fades on a **7700 s zombie feed** — health gate logged
+     ``data feed degraded but placing anyway`` (warn-and-proceed).
+  4. At 09:26:46 ET, watchdog backoff (480 s since 09:18 reconnect)
+     expired → ``cancel_all_working_orders`` pulled both brackets before
+     forcing reconnect #18.  Operator never saw working orders.
+
+  **Fixes**:
+
+  1. **Tiered health gate** (``core/data_feed_health.resolve_health_gate_decision``):
+     ``warn`` mode now refuses when Market Hub / User Hub silence exceeds
+     ``DATA_FEED_HEALTH_SEVERE_SILENCE_S`` (default **300 s**).  Mild
+     transients (120–300 s) still warn-and-proceed; long-running zombies
+     refuse at both ``strategy_base.place_bracket_order`` and
+     ``trading_bot.place_oco_bracket_with_stop_entry`` chokepoints.
+  2. **Post-reconnect grace bypass** (``is_safe_to_trade``): startup
+     grace now applies only while awaiting a symbol's **first** tick.
+     ``reset_clock_for_grace()`` after watchdog reconnect no longer masks
+     a previously-flowing zombie feed for 60 s.
+  3. **MRR ``execute()`` defense-in-depth**: refuses fades when the tiered
+     gate would block placement (covers analyze paths that pass on briefly
+     fresh REST bars while SignalR is still dead).
+
+  **Tests**: 3 new in ``tests/test_health_gate_integration.py`` (severe
+  refuse, mild warn, post-reconnect grace).  Full suite green.
+
+- **Master GUI v2 — range overlays, recap labels, idle list (2026-06-16)** —
+  - Trade recap IN/OUT vertical labels show **clock time only** (no date).
+  - Stale-range filter uses **6× range width** (min 10% of price / 400 pts),
+    not a tight fixed % — better when ATR/range width is elevated.
+  - Range overlays: unified ``/api/chart/range_overlays`` endpoint; multi-session
+    picks newest N dates; MRR/ORB no longer gated by overnight freshness filter.
+    **Fix:** handler used ``request.app['trading_bot']`` (KeyError) — now uses the
+    chart-server closure like other routes; legacy per-strategy fetch fallback in GUI.
+    **Fix:** backfill stored naive UTC in ``session_*_et`` fields (MRR showed
+    11am–12pm instead of 7–8am ET); API now rewrites true ET ISO bounds on read.
+  - **v2 dash blank fix:** restored accidental deletion of ``collectRangeDrawables``
+    (JS syntax error broke entire page boot).
+- **Master GUI v2 — chart legend, DLL/MLL fix, idle list polish (2026-06-16)** —
+  - Chart: OHLC hidden until crosshair hovers a bar; countdown moved under
+    last price; maximize above price; last-price tick flash (moss/rose).
+    Symbol/timeframe persist in ``localStorage`` across refresh.
+  - **DLL/MLL pills:** ``AccountTracker.get_compliance_status`` alias added
+    (was calling a non-existent method); lazy tracker init on account state.
+  - Strategies idle list: only overnight_range / morning_range_reversion /
+    opening_range_breakout; column headers for Schedule vs Last range;
+    arms-in tooltip; order table shows auto/manual/bracket from ``customTag``.
+  - Positions/orders poll every 3s; range-session depth selector (1–3).
+  - Trades + KPIs: ``customTag`` on entry order classifies each trade as
+    auto/manual/bracket; ``statistics_by_source`` + perf-drawer source
+    filter (All / Auto / Manual / Bracket). Idle list: only MRR is
+    launchd-managed; others show schedule preview.
+  - v2 polish: ``--subtle`` text color (replaces invisible ``--hairline``
+    on hints/tags); sleek ⤢ zoom; sticky last-price tick color; Next
+    countdown prefix; strategy launcher limited to OR/MRR/ORB; chart +
+    recap range overlays fetch from DB for all three range strategies
+    (not only when active).
+
+- **Master GUI — session warmth, account filter, log-spam fix (2026-06-16)** —
+  - **Session warmth:** ``master``/``gui`` boot now calls
+    ``start_keepalive_heartbeat()`` (cheap ``Account/search`` every
+    ``BROKER_KEEPALIVE_HEARTBEAT_SEC``, default 120s — keeps TCP+TLS
+    warm and refreshes JWT via ``ensure_valid_token``) and
+    ``start_market_hub_for_strategies()`` for the chart symbol/timeframe.
+    GUI does **not** honour ``ENABLE_SIGNALR=false`` — that flag only
+    gates ``strategy_executor`` Market Hub wiring.
+  - **Account rotation:** ``GUI_ACCOUNT_BLOCKLIST`` (comma-separated IDs)
+    and ``GUI_DEFAULT_ACCOUNT_ID`` env vars; blocklisted accounts are
+    removed from the dropdown and auto-switch picks the highest-balance
+    practice account when the current selection is ineligible.
+  - **KPI flash fix:** ``handle_account_state`` no longer treats
+    ``realized_pnl==0`` as "uninitialized" and no longer fetches
+    session-only trades (which returned 0 for empty-session accounts
+    like 22182502 while the trades table used a 30-day window).
+  - **Log spam:** ``websocket_manager.subscribe_quote`` routes hub-not-ready
+    ``ValueError`` through the same once-per-symbol dedupe as other hub
+    errors (was logging WARNING on every quote poll).
+
+- **Master GUI — v2 Phase 3.7: MLL (trailing) chip + canonical risk-source refactor + 3.6 silent-hide bugfix (2026-06-16 early morning)** —
+  Two things in one swing:
+
+  1. **MLL chip added** next to the DLL pill in the always-visible
+     head summary. MLL is the trailing-drawdown floor — breaching it
+     permanently *terminates* the prop account (no daily reset), so
+     it's strictly more catastrophic than DLL and now sits one
+     position to the right with the same color thresholds:
+     muted ≥50% buffer, ``--linen`` 25-50%, ``--rose`` <25%,
+     bright-rose ``MLL BREACH`` at 0. Tooltip carries the full
+     breakdown including trailing loss and breach context
+     (``"trading locked until EOD reset"`` for DLL,
+     ``"account permanently terminated"`` for MLL).
+
+  2. **Phase 3.6 silent-hide bug fixed.** While wiring MLL I traced
+     the data path and found the DLL chip was actually *always*
+     hidden in production: ``handle_account_state`` was reading
+     ``daily_loss_limit`` from ``tracker.get_state()`` — which
+     **doesn't include the limit fields** (``get_state()`` only
+     returns balance/PnL/positions). The condition
+     ``if !limit || limit <= 0 → hide`` was always true.
+     Refactored to read DLL + MLL from
+     ``AccountTracker.get_compliance_status(account_id)`` instead —
+     that's the canonical risk-state source the bot's own risk gate
+     reads from, so the dashboard chip and the consec-loss breaker
+     now agree on the same numbers.
+
+  Backend (``gui/chart_html.py``):
+  - ``handle_account_state`` now calls
+    ``trading_bot.account_tracker.get_compliance_status(account_id)``
+    once and pulls ``dll_limit`` / ``dll_remaining`` /
+    ``dll_violated`` / ``mll_limit`` / ``mll_remaining`` /
+    ``mll_violated`` / ``trailing_loss`` from a single source.
+    Inline DLL-buffer math removed (the tracker already handles the
+    ``min(0, daily_pnl)`` no-inflate semantics correctly).
+  - Response keys added: ``mll_remaining``, ``mll_pct_remaining``,
+    ``mll_violated``, ``trailing_loss``, ``dll_violated``.
+
+  Frontend (``gui/master_control_v2.html``):
+  - New ``#head-summary-mll`` span with class ``risk mll`` (paired
+    sep with class ``mll-sep``).
+  - Generalised CSS: ``.head-summary .risk`` carries the shared
+    palette (warn / hot / breach / hidden); ``.dll`` and ``.mll``
+    are now style-free identifiers used only for selectors.
+  - ``applyAccountState`` now calls a shared ``applyRiskChip(cfg)``
+    helper twice (once per pill). Same threshold ladder, same
+    BREACH semantics, same hide-on-unknown-limit behaviour.
+  - The chip respects the tracker's ``*_violated`` boolean as the
+    authoritative breach flag (defensive: don't redundantly derive
+    breach from pct math when the source already says so).
+
+  Pinned by ``tests/test_mll_buffer_math.py``: 8 cases covering
+  unknown limits, full-buffer at high-water mark, no-inflate when
+  intraday gain pushes above prior high, partial drawdown math,
+  at-floor zero, sub-floor clamp, threshold boundary parity with
+  DLL, and an inline-extraction drift guard against the production
+  expression. ``tests/test_dll_buffer_math.py`` (Phase 3.6) still
+  passes against the new compliance-status path — the math contract
+  was identical, only the source changed.
+
+- **Master GUI — v2 Phase 3.6: DLL buffer pill in head-summary chip (2026-06-16 early morning)** —
+  Phase 3.2 promoted WS health into the always-visible drawer-head
+  chip but dropped the daily-loss-limit number entirely. The DLL is
+  the most fatal-to-prop number on the dashboard — TopStep prop
+  accounts get blown out the instant ``daily_pnl <= -daily_loss_limit``
+  — so cycling the operator through "expand drawer → squint at
+  Realized → mental math against the DLL env var" was the wrong
+  cost-vs-glance-value tradeoff. Restored as a 4th compact token
+  next to ``Connected · uptime · last tick``, with color thresholds.
+
+  Backend (``gui/chart_html.py``):
+  - ``handle_account_state`` now also emits ``dll_remaining`` and
+    ``dll_pct_remaining`` (range 0..1, ``None`` when limit not
+    seeded). Math:
+    ``dll_remaining = max(0, daily_loss_limit + min(0, total_pnl))``
+    The inner ``min(0, total_pnl)`` is the critical guard — without
+    it a profitable session would inflate the buffer above 100%
+    instead of capping at the limit.
+
+  Frontend (``gui/master_control_v2.html``):
+  - New ``#head-summary-dll`` span in the head-summary chip,
+    rendered as ``DLL $670`` with the prefix label in
+    ``--hairline`` so the dollar number dominates.
+  - Color thresholds (matches the rest of the dashboard's risk
+    palette): muted ≥ 50% buffer, ``--linen`` 25-50%, ``--rose``
+    < 25%, bright rose + label flips to ``DLL BREACH`` when
+    buffer hits 0 (the bot's risk gate has already locked
+    trading; chip is the visual confirmation).
+  - When the tracker hasn't seeded the limit yet (fresh session,
+    no broker round-trip), the chip and its preceding sep both
+    add ``.hidden`` so the operator doesn't see a phantom
+    ``DLL —``.
+  - Tooltip carries the full breakdown:
+    ``Daily loss-limit buffer: $670 of $1,000 remaining (70%)``.
+
+  Pinned by ``tests/test_dll_buffer_math.py``: 9 cases covering
+  unknown / negative limits, profitable sessions (no-inflate
+  guarantee), partial loss math, at-limit zero, sub-zero clamp,
+  exact threshold boundaries, and an inline-math drift check
+  against the production expression.
+
+- **Master GUI — v2 Phase 3.5: strategies "ready / sleeping" panel (2026-06-15 night)** —
+  The Strategies section's empty state used to be just the launcher
+  form, which gave the operator zero visibility into what the bot was
+  going to do next during the long quiet windows around active
+  sessions (overnight_range trades ~10 minutes/day around 9:29 ET, MRR
+  has a 7 AM-4 PM weekday window, ORB is similar). New panel renders
+  every registered range strategy that isn't currently active with
+  its schedule, an arms-in countdown, and the last persisted range
+  per symbol. Sits above the launcher; 1 Hz client-side ticker so
+  the countdown stays smooth between the 15s strategy-status polls.
+
+  Backend (``gui/chart_html.py``):
+  - New ``_STRATEGY_SCHEDULES`` map encoding each time-gated
+    strategy's launch window. Cross-referenced with the live
+    ``config/strategies/<name>.toml`` (``range_start`` /
+    ``range_end_open``) and the strategy's own
+    ``_in_trading_window`` logic.
+  - New ``_compute_next_launch(name, now=None)`` — converts to
+    ``America/New_York`` via ``zoneinfo``, advances past today's
+    window if already passed, skips Sat/Sun for weekday-only
+    strategies, returns ``eta_iso`` (UTC), ``eta_seconds``,
+    human ``label`` ("9:29 AM ET tomorrow"), ``schedule`` string,
+    and ``kind`` (``signal`` / ``range_build`` / ``manual``).
+  - New ``_strategy_idle_state(name, db, account_id)`` — pulls the
+    persisted ranges from ``strategy_states.settings`` (re-using
+    the same blob the live chart consumes for ``or_ranges`` /
+    ``mrr_ranges`` / ``orb_ranges``), normalises symbol aliases
+    ("F.US.MNQ" → "MNQ"), dedupes on (high, low) so each symbol
+    shows once, and computes ``snapshot_age_seconds`` from
+    ``metadata.or_ranges_saved_at`` (OR) or the row's
+    ``updated_at`` (MRR / ORB).
+  - ``handle_strategy_status`` attaches ``idle_state`` to every
+    non-active strategy in the response. Active strategies skip
+    this — their ranges already render as live overlays on the
+    chart.
+
+  Frontend (``gui/master_control_v2.html``):
+  - New ``#strategy-idle-list`` block below the active list and
+    above the launcher form. Header reads "Ready — schedule · last
+    range".
+  - Per row: pretty name | schedule + arms-in countdown
+    (color-coded — moss when < 2 min, linen when < 1h, accent
+    default) | per-symbol low/high range chips with snapshot age.
+    "manual launch" strategies render without a countdown.
+  - Eyebrow upgrades from ``"at rest"`` to ``"at rest · N ready"``
+    when there are registered idle strategies.
+  - 1 Hz ``tickIdleCountdowns()`` recomputes the arms-in label
+    from the cached ``eta_iso`` between polls so the chip stays
+    smooth.
+  - Idle rows ranked by soonest arms-in first (so what's coming
+    up next is at the top).
+
+  Pinned by ``tests/test_strategy_next_launch.py``: 9 cases
+  covering unknown strategies → manual, same-day before window,
+  same-day after window → tomorrow, Friday-evening → Monday weekend
+  skip, Saturday → Monday, Sunday → tomorrow (Monday) label
+  preference, MRR / ORB schedule times, and label-suffix contract.
+
+- **Master GUI — v2 Phase 3.4: trade aggregation (collapse fill legs into logical trades) (2026-06-15 night)** —
+  The TopStepX ``Trade/search`` API emits one record per filled
+  contract leg. The v2 dashboard was rendering each leg as a separate
+  trade row, which triple-counted everything downstream: trade count,
+  win rate, streaks, max-drawdown, profit factor, equity curve.
+  Concrete symptoms in the live screenshot:
+
+  - Rows ``#57``, ``#58``, ``#59``: identical entry stamp / exit stamp
+    / exit price (``29008.50 → 28932.50``); three back-to-back
+    ``-$1,520`` rows. Real shape: one logical 3-contract trade.
+  - Rows ``#51-56``: same entry stamp (``5/19 10:14 AM``), staggered
+    exits (``10:20-10:23 AM``). Real shape: one 6-contract scale-out.
+
+  With ~30 logical trades inflated to 59 rows, ``profit_factor`` was
+  pinned at 1.00 and the KPI strip looked broken even though net P&L
+  was small-positive.
+
+  Fix lives entirely in ``gui/chart_html.py``:
+
+  - New module-level ``_aggregate_trade_legs(legs)`` helper. Group key
+    in priority order: ``(symbol, side, entry_order_id)`` (most
+    precise — same parent open IS the same logical position), with a
+    ``(symbol, side, entry_time bucketed to 2s)`` fallback for legs
+    whose opener wasn't paired by the FIFO half-turn matcher. Output
+    is qty-weighted average entry/exit prices, summed qty/pnl/fees,
+    earliest entry / latest exit, sign-correct points, and a
+    ``legs[]`` drilldown list.
+  - ``handle_get_trades`` tags each enhanced leg with
+    ``entry_order_id`` (sourced from the existing pairings dict),
+    aggregates BEFORE computing ``cumulative_pnl`` / ``trade_number``,
+    and recomputes ``statistics`` via
+    ``trading_bot._calculate_trade_statistics`` over the
+    logical-trade list. Response now also carries ``total_legs`` so
+    the frontend can show both numbers.
+  - Frontend (``gui/master_control_v2.html``):
+    - Trades eyebrow: ``"30 trades"`` by default; expands to
+      ``"30 trades · 59 fills"`` only when fills > trades.
+    - SIDE column gets a small ``× N`` pill next to ``BUY``/``SELL``
+      when the trade aggregated multiple legs (e.g. ``BUY ×3`` for
+      a 3-contract position). Tooltip shows legs-aggregated count.
+    - KPI strip (``applyKpisFromTrades``) and equity curve
+      (``buildEquityFromTrades``) need NO changes — they consume the
+      already-corrected ``stats`` and ``trades[]``. Streaks recompute
+      client-side from the logical-trade list automatically.
+  - ``handle_performance_metrics`` is left untouched (legacy v1
+    contract; the v2 dashboard reads stats from
+    ``/api/chart/trades`` only). Fix can be lifted there later if a
+    v1 caller needs it.
+  - Regression-pinned by ``tests/test_aggregate_trade_legs.py``:
+    seven cases covering single-leg passthrough, atomic-close
+    3-fill collapse, 6-fill scale-out collapse, time-bucket
+    fallback when pairing failed, separation when entry orders
+    differ, empty input, and short-position points sign.
+
+- **CRITICAL HOTFIX: MRR launchd wrapper crashed on first morning fire — `SESSION_EXIT_GRACE_MIN` referenced before assignment (2026-06-16 morning)** —
+  Field-discovered regression in the previous night's launchd migration.
+  The schedule banner at line 211 of ``scripts/run_morning_reversion.sh``
+  printed ``session-end exit: $(fmt_et "$SESSION_EXIT_TS")  (grace
+  ${SESSION_EXIT_GRACE_MIN}min ...)`` conditional on
+  ``$SESSION_EXIT_GRACE_MIN`` — but the variable's assignment block was
+  137 lines lower (line 348, in the supervise-loop tunables section).
+  Under ``set -euo pipefail`` (``set -u``) this is an instant crash:
+  ``unbound variable``, rc=1, executor never spawned, no trades placed.
+
+  Observed in production: the user installed the launchd agent Mon
+  night, the agent fired Tue 06:50 ET (``launchctl print`` showed
+  ``runs = 1`` and ``last exit code = 1``), the wrapper printed the
+  schedule banner, then crashed silently into
+  ``logs/launchd_mrr_account1.err`` with no executor log file created.
+  MRR did not trade Tuesday's morning session.
+
+  **Fix**: moved the entire ``SESSION_EXIT_GRACE_MIN`` /
+  ``SESSION_EXIT_TS`` declaration block to immediately AFTER the
+  ``FLAT_BEFORE_TS`` computation (line ~190) and BEFORE the schedule
+  banner.  Left a NOTE comment at the old position pointing readers
+  upward.  Both ``set -u`` and the banner reference are now satisfied.
+
+  **Why the original tests missed this**: the existing wrapper-snippet
+  tests (``test_wrapper_session_end_grace_zero_disables_cutoff`` and
+  ``test_wrapper_session_end_grace_positive_computes_cutoff``)
+  exercised the cutoff arithmetic in isolation — they didn't execute
+  the wrapper's actual top-to-bottom flow.  Plist-rendering tests
+  exercised the installer, not the wrapper.  The crash only manifested
+  in real execution order.
+
+  **New regression test**:
+  ``tests/test_mrr_launchd_install.py::test_wrapper_runs_past_banner_without_unbound_variable_crash``
+  spawns the wrapper end-to-end with NO_WAIT=1 + MAX_RESTARTS=0, streams
+  stdout line-by-line, and asserts (a) no ``unbound variable`` error
+  appears and (b) the wrapper reaches the
+  ``→ launching strategy_executor`` supervise-loop line within 12s.
+  SIGTERMs the wrapper + nukes the spawned executor pgrp on
+  completion.  This now catches any future "reference before
+  assignment" regression in the wrapper.
+
+  **Validation**: 9/9 launchd tests pass (one new regression added).
+  Full suite: **600 passed in 16.3s**.  Direct smoke test with
+  ``SESSION_EXIT_GRACE_MIN=0`` and ``=30`` confirmed the wrapper
+  reaches the supervise loop cleanly and the cutoff banner appears
+  when grace > 0.
+
+  **Operator action**: launchd installs do NOT need reinstall — the
+  wrapper script is read fresh on each fire, so tomorrow's 06:50 ET
+  wake will use the fixed code automatically.  To trade today, run
+  ``launchctl kickstart -k "gui/$(id -u)/com.tradebot.mrr.account1"``
+  (afternoon fades still possible; morning window already past).
+
+- **MRR daily-launchd migration: session-end clean-exit + launchd agent + install/uninstall scripts (2026-06-15 night)** —
+  Operational architecture shift for MRR.  The always-on supervise-loop
+  model (Round 1 + Round 2 hardening) worked, but MRR is structurally a
+  daily strategy — range build 7-8 AM ET, fade window 8 AM - 4 PM, no
+  overnight state.  Running 24/7 for a 9-hour-per-day strategy meant 15h
+  of zero-value process lifetime per day plus the entire weekend gap to
+  defend against.  Migrating to a launchd-scheduled daily launch:
+  * Eliminates the weekend SignalR gap entirely (process doesn't exist
+    Friday evening → Monday morning).
+  * Bounds resource lifetime to ~9h/day (no long-running drift / FD
+    growth / GC pressure).
+  * Natural one-log-per-launch (the rotated handler is still installed,
+    but now mostly belt-and-suspenders).
+  * Kernel-managed scheduling via ``StartCalendarInterval`` (more
+    reliable than userspace bash wait+sleep).
+  * Mid-day crash recovery and reconciliation logic from Round 1+2
+    carry forward unchanged — the supervise loop, hang watchdog,
+    startup reconciliation, orphan-sweep, and tag fix all still run
+    inside each daily launch.
+
+  **Files**
+
+  1. ``scripts/run_morning_reversion.sh`` — new session-end clean-exit
+     clause:
+     * ``SESSION_EXIT_GRACE_MIN`` env (default 30) computes
+       ``SESSION_EXIT_TS = FLAT_BEFORE_TS + grace*60`` (set 0 to
+       restore legacy always-on behaviour).
+     * ``session_exit_timer_loop`` spawns alongside the hang watchdog
+       for each executor iteration; SIGTERMs the executor at
+       SESSION_EXIT_TS.
+     * Supervise loop checks ``session_ended`` predicate before each
+       relaunch AND after each exit — breaks cleanly with rc=0 so
+       launchd can pick up the next scheduled wake.
+     * Shutdown trap extended to tear down the session timer alongside
+       the hang watchdog.
+     * Schedule banner now prints the session-end exit time when grace
+       is non-zero.
+  2. ``scripts/launchd/com.tradebot.mrr.plist.template`` — new
+     placeholder-substituted launchd agent template.  ``StartCalendarInterval``
+     entries for Weekday 1-5 (Mon-Fri only — Sunday would idle because
+     MRR's first trade of the week is Monday 7 AM ET).  Placeholders:
+     ``__LABEL__ __SCRIPT_PATH__ __ACCOUNT__ __WORKING_DIR__ __LOG_OUT__
+     __LOG_ERR__ __HOUR__ __MINUTE__ __PATH__``.
+  3. ``scripts/install_mrr_launchd.sh`` — new installer.  Reads
+     ``start_time`` + ``session_timezone`` from MRR's TOML, translates
+     "start_time minus WAKE_LEAD_MIN ET" to the host's local clock
+     (works for any host TZ — DST-safe within US-observing zones),
+     awk-substitutes the template, validates the rendered XML via
+     ``plistlib``, copies to ``~/Library/LaunchAgents/``, and
+     ``launchctl bootstrap``s it.  Flags: ``--wake-lead MIN``,
+     ``--dry-run``, ``--reload``.  Default schedule: Mon-Fri 06:50
+     local time (5min before MRR's 06:55 ET start_time).
+  4. ``scripts/uninstall_mrr_launchd.sh`` — new uninstaller.
+     ``launchctl bootout`` (with ``unload -w`` fallback for older
+     macOS) + plist removal.  ``--keep`` retains the plist on disk
+     for inspection.
+  5. ``scripts/launchd/README.md`` — operator quick-start: install,
+     verify, kickstart-for-testing, log paths, env tunables, lifecycle
+     diagram, "when NOT to use this" guidance for future
+     overnight-holding strategies.
+  6. ``tests/test_mrr_launchd_install.py`` — new (8 tests, 0.27s):
+     installer file permissions, template placeholder coverage,
+     post-substitution plistlib parseability, installer dry-run
+     end-to-end, absolute-path resolution in rendered plist,
+     ``--wake-lead`` override propagation, ``SESSION_EXIT_GRACE_MIN=0``
+     sentinel, positive-grace cutoff math.
+  7. ``pytest.ini`` — registered new test file.
+
+  **Operator workflow (post-migration)**
+
+  ```bash
+  # One-time install per account:
+  bash scripts/install_mrr_launchd.sh 1
+
+  # Verify:
+  launchctl list | grep com.tradebot.mrr.account1
+  launchctl print "gui/$(id -u)/com.tradebot.mrr.account1"
+
+  # Force a test run NOW (executor will idle if outside trading window):
+  launchctl kickstart -k "gui/$(id -u)/com.tradebot.mrr.account1"
+
+  # Uninstall when done:
+  bash scripts/uninstall_mrr_launchd.sh 1
+  ```
+
+  **Daily lifecycle**
+
+  ```
+  06:50 ET   launchd fires → wrapper starts
+  06:55 ET   wrapper exec's strategy_executor under supervise loop
+  06:55 ET   executor authenticates, connects SignalR, subscribes symbols
+  07:00 ET   strategy starts building anchor range
+  08:00 ET   anchor finalized, fade window opens
+   ...trade...
+  16:00 ET   flat_before — strategy flattens open positions
+  16:30 ET   session-end timer SIGTERMs executor (grace=30min)
+  16:30 ET   supervise loop sees cutoff → wrapper exits rc=0
+  16:30 ET   launchd waits until tomorrow 06:50 ET
+  ```
+
+  **Backward compatibility**
+
+  The always-on workflow is preserved: ``SESSION_EXIT_GRACE_MIN=0``
+  (the existing wrapper's legacy default behaviour) disables the
+  cutoff entirely.  Operators not using launchd can keep invoking
+  ``bash scripts/run_morning_reversion.sh <account>`` directly with
+  ``SESSION_EXIT_GRACE_MIN=0`` and the wrapper supervises forever as
+  before.  When the wrapper IS launched by launchd, the default
+  grace=30 takes effect and the wrapper exits cleanly for daily
+  handoff.
+
+  **Validation**
+
+  * 8 new tests pass in 0.27s.
+  * Full suite: **599 passed in 16.2s** — no regressions.
+  * Installer dry-run validated end-to-end against the real MRR TOML;
+    rendered plist parses with plistlib + has exactly 5 Weekday entries.
+  * Session-timer shell smoke test confirmed SIGTERM fires within 3s of
+    cutoff in isolation.
+
+  **When always-on is still right**
+
+  Documented in ``scripts/launchd/README.md``: any future strategy that
+  holds overnight positions (Globex/Asia/European sessions) or tracks
+  24-hour rolling state (e.g. ``overnight_range`` building a 6 PM →
+  9:29 AM range across midnight) should use the always-on wrapper.
+  MRR doesn't need either, so daily-launchd is the cleaner fit.
+
+- **MRR unattended-operation hardening Round 2: startup reconciliation + hang watchdog + SignalR weekend-survival + critical tag-truncation bug fix (2026-06-15 evening)** —
+  Tier-1 production-value bundle closing the remaining silent-risk gaps for
+  week-long unattended operation.  Each fix targets a specific failure mode
+  the Round 1 work (orphan-sweep, supervise loop, daily log rotation) didn't
+  cover.
+
+  0. **CRITICAL: tag-truncation bug fix (pre-existing, affects ALL MRR live
+     order matching).**
+     ``brokers/topstepx_adapter._generate_unique_custom_tag`` truncates
+     the strategy name to 16 chars (TopStepX rejects long ``customTag``s
+     with opaque HTTP 500s).  For ``morning_range_reversion`` (23 chars)
+     the actual generated tag prefix is ``morning_range_re``, NOT the full
+     name.  But ``_live_tag_is_entry`` looked for the FULL string —
+     meaning:
+
+     * ``_has_open_position_or_pending_entry_async`` thought every
+       account had zero pending MRR entries → MRR could place duplicate
+       stop-entries on rapid re-evaluation.
+     * The Round-1 orphan-sweep helper
+       (``_cancel_previous_session_orders``) never matched its own
+       orders → orphan triggers carried across sessions unchanged
+       (defeating the whole point of that fix).
+
+     Replaced the hard-coded substring check with a new
+     ``_expected_tag_marker()`` helper that mirrors the adapter's exact
+     truncation logic — automatically robust against future strategy
+     renames AND any tag-format tweaks in the adapter.  Two new
+     regression tests pin the fix and assert the matcher/emitter stay in
+     sync (``test_live_tag_is_entry_matches_truncated_production_tag``,
+     ``test_expected_tag_marker_mirrors_broker_truncation``).
+     Orphan-sweep tests rewritten with realistic truncated tags to catch
+     this drift in CI from now on.
+
+  1. **Startup reconciliation against broker state.**
+     The supervise loop (Round 1) re-launches the executor after a crash,
+     but the freshly-constructed strategy starts with empty in-memory
+     state (``_live_managed_symbols = set()`` etc.).  The broker may
+     still hold working stop-entry orders AND/OR open positions from the
+     previous incarnation — silent risk for hours until the next session
+     rollover orphan-sweep fires.
+
+     New ``_reconcile_with_broker_state()`` runs once per strategy
+     lifetime (gated by ``_did_startup_reconcile``) on the first
+     ``analyze()`` call:
+
+     * Pulls ``get_open_orders()`` + ``get_positions()`` from the broker.
+     * Adopts every open position on a configured symbol into
+       ``_live_managed_symbols`` (so ``manage_positions`` sees it) and
+       seeds ``_entry_bar_seq`` to the current bar so ``max_hold_bars``
+       clocks fresh.
+     * Buckets working entry orders by the YYMMDD prefix embedded in the
+       customTag (the adapter's ``%y%m%d%H%M%S`` timestamp): adopts
+       same-session triggers into ``_live_managed_symbols``, cancels
+       prior-session orphans using the pre-computed ID list (NOT via
+       the broader ``_cancel_previous_session_orders`` — that would also
+       wipe the same-session orders we just adopted).
+     * Position-protected symbols still spared the cancellation pass.
+     * Replay/backtest paths short-circuit at the top; broker errors
+       are caught + logged but never raised; ``finally`` block ensures
+       single-shot semantics even on partial failure.
+
+     Five new unit tests cover replay short-circuit, position adoption,
+     same-session-vs-prior bucketing, single-shot guarantee, and broker-
+     error tolerance.
+
+  2. **Hang watchdog — catches "Python alive but asyncio loop wedged".**
+     The Round-1 supervise loop only fires on process EXIT.  If the
+     event loop wedges (rare but real: GIL contention, deadlocked
+     lock, busy infinite loop) Python stays alive, the supervise wrapper
+     sees nothing wrong, and the strategy silently dies.
+
+     Two-part fix:
+
+     * ``core/strategy_executor._heartbeat_loop`` now touches an external
+       heartbeat file every 30s when ``HEARTBEAT_FILE`` env var is set.
+       Failures swallowed at DEBUG — heartbeat-file write must never
+       kill the executor.
+     * ``scripts/run_morning_reversion.sh`` adds a ``hang_watchdog_loop``
+       background process per executor iteration.  Polls
+       ``stat -f %m`` / ``stat -c %Y`` on the heartbeat file every
+       ``HANG_CHECK_INTERVAL_SEC`` (default 60s); if the mtime is older
+       than ``HANG_THRESHOLD_SEC`` (default 300s = 10 missed heartbeats),
+       SIGTERMs the executor PID so the supervise loop respawns a fresh
+       instance.  Stale-mtime detection skipped for the brief startup
+       window when the file doesn't exist yet (avoids racing the first
+       heartbeat).  Cleanup trap ``rm -f``s the heartbeat file on
+       wrapper exit so a stopped wrapper doesn't leave a phantom
+       liveness signal.
+
+     Verified end-to-end via a synthetic ``/tmp/test_watchdog.sh`` run:
+     a sleeping target that never touches the heartbeat is SIGTERMed
+     within ~3s of the threshold crossing.
+
+  3. **SignalR weekend-survival reconnect.**
+     The original ``_handle_network_interruption_and_reconnect`` had a
+     hard-coded ``max_attempts = 10`` with 30s-capped exponential
+     backoff — worst-case ~5 minutes total before the connection died
+     silently.  Fine for a transient network blip, useless for a
+     Friday-5pm-to-Sunday-6pm broker maintenance window.  After
+     exhaustion the downstream bar aggregator + MRR's stale-data guard
+     saw nothing but gaps; the supervise loop would then respawn the
+     executor and hit the same dead broker, burning through its
+     restart budget for nothing.
+
+     Replaced the single-phase loop with a two-phase strategy:
+
+     * **Fast phase** — first ``SIGNALR_FAST_RECONNECT_ATTEMPTS``
+       attempts (default 10) keep the original 2/4/8/16/30s backoff at
+       INFO log level.  Loud, fast — transient blips show up clearly.
+     * **Extended phase** — kicks in after the fast phase fails.  Up
+       to ``SIGNALR_MAX_RECONNECT_ATTEMPTS`` total (default 1000),
+       polling at ``SIGNALR_EXTENDED_RECONNECT_DELAY_SEC`` (default
+       300s = 5 min).  Single WARNING-level "switching to extended
+       retry mode" banner on transition; individual attempts logged at
+       DEBUG so we don't spam the log with 600 lines during a weekend.
+       Default 1000 attempts × 300s ≈ 83 h covers any realistic outage
+       window.  Loud WARNING-level "✅ reconnected after extended
+       outage" on recovery so the operator can see broker-is-back at a
+       glance.
+
+     Config clamping: nonsense env-var values fall back to defaults
+     (no crash); ``max_attempts < fast_phase_attempts`` is silently
+     bumped so we never retry FEWER times than the fast budget.
+
+     Eight new unit tests cover: fast-phase exponential backoff
+     timing, fast-phase success + resubscribe, extended-phase cadence,
+     transition announcement at WARNING level (fires exactly once),
+     loud recovery message after extended outage, garbage-env
+     fallback to defaults, max-clamping safety, and the
+     reconnecting-flag double-entry guard.
+
+  Operational implication of all three: an MRR instance launched
+  Monday morning will now survive — without operator intervention —
+  Wednesday-night broker maintenance, an event-loop deadlock at 3am
+  Thursday, and the Friday-evening-to-Sunday-evening weekend gap.
+  The Round 1 + Round 2 wrapper now self-heals from all four
+  identified failure modes (process exit, event-loop wedge,
+  reconnect exhaustion, orphaned broker state) and the only thing
+  that takes the strategy down is a real config / network /
+  hardware failure that needs human attention.
+
+  Verification: 591/591 full suite passes (up from 576: +5 reconcile
+  + 2 tag-bug regression + 8 reconnect tests).  ``bash -n`` syntax-
+  clean wrapper.  Both wrapper-side (synthetic ``sleep`` target hang)
+  and executor-side (heartbeat file touch in temp dir) smoke-tests
+  green.
+
+- **MRR unattended-operation hardening: orphan-sweep + supervise loop + daily log rotation (2026-06-15 PM)** —
+  Three coordinated fixes so `scripts/run_morning_reversion.sh` can be
+  launched once and left running for a full trading week without operator
+  intervention.  Operational audit (response to user question "would the bot
+  run my morning range reversion strategy all week with no problem being
+  idle between sessions etc?") surfaced three real gaps; all three closed:
+
+  1. **MRR `_cancel_previous_session_orders` at session rollover.**
+     Symptom that motivated the fix: MRR's stop-entry triggers (the
+     ``sweep_advance_stop`` mode used by the validated TOML) sit on the
+     broker as **working orders** until either filled or cancelled.  The
+     strategy's existing ``flat_before`` + ``max_hold_bars`` guards only
+     operate on *filled* positions; unfilled triggers from yesterday could
+     silently carry over into tomorrow's session — potentially firing at
+     yesterday's stale level once today's anchor range armed a fresh trigger
+     at a different price.  Mirrors the
+     ``overnight_range._cancel_previous_session_orders`` pattern
+     (``strategies/overnight_range_strategy.py:930-981``):
+       * Pull ``get_open_orders()`` + ``get_positions()`` from the broker.
+       * Skip every order on a symbol that has a **live position** (the SL/TP
+         legs covering that position must survive — cancelling them naked-
+         legs the live trade).
+       * Filter remaining orders through the existing
+         ``_live_tag_is_entry`` predicate so we only touch MRR's own
+         stop-entry / stop-bracket triggers — never SL/TP children, never
+         overnight_range orders, never operator-placed orders without our
+         tag.
+       * Issue ``cancel_order()`` for the survivors; log + swallow individual
+         failures so one broker hiccup can't abort the sweep.
+     Wired into ``analyze()``'s ``🌅 new session`` rollover block
+     (``strategies/morning_range_reversion_strategy.py:2393``), guarded by a
+     new strategy-level ``_last_orphan_sweep_date`` so the broker round-trip
+     happens **once per ET date** regardless of how many symbols transition
+     simultaneously.  First-ever-session guard
+     (``st["session_date"] is not None``) prevents wiping orders the
+     operator placed manually before starting MRR.
+     Replay/backtest paths short-circuit at the top of the helper — no
+     change to determinism.
+     Five new unit tests in ``tests/test_morning_range_reversion_smoke.py``
+     cover: replay short-circuit, tag-prefix filtering (overnight_range +
+     SL/TP children + untagged orders all survive), live-position
+     protection, broker-error tolerance, and ``config.symbols``
+     normalisation/dedupe + fallback to ``self._state`` when empty.
+
+  2. **Wrapper-side supervise loop with backoff + max-restart cap.**
+     Original ``scripts/run_morning_reversion.sh`` ended with
+     ``exec caffeinate -dimsu "$PY" core/strategy_executor.py …`` — exec
+     replaced the wrapper PID with caffeinate, so a Python crash killed the
+     entire instance.  For week-long unattended runs the executor needs to
+     self-heal from transient broker hiccups, OOM events, and the (very
+     unlikely) post-weekend reconnect failure when SignalR exhausts its
+     10-attempt reconnect budget.  New topology:
+       ```
+       wrapper PID                 (supervisor — the bash script)
+         └── caffeinate -w $$ &    (keeps mac awake until wrapper exits)
+         └── python executor       (looped; respawned on non-zero exit)
+       ```
+     * ``caffeinate -dimsu -w $$ &`` runs ONCE at the top of the launch
+       phase, tied to the wrapper PID so it dies cleanly on
+       wrapper exit (success, error, Ctrl+C).
+     * Executor runs in a ``while :; do …; done`` loop.  Exit codes 0 / 130
+       (SIGINT) / 143 (SIGTERM) are treated as intentional shutdowns →
+       break the loop.  Any other non-zero exit triggers backoff + retry.
+     * Exponential backoff: 5s → 10 → 20 → 40 → 80 → 160 → 300 (capped at
+       ``BACKOFF_MAX``).
+     * Hard cap: ``MAX_RESTARTS=10`` failures in a "tight" window aborts
+       the supervisor so a tight crash loop can't burn API quota.
+       ``RESET_AFTER_SEC=3600`` (1 h) of healthy uptime resets the counter
+       so a 6-hour-in crash doesn't add to yesterday's noise.
+     * ``shutdown()`` trap handler on INT/TERM/EXIT forwards SIGTERM to the
+       executor (with 10 s grace period for log flush + SignalR cancel),
+       then SIGKILL, then kills caffeinate — no orphaned children when
+       the operator Ctrl+C's the wrapper.
+     All tunables override-able via env (``MAX_RESTARTS``,
+     ``RESET_AFTER_SEC``, ``BACKOFF_INITIAL``, ``BACKOFF_MAX``).
+
+  3. **Daily log rotation via ``LOG_ROTATE_DAILY=1``.**
+     Default ``core/logging_setup.configure_logging`` used
+     ``RotatingFileHandler(maxBytes=10MB, backupCount=5)`` — size-based
+     rotation that produced ``morning_range_reversion_account1_<ts>.log``
+     + 5 ``.log.1``…``.log.5`` siblings.  Across a multi-day run all
+     sessions were interleaved into the same file, making
+     "what happened Tuesday?" non-trivial.  Added an opt-in
+     ``LOG_ROTATE_DAILY`` env switch (recognised values: ``1``, ``true``,
+     ``yes``, ``on``, ``daily``) that swaps to
+     ``TimedRotatingFileHandler(when="midnight", interval=1,
+     backupCount=max(backup_count, 14), encoding="utf-8")`` with
+     ``suffix = "%Y-%m-%d"`` — one archive per calendar day, two trading
+     weeks of history kept by default.  Default behaviour unchanged for
+     every other entry-point (master CLI, webhook server, one-shot
+     scripts) — they keep size-rotation as before.
+     ``scripts/run_morning_reversion.sh`` now exports
+     ``LOG_ROTATE_DAILY=1`` by default; override with
+     ``LOG_ROTATE_DAILY=0 bash scripts/…`` to fall back to size mode.
+     ``get_log_path()`` updated to match both handler types via
+     ``isinstance(h, (RotatingFileHandler, TimedRotatingFileHandler))`` so
+     downstream consumers (dashboard log tail, ``scripts/log_drain.sh``,
+     etc.) still resolve the active log.
+
+     Operational implication: an MRR run started Monday morning will
+     produce ``morning_range_reversion_account1_<startup_ts>.log``
+     (Monday's session) +
+     ``…_<startup_ts>.log.2026-06-15`` /
+     ``…_<startup_ts>.log.2026-06-16`` / … through Friday.  Easy
+     to grep per-day; old archives auto-purged after 14 days.
+
+  Verification: 77/77 MRR tests pass (72 existing + 5 new orphan-sweep
+  cases); 576/576 full suite passes.  ``bash -n`` syntax-clean wrapper.
+  Smoke-tested both logging modes via a temp-dir reload exercise:
+  ``LOG_ROTATE_DAILY`` toggle correctly selects ``RotatingFileHandler``
+  vs ``TimedRotatingFileHandler`` with the expected ``%Y-%m-%d``
+  archive suffix.
+
+- **Master GUI — v2 Phase 3.3: chart auto-mode regression fix + remove duplicated WS chip (2026-06-13 night)** —
+  Two follow-ups to Phase 2.9 + 3.2:
+
+  1. **Auto-mode chart broke for windows < 5 days.**
+     Phase 2.9 wired hybrid Databento + API stitching for the
+     `source=auto` path. Part of that change had the auto branch always
+     pass the *inferred* `start_time`/`end_time` window down to
+     `trading_bot.get_historical_data()` — even when the window already
+     fit entirely inside the API horizon. That broke the tight presets
+     ("Auto · last 200", "1 day", "3 days"): the broker's `Bar/retrieve`
+     call returned zero bars whenever `end_time` landed inside the
+     still-open candle, so the chart rendered empty. Fix: in
+     `gui/chart_html.py`'s `handle_reload_data`, the auto branch now
+     **only** forces tight `start_time`/`end_time` on the API call when
+     `needs_databento=True` (i.e. the window straddles the api_horizon
+     and we need to stitch). When `needs_databento=False` we fall back
+     to `start_time=None, end_time=None` and let the broker return its
+     natural "latest `limit` bars" — same behaviour as pre-Phase-2.9.
+     Big windows (1mo / 3mo / 6mo / 1y) keep the explicit window so
+     stitching has a defined join point at api_horizon.
+
+  2. **Removed the now-redundant WS-health pair from the drawer body.**
+     Phase 3.2 promoted "Connected · uptime · last tick" into the
+     always-visible drawer-head chip but left the original
+     `<div class="conn">` + `<div id="conn-meta">` pair sitting under
+     the account selector in the body. Stripped them along with their
+     CSS (`.head .conn`, `.head .conn-meta`, `.head .conn .dot.warn`,
+     etc.). The 1 Hz `tickConnMeta()` and `setConn()` getElementById
+     lookups are null-guarded so no JS changes were required — they
+     simply stop writing to the gone nodes and continue mirroring into
+     the head-summary chip.
+
+- **Master GUI — v2 Phase 3.2: head-summary now shows WS health, not DLL (2026-06-13 night)** —
+  The always-visible drawer-head summary chip used to display the daily
+  loss-limit buffer (`DLL $XXX left`). Operators rarely act on that
+  number from the chip alone (DLL warnings already surface via toast +
+  the consec-loss breaker), but they DO need WS health visible at a
+  glance without expanding the Session drawer. Swapped the chip's
+  payload to:
+
+  ``● Connected · uptime 1m 25s · last tick 2s ago``
+
+  Wiring:
+  - Replaced `<span id="head-summary-risk">` with two spans in the
+    drawer-head: `#head-summary-conn-status` (the verbal status —
+    "Connected" / "Reconnecting…" / etc.) and `#head-summary-conn-meta`
+    (uptime + last-tick monospace string).
+  - `setConn(state, label)` now mirrors `label` into
+    `#head-summary-conn-status` so the chip's text follows reconnect
+    state instantly.
+  - `tickConnMeta()` (1 Hz) now writes both the existing drawer-body
+    `#conn-uptime` / `#conn-tick` and the new `#head-summary-conn-meta`
+    summary span. Single source of truth, two render targets.
+  - Stripped the dead DLL block in `applyAccountState` and the
+    associated `.head-summary #head-summary-risk.warn/.hot` CSS rules.
+
+- **Tooling — daily Databento freshness uses *existing* helpers** —
+  Earlier tonight I drafted a new `scripts/append_api_bars_to_databento.py`
+  not realising the repo already ships exactly what's needed. The
+  canonical pair has been there for a while and is what the cron line
+  should use:
+
+  - `scripts/stitch_broker_history_to_databento_1m.py` — chunks broker
+    `get_historical_data` in 10-day windows (1m × 10d ≈ 14 400 bars,
+    safely under the 20 k adapter cap), merges via
+    `historical_data/csv_merger.py` (canonical first, broker second so
+    duplicate timestamps keep the **newer** broker row), backs up
+    `*.bak.<UTC>` per root.
+  - `scripts/stitch_broker_history_to_databento_5m.py` — same flow for
+    5 m, independent of 1 m so each cadence stitches against its own
+    canonical CSV.
+
+  Cron pair (after CME daily settlement, weekdays only)::
+
+      30 17 * * 1-5 cd /path/to/tradeBotServer && \\
+          ENABLE_SIGNALR=false .venv/bin/python \\
+            scripts/stitch_broker_history_to_databento_1m.py \\
+          >>logs/stitch_broker_1m.log 2>&1
+      35 17 * * 1-5 cd /path/to/tradeBotServer && \\
+          ENABLE_SIGNALR=false .venv/bin/python \\
+            scripts/stitch_broker_history_to_databento_5m.py \\
+          >>logs/stitch_broker_5m.log 2>&1
+
+  My new script was deleted (it duplicated the chunking + merge logic
+  with no new value). The Phase 3.1 entry is replaced by this note;
+  there's no behaviour change to ship beyond pointing the cron at the
+  existing scripts.
+
+- **Master GUI — v2 Phase 3.0: DB rewiring — MRR/ORB range persistence + trade snapshots (2026-06-13 night)** —
+  Three queued items from `gui/design_todo.md` resolved in one round, all
+  hanging off existing Postgres infrastructure that just needed wiring.
+
+  * **MRR + ORB range DB persistence.** Until now only `overnight_range`
+    persisted its session range to `strategy_states.settings.or_ranges`,
+    so MRR / ORB boxes never showed on the live chart when those
+    strategies ran in a separate `strategy_executor` process (production
+    setup). Added:
+      - `BaseStrategy.persist_range_snapshot(snap, key=..., throttle=...)`
+        in `strategies/strategy_base.py` — generic helper that any
+        range-based strategy can call to mirror its per-symbol box into
+        `strategy_states.settings[key]`. Throttle defaults to 4s
+        (matches the OR pattern). Errors are logged at DEBUG and never
+        propagate.
+      - `_persist_mrr_ranges_to_db()` on
+        `MorningRangeReversionStrategy`, called at range-finalization
+        right after `_persist_anchor_snapshot`. Slot key: `mrr_ranges`.
+      - `_persist_orb_ranges_to_db()` on
+        `OpeningRangeBreakoutStrategy`, called whenever the build-window
+        scan updates `range_hi`/`range_lo`. Slot key: `orb_ranges`.
+      - Both methods emit `{symbol: {high, low, mid, width, session_date,
+        session_start_et, session_end_et, ...}}` and also write a
+        contract-prefix-stripped alias (`F.US.MNQ` → `MNQ`) so the
+        chart's symbol dropdown can find them.
+    Read side in `gui/chart_html.py::handle_strategy_details` now
+    consults `_strategy_ranges_from_db(trading_bot, account_id, name,
+    settings_key)` whenever the in-process `_state`/`_sessions` is empty
+    (the executor-owns-strategy case), with a per-strategy slot map:
+    `morning_range_reversion → mrr_ranges`, `opening_range_breakout →
+    orb_ranges`. Live in-process state still wins when present (avoids
+    DB-lag on the host process).
+
+  * **Trade snapshots — locked-at-close OHLCV + range capture.** Adds
+    `trade_snapshots` Postgres table (12 columns including JSONB
+    `bars_json`, `range_snapshot_json`, `metadata`). New methods on
+    `infrastructure/database.py::DatabaseService`:
+    `save_trade_snapshot(...)` (idempotent ON CONFLICT trade_id DO UPDATE)
+    and `get_trade_snapshot(trade_id)`. Capture runs in
+    `core/user_hub_handlers._capture_trade_snapshot`, scheduled as a
+    background `asyncio.create_task` from `_publish_trade_closed_events`
+    so a slow Databento read never delays downstream subscribers
+    (consec-loss breaker, GUI broadcast). Source-priority for the bar
+    window: (1) `core.chart_databento_loader.load_databento_window_for_chart`
+    (deep history, parquet-cached), (2) broker historical API
+    (current-edge bars). Strategy range is sourced from whichever of
+    `or_ranges`/`mrr_ranges`/`orb_ranges` matches the trade's symbol in
+    `strategy_states.settings` at close time. **Key choice:** rows are
+    keyed by the broker's `exit_fill_id` (which equals `trade.id` on the
+    `Trade/search` API the dashboard reads from), with a session-tracker
+    `trade_id` alias row written so tools that only have the internal id
+    still resolve.
+
+  * **`GET /api/chart/trade_snapshot/{trade_id}` endpoint** + frontend
+    rewire. The recap modal in `gui/master_control_v2.html` now follows
+    a two-tier source priority:
+      1. **Locked snapshot** (`/api/chart/trade_snapshot/<id>`) —
+         exact bars + range as captured at close. Always available
+         regardless of broker-history rolloff or Databento lag.
+      2. **Live Databento window** (`/api/chart/trade_recap`) —
+         existing fallback for trades that closed before the snapshot
+         feature was deployed (or whose capture failed).
+    `openTradeRecap()` uses the snapshot's `entry_time`/`exit_time` for
+    vertical lines and snaps to the nearest bar in the returned series
+    (same `_snapToBar` helper either way) so labels land cleanly.
+
+  * **Strategy range overlay on recap modal.** When a snapshot includes
+    `range_snapshot_json`, the modal now draws the H/L box (shaded
+    amber area-series + dotted H/L price lines + thin midline) so the
+    recap shows the *exact* setup geometry — same shape as
+    `scripts/walkforward_trade_recap_report.py`. Range slot is detected
+    from the saved `__slot` flag (`mrr_ranges`/`orb_ranges`/`or_ranges`)
+    so the price-line labels read `MRR-H` / `ORB-H` / `OR-H` accordingly.
+
+  See `gui/design_todo.md` for the now-resolved list and the one
+  remaining queued item (daily Databento append-from-API helper).
+
+- **Master GUI — v2 Phase 2.9: hybrid Databento+API chart history + recap vline timestamps (2026-06-13 late)** —
+  Two surface changes, one architectural.
+
+  * **`/api/chart/reload?source=auto` now stitches Databento + broker API.**
+    The broker API is current-to-the-tick but only serves the most recent
+    ~5 days; Databento covers multi-year history but lags by a day. The
+    auto path computes an effective window (explicit `start`/`end`, or
+    `limit × tf` back from now), then:
+      - window entirely older than `now − CHART_API_HORIZON_DAYS` (default
+        5d) → Databento only
+      - window entirely within the API horizon → API only
+      - window straddles → Databento for `[lo, api_horizon]` + API for
+        `[api_horizon, hi]`, deduped on `time` (API wins on overlap)
+    The stitched output is trimmed to the requested `limit` from the
+    recent edge so wide+coarse windows ("3 months 1h") show the full span
+    while narrow+fine windows ("1 day 1m") still hit the live API edge.
+    `history_source` in the JSON payload is now one of `databento`,
+    `api`, or `databento+api` so the eyebrow chip surfaces the choice.
+  * **New `core.chart_databento_loader.load_databento_window_for_chart`** —
+    the previous loader only tailed the last N rows of the canonical CSV;
+    the new helper routes through `core.backtest.parquet_cache.load_ohlcv_cached`
+    (same hot path as `scripts/walkforward_trade_recap_report.py`), slices
+    by `[start_utc, end_utc]`, optionally resamples 1m → coarser via
+    `HistoricalDataLoader`, and caps to the last `limit` rows. This is what
+    enables both the auto stitcher and `source=databento` with an explicit
+    window.
+  * **Frontend sends explicit `start`/`end` for time-window presets.** When
+    the user picks "1 month / 3 months / 1 year / etc.", `loadChartData()`
+    now appends `start=now−preset.minutes×60` & `end=now` to the request.
+    Without this, the implicit window from `limit × tf` understated wide
+    spans (limit gets cap-bound to 5000) and the auto stitcher would route
+    purely to the API.
+  * **Recap modal: time labels under each vertical line.** The IN/OUT
+    vertical-line `<div>`s now host a child `<span class="recap-vlabel">`
+    rendering `IN <m/d HH:mm>` / `OUT <m/d HH:mm>` in local time, pinned
+    to the bottom of the chart pane (just above the time-axis row) and
+    colored to match the trade outcome (moss = profit, rose = loss).
+    Reposition logic shares `updateRecapVerticals` so labels follow the
+    line on every pan/zoom/resize. Closes the user's "now add time labels
+    to the bottoms of the vertical lines" ask.
+
+  Deferred (still open): **daily append-from-API → canonical Databento CSVs**.
+  The user proposed a periodic helper that pulls the broker's last 24h of
+  bars and merges them into the canonical 1m/5m CSVs so Databento itself
+  stays current. The hybrid stitcher above keeps the chart visually
+  correct without that, but if we want offline tools (backtests, sweeps)
+  to also see today's bars, this script is still required. Sketch in
+  `docs/design_todo.md` notes.
+
+- **Master GUI — v2 Phase 2.8: side semantics + local-time chart axis (2026-06-13 night)** —
+  Round 2.7 introduced a real entry price via pairing but exposed two
+  more correctness bugs the previous derivation was hiding.
+
+  * **`side` now carries the position direction, not the close-fill side.**
+    Trade/search returns one record per fill; the closing fill of a
+    long is a SELL and the closing fill of a short is a BUY. The
+    enhance loop in `gui/chart_html.py::handle_get_trades` was passing
+    the close-fill side straight through, so trade #59 (long, qty 15,
+    closed for +$1672) read as `SELL MNQ` with `entry < exit` and
+    `pts = entry − exit < 0` even though pnl was positive — a confusing
+    sign mismatch. After pairing succeeds we now copy the *opener's*
+    side into `serialized_trade['side']` (the real position direction),
+    keep the close-fill side under `close_fill_side` for diagnostics,
+    and recompute `points` using the resolved direction so its sign
+    always matches `pnl`.
+  * **Entry-derivation fallback re-grounded on pnl sign.** When pairing
+    fails (e.g. open lies before the queried window) we still need to
+    reconstruct the missing entry price. The previous formula assumed
+    `side = position direction` — exactly the assumption that just
+    broke. The new fallback uses the `pnl` sign + the close-fill side
+    to disambiguate: profit + close-fill SELL → was LONG (`entry =
+    exit − |pts|`), loss + close-fill SELL → was LONG with adverse
+    move (`entry = exit + |pts|`), and so on. Result: derived trades
+    line up with the paired ones — sign of `pts` always matches pnl.
+  * **Chart x-axis now renders in local timezone.** The user reported
+    "15:20 = 11:20 EDT" — i.e. the LWC default UTC formatter. Both
+    `chart` and `recapChart` now pass `tickMarkFormatter` +
+    `localization.timeFormatter` that route through
+    `Date.toLocale*String(undefined, …)` so axis ticks and the
+    crosshair tooltip respect whatever timezone the browser is in.
+
+- **Master GUI — v2 Phase 2.7: real entry timestamps via half-turn pairing (2026-06-13 night)** —
+  After 2.6 the recap chart loaded real Databento bars, but `entry_time`
+  was still equal to `exit_time` because `core.cli_command_parser._handle_trades`
+  drops the half-turn open fills before they reach `handle_get_trades`.
+  That made both the IN and OUT arrows snap to the same minute on the
+  recap chart ("wild and ugly" arrow stacking).
+
+  * **`handle_get_trades` now pairs opens with closes itself.** Calls
+    `trading_bot.get_trades_from_api(...)` directly to get the *raw*
+    Trade/search records (incl. `is_half_turn=True` opens), sorts them
+    ascending, and FIFO-matches per symbol so each closing record gets
+    `{entry_time, entry_price, entry_order_id}` from its corresponding
+    open. Works because TopStepX prop accounts hold flat-or-one position
+    per symbol; partial scale-outs still get the oldest unmatched open
+    as the entry source until the queue empties.
+  * **Pairing wins over derivation.** When a paired open is found we
+    use the broker's actual entry timestamp + price and recompute
+    `points` from the real two-leg prices (no longer marked
+    `derived_entry`). The exit-minus-points fallback still runs for
+    trades where pairing failed (e.g. opens outside the queried window).
+  * **Same-bar scalp visual fix in the recap modal.** When entry and
+    exit snap to the same candle (very fast in-out scalps, or trades
+    where pairing failed and only the close timestamp is known), the
+    modal now pushes the exit marker to the next bar so the IN / OUT
+    arrows + connector line stay visually distinct instead of stacking
+    on top of each other.
+
+- **Master GUI — v2 Phase 2.6: recap charts on Databento + head label polish (2026-06-13 late)** —
+  Replaces the broker-history workaround with the canonical Databento path.
+
+  * **New endpoint `GET /api/chart/trade_recap`** in `gui/chart_html.py`.
+    Mirrors `scripts/walkforward_trade_recap_report.py` exactly:
+    `core.backtest.parquet_cache.load_ohlcv_cached(csv_path)` → slice
+    `[entry − pad, exit + pad]` on the naive-UTC index →
+    `core.backtest.ohlcv.dataframe_to_chart_bars_unix(sub)` → snap entry /
+    exit unix-times to bar opens via `snap_trade_unix_to_chart_bar_open`.
+    Returns LWC-ready bars + the *snapped* entry/exit times so markers
+    always land on a real candle (left-labeled bar convention). Query:
+    `symbol`, `entry`, `exit` (ISO 8601 or unix), optional `pad_minutes`
+    (clamped 5–1440, default 120), optional `timeframe` (`1m`/`5m`,
+    default `1m` with 5m fallback when 1m CSV is missing). Coverage =
+    full Databento history (currently 2023-05 → today for MNQ/MES/MGC),
+    so old trades work the same as today's.
+  * **Recap modal switched to the new endpoint.** No more "trade pre-dates
+    broker history" empty-state — the modal hits `trade_recap`, gets a
+    proper sliced window, and uses `entry_snapped`/`exit_snapped` for
+    the markers. Foot now reads e.g. `181 bars · 1m · MNQ_1m_databento.csv`
+    (and appends `entry derived from exit + pts` when applicable).
+  * **Header drawer label kept as "Session", account name truncated.**
+    Long broker names like `PRAC-V2-14334-54471239` collapse to
+    `PRAC-V2` in the drawer-toggle row (heuristic: first numeric tail
+    segment ≥ 3 chars ends the prefix). The full name remains in the
+    `<select>` inside the body.
+
+  * **Known network issue (not a code bug):** the user's last bot run
+    hit `socket.gaierror: nodename nor servname provided, or not known`
+    on the SignalR transport plus a Railway Postgres `Operation timed
+    out`. Both are DNS / connectivity at the host level — restart the
+    bot once the network is reachable; no patches required.
+
+- **Master GUI — v2 Phase 2.5: drawer-everything + recap data fixes (2026-06-13 evening)** —
+  Round of UI polish + targeted data fixes after the Phase 2.4 review.
+
+  * **Candle countdown moves next to Close (C).** Previously it was a long
+    way to the right of the last-price block (after the OHLC group, after
+    the big LP figure). It now sits inside the OHLC inline group as the
+    fifth element (`O · H · L · C · countdown`), where it's actually
+    next to the data it's counting down for. CSS shrinks the cell and
+    drops the left margin so it doesn't push other elements.
+  * **Trade-recap entry price reconstruction.** The broker's
+    `Trade/search` returns one fill per record (the close fill), so
+    `entry_price == exit_price` even though `pnl != 0`. We already
+    derived `points` from `pnl / (point_value × quantity)` in 2.4; this
+    pass also reconstructs the missing leg —
+    `entry = exit - pts` for LONG, `entry = exit + pts` for SHORT — so
+    the recap modal can render real arrows and price lines instead of
+    drawing both at the same level. Trades carry a `derived_entry: true`
+    flag so the recap footer can call out that the entry came from the
+    pnl/points reconstruction.
+  * **Recap modal degrades gracefully for old trades.** When a trade
+    pre-dates available broker history (anything older than ~3 weeks),
+    the windowed `/api/chart/reload?start=…&end=…` returns no bars and
+    we used to dump the latest 200 bars into the chart while still
+    placing entry/exit markers at the trade's timestamp. LWC silently
+    snaps off-range markers to the leftmost bar, which made the recap
+    confidently lie ("BUY at 5/19, 6:40 AM" pinned to today's first
+    bar with the wrong price). The recap now checks whether
+    `entry/exit_sec` falls inside `[firstBarT, lastBarT]` and skips
+    markers + price lines + connector entirely when it doesn't,
+    surfacing an honest footer instead: *"trade window pre-dates
+    broker history — showing latest N bars (markers omitted; snapshot
+    retention on roadmap)"*. Trade snapshot persistence (storing the
+    bar window + entry/exit metadata in a new `trade_snapshots` table
+    on close) is the canonical fix and remains queued.
+  * **Drawer toggle on the chart section.** The chart section is now a
+    drawer (`#chart-drawer`, default open). Click the `▸ Chart` toggle
+    to collapse the chart canvas + meta + order-entry + bracket rows.
+    `toggleDrawer` was extended to call `chart.applyOptions()` and
+    `chart.timeScale().fitContent()` after the body un-hides so LWC
+    repaints to the new container width.
+  * **Drawer toggle on the account header.** The header is now
+    `<header class="head drawer" id="head-drawer">` with a compact
+    one-line summary visible when collapsed (`▸ Account · <selected>
+    · <dot> <balance + unrealized>`). Default open. The mini connection
+    dot mirrors `connection-dot` so you can still see live/warn/error
+    status with the body collapsed.
+
+- **Master GUI — v2 Phase 2.4: review-pass fixes + recap window query (2026-06-13 PM)** —
+  Follow-up round addressing review feedback on the live v2 dashboard.
+
+  * **Trades-window selector now actually changes the data.** The inline
+    `onchange="onPerfWindowChange()"` was being called without an event
+    arg, so `getPerfWindowDays()` only ever read the *Performance*
+    selector. Both selectors now pass `this`, and `onPerfWindowChange`
+    falls back through `arg.value` → `arg.target.value` → `activeElement`
+    → `getPerfWindowDays()`.
+  * **Equity curve hover tooltip.** A floating tooltip now follows the
+    cursor over the equity area, showing the date and the cumulative P&L
+    of the hovered point (moss for gain, rose for loss). Wired through
+    `equityChart.subscribeCrosshairMove`.
+  * **Trades table "Pts" column.** The broker's `Trade/search` API
+    returns one fill per record, so `entry_price == exit_price` and the
+    points calc was always 0 even on winning/losing trades. The
+    enhanced-trades builder in `gui/chart_html.py` now falls back to
+    `pnl / (point_value × quantity)` whenever entry == exit and
+    `pnl != 0`, so the column reflects the actual price movement.
+  * **Range overlay reaches edge-to-edge.** The shaded box now spans the
+    visible time range of the chart instead of only the build window
+    (the strategy is "in effect" for the whole session). The build-
+    window region keeps a slightly stronger tint to mark *where* the
+    range was formed. Re-renders on pan/zoom via
+    `subscribeVisibleTimeRangeChange`.
+  * **Stale range filter.** Ranges with a `session_date` more than 36
+    hours old are skipped client-side (handles overnight strategies'
+    yesterday-dated sessions while suppressing prior-week leftovers).
+  * **Trade-recap modal fetches the correct window.** Added `start` /
+    `end` query params (Unix seconds OR ISO 8601) to
+    `/api/chart/reload`; the modal now fetches the exact trade window
+    (entry − 2h → exit + 2h) instead of relying on whatever the most
+    recent 1000 bars happen to cover. Falls back to a plain limit-based
+    fetch if the windowed call returns nothing. The modal also adds
+    horizontal entry/exit price lines and a diagonal connector between
+    entry and exit points (walkforward visual).
+
+  Files: `gui/master_control_v2.html`, `gui/chart_html.py`.
+
+### Next
+- **MRR / ORB strategy-range DB persistence (planned)** — `overnight_range`
+  already round-trips its per-symbol H/L through
+  `strategy_state.or_ranges`, which is what makes the chart overlay
+  survive a strategy_executor restart. `morning_range_reversion`
+  (`_state[sym]`) and `opening_range_breakout`
+  (`_sessions[sym]`) currently keep their range state in-memory only,
+  so when MRR/ORB are run via the executor the main bot process can't
+  read them and the v2 chart shows no overlay until the strategy
+  rebuilds the range from scratch. Adding a `persist_state()` /
+  `restore_state()` pair to both classes (writing to
+  `strategy_state.range_state`) is the next discrete piece.
+- **Trade snapshot capture on close (planned)** — store a pre-trimmed
+  bar-window + entry/exit metadata to a `trade_snapshots` table at the
+  moment a trade exits, so the recap modal can re-render even months
+  later without depending on broker historical APIs that may have
+  rolled past the trade. Fetched on demand by the recap modal via a
+  new `/api/chart/trade_snapshot/{trade_id}` endpoint.
+
 ### Added
+- **Master GUI — v2 Phase 2.3: live strategy range overlays on the chart (2026-06-13 PM)** —
+  When a range-based strategy is running (overnight_range / morning_range_reversion /
+  opening_range_breakout / overnight_reversion), the v2 chart now draws the
+  same shaded build-window box + high/low/midline overlay that the static
+  walkforward trade-recap charts use.
+
+  * **Backend**: `handle_strategy_details` extended to expose
+    `details.ranges[symbol] = {high, low, mid, size, session_start_et,
+    session_end_et}` and `details.range_window = {start_et, end_et, tz}`
+    for MRR / ORB / overnight_reversion (overnight_range already had this
+    shape). MRR pulls per-symbol H/L from `_state[sym]`; ORB pulls from
+    `_sessions[sym].range_hi/range_lo`; both compute session timestamps
+    from the strategy's `range_start` / `range_end_open` attributes.
+    Files: `gui/chart_html.py`.
+
+  * **Frontend**: `master_control_v2.html` now polls active strategies
+    via `loadStrategies` and, for each that exposes `details.ranges`,
+    fetches the per-symbol H/L. When the chart symbol matches, it draws:
+    - 3 horizontal price lines (`H`, `L`, `mid`) using
+      `candlestickSeries.createPriceLine` — visible across the entire
+      chart with right-axis labels.
+    - 1 shaded baseline-series rectangle across the build window
+      (`session_start_et` → `session_end_et`) using the same
+      `addBaselineSeries({ baseValue: { type: 'price', price: lo }, ... })`
+      pattern as the static walkforward charts.
+    Each strategy gets its own colour palette (overnight_range = moss,
+    MRR = amber, ORB = slate-blue, overnight_reversion = rose). Overlays
+    redraw on chart symbol change and on every `loadStrategies` cycle
+    (15 s).
+
+    Limitation: when MRR / ORB run via `core/strategy_executor.py` (a
+    separate subprocess), the main bot may not have the strategy's
+    in-memory `_state` loaded. overnight_range already has DB persistence
+    via the `strategy_state.or_ranges` blob; extending DB persistence to
+    MRR/ORB is a follow-up.
+
+### Added / Changed
+- **Master GUI — v2 Phase 2.2: candle countdown, symbol search, drawer-everywhere, trade recap (2026-06-13 PM)** —
+  Six follow-ups to the data-correctness pass.
+
+  * **Candle countdown** — small `mm:ss` count-down to the right of the
+    last-price legend. Uses `__lastBarOpenSec + tfSeconds`, ticks every
+    second, goes muted → `linen` (last 25%) → `rose` (last 10%).
+  * **Symbol combobox** — replaced the basic 3-option `<select>` with a
+    custom popover: a search input, MNQ / MES / MGC pinned as favorite
+    pills at the top, and a scrollable list of all account-available
+    contracts pulled from `/api/chart/contracts` (filtered by typed
+    query). The hidden `<select>` stays as the source-of-truth so all
+    existing handlers (`onChartContextChange`) keep working.
+  * **Drawer-everywhere** — Active, Performance, Trades, and Strategies
+    sections now use the same collapsible drawer pattern as Terminal.
+    Open state persists in `localStorage['masterv2.drawers.open']`.
+    Default open: all of Active / Performance / Trades / Strategies;
+    Terminal stays closed-by-default. The chart section is intentionally
+    NOT collapsible.
+  * **Refresh rate** — default bumped from 4× to **12×/sec**, options
+    extended to include 1× / 2× / 4× / 8× / 12× / **24×** (matches v1).
+    Persists in localStorage.
+  * **Chart canvas** — default height bumped another 10% (462 → **508 px**).
+  * **Trade recap modal** — every row in the Trades table gets a "view"
+    link. Click opens a modal showing the trade on a 5-minute candlestick
+    chart, windowed to 90 min before entry through 90 min after exit,
+    with entry/exit arrows (`IN` / `OUT`) coloured moss/rose by P&L sign.
+    Same per-trade snapshot pattern as
+    `scripts/walkforward_last_trades_charts.py`. ESC closes; click the
+    backdrop closes. Uses the existing `/api/chart/reload?limit=1000`
+    endpoint, falls back to the latest 200 bars if the trade is older
+    than the available history (~3.5 days at 5m × 1000).
+
+  Files: `gui/master_control_v2.html`.
+
+### Changed / Fixed
+- **Master GUI — v2 Phase 2.1: data-correctness pass + UX polish (2026-06-13 PM)** —
+  Bug-fix and polish round on `gui/master_control_v2.html` after live review.
+
+  **Data correctness — KPIs / Equity / Trades all now derive from a single
+  `/api/chart/trades` fetch.** Previous code split this across three endpoints
+  (`/performance/metrics`, `/pnl/history`, `/trades`) which produced
+  inconsistent values:
+  * **Net P&L** showed `$0.00` because it was reading `current.realized_pnl`
+    from live account state (often zero for stale sessions). Now uses
+    `data.statistics.total_pnl`.
+  * **Avg trade** showed `$0.00` because the metrics endpoint never set
+    `trades.avg_trade`. Now computed as `total_pnl / total_trades`.
+  * **Max drawdown** showed values like `599.7%` / `1757.4%` because the
+    metrics endpoint returns drawdown in **dollars** but the v1 widget
+    treated it as a percent. Now uses `statistics.max_drawdown_pct`
+    (already a proper percent).
+  * **Equity curve** stayed empty because `/api/chart/pnl/history` queries
+    the `trade_history` DB table — sometimes empty even when `/chart/trades`
+    has hundreds of fills. Now built **client-side** by cumulative-summing
+    `pnl` over sorted exit_time from the trades list. Always matches the
+    visible table.
+
+  **New KPI cells: Best streak / Current streak.** Computed client-side from
+  the trades list. Cells render as `<n><W|L>` with W in moss-green, L in
+  rose. KPI grid expanded from 6 to 8 cells (4-column layout).
+
+  **Stale-order filter.** Orders with status REJECTED / CANCELLED / FILLED /
+  EXPIRED / DONE / CLOSED are now filtered out of the Orders table client
+  side, so rejected fat-finger orders from market-closed hours stop
+  lingering on the board.
+
+  **Trades table is now scrollable** (max-height 520px, sticky thead,
+  custom thin scrollbar) instead of growing the page.
+
+  **Chart controls:**
+  * Default chart height 420 → **462px** (+10%).
+  * **Maximize** link in the chart-meta — toggles a body class that hides
+    everything but the chart section + trade row, with a sticky/blurred
+    trade row at the bottom of the viewport.
+  * **Refresh-rate selector** (1× / 4× / 12× per second) restored next to
+    the History-source dropdown; persists in localStorage.
+
+  **Header:**
+  * Added a small mono-typed line under the connection dot:
+    `uptime 2h 14m · last tick 1s ago` — uptime ticks every second, last-tick
+    color goes moss → linen → rose as the WS message age crosses 10s / 60s.
+
+  **Misc:** PRICE / TYPE column gap in the Orders table fixed (extra
+  padding on the Type column). WS handler collapsed: `metrics_update`,
+  `performance_metrics`, `pnl_history`, `session_trades` all invalidate the
+  trades cache and re-fetch the unified trades response. Removed
+  `loadPerformanceMetrics` / `loadPnlHistory` (folded into
+  `loadTradesTable`).
+
+  Files: `gui/master_control_v2.html`.
+
+### Added
+- **Master GUI — v2 Phase 2: Performance, Trades, Equity, Strategies, Terminal (2026-06-13 AM)** —
+  Phase 2 of the P6 Quiet Trader rewrite. The "wiring next round" placeholder
+  in `gui/master_control_v2.html` is replaced with four fully-wired sections:
+  * **Performance** — 6-cell KPI grid (Trades / Win rate / Net P&L / Avg
+    trade / Max drawdown / Profit factor) with italic-serif labels and big
+    JetBrains-Mono numerics. Window selector at top-right (Today / 7d / 30d
+    / 90d / 1y / All). Pulls `/api/chart/performance/metrics?period_days=N`
+    every 30s plus on `metrics_update`/`performance_metrics` WS pushes.
+  * **Equity curve** — Lightweight Charts area series (transparent canvas,
+    bone-white line) below the KPIs. Fed from `/api/chart/pnl/history` —
+    converts ISO timestamps → Unix seconds, dedupes by time so LWC never
+    rejects the dataset.
+  * **Trades** — sortable-feel table (newest first by trade_number),
+    9 columns matching the prototype (#, Side, Entry, Exit, Entry px, Exit
+    px, Pts, P&L, Cum). Side is rendered as a small letter-spaced "BUY" /
+    "SELL" tag in moss / rose. Window selector mirrors the Performance one;
+    changing either keeps both in sync and re-fetches both endpoints.
+  * **Strategies** — italic-serif active list with `<symbols> · <tf> · N pos
+    · runtime` meta and a ghost Stop pill per row, plus a horizontal
+    "strat-row" with Strategy / Symbols / Timeframe + Start pill at the
+    bottom of the section. Pulls `/api/chart/strategy/status` every 15s.
+    Start posts `{strategy, symbols[], timeframe}`; Stop posts `{strategy}`.
+  * **Terminal** — collapsible drawer ("▸ Terminal — N logs") matching the
+    P6 prototype. Subscribes to WS `log` messages, keeps the last 500 entries
+    in memory and renders the last 200 to the DOM, color-coded INFO / OK /
+    WARN / ERR. Auto-scrolls when the drawer is open.
+
+  Window state persists in localStorage (`masterv2.perf.window`) and
+  syncs the Performance and Trades selectors. Singular/plural fix on the
+  rolling-N label ("rolling 1 month", "rolling 1 year").
+
+  Phase 3 (next): hotkeys (b/s/f/c/r/esc), audio alerts, desktop
+  notifications, then `/master` becomes a redirect to `/master/v2`.
+
+  Files: `gui/master_control_v2.html` (~1100 → ~1590 lines).
+
+- **Master GUI — v2 (P6 Quiet Trader, Phase 1) (2026-06-12 PM)** —
+  After previewing P1–P6 the user picked **P6 Quiet Trader**. New file
+  `gui/master_control_v2.html` implements P6 as a real, live dashboard
+  served alongside the existing v1 — both stay accessible:
+  * `/master`    — v1 (existing dashboard, untouched)
+  * `/master/v2` — v2 (P6 Quiet Trader, wired)
+  * Top-right pill switcher toggles between them.
+
+  Phase 1 wires the trading-critical path: WebSocket connection with
+  reconnect/backoff, account selector + switching, live stat strip
+  (Balance / Unrealized / Realized P&L), chart with all controls
+  (Symbol / Timeframe / Range / History source) including the
+  recently-added Range selector, OHLC + last-price legend, order entry
+  (market / limit / stop / stop-limit / trailing-stop) with Bracket
+  (SL/TP price) row, Buy / Sell / Cancel / Flatten, positions table with
+  Close action, orders table with Cancel action, all reusing the
+  existing `/api/chart/*` endpoints.
+
+  Phase 2 (placeholder banner visible in v2) will wire Performance KPIs,
+  Trades table, Equity curve, Strategies, Terminal log stream. Phase 3
+  will add hotkeys, alerts, notifications, then v2 becomes the default.
+
+  Visual fidelity matches the prototype: italic-serif KPI/eyebrow labels,
+  hairline-underlined select inputs, SAFE filled buy/sell pills,
+  ghost cancel/flatten pills, transparent chart canvas, type-only
+  Active section. Drops v1's drag-drop panel reordering, panel
+  visibility toggles, multi-theme presets, and Customize button —
+  these are intentionally out-of-scope for v2.
+
+  Files: `gui/master_control_v2.html` (new, ~1100 lines),
+  `gui/chart_html.py` (`/master/v2` route),
+  `gui/serve_previews.py` (preview-server route so layout can be
+  reviewed at `:8787/master/v2` without launching the live bot).
+
+- **Master GUI — P5/P6 hybrid prototypes (2026-06-12 PM)** —
+  Two additional prototypes synthesizing the user's preferred P3 (Reading Room)
+  and P4 (Whitespace) directions:
+  * `master_control_preview_5.html` **Atelier Press** — P3's editorial
+    masthead and italic-serif accents, but with P4's transparent chart, big
+    KPI numbers, and zero panel chrome. Trade pills stay filled for execution
+    safety.
+  * `master_control_preview_6.html` **Quiet Trader** — P4's austere type-only
+    bones, but with P3-imported italic-serif KPI labels and SAFE filled
+    Buy/Sell pills (replacing P4's risky underlined text controls).
+
+  `gui/serve_previews.py` and the `/master/preview/{n}` route in
+  `gui/chart_html.py` now accept `n in {1..6}`. The variant switcher pill in
+  every prototype lists all six options.
+
+- **Master GUI — redesign prototypes (2026-06-12 PM)** —
+  Four self-contained static prototype HTMLs in `gui/master_control_preview_{1..4}.html`
+  exploring the **Editorial + Paper** redesign direction. Each is a single
+  self-contained file (mock data, no live wiring) so they have **zero runtime
+  impact on the live dashboard**. Variants:
+  * `_1.html` **Pure Paper** — single column, sticky chart, hairline rules,
+    no panel chrome.
+  * `_2.html` **Bound Paper** — max-width centered column, thin section
+    borders, sticky stat strip.
+  * `_3.html` **Reading Room** — editorial masthead with Instrument Serif
+    headings, 64–80px rhythm, no rules.
+  * `_4.html` **Whitespace** — maximum minimal, type-only structure, large
+    KPI numbers, transparent chart.
+
+  Routes added:
+  * `gui/chart_html.py` — new `/master/preview/{n}` route for the live master GUI
+    (requires GUI restart to register).
+  * `gui/serve_previews.py` — standalone preview server on port 8787 so the
+    prototypes can be browsed without restarting the live bot. Run with
+    `python gui/serve_previews.py`.
+
+  Each prototype has a fixed top-right variant switcher pill linking to the
+  other three plus a `Live` link back to `/master`. All four use the same mock
+  dataset (MNQ 5m, 82 trades, $152,081 balance) and the existing
+  graphite/linen/moss palette so the comparison is purely about structure,
+  rhythm, and chrome.
+
 - **Master GUI — Chart Range selector (2026-06-12 PM)** —
   New "Range" dropdown in the chart controls row (`gui/master_control.html`)
   controls how far back / how many bars to load. Two `<optgroup>`s:

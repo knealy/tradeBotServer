@@ -58,12 +58,12 @@ def _env_float(name: str, default: float) -> float:
 
 
 # When MARKET HUB has not delivered a tick for this symbol in
-# ``MARKET_HUB_MAX_SILENCE_SECONDS``, the feed is considered ZOMBIED.
-# Default 120 s — tight enough to catch silent-failure within one
-# 5-min bar, loose enough that thin pre-market gaps don't cause
-# false alarms.  Tunable via env.
+# ``MARKET_HUB_MAX_SILENCE_SECONDS``, the quote path is considered stale.
+# Default **900 s (15 min)** — matches MRR ``max_bar_staleness_seconds``
+# and tolerates SignalR quote pauses when REST + periodic bar-completion
+# still deliver fresh bars.  Tunable via env.
 MARKET_HUB_MAX_SILENCE_SECONDS: float = _env_float(
-    "DATA_FEED_MARKET_HUB_MAX_SILENCE_S", 120.0
+    "DATA_FEED_MARKET_HUB_MAX_SILENCE_S", 900.0
 )
 
 # USER HUB max silence — order/position/account events naturally
@@ -83,16 +83,28 @@ MARKET_HUB_STARTUP_GRACE_SECONDS: float = _env_float(
     "DATA_FEED_STARTUP_GRACE_S", 60.0
 )
 
+# In ``warn`` gate mode, feed silence beyond this threshold upgrades the
+# decision from warn-and-proceed to refuse.  Prevents the 2026-06-17
+# failure mode: orders placed on a 7700 s zombie feed, then cancelled
+# ~3 min later by cancel-on-staleness — worst operator UX.  Mild
+# transients (120-300 s) still warn-and-proceed; severe zombies refuse.
+DATA_FEED_HEALTH_SEVERE_SILENCE_SECONDS: float = _env_float(
+    "DATA_FEED_HEALTH_SEVERE_SILENCE_S", 900.0
+)
+
 
 # ─────────────────────── data classes ────────────────────────────────
 
 
 @dataclass
 class SymbolFeedState:
-    """Per-symbol Market Hub state."""
+    """Per-symbol Market Hub + bar-cache state."""
     last_tick_at_mono: Optional[float] = None
     last_tick_at_wall: Optional[datetime] = None
     total_ticks: int = 0
+    last_bar_at_mono: Optional[float] = None
+    last_bar_at_wall: Optional[datetime] = None
+    total_bars: int = 0
 
 
 @dataclass
@@ -176,6 +188,28 @@ class DataFeedHealthMonitor:
             st.last_tick_at_wall = now_w
             st.total_ticks += 1
 
+    def record_bar_activity(self, symbol: str) -> None:
+        """Called when a closed bar lands in the live cache or REST poll.
+
+        The quote-only health path falsely flagged zombies when SignalR
+        quotes paused but REST + periodic bar-completion still delivered
+        fresh bars (2026-06-17 MRR incident).  Bar activity is a second
+        liveness signal — feed is healthy if *either* path is fresh.
+        """
+        if not symbol:
+            return
+        sym = symbol.upper()
+        now_m = self._mono()
+        now_w = self._wall()
+        with self._lock:
+            st = self._symbols.get(sym)
+            if st is None:
+                st = SymbolFeedState()
+                self._symbols[sym] = st
+            st.last_bar_at_mono = now_m
+            st.last_bar_at_wall = now_w
+            st.total_bars += 1
+
     def record_user_event(self, kind: str = "unspecified") -> None:
         """Called on every order / position / account hub event."""
         now_m = self._mono()
@@ -209,7 +243,7 @@ class DataFeedHealthMonitor:
     # ─── query (called from any thread) ──────────────────────────────
 
     def market_hub_age_seconds(self, symbol: str) -> Optional[float]:
-        """Seconds since the most recent tick for ``symbol``.
+        """Seconds since the most recent quote tick for ``symbol``.
 
         ``None`` if no tick has ever been recorded for this symbol.
         """
@@ -220,6 +254,38 @@ class DataFeedHealthMonitor:
             if st is None or st.last_tick_at_mono is None:
                 return None
             return now_m - st.last_tick_at_mono
+
+    def bar_activity_age_seconds(self, symbol: str) -> Optional[float]:
+        """Seconds since the most recent bar close / REST refresh."""
+        sym = symbol.upper()
+        now_m = self._mono()
+        with self._lock:
+            st = self._symbols.get(sym)
+            if st is None or st.last_bar_at_mono is None:
+                return None
+            return now_m - st.last_bar_at_mono
+
+    def total_bar_events(self, symbol: str) -> int:
+        sym = symbol.upper()
+        with self._lock:
+            st = self._symbols.get(sym)
+            return st.total_bars if st else 0
+
+    def symbol_both_paths_stale(
+        self, symbol: str, max_silence_s: Optional[float] = None,
+    ) -> bool:
+        """True only when BOTH quote ticks AND bar activity are stale.
+
+        Used by the watchdog and cancel-on-staleness logic so we don't
+        pull working orders while REST bars are still flowing.
+        """
+        max_s = float(max_silence_s if max_silence_s is not None else self._market_max_silence)
+        sym = symbol.upper()
+        qa = self.market_hub_age_seconds(sym)
+        ba = self.bar_activity_age_seconds(sym)
+        quote_stale = qa is None or qa > max_s
+        bar_stale = ba is None or ba > max_s
+        return quote_stale and bar_stale
 
     def user_hub_silent_since_last_order(self) -> Optional[float]:
         """Seconds elapsed between the last order placement and the
@@ -295,37 +361,54 @@ class DataFeedHealthMonitor:
         if self._paused:
             return HealthVerdict(True, "paused (backtest/replay)")
 
+        sym = symbol.upper()
+
         if self.in_startup_grace():
+            # Only bypass health checks while awaiting the *first* data for
+            # this symbol (quote OR bar).
+            if self.total_market_ticks(sym) == 0 and self.total_bar_events(sym) == 0:
+                return HealthVerdict(
+                    True,
+                    f"startup grace ({self._startup_grace:.0f}s) — "
+                    f"awaiting first data for {sym}",
+                )
+
+        quote_age = self.market_hub_age_seconds(sym)
+        bar_age = self.bar_activity_age_seconds(sym)
+
+        # Feed is alive if EITHER path is fresh — MRR can trade on REST
+        # bars + a finalized 7-8 anchor even when SignalR quotes pause.
+        quote_fresh = quote_age is not None and quote_age <= self._market_max_silence
+        bar_fresh = bar_age is not None and bar_age <= self._market_max_silence
+        if quote_fresh or bar_fresh:
+            user_silent = self.user_hub_silent_since_last_order()
+            if user_silent is not None and user_silent > self._user_max_silence_after_order:
+                return HealthVerdict(
+                    False,
+                    f"User Hub silent for {user_silent:.1f}s since the last order was placed "
+                    f"(threshold {self._user_max_silence_after_order:.0f}s); "
+                    f"order tracking is unreliable",
+                )
             return HealthVerdict(
                 True,
-                f"startup grace ({self._startup_grace:.0f}s) — health checks bypassed",
+                f"quote_age={quote_age} bar_age={bar_age}",
             )
 
-        sym = symbol.upper()
-        age = self.market_hub_age_seconds(sym)
-        if age is None:
+        if quote_age is None and bar_age is None:
             return HealthVerdict(
                 False,
-                f"Market Hub has NEVER delivered a tick for {sym} since startup; "
-                f"refusing to trade until at least one quote arrives",
-            )
-        if age > self._market_max_silence:
-            return HealthVerdict(
-                False,
-                f"Market Hub silent for {sym} for {age:.1f}s "
-                f"(threshold {self._market_max_silence:.0f}s); feed is likely zombied",
+                f"No quote ticks or bar activity for {sym} since startup; "
+                f"refusing to trade until at least one data path flows",
             )
 
-        user_silent = self.user_hub_silent_since_last_order()
-        if user_silent is not None and user_silent > self._user_max_silence_after_order:
-            return HealthVerdict(
-                False,
-                f"User Hub silent for {user_silent:.1f}s since the last order was placed "
-                f"(threshold {self._user_max_silence_after_order:.0f}s); "
-                f"order tracking is unreliable",
-            )
-
-        return HealthVerdict(True, f"market_age={age:.1f}s user_silent={user_silent}")
+        q_txt = f"{quote_age:.1f}s" if quote_age is not None else "never"
+        b_txt = f"{bar_age:.1f}s" if bar_age is not None else "never"
+        return HealthVerdict(
+            False,
+            f"Both data paths stale for {sym}: "
+            f"quote_silent={q_txt} bar_silent={b_txt} "
+            f"(threshold {self._market_max_silence:.0f}s)",
+        )
 
     # ─── control ──────────────────────────────────────────────────────
 
@@ -399,6 +482,73 @@ def set_monitor(monitor: Optional[DataFeedHealthMonitor]) -> None:
 def reset_monitor_for_tests() -> None:
     """Drop the singleton so the next ``get_monitor()`` builds a fresh one."""
     set_monitor(None)
+
+
+# ─────────────── health-gate policy (shared by bot + strategies) ─────
+
+
+def resolve_health_gate_mode() -> str:
+    """Return the active health-gate mode from env.
+
+    Modes:
+      * ``warn``   — mild degradation logs WARNING and proceeds; severe
+        degradation (see ``resolve_health_gate_decision``) refuses.
+      * ``off``    — gate silent.
+      * ``refuse`` — any unhealthy verdict refuses the order.
+    """
+    if os.getenv("DATA_FEED_HEALTH_GATE", "true").lower() in ("false", "0", "no"):
+        return "off"
+    return os.getenv("DATA_FEED_HEALTH_GATE_MODE", "warn").lower()
+
+
+def resolve_health_gate_decision(
+    verdict: HealthVerdict,
+    monitor: DataFeedHealthMonitor,
+    symbol: str,
+    *,
+    gate_mode: Optional[str] = None,
+    severe_silence_s: float = DATA_FEED_HEALTH_SEVERE_SILENCE_SECONDS,
+) -> Tuple[str, str]:
+    """Map a feed-health verdict to a placement decision.
+
+    Returns ``(decision, reason)`` where ``decision`` is one of:
+
+      * ``proceed`` — healthy; place silently.
+      * ``warn``    — mildly unhealthy; log WARNING and place.
+      * ``refuse``  — unhealthy; block the order.
+
+    In ``warn`` mode, silence beyond ``severe_silence_s`` (default 300 s)
+    upgrades to ``refuse`` so we never place on a long-running zombie feed
+    only to have cancel-on-staleness pull the order minutes later.
+    """
+    mode = (gate_mode if gate_mode is not None else resolve_health_gate_mode()).lower()
+    if mode == "off":
+        return "proceed", ""
+    if verdict.ok:
+        return "proceed", verdict.reason or "feed healthy"
+
+    if mode == "refuse":
+        return "refuse", verdict.reason
+
+    # warn mode — tiered: severe zombies refuse, mild transients warn.
+    sym = symbol.upper()
+    age = monitor.market_hub_age_seconds(sym)
+    user_silent = monitor.user_hub_silent_since_last_order()
+    severe = float(severe_silence_s)
+    is_severe = False
+    if age is not None and age > severe:
+        is_severe = True
+    if user_silent is not None and user_silent > severe:
+        is_severe = True
+    if age is None and not monitor.in_startup_grace():
+        is_severe = True
+    if is_severe:
+        return (
+            "refuse",
+            f"{verdict.reason} — refusing despite warn mode "
+            f"(severe silence > {severe:.0f}s)",
+        )
+    return "warn", verdict.reason
 
 
 # ──────────────── market-hours helper (for watchdog) ─────────────────

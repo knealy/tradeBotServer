@@ -200,3 +200,68 @@ def load_anchor(
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("anchor_persistence: %s unreadable (%s)", p, exc)
         return None
+
+
+def patch_session_activity(
+    *,
+    strategy: str,
+    symbol: str,
+    session_date_et: date,
+    patch: Dict[str, Any],
+    base_dir: Optional[Path] = None,
+) -> bool:
+    """Merge ``patch`` into ``session_activity`` on the anchor JSON for this day.
+
+    Creates a minimal anchor stub when the range snapshot has not been written
+    yet (mid-session crash before finalisation).  Best-effort — never raises.
+    """
+    if not patch:
+        return False
+    try:
+        p = anchor_json_path(
+            strategy=strategy, symbol=symbol,
+            session_date_et=session_date_et, base_dir=base_dir,
+        )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.is_file():
+            try:
+                doc = json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                doc = {}
+        else:
+            doc = {
+                "strategy": str(strategy),
+                "symbol": str(symbol),
+                "session_date_et": session_date_et.isoformat(),
+                "anchor": None,
+            }
+        activity = dict(doc.get("session_activity") or {})
+        activity.update(patch)
+        activity["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        doc["session_activity"] = activity
+        p.write_text(json.dumps(doc, indent=2, sort_keys=False), encoding="utf-8")
+        return True
+    except OSError as exc:
+        logger.debug(
+            "anchor_persistence: patch_session_activity failed for %s/%s %s (%s)",
+            strategy, symbol, session_date_et, exc,
+        )
+        return False
+
+
+def load_session_activity(
+    *,
+    strategy: str,
+    symbol: str,
+    session_date_et: date,
+    base_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Return persisted ``session_activity`` dict, or ``{}`` if absent."""
+    doc = load_anchor(
+        strategy=strategy, symbol=symbol,
+        session_date_et=session_date_et, base_dir=base_dir,
+    )
+    if not doc:
+        return {}
+    activity = doc.get("session_activity")
+    return dict(activity) if isinstance(activity, dict) else {}

@@ -78,6 +78,28 @@ WATCHDOG_BACKOFF_INITIAL_SECONDS: float = _env_float(
     "DATA_FEED_WATCHDOG_BACKOFF_INITIAL_S", 60.0
 )
 
+# Cancel working bracket orders before a zombie reconnect?  Default OFF
+# (2026-06-17 operator policy): range-breakout strategies (MRR, ORB) place
+# stop-entry brackets that should stay on the broker until filled or
+# session-end flatten — NOT be pulled because local SignalR hiccuped.
+# Set ``DATA_FEED_CANCEL_ON_STALENESS=true`` for strategies that need the
+# 2026-06-11 blind-fill protection (continuous monitoring styles).
+def _cancel_on_staleness_enabled() -> bool:
+    return os.getenv(
+        "DATA_FEED_CANCEL_ON_STALENESS", "false",
+    ).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _discord_feed_alerts_enabled() -> bool:
+    return os.getenv(
+        "DATA_FEED_DISCORD_ALERTS", "true",
+    ).strip().lower() in ("true", "1", "yes", "on")
+
+
+DATA_FEED_DISCORD_ALERT_COOLDOWN_S: float = _env_float(
+    "DATA_FEED_DISCORD_ALERT_COOLDOWN_S", 900.0
+)
+
 
 class DataFeedWatchdog:
     """Async task that auto-reconnects zombied SignalR hubs."""
@@ -91,6 +113,8 @@ class DataFeedWatchdog:
         subscribed_symbols_getter=None,
         broker_adapter=None,
         working_order_registry=None,
+        discord_notifier=None,
+        account_name_getter: Optional[Callable[[], str]] = None,
         poll_interval_s: float = WATCHDOG_POLL_INTERVAL_SECONDS,
         reconnect_cooldown_s: float = WATCHDOG_RECONNECT_COOLDOWN_SECONDS,
         max_silence_s: float = MARKET_HUB_MAX_SILENCE_SECONDS,
@@ -115,6 +139,8 @@ class DataFeedWatchdog:
         self.user_hub = user_hub_manager
         self.broker_adapter = broker_adapter
         self.working_order_registry = working_order_registry
+        self.discord_notifier = discord_notifier
+        self._account_name_getter = account_name_getter
         self._poll_interval = float(poll_interval_s)
         self._cooldown = float(reconnect_cooldown_s)
         self._max_silence = float(max_silence_s)
@@ -126,6 +152,8 @@ class DataFeedWatchdog:
         self._last_reconnect_at_mono: float = 0.0
         self._backoff_s: float = WATCHDOG_BACKOFF_INITIAL_SECONDS
         self._reconnects_total: int = 0
+        self._feed_alert_active: bool = False
+        self._last_discord_alert_mono: float = 0.0
 
     # ─── lifecycle ───────────────────────────────────────────────────
 
@@ -189,16 +217,18 @@ class DataFeedWatchdog:
         if not symbols:
             return  # nothing subscribed yet — nothing to check
 
-        # Find the WORST-aged symbol; reconnect once for all of them.
+        # Find symbols where BOTH quote and bar paths are stale.
         worst_age: Optional[float] = None
         worst_symbol: Optional[str] = None
         for sym in symbols:
-            age = self.monitor.market_hub_age_seconds(sym)
-            if age is None:
-                # No tick ever seen for this symbol; treat as max silence.
-                worst_age = max(worst_age or 0.0, self._max_silence + 1.0)
-                worst_symbol = sym
+            if not self.monitor.symbol_both_paths_stale(sym, self._max_silence):
                 continue
+            qa = self.monitor.market_hub_age_seconds(sym)
+            ba = self.monitor.bar_activity_age_seconds(sym)
+            age = max(
+                qa if qa is not None else self._max_silence + 1.0,
+                ba if ba is not None else self._max_silence + 1.0,
+            )
             if worst_age is None or age > worst_age:
                 worst_age = age
                 worst_symbol = sym
@@ -206,6 +236,9 @@ class DataFeedWatchdog:
         if worst_age is None or worst_age <= self._max_silence:
             # All symbols healthy → reset backoff to initial.
             self._backoff_s = WATCHDOG_BACKOFF_INITIAL_SECONDS
+            if self._feed_alert_active:
+                await self._discord_feed_recovered(worst_symbol or "")
+                self._feed_alert_active = False
             return
 
         # ZOMBIE DETECTED — force reconnect.
@@ -216,11 +249,21 @@ class DataFeedWatchdog:
             self._reconnects_total + 1, self._backoff_s,
         )
 
-        # CANCEL-ON-STALENESS: before the reconnect, eagerly cancel every
-        # placed-but-unfilled entry order so it can't fill silently while
-        # the bot is reconnecting (the 2026-06-11 failure mode — see
-        # core/working_order_registry.py).
-        await self._cancel_working_orders_due_to_zombie(worst_symbol or "", worst_age)
+        await self._discord_feed_down(worst_symbol or "", worst_age)
+        self._feed_alert_active = True
+
+        # CANCEL-ON-STALENESS (opt-in): before reconnect, optionally cancel
+        # working entries.  OFF by default — range-breakout brackets should
+        # stay on the broker until fill or session-end (operator 2026-06-17).
+        if _cancel_on_staleness_enabled():
+            await self._cancel_working_orders_due_to_zombie(worst_symbol or "", worst_age)
+        else:
+            logger.info(
+                "watchdog: zombie reconnect for %s (%.0fs) — "
+                "DATA_FEED_CANCEL_ON_STALENESS=false, leaving working "
+                "brackets on the broker",
+                worst_symbol, worst_age,
+            )
 
         await self._force_reconnect_market_hub()
         self._last_reconnect_at_mono = self._mono()
@@ -231,6 +274,61 @@ class DataFeedWatchdog:
         self.monitor.reset_clock_for_grace()
 
     # ─── reconnection ────────────────────────────────────────────────
+
+    def _account_name(self) -> str:
+        if self._account_name_getter is None:
+            return ""
+        try:
+            return str(self._account_name_getter() or "")
+        except Exception:
+            return ""
+
+    async def _discord_feed_down(self, symbol: str, silence_s: float) -> None:
+        if not _discord_feed_alerts_enabled():
+            return
+        notifier = self.discord_notifier
+        if notifier is None or not getattr(notifier, "enabled", False):
+            return
+        now = self._mono()
+        if (
+            self._last_discord_alert_mono > 0.0
+            and (now - self._last_discord_alert_mono) < DATA_FEED_DISCORD_ALERT_COOLDOWN_S
+        ):
+            return
+        self._last_discord_alert_mono = now
+        try:
+            await notifier.send_data_feed_alert(
+                status="down",
+                symbol=symbol,
+                silence_s=silence_s,
+                threshold_s=self._max_silence,
+                account_name=self._account_name(),
+                reconnect_count=self._reconnects_total + 1,
+                cancel_on_staleness=_cancel_on_staleness_enabled(),
+                detail="Both quote and bar paths stale; forcing SignalR reconnect.",
+            )
+        except Exception as exc:
+            logger.debug("watchdog discord feed-down alert failed: %s", exc)
+
+    async def _discord_feed_recovered(self, symbol: str) -> None:
+        if not _discord_feed_alerts_enabled():
+            return
+        notifier = self.discord_notifier
+        if notifier is None or not getattr(notifier, "enabled", False):
+            return
+        try:
+            await notifier.send_data_feed_alert(
+                status="recovered",
+                symbol=symbol,
+                silence_s=0.0,
+                threshold_s=self._max_silence,
+                account_name=self._account_name(),
+                reconnect_count=self._reconnects_total,
+                cancel_on_staleness=_cancel_on_staleness_enabled(),
+                detail="Quote or bar path fresh again after zombie reconnect.",
+            )
+        except Exception as exc:
+            logger.debug("watchdog discord feed-recovered alert failed: %s", exc)
 
     async def _cancel_working_orders_due_to_zombie(
         self, worst_symbol: str, worst_age: float,
@@ -245,14 +343,16 @@ class DataFeedWatchdog:
         if self.working_order_registry is None or self.broker_adapter is None:
             return 0
         try:
-            from core.working_order_registry import cancel_all_working_orders
-            count = await cancel_all_working_orders(
+            from core.working_order_registry import cancel_working_orders_for_stale_symbols
+            count = await cancel_working_orders_for_stale_symbols(
                 self.working_order_registry,
                 self.broker_adapter,
+                self.monitor,
+                max_silence_s=self._max_silence,
                 reason=(
-                    f"zombie SignalR detected — {worst_symbol or 'unknown'} "
-                    f"silent for {worst_age:.1f}s; refusing to leave working "
-                    f"entries on the broker while reconnecting"
+                    f"zombie data paths — {worst_symbol or 'unknown'} "
+                    f"quote+bar both silent >{self._max_silence:.0f}s; "
+                    f"refusing to leave working entries while reconnecting"
                 ),
                 include_siblings=True,
             )
@@ -270,20 +370,26 @@ class DataFeedWatchdog:
             return 0
 
     async def _force_reconnect_market_hub(self) -> None:
+        # Snapshot symbols BEFORE stop — stop() must preserve the intent
+        # list but we also keep the watchdog getter as belt-and-suspenders.
+        symbols_backup = self._current_symbols()
         try:
             await self.market_hub.stop()
         except Exception as exc:
             logger.warning("watchdog: market_hub.stop() raised: %s", exc)
-        # Brief breath so SignalR really tears down.
         await asyncio.sleep(0.5)
         try:
             ok = await self.market_hub.start()
             if ok:
                 logger.info("🛡️  Market Hub reconnect OK (re-subscribing to symbols)")
-                # WebSocketManager has its own resubscribe path — call if present.
                 resub = getattr(self.market_hub, "_resubscribe_all_symbols", None)
                 if resub is not None:
                     await resub()
+                else:
+                    for sym in symbols_backup:
+                        sub = getattr(self.market_hub, "subscribe_quote", None)
+                        if sub is not None:
+                            await sub(sym)
             else:
                 logger.error("🛡️  Market Hub reconnect returned False")
         except Exception as exc:

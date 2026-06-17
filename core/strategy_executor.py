@@ -78,6 +78,11 @@ class StrategyExecutor:
         self.ws_client = None
         self.ws_port = None
         self.ws_connected = False
+        self.ws_session = None
+        self._ws_keepalive_task: Optional[asyncio.Task] = None
+        self._ws_connecting = False
+        self._last_gui_ws_warn_mono: float = 0.0
+        self._gui_ws_fail_streak: int = 0
         self._lifecycle_bound = None
         # Optional drift monitor (DRIFT_MONITOR=true). Subscribes to ORDER_FILLED
         # and writes a JSONL log under logs/drift/. Compare offline with
@@ -92,11 +97,33 @@ class StrategyExecutor:
             logger.debug("Strategy lifecycle handler: %s", exc)
 
     async def _heartbeat_loop(self) -> None:
-        """DB process heartbeat on a fixed interval (no strategy polling here)."""
+        """DB process heartbeat on a fixed interval (no strategy polling here).
+
+        Also touches an external heartbeat file when ``HEARTBEAT_FILE`` is set
+        in the environment (the 2026-06-15 unattended-operation hardening
+        adds a wrapper-side watchdog that monitors this file's mtime — if
+        the asyncio event loop wedges, the file goes stale and the
+        watchdog SIGTERMs the executor so the supervise loop can respawn).
+        """
+        heartbeat_path = os.environ.get("HEARTBEAT_FILE", "").strip()
         try:
             while self.is_running:
                 await self._update_process_state()
                 await self._sync_persisted_disable_flags()
+                if heartbeat_path:
+                    # Touch the file via os.utime (cheaper than open/close on
+                    # every cycle).  Falls back to a no-op on errors — a
+                    # heartbeat-file failure must NOT kill the executor.
+                    try:
+                        from pathlib import Path as _Path
+                        p = _Path(heartbeat_path)
+                        if not p.exists():
+                            p.parent.mkdir(parents=True, exist_ok=True)
+                            p.touch()
+                        else:
+                            os.utime(str(p), None)
+                    except Exception as exc:
+                        logger.debug("heartbeat file touch failed: %s", exc)
                 await asyncio.sleep(30)
         except asyncio.CancelledError:
             raise
@@ -239,6 +266,10 @@ class StrategyExecutor:
         
         # Connect to GUI WebSocket server if available
         await self._connect_to_gui_websocket()
+        if self._ws_keepalive_task is None or self._ws_keepalive_task.done():
+            self._ws_keepalive_task = asyncio.create_task(
+                self._websocket_keepalive(), name="gui_ws_keepalive",
+            )
         
         # Start requested strategies
         for strategy_name in strategies:
@@ -462,66 +493,100 @@ class StrategyExecutor:
     
     async def _connect_to_gui_websocket(self):
         """Connect to GUI WebSocket server to broadcast signals."""
+        if os.getenv("STRATEGY_EXECUTOR_GUI_WS", "true").lower() in ("false", "0", "no", "off"):
+            return
+        if self._ws_connecting:
+            return
+        self._ws_connecting = True
         try:
-            # Try to read port from file
             port_file = Path('.gui_websocket_port')
             if not port_file.exists():
                 logger.debug("📡 GUI WebSocket port file not found - signals will not be broadcast to GUI")
                 return
-            
+
             with open(port_file, 'r') as f:
                 self.ws_port = int(f.read().strip())
-            
+
             if not self.ws_port:
                 logger.debug("📡 No GUI WebSocket port found")
                 return
-            
-            # Connect to WebSocket server
+
             import aiohttp
             ws_url = f"ws://127.0.0.1:{self.ws_port}/ws"
-            logger.info(f"📡 Connecting to GUI WebSocket at {ws_url}")
-            
-            try:
-                # Create a persistent session for WebSocket
-                from aiohttp.client_ws import ClientWSTimeout
+            logger.debug("📡 Connecting to GUI WebSocket at %s", ws_url)
 
-                self.ws_session = aiohttp.ClientSession()
-                self.ws_client = await self.ws_session.ws_connect(
-                    ws_url,
-                    timeout=ClientWSTimeout(ws_close=10),
-                    heartbeat=30,
-                )
-                self.ws_connected = True
-                logger.info("✅ Connected to GUI WebSocket server - signals will be broadcast")
-                
-                # Start a task to keep connection alive and handle reconnection
-                asyncio.create_task(self._websocket_keepalive())
-            except Exception as e:
-                logger.debug(f"Could not connect to GUI WebSocket: {e}")
-                self.ws_client = None
-                self.ws_connected = False
-                if hasattr(self, 'ws_session'):
-                    await self.ws_session.close()
-                    self.ws_session = None
+            # Tear down any prior session before opening a new one — prevents
+            # the 2026-06-17 "Unclosed client session" storm that starved the
+            # asyncio loop and coincided with SignalR going zombie.
+            await self._disconnect_from_gui_websocket()
+
+            from aiohttp.client_ws import ClientWSTimeout
+
+            self.ws_session = aiohttp.ClientSession()
+            self.ws_client = await self.ws_session.ws_connect(
+                ws_url,
+                timeout=ClientWSTimeout(ws_close=10),
+                heartbeat=30,
+            )
+            self.ws_connected = True
+            self._gui_ws_fail_streak = 0
+            logger.info("✅ Connected to GUI WebSocket server - signals will be broadcast")
         except Exception as e:
-            logger.debug(f"Could not connect to GUI WebSocket: {e}")
+            logger.debug("Could not connect to GUI WebSocket: %s", e)
             self.ws_client = None
             self.ws_connected = False
-    
+            self._gui_ws_fail_streak += 1
+            if self._gui_ws_fail_streak >= 5:
+                # Stop hammering a dead/stale port — re-read on next interval.
+                self.ws_port = None
+                self._gui_ws_fail_streak = 0
+            if getattr(self, "ws_session", None):
+                try:
+                    await self.ws_session.close()
+                except Exception:
+                    pass
+                self.ws_session = None
+        finally:
+            self._ws_connecting = False
+
     async def _websocket_keepalive(self):
-        """Keep WebSocket connection alive and handle reconnection."""
+        """Keep WebSocket connection alive and handle reconnection.
+
+        Spawned exactly ONCE from ``run()`` — never recursively from
+        ``_connect_to_gui_websocket`` (that caused N duplicate loops).
+        """
         while self.is_running:
             try:
+                if os.getenv("STRATEGY_EXECUTOR_GUI_WS", "true").lower() in ("false", "0", "no", "off"):
+                    await asyncio.sleep(30)
+                    continue
                 if self.ws_client and not self.ws_client.closed:
-                    # Send ping to keep connection alive
                     await self.ws_client.send_json({'type': 'ping'})
-                    await asyncio.sleep(30)  # Ping every 30 seconds
+                    await asyncio.sleep(30)
                 else:
-                    # Connection lost, try to reconnect
+                    import time
+                    if not self.ws_port:
+                        port_file = Path('.gui_websocket_port')
+                        if port_file.exists():
+                            try:
+                                with open(port_file, 'r') as f:
+                                    self.ws_port = int(f.read().strip()) or None
+                            except Exception:
+                                self.ws_port = None
                     if self.ws_port:
-                        logger.info("📡 WebSocket disconnected, attempting reconnect...")
+                        now = time.monotonic()
+                        if now - self._last_gui_ws_warn_mono >= 60.0:
+                            logger.warning(
+                                "📡 GUI WebSocket disconnected — retrying (rate-limited; "
+                                "set STRATEGY_EXECUTOR_GUI_WS=0 to disable)"
+                            )
+                            self._last_gui_ws_warn_mono = now
+                        else:
+                            logger.debug("📡 GUI WebSocket disconnected, retrying...")
                         await self._connect_to_gui_websocket()
                     await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.debug(f"WebSocket keepalive error: {e}")
                 self.ws_connected = False
@@ -532,7 +597,7 @@ class StrategyExecutor:
         try:
             if self.ws_client and not self.ws_client.closed:
                 await self.ws_client.close()
-                logger.info("📡 Disconnected from GUI WebSocket")
+                logger.debug("📡 Disconnected from GUI WebSocket")
             self.ws_client = None
             self.ws_connected = False
             if hasattr(self, 'ws_session') and self.ws_session:

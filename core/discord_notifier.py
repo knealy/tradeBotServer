@@ -320,6 +320,70 @@ class DiscordNotifier:
             logger.error(f"Failed to send Discord signal notification: {e}")
             return False
 
+    async def send_data_feed_alert(
+        self,
+        *,
+        status: str,
+        symbol: str,
+        silence_s: float,
+        threshold_s: float,
+        account_name: str = "",
+        reconnect_count: int = 0,
+        cancel_on_staleness: bool = False,
+        detail: str = "",
+    ) -> bool:
+        """Alert when market data paths go zombie (down) or recover (recovered)."""
+        if not self.enabled:
+            return False
+        if not self._rate_limit_check():
+            return False
+        try:
+            is_down = status.strip().lower() == "down"
+            title = (
+                "🧟 Market data feed DOWN"
+                if is_down
+                else "✅ Market data feed recovered"
+            )
+            color = 15158332 if is_down else 3066993
+            fields = [
+                {"name": "Symbol", "value": symbol or "n/a", "inline": True},
+                {
+                    "name": "Silence",
+                    "value": f"{silence_s:.0f}s (threshold {threshold_s:.0f}s)",
+                    "inline": True,
+                },
+                {
+                    "name": "Reconnect #",
+                    "value": str(reconnect_count),
+                    "inline": True,
+                },
+                {
+                    "name": "Cancel on staleness",
+                    "value": "yes" if cancel_on_staleness else "no",
+                    "inline": True,
+                },
+            ]
+            if account_name:
+                fields.insert(0, {"name": "Account", "value": account_name, "inline": True})
+            if detail:
+                fields.append({"name": "Detail", "value": detail[:1024], "inline": False})
+            embed = {
+                "title": title,
+                "color": color,
+                "fields": fields,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            ok = await self._post({"embeds": [embed]})
+            if ok:
+                logger.info(
+                    "Discord data-feed alert sent (%s %s %.0fs)",
+                    status, symbol, silence_s,
+                )
+            return ok
+        except Exception as e:
+            logger.error("Failed to send Discord data-feed alert: %s", e)
+            return False
+
     async def send_inactivity_alert(
         self,
         account_name: str,

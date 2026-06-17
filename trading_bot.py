@@ -552,6 +552,12 @@ class TopStepXTradingBot:
                     series[-1] = bar_dict
                 else:
                     series.append(bar_dict)
+            # Bar-close is a second liveness signal for the health monitor.
+            try:
+                from core.data_feed_health import get_monitor
+                get_monitor().record_bar_activity(sym)
+            except Exception:
+                pass
         except Exception as exc:
             logger.debug("Error updating live bar cache: %s", exc)
 
@@ -1062,12 +1068,20 @@ class TopStepXTradingBot:
                 from core.data_feed_health import get_monitor as _get_health_monitor
                 from core.working_order_registry import get_registry as _get_wo_registry
                 if os.getenv("DATA_FEED_WATCHDOG", "true").lower() not in ("false", "0", "no"):
+                    def _watchdog_account_name() -> str:
+                        acc = getattr(self, "selected_account", None)
+                        if isinstance(acc, dict):
+                            return str(acc.get("name") or acc.get("id") or "")
+                        return str(acc or "")
+
                     self._data_feed_watchdog = DataFeedWatchdog(
                         monitor=_get_health_monitor(),
                         market_hub_manager=self.websocket_manager,
                         user_hub_manager=getattr(self, "user_hub_manager", None),
                         broker_adapter=getattr(self, "broker_adapter", None),
                         working_order_registry=_get_wo_registry(),
+                        discord_notifier=getattr(self, "discord_notifier", None),
+                        account_name_getter=_watchdog_account_name,
                         subscribed_symbols_getter=lambda: list(self._subscribed_symbols),
                     )
                     self._data_feed_watchdog.start()
@@ -4160,35 +4174,37 @@ class TopStepXTradingBot:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
 
             # ── Data-feed health gate (bot-level chokepoint) ──────────────────
-            # Default mode is WARN — surface degraded conditions loudly but
-            # let the strategy's signal logic decide.  Watchdog + place-and-
-            # verify + cancel-on-staleness collectively protect the trade.
-            # Set ``DATA_FEED_HEALTH_GATE_MODE=refuse`` to restore the
-            # pre-2026-06-11-fix block-the-order behaviour.
+            # Default mode is WARN with tiered severe cutoff — mild degradation
+            # logs loudly and proceeds; silence >300s refuses (2026-06-17 fix).
             try:
-                gate_mode = os.getenv("DATA_FEED_HEALTH_GATE_MODE", "warn").lower()
-                if os.getenv("DATA_FEED_HEALTH_GATE", "true").lower() in ("false", "0", "no"):
-                    gate_mode = "off"
+                from core.data_feed_health import (
+                    resolve_health_gate_decision,
+                    resolve_health_gate_mode,
+                )
+                gate_mode = resolve_health_gate_mode()
                 if gate_mode != "off":
                     monitor = getattr(self, "data_feed_monitor", None)
                     if monitor is not None:
                         verdict = monitor.is_safe_to_trade(symbol)
-                        if not verdict.ok:
-                            if gate_mode == "refuse":
-                                logger.error(
-                                    "🛑 place_oco_bracket_with_stop_entry: REFUSING %s %s order — "
-                                    "data feed unhealthy: %s",
-                                    side, symbol, verdict.reason,
-                                )
-                                return {
-                                    "error": f"data feed unhealthy: {verdict.reason}",
-                                    "orderId": None,
-                                    "method": "gated_health",
-                                }
+                        decision, reason = resolve_health_gate_decision(
+                            verdict, monitor, symbol, gate_mode=gate_mode,
+                        )
+                        if decision == "refuse":
+                            logger.error(
+                                "🛑 place_oco_bracket_with_stop_entry: REFUSING %s %s order — "
+                                "data feed unhealthy: %s",
+                                side, symbol, reason,
+                            )
+                            return {
+                                "error": f"data feed unhealthy: {reason}",
+                                "orderId": None,
+                                "method": "gated_health",
+                            }
+                        if decision == "warn":
                             logger.warning(
                                 "⚠️  place_oco_bracket_with_stop_entry: data feed degraded "
                                 "(%s %s) — placing anyway: %s",
-                                side, symbol, verdict.reason,
+                                side, symbol, reason,
                             )
             except Exception as _hg_exc:
                 logger.warning(
@@ -5225,6 +5241,15 @@ class TopStepXTradingBot:
                 result = self._merge_live_bars(result, symbol, timeframe)
             except Exception as exc:
                 logger.debug("Live-bar merge failed (continuing with REST-only result): %s", exc)
+
+            # REST poll delivered bars — counts as bar-path liveness even
+            # when SignalR quotes are paused.
+            if result:
+                try:
+                    from core.data_feed_health import get_monitor
+                    get_monitor().record_bar_activity(str(symbol).upper())
+                except Exception:
+                    pass
 
             return result
 

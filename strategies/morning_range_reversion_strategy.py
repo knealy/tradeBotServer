@@ -936,6 +936,20 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self._entry_bar_seq: Dict[str, int] = {}
         self._state: Dict[str, Dict[str, Any]] = {}
         self._live_managed_symbols: set[str] = set()
+        # Session-rollover orphan sweep guard.  ``_cancel_previous_session_orders``
+        # is invoked when ANY symbol transitions to a new ET trading date, but we
+        # only want to sweep ONCE per date (not once per symbol).  Tracks the most
+        # recent date for which the cancellation has already run.
+        self._last_orphan_sweep_date: Optional[date] = None
+        # Startup reconciliation guard.  ``_reconcile_with_broker_state`` runs
+        # exactly ONCE per strategy lifetime — gated by this flag — on the first
+        # ``analyze()`` call.  The mid-day-respawn scenario the supervise loop
+        # protects us against would otherwise launch into a session naked: the
+        # broker may already have working orders + open positions from the prior
+        # incarnation of this same process, and the freshly-constructed
+        # strategy has no idea they exist.  Single one-shot adoption closes the
+        # window.
+        self._did_startup_reconcile: bool = False
 
         # Compact init banner: groups related knobs on separate lines for terminal
         # readability. The single-line summary used to overflow most terminals and
@@ -1641,7 +1655,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
             df_health = {"available": False, "error": type(exc).__name__}
         try:
             anchor_persistence.record_anchor(
-                strategy=self.name,
+                strategy=self.NAME,
                 symbol=str(symbol),
                 session_date_et=session_date_et,
                 high=float(high),
@@ -1662,15 +1676,65 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     "🛑 %s %s anchor finalised with data-feed health = UNSAFE (%s). "
                     "Trade will proceed but the anchor extremes may be wrong; "
                     "see data/anchors/%s_%s_%s.json and run scripts/diff_anchor_live_vs_databento.py.",
-                    self.name, symbol,
+                    self.NAME, symbol,
                     df_health.get("reason") or "n/a",
-                    self.name, symbol, session_date_et.isoformat(),
+                    self.NAME, symbol, session_date_et.isoformat(),
                 )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
                 "anchor_persistence: record_anchor raised %s for %s/%s — ignoring",
                 type(exc).__name__, symbol, session_date_et,
             )
+
+    def _persist_mrr_ranges_to_db(self) -> None:
+        """Snapshot today's MRR anchor ranges into ``strategy_states.settings.mrr_ranges``
+        so the dashboard chart server can render the shaded box even when the strategy
+        runs in a separate executor process. Same pattern as
+        ``OvernightRangeStrategy._persist_or_ranges_to_db`` — see
+        ``BaseStrategy.persist_range_snapshot``.
+        """
+        snap: Dict[str, Dict[str, Any]] = {}
+        for sym, st in (self._state or {}).items():
+            try:
+                hi = st.get("H") if isinstance(st, dict) else None
+                lo = st.get("L") if isinstance(st, dict) else None
+                if hi is None or lo is None:
+                    hi = st.get("range_hi") if isinstance(st, dict) else None
+                    lo = st.get("range_lo") if isinstance(st, dict) else None
+                if hi is None or lo is None:
+                    continue
+                hi_f = float(hi)
+                lo_f = float(lo)
+            except (TypeError, ValueError):
+                continue
+            entry: Dict[str, Any] = {
+                "high": hi_f,
+                "low": lo_f,
+                "mid": (hi_f + lo_f) / 2.0,
+                "width": hi_f - lo_f,
+            }
+            sd = st.get("session_date") if isinstance(st, dict) else None
+            if sd is not None and hasattr(sd, "isoformat"):
+                entry["session_date"] = sd.isoformat()
+                try:
+                    from datetime import datetime as _dt, timedelta as _td
+                    start_et = _dt.combine(sd, self.range_start, tzinfo=self._tz)
+                    end_open = _dt.combine(sd, self.range_end_open, tzinfo=self._tz)
+                    entry["session_start_et"] = start_et.isoformat()
+                    entry["session_end_et"] = (end_open - _td(microseconds=1)).isoformat()
+                except Exception:
+                    pass
+            key = str(sym).upper()
+            snap[key] = entry
+            # Alias short-form when symbol is contract-prefixed (e.g. "F.US.MNQ" → "MNQ").
+            if "." in key:
+                short = key.split(".")[-1].strip()
+                if short and short != key:
+                    snap[short] = entry
+        self.persist_range_snapshot(
+            snap, key="mrr_ranges",
+            attr="_mrr_ranges_db_last_mono",
+        )
 
     def _bar_timestamp_eastern(self, bar: Dict[str, Any]) -> Optional[datetime]:
         ts = bar.get("timestamp") or bar.get("time") or bar.get("t")
@@ -1713,13 +1777,52 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     continue
         return default
 
+    def _expected_tag_marker(self) -> str:
+        """Return the strategy-name fragment that ACTUALLY appears in our
+        generated custom tags.
+
+        2026-06-15 bug fix: ``brokers/topstepx_adapter._generate_unique_custom_tag``
+        truncates the strategy name to 16 chars (TopStepX rejects long
+        customTags with opaque HTTP 500s).  For ``morning_range_reversion``
+        (23 chars) the resulting tag prefix is ``morning_range_re``, NOT
+        ``morning_range_reversion``.  The previous ``_live_tag_is_entry``
+        substring check looked for the full name → it ALWAYS returned False
+        in production, so:
+
+          * ``_has_open_position_or_pending_entry_async`` thought every
+            account had zero pending MRR entries → MRR could place duplicate
+            stop-entries on rapid re-evaluation.
+          * The 2026-06-15 orphan-sweep helper (``_cancel_previous_session_orders``)
+            never matched its own orders → orphan triggers carried across
+            sessions unchanged.
+
+        Computing the expected marker via the SAME truncation logic the
+        adapter uses makes the matcher automatically robust against future
+        strategy renames AND any tag-format tweaks in the adapter.
+        """
+        raw = str(getattr(self.config, "name", "") or "").lower()
+        safe = "".join(
+            ch if ch.isalnum() or ch in ("_", "-") else "_"
+            for ch in raw
+        )
+        if len(safe) > 16:
+            safe = safe[:16]
+        return safe
+
     def _live_tag_is_entry(self, tag: str) -> bool:
-        t = str(tag).lower()
-        if "morning_range_reversion" not in t and "morning-range-reversion" not in t:
+        # Normalise dashes ↔ underscores so we tolerate either delimiter
+        # (the adapter emits underscores; older docs/manual entries use dashes).
+        t = str(tag).lower().replace("-", "_")
+        marker = self._expected_tag_marker().replace("-", "_")
+        # Empty marker = no strategy name → nothing safe to match; bail.
+        if not marker or marker not in t:
             return False
-        if "-sl" in t or "-tp" in t:
+        # SL/TP children inherit the strategy marker but carry an ``_sl`` / ``_tp``
+        # suffix appended by the bracket adapter.  Those must NEVER be treated
+        # as entry orders (cancelling them naked-legs a live position).
+        if "_sl" in t or "_tp" in t:
             return False
-        return "stop_entry" in t or "stop_bracket" in t or "stop-entry" in t or "stop-bracket" in t
+        return "stop_entry" in t or "stop_bracket" in t
 
     def _live_order_is_pending_entry(self, order: Dict[str, Any], sym: str) -> bool:
         if not _order_counts_as_working_entry_for_risk(order):
@@ -1807,8 +1910,112 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 # immediate fade this session (stops churn while price stays beyond the range).
                 "immediate_block_until_inside": False,
                 "fades_this_session": 0,
+                "sweep_fired_high": False,
+                "sweep_fired_low": False,
             }
         return self._state[sym]
+
+    def _persist_session_activity(
+        self, symbol: str, session_date, st: Dict[str, Any],
+    ) -> None:
+        """Disk-backed sweep/fade state survives executor restarts."""
+        try:
+            from core.anchor_persistence import patch_session_activity
+            patch_session_activity(
+                strategy=self.NAME,
+                symbol=str(symbol).upper(),
+                session_date_et=session_date,
+                patch={
+                    "sweep_fired_high": bool(st.get("sweep_fired_high")),
+                    "sweep_fired_low": bool(st.get("sweep_fired_low")),
+                    "immediate_block_until_inside": bool(
+                        st.get("immediate_block_until_inside")
+                    ),
+                    "fades_this_session": int(st.get("fades_this_session", 0) or 0),
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "morning_range_reversion %s: session_activity persist skipped (%s)",
+                symbol, exc,
+            )
+
+    def _restore_session_activity(
+        self, symbol: str, session_date, st: Dict[str, Any],
+    ) -> None:
+        """Reload sweep guards written before a mid-session crash/restart."""
+        try:
+            from core.anchor_persistence import load_session_activity
+            activity = load_session_activity(
+                strategy=self.NAME,
+                symbol=str(symbol).upper(),
+                session_date_et=session_date,
+            )
+            if not activity:
+                return
+            for key in (
+                "sweep_fired_high",
+                "sweep_fired_low",
+                "immediate_block_until_inside",
+            ):
+                if key in activity:
+                    st[key] = bool(activity[key])
+            if "fades_this_session" in activity:
+                st["fades_this_session"] = max(
+                    int(st.get("fades_this_session", 0) or 0),
+                    int(activity.get("fades_this_session") or 0),
+                )
+            if activity.get("sweep_fired_high") or activity.get("sweep_fired_low"):
+                logger.info(
+                    "🔁 %-3s restored session activity for %s "
+                    "(fades=%d block_inside=%s high=%s low=%s)",
+                    symbol, session_date,
+                    int(st.get("fades_this_session", 0) or 0),
+                    st.get("immediate_block_until_inside"),
+                    st.get("sweep_fired_high"),
+                    st.get("sweep_fired_low"),
+                )
+        except Exception as exc:
+            logger.debug(
+                "morning_range_reversion %s: session_activity restore skipped (%s)",
+                symbol, exc,
+            )
+
+    def _apply_sweep_guard_from_price(
+        self,
+        symbol: str,
+        H: float,
+        L: float,
+        close: float,
+        st: Dict[str, Any],
+    ) -> None:
+        """If price is still outside the anchor box, treat the sweep as done.
+
+        Prevents a mid-session executor restart from re-firing ``immediate_stop``
+        hours after the market already swept (2026-06-17 MGC re-place at 11:20).
+        """
+        threshold_pts = float(getattr(self, "sweep_points_threshold", 0.0) or 0.0)
+        if threshold_pts > 0.0:
+            return
+        if close > H:
+            st["sweep_fired_high"] = True
+            st["immediate_block_until_inside"] = True
+        elif close < L:
+            st["sweep_fired_low"] = True
+            st["immediate_block_until_inside"] = True
+
+    def _terminal_order_status(self, order: Dict[str, Any]) -> bool:
+        """True when the broker order is no longer working."""
+        status = str(
+            order.get("status")
+            or order.get("orderStatus")
+            or order.get("state")
+            or ""
+        ).strip().lower()
+        return status in {
+            "cancelled", "canceled", "filled", "rejected", "expired",
+            "completed", "done",
+        }
 
     # ``record_trade_outcome`` is inherited from ``BaseStrategy`` and is the
     # live-mode entry point for the consec-loss breaker (driven by
@@ -2056,6 +2263,11 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 st["_logged_max_fades"] = True
             return None
 
+        if sweep == "high" and st.get("sweep_fired_high"):
+            return None
+        if sweep == "low" and st.get("sweep_fired_low"):
+            return None
+
         # Time-of-day entry window — skip entries outside [entry_start_et, entry_end_et]
         # so we can clip first-N-minutes / last-N-minutes regimes that
         # systematically underperform.  Both bounds inclusive; either ``None`` =
@@ -2254,6 +2466,12 @@ class MorningRangeReversionStrategy(BaseStrategy):
         )
         logger.info("🎯 %-5s %-3s @ %9.2f  (%s)", action, symbol, entry, reason)
         st["fades_this_session"] = int(st.get("fades_this_session", 0) or 0) + 1
+        if sweep == "high":
+            st["sweep_fired_high"] = True
+        else:
+            st["sweep_fired_low"] = True
+        st["immediate_block_until_inside"] = True
+        self._persist_session_activity(symbol, bar_et.date(), st)
         return {
             "action": action,
             "symbol": symbol,
@@ -2264,8 +2482,468 @@ class MorningRangeReversionStrategy(BaseStrategy):
             "reason": reason,
         }
 
+    async def _reconcile_with_broker_state(self) -> None:
+        """One-shot startup reconciliation against the broker's view of the world.
+
+        Why this exists
+        ───────────────
+        With the 2026-06-15 supervise loop in ``run_morning_reversion.sh``
+        the strategy_executor process can respawn mid-day after a crash.  The
+        newly-constructed ``MorningRangeReversionStrategy`` instance has
+        ``_live_managed_symbols = set()`` and zero entries in
+        ``_state[sym]["fades_this_session"]`` etc. — but the broker may still
+        have **stale state** from the previous incarnation:
+
+          1. Working stop-entry orders waiting at the prior session's level.
+          2. Open positions whose protective SL/TP brackets are still live.
+
+        Without reconciliation:
+
+          * Risk caps (``max_pending``, ``max_quantity``) under-count → the
+            strategy might place a second entry on top of an existing one.
+          * ``manage_positions`` won't see the prior position → no
+            ``flat_before`` enforcement, no ``max_hold_bars`` timeout.
+          * The orphan-sweep at the next session rollover would normally
+            handle the working-orders side, but that doesn't fire until the
+            ET date increments — a same-day crash leaves us naked for hours.
+
+        What this does
+        ──────────────
+        Pulls ``get_open_orders()`` + ``get_positions()`` from the broker
+        ONCE, then for each MRR-tagged surviving order/position:
+
+          * **Live positions** → register the symbol in
+            ``_live_managed_symbols`` so ``manage_positions`` and the
+            pending-entry check see it.  Seed ``_entry_bar_seq`` to the
+            current bar so ``max_hold_bars`` clocks from "right now"
+            (we can't recover the original entry bar; charging the timer
+            fresh is conservative — worst case we hold a little longer
+            than ideal).
+          * **Same-session working orders** → log them so the operator can
+            see what was adopted; leave intact (they're our valid pending
+            triggers).
+          * **Prior-session working orders** → cancel via
+            ``_cancel_previous_session_orders`` (handles ALL the safety
+            filters: tag-prefix, position-protected symbols, error
+            tolerance).  This is the mid-day equivalent of the next-day
+            rollover sweep.
+
+        Replay/backtest paths short-circuit at the top — no broker
+        round-trip, no test determinism impact.  Idempotent: the
+        ``_did_startup_reconcile`` guard ensures this fires exactly once per
+        strategy lifetime regardless of how many symbols call ``analyze()``.
+
+        Errors are caught and logged at ERROR but never raised — a failed
+        reconciliation must NOT prevent the strategy from running (the
+        existing risk checks are still defensive; they just don't have the
+        adoption boost).
+        """
+        if self._did_startup_reconcile:
+            return
+        bot = self.trading_bot
+        if getattr(bot, "_is_strategy_replay", False):
+            self._did_startup_reconcile = True
+            return
+        if getattr(bot, "backtest_engine", None) is not None:
+            self._did_startup_reconcile = True
+            return
+        if getattr(self, "_replay_engine", None) is not None:
+            self._did_startup_reconcile = True
+            return
+
+        symbols = self._configured_symbols_for_orphan_sweep()
+        if not symbols:
+            self._did_startup_reconcile = True
+            return
+
+        adopted_positions: List[str] = []
+        same_session_orders: List[tuple[str, str, str, Dict[str, Any]]] = []
+        prior_session_orders: List[tuple[str, str]] = []
+
+        try:
+            try:
+                open_orders = await bot.get_open_orders()
+            except Exception as exc:
+                logger.warning("📋 reconcile: get_open_orders failed (%s)", exc)
+                open_orders = []
+            try:
+                positions = await bot.get_positions()
+            except Exception as exc:
+                logger.warning("📋 reconcile: get_positions failed (%s)", exc)
+                positions = []
+
+            cfg_syms_upper = {s.upper() for s in symbols}
+
+            # ── Adopt open positions ──────────────────────────────────────
+            if isinstance(positions, list):
+                for pos in positions:
+                    if not isinstance(pos, dict):
+                        continue
+                    qty = pos.get("quantity") or pos.get("size") or 0
+                    try:
+                        if abs(int(qty)) <= 0:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                    raw_sym = (
+                        pos.get("symbol")
+                        or pos.get("contractName")
+                        or ""
+                    ).upper()
+                    if not raw_sym:
+                        parts = str(pos.get("symbolId", "")).split(".")
+                        if parts:
+                            raw_sym = parts[-1].upper()
+                    base_sym = next(
+                        (s for s in cfg_syms_upper if raw_sym.startswith(s)),
+                        None,
+                    )
+                    if not base_sym:
+                        continue
+                    self._live_managed_symbols.add(base_sym)
+                    # Seed the entry-bar timer from "now" so the existing
+                    # ``max_hold_bars`` guard still clocks down — we lost
+                    # the original entry's bar_seq across the respawn.
+                    self._entry_bar_seq[base_sym] = self._bar_seq
+                    adopted_positions.append(f"{base_sym}×{int(qty)}")
+
+            # ── Bucket working orders by session (today vs prior) ─────────
+            today_et = datetime.now(self._tz).date()
+            tag_marker = self._expected_tag_marker().replace("-", "_")
+            if isinstance(open_orders, list):
+                for order in open_orders:
+                    if not isinstance(order, dict):
+                        continue
+                    if self._terminal_order_status(order):
+                        continue
+                    raw_sym = (
+                        order.get("symbol")
+                        or order.get("contractName")
+                        or ""
+                    ).upper()
+                    if not raw_sym:
+                        parts = str(order.get("symbolId", "")).split(".")
+                        if parts:
+                            raw_sym = parts[-1].upper()
+                    base_sym = next(
+                        (s for s in cfg_syms_upper if raw_sym.startswith(s)),
+                        None,
+                    )
+                    if not base_sym:
+                        continue
+                    tag = str(
+                        order.get("customTag") or order.get("custom_tag") or ""
+                    )
+                    if not self._live_tag_is_entry(tag):
+                        continue
+                    order_id = str(
+                        order.get("id") or order.get("orderId") or ""
+                    ).strip()
+                    if not order_id:
+                        continue
+                    # Parse the YYMMDD prefix the adapter embeds via
+                    # ``%y%m%d%H%M%S`` (see
+                    # brokers/topstepx_adapter.py:5797) to classify the
+                    # order as same-session or prior-session.  Falls back
+                    # to "same-session" if the date can't be parsed — safer
+                    # to keep an order we own than to nuke it on a fuzzy
+                    # match.
+                    tag_lower = tag.lower().replace("-", "_")
+                    is_prior = False
+                    marker_idx = tag_lower.find(tag_marker)
+                    if marker_idx >= 0:
+                        rest = tag_lower[marker_idx + len(tag_marker):]
+                        # rest starts with "_YYMMDDHHMMSS_..."
+                        if rest.startswith("_") and len(rest) >= 7:
+                            yymmdd = rest[1:7]
+                            if yymmdd.isdigit():
+                                try:
+                                    yy = int(yymmdd[0:2])
+                                    mm = int(yymmdd[2:4])
+                                    dd = int(yymmdd[4:6])
+                                    tag_date = date(2000 + yy, mm, dd)
+                                    if tag_date < today_et:
+                                        is_prior = True
+                                except (ValueError, OverflowError):
+                                    pass
+                    if is_prior:
+                        prior_session_orders.append((base_sym, order_id))
+                    else:
+                        side = str(
+                            order.get("side")
+                            or order.get("action")
+                            or ""
+                        ).upper()
+                        same_session_orders.append(
+                            (base_sym, order_id, side, order)
+                        )
+                        self._live_managed_symbols.add(base_sym)
+
+            # ── Cancel prior-session orphans ──────────────────────────────
+            # We can't delegate to ``_cancel_previous_session_orders`` here:
+            # that helper has no date filter and would also cancel the
+            # same-session triggers we just adopted into
+            # ``same_session_orders``.  Cancel by the explicit ID list we
+            # pre-computed in the bucketing loop, with the
+            # position-protected-symbol rule re-applied so we still spare
+            # symbols carrying live trades.
+            position_protected: set[str] = set()
+            if isinstance(positions, list):
+                for pos in positions:
+                    if not isinstance(pos, dict):
+                        continue
+                    qty = pos.get("quantity") or pos.get("size") or 0
+                    try:
+                        if abs(int(qty)) <= 0:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                    raw_sym = (
+                        pos.get("symbol")
+                        or pos.get("contractName")
+                        or ""
+                    ).upper()
+                    if not raw_sym:
+                        parts = str(pos.get("symbolId", "")).split(".")
+                        if parts:
+                            raw_sym = parts[-1].upper()
+                    base = next(
+                        (s for s in cfg_syms_upper if raw_sym.startswith(s)),
+                        None,
+                    )
+                    if base:
+                        position_protected.add(base)
+
+            cancelled = 0
+            for sym, oid in prior_session_orders:
+                if sym in position_protected:
+                    logger.info(
+                        "   ↳ skipping prior-session %s order %s "
+                        "(live position present)",
+                        sym, oid,
+                    )
+                    continue
+                try:
+                    await bot.cancel_order(oid)
+                    cancelled += 1
+                    logger.info(
+                        "   🗑️  cancelled prior-session %s entry %s",
+                        sym, oid,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "   ↳ could not cancel %s order %s: %s",
+                        sym, oid, exc,
+                    )
+            if cancelled:
+                # Mark today as already-swept so the next-rollover guard
+                # doesn't fire a redundant sweep on the same broker state.
+                self._last_orphan_sweep_date = today_et
+
+            logger.info(
+                "📋 startup reconcile  positions=%s  same-session-orders=%s  "
+                "prior-session-cancelled=%d",
+                ",".join(adopted_positions) or "∅",
+                len(same_session_orders),
+                cancelled,
+            )
+            if same_session_orders:
+                try:
+                    from core.working_order_registry import get_registry as _get_wo_registry
+                    registry = _get_wo_registry()
+                    acct = getattr(bot, "selected_account", None)
+                    acct_id = ""
+                    if isinstance(acct, dict):
+                        acct_id = str(
+                            acct.get("id")
+                            or acct.get("account_id")
+                            or acct.get("accountId")
+                            or ""
+                        )
+                    elif acct:
+                        acct_id = str(acct)
+                except Exception:
+                    registry = None
+                    acct_id = ""
+                for sym, oid, side, order in same_session_orders:
+                    logger.info(
+                        "   ↳ adopted same-session %s entry %s",
+                        sym, oid,
+                    )
+                    st = self._get_state(sym)
+                    st["immediate_block_until_inside"] = True
+                    st["fades_this_session"] = max(
+                        int(st.get("fades_this_session", 0) or 0), 1,
+                    )
+                    if side in ("SELL", "SHORT"):
+                        st["sweep_fired_high"] = True
+                    elif side in ("BUY", "LONG"):
+                        st["sweep_fired_low"] = True
+                    self._persist_session_activity(sym, today_et, st)
+                    if registry is not None:
+                        siblings: List[str] = []
+                        for k in (
+                            "stopOrderId", "limitOrderId",
+                            "stopLossOrderId", "takeProfitOrderId",
+                        ):
+                            v = order.get(k)
+                            if v:
+                                siblings.append(str(v))
+                        registry.register(
+                            order_id=str(oid),
+                            account_id=acct_id,
+                            symbol=sym,
+                            side=side or "BUY",
+                            strategy_name=self.NAME,
+                            oco_sibling_ids=siblings,
+                        )
+        except Exception as exc:
+            logger.error(
+                "📋 reconcile: unexpected error (continuing): %s",
+                exc, exc_info=True,
+            )
+        finally:
+            # Single-shot flag set in ``finally`` so a partial failure
+            # doesn't trap us in a retry loop on every bar.
+            self._did_startup_reconcile = True
+
+    def _configured_symbols_for_orphan_sweep(self) -> List[str]:
+        """Return the symbol universe to sweep at session rollover.
+
+        Prefers ``self.config.symbols`` (the canonical configured list).  Falls
+        back to symbols the strategy has already observed in ``self._state`` —
+        this covers replay/test scaffolding where ``config.symbols`` may be
+        empty but the strategy is still managing per-symbol state.
+        """
+        configured = list(getattr(self.config, "symbols", None) or [])
+        if not configured:
+            configured = list(self._state.keys())
+        seen: set[str] = set()
+        result: List[str] = []
+        for sym in configured:
+            if not sym:
+                continue
+            key = str(sym).strip().upper()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(key)
+        return result
+
+    async def _cancel_previous_session_orders(self, symbols: List[str]) -> None:
+        """Cancel pending entry orders from the previous session for ``symbols``.
+
+        MRR uses stop-entry orders (``sweep_advance_stop`` mode) for its fade
+        triggers — these are working orders that sit on the broker until either
+        filled or cancelled.  The strategy's ``flat_before`` and ``max_hold_bars``
+        guards only operate on FILLED positions; unfilled stop-entry triggers
+        can carry over to the next session.
+
+        This method is invoked once per ET trading date (guarded by
+        ``self._last_orphan_sweep_date``).  It mirrors the equivalent helper in
+        ``overnight_range_strategy.py:930-981``: pull open orders + positions
+        from the broker, drop anything on a symbol with a live position
+        (protective SL/TP legs), filter the rest by the MRR entry tag pattern
+        (``_live_tag_is_entry``), and issue ``cancel_order`` for each.
+
+        Safe to call in any mode — replay/backtest paths short-circuit at the
+        top, and any broker-call failure is logged + swallowed so the
+        session-start handler never throws.
+        """
+        bot = self.trading_bot
+        if getattr(bot, "_is_strategy_replay", False):
+            return
+        if getattr(bot, "backtest_engine", None) is not None:
+            return
+        if getattr(self, "_replay_engine", None) is not None:
+            return
+        if not symbols:
+            return
+        try:
+            open_orders = await bot.get_open_orders()
+            if not open_orders or not isinstance(open_orders, list):
+                return
+
+            positions = await bot.get_positions()
+            position_symbols: set = set()
+            if isinstance(positions, list):
+                for pos in positions:
+                    qty = pos.get("quantity") or pos.get("size") or 0
+                    try:
+                        if abs(int(qty)) <= 0:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                    raw_sym = (pos.get("symbol") or pos.get("contractName") or "").upper()
+                    if not raw_sym:
+                        parts = str(pos.get("symbolId", "")).split(".")
+                        if parts:
+                            raw_sym = parts[-1].upper()
+                    for s in symbols:
+                        if raw_sym.startswith(s.upper()):
+                            position_symbols.add(s.upper())
+
+            cancelled = 0
+            for order in open_orders:
+                if not isinstance(order, dict):
+                    continue
+                raw_sym = (order.get("symbol") or order.get("contractName") or "").upper()
+                if not raw_sym:
+                    parts = str(order.get("symbolId", "")).split(".")
+                    if parts:
+                        raw_sym = parts[-1].upper()
+                base_symbol = next(
+                    (s for s in symbols if raw_sym.startswith(s.upper())), None,
+                )
+                if not base_symbol:
+                    continue
+                if base_symbol.upper() in position_symbols:
+                    # Live position present → protective SL/TP legs may be
+                    # among these orders.  Leave the entire symbol alone.
+                    continue
+                tag = str(order.get("customTag") or order.get("custom_tag") or "")
+                # Only cancel MRR's own stop-entry triggers — never SL/TP
+                # children, never other strategies' orders.
+                if not self._live_tag_is_entry(tag):
+                    continue
+                order_id = str(order.get("id") or order.get("orderId") or "").strip()
+                if not order_id:
+                    continue
+                logger.info(
+                    "🗑️  MRR cancelling previous-session order %s for %s (tag=%s)",
+                    order_id, base_symbol, tag[:60],
+                )
+                try:
+                    await bot.cancel_order(order_id)
+                    cancelled += 1
+                except Exception as exc:
+                    logger.warning(
+                        "MRR could not cancel previous-session order %s: %s",
+                        order_id, exc,
+                    )
+
+            if cancelled:
+                logger.info(
+                    "✅ MRR cancelled %d previous-session order(s) across %s",
+                    cancelled, ",".join(symbols),
+                )
+        except Exception as exc:
+            logger.error(
+                "MRR _cancel_previous_session_orders failed: %s", exc, exc_info=True,
+            )
+
     async def analyze(self, symbol: str) -> Optional[Dict[str, Any]]:
         try:
+            # One-shot startup reconciliation — adopts any broker-side state
+            # left over from a prior incarnation of this strategy_executor
+            # (the supervise-loop respawn case).  Idempotent: guarded by
+            # ``self._did_startup_reconcile`` so it runs exactly once per
+            # lifetime.  Placed BEFORE ``manage_positions`` so the
+            # ``_live_managed_symbols`` adoption is visible to the very first
+            # management pass.
+            if not self._did_startup_reconcile:
+                await self._reconcile_with_broker_state()
+
             await self.manage_positions()
 
             bars = await self.trading_bot.get_historical_data(
@@ -2313,6 +2991,8 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     st["H"] = st["L"] = st["mid"] = st["width"] = None
                     st["immediate_block_until_inside"] = False
                     st["fades_this_session"] = 0
+                    st["sweep_fired_high"] = False
+                    st["sweep_fired_low"] = False
                     st["_logged_range_ready"] = False
                     st["_logged_range_degenerate"] = False
                     st["_logged_deadline"] = False
@@ -2335,6 +3015,28 @@ class MorningRangeReversionStrategy(BaseStrategy):
                         "🌅 %-3s new session %s  (anchor build %s → %s ET, fade window through %s ET)",
                         symbol, d, self.range_start, self.range_end_open, self.flat_before,
                     )
+                # ── Orphan sweep (2026-06-15 fix): the rollover block runs per
+                # (symbol, date), so we'd fire the cancellation 3× if we didn't
+                # guard.  ``_last_orphan_sweep_date`` ensures the broker REST
+                # round-trip happens at most ONCE per ET trading date even when
+                # MNQ + MES + MGC all transition on the same bar tick.  Skipped
+                # entirely on the very first session the strategy ever sees
+                # (``st["session_date"] is None``) so we don't blow away orders
+                # the operator placed manually before starting MRR.
+                if (
+                    st["session_date"] is not None
+                    and self._last_orphan_sweep_date != d
+                ):
+                    self._last_orphan_sweep_date = d
+                    try:
+                        await self._cancel_previous_session_orders(
+                            self._configured_symbols_for_orphan_sweep()
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "MRR orphan-sweep at session %s failed (continuing): %s",
+                            d, exc,
+                        )
                 st["session_date"] = d
                 st["range_hi"] = st["range_lo"] = None
                 st["range_ready"] = False
@@ -2346,6 +3048,8 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 st["H"] = st["L"] = st["mid"] = st["width"] = None
                 st["immediate_block_until_inside"] = False
                 st["fades_this_session"] = 0
+                st["sweep_fired_high"] = False
+                st["sweep_fired_low"] = False
                 # Per-session "already-logged" guards so the deadline / max-fades /
                 # degenerate-range INFO lines fire at most once per (symbol, date).
                 st["_logged_range_ready"] = False
@@ -2521,6 +3225,10 @@ class MorningRangeReversionStrategy(BaseStrategy):
                         first_bar_ts_utc=st.get("range_first_bar_ts_utc"),
                         last_bar_ts_utc=st.get("range_last_bar_ts_utc"),
                     )
+                # Mirror the freshly-built range to ``strategy_states.settings.mrr_ranges``
+                # so the dashboard chart can render the shaded box even when this
+                # strategy is owned by a separate executor process.
+                self._persist_mrr_ranges_to_db()
 
                 if min_w > 0 and width < min_w:
                     st["phase"] = "idle"
@@ -2550,6 +3258,10 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
                 st["phase"] = "scan"
                 st["sweep_side"] = None
+                self._restore_session_activity(symbol, d, st)
+                self._apply_sweep_guard_from_price(symbol, H, L, c, st)
+                if st.get("immediate_block_until_inside") or st.get("sweep_fired_high") or st.get("sweep_fired_low"):
+                    self._persist_session_activity(symbol, d, st)
 
             if st["phase"] == "idle":
                 return None
@@ -2778,6 +3490,12 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
     async def execute(self, signal: Dict[str, Any]) -> bool:
         try:
+            symbol = str(signal["symbol"]).upper()
+            # Placement health is enforced in ``place_bracket_order`` (tiered
+            # warn/refuse) and analyze already skips on stale bars — no extra
+            # execute-time gate (2026-06-17: double-gate blocked valid fades
+            # on briefly-fresh REST while quotes were zombie).
+
             side = "BUY" if signal["action"] == "LONG" else "SELL"
             qty = self._position_size(signal["symbol"])
             r0 = abs(float(signal["entry_price"]) - float(signal["stop_loss"]))
@@ -2811,6 +3529,9 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 return False
             if not getattr(self.trading_bot, "_is_strategy_replay", False):
                 self._live_managed_symbols.add(str(signal["symbol"]).upper())
+                st = self._get_state(symbol)
+                d = datetime.now(self._tz).date()
+                self._persist_session_activity(symbol, d, st)
             self.daily_trades += 1
             return True
         except Exception as exc:

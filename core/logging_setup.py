@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -128,6 +128,12 @@ def configure_logging(
     file_level_name = (level or os.getenv("LOG_LEVEL", "INFO")).upper()
     file_level = getattr(logging, file_level_name, logging.INFO)
     console_level_value = getattr(logging, console_level.upper(), logging.WARNING)
+    env_max_bytes = os.getenv("LOG_MAX_BYTES", "").strip()
+    if env_max_bytes:
+        try:
+            max_bytes = int(env_max_bytes)
+        except ValueError:
+            pass
 
     log_path = Path(log_file)
     if not log_path.is_absolute():
@@ -140,13 +146,46 @@ def configure_logging(
 
     fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    file_handler = RotatingFileHandler(
-        str(log_path),
-        mode="a",
-        encoding="utf-8",
-        maxBytes=max_bytes,
-        backupCount=backup_count,
+    # ── Daily-rotation opt-in (2026-06-15) ─────────────────────────────────────
+    # Long-running wrappers (e.g. ``scripts/run_morning_reversion.sh`` left
+    # running across a trading week) want one log archive per calendar day so
+    # operators can ``grep`` "what happened Tuesday" without parsing a single
+    # multi-day blob.  Setting ``LOG_ROTATE_DAILY=1`` swaps the default size-
+    # based RotatingFileHandler for a TimedRotatingFileHandler that rolls at
+    # local midnight and names archives ``<base>.YYYY-MM-DD``.
+    #
+    # Default remains the legacy 10MB × 5-backup size rotation so existing
+    # entry-points (one-shot scripts, the master CLI, the webhook server) keep
+    # their current behaviour.
+    rotate_daily = os.getenv("LOG_ROTATE_DAILY", "").strip().lower() in (
+        "1", "true", "yes", "on", "daily",
     )
+    if rotate_daily:
+        # ``backupCount`` is interpreted in days under TimedRotatingFileHandler.
+        # Bump to 14 by default so two trading weeks of archives stay around —
+        # ``backup_count`` (the kwarg) is still honoured if the caller passes a
+        # larger value.
+        days_to_keep = max(int(backup_count or 0), 14)
+        file_handler: logging.Handler = TimedRotatingFileHandler(
+            str(log_path),
+            when="midnight",
+            interval=1,
+            backupCount=days_to_keep,
+            encoding="utf-8",
+            delay=False,
+            utc=False,
+        )
+        # ``YYYY-MM-DD`` suffix makes archive files sort lexicographically by
+        # date — overrides the default ``%Y-%m-%d_%H-%M-%S`` for cleaner naming.
+        file_handler.suffix = "%Y-%m-%d"  # type: ignore[attr-defined]
+    else:
+        file_handler = RotatingFileHandler(
+            str(log_path),
+            mode="a",
+            encoding="utf-8",
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+        )
     file_handler.setLevel(file_level)
     file_handler.setFormatter(fmt)
 
@@ -187,7 +226,15 @@ def configure_logging(
     logging.getLogger("websocket").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    asyncio_level = logging.WARNING
+    if os.getenv("LOG_SUPPRESS_ASYNCIO_SESSION_ERRORS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        # aiohttp leak storms during GUI-WS reconnect wedges can emit millions
+        # of identical "Unclosed client session" ERROR lines — CRITICAL silences
+        # them without hiding real asyncio bugs at WARNING and below.
+        asyncio_level = logging.CRITICAL
+    logging.getLogger("asyncio").setLevel(asyncio_level)
 
     log = logging.getLogger(__name__)
     if install_uvloop:
@@ -224,6 +271,9 @@ def get_log_path() -> Path:
     """Return the path of the active rotating log file."""
     root = logging.getLogger()
     for h in root.handlers:
-        if isinstance(h, RotatingFileHandler):
+        # Match both the size-rotated and the time-rotated handlers; the timed
+        # variant is a subclass-sibling, not a subclass, so isinstance has to
+        # cover both.
+        if isinstance(h, (RotatingFileHandler, TimedRotatingFileHandler)):
             return Path(h.baseFilename)
     return Path("trading_bot.log").resolve()

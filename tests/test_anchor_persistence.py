@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 from core import anchor_persistence
-from core.anchor_persistence import anchor_json_path, load_anchor, record_anchor
+from core.anchor_persistence import (
+    anchor_json_path,
+    load_anchor,
+    load_session_activity,
+    patch_session_activity,
+    record_anchor,
+)
 
 
 # ─── path resolution ─────────────────────────────────────────────────────────
@@ -227,3 +233,102 @@ def test_load_anchor_handles_corrupt_file(tmp_path: Path):
         base_dir=tmp_path,
     )
     assert payload is None
+
+
+def test_patch_session_activity_creates_stub_and_merges(tmp_path: Path):
+    ok = patch_session_activity(
+        strategy="morning_range_reversion",
+        symbol="MGC",
+        session_date_et=date(2026, 6, 17),
+        patch={"sweep_fired_high": True, "fades_this_session": 1},
+        base_dir=tmp_path,
+    )
+    assert ok is True
+    activity = load_session_activity(
+        strategy="morning_range_reversion",
+        symbol="MGC",
+        session_date_et=date(2026, 6, 17),
+        base_dir=tmp_path,
+    )
+    assert activity["sweep_fired_high"] is True
+    assert activity["fades_this_session"] == 1
+    patch_session_activity(
+        strategy="morning_range_reversion",
+        symbol="MGC",
+        session_date_et=date(2026, 6, 17),
+        patch={"immediate_block_until_inside": True},
+        base_dir=tmp_path,
+    )
+    activity2 = load_session_activity(
+        strategy="morning_range_reversion",
+        symbol="MGC",
+        session_date_et=date(2026, 6, 17),
+        base_dir=tmp_path,
+    )
+    assert activity2["sweep_fired_high"] is True
+    assert activity2["immediate_block_until_inside"] is True
+
+
+def test_mrr_blocks_repeat_sweep_after_session_restore(tmp_path: Path, monkeypatch):
+    """Mid-session restart must not re-fire immediate_stop on the same sweep."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True, symbols=["MGC"],
+        max_positions=2, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    bot = type("B", (), {"_is_strategy_replay": True})()
+    strat = MorningRangeReversionStrategy(bot, cfg)
+    monkeypatch.setenv("ANCHOR_PERSISTENCE_DIR", str(tmp_path))
+    st = strat._get_state("MGC")
+    st["sweep_fired_high"] = True
+    st["immediate_block_until_inside"] = True
+    st["fades_this_session"] = 1
+    strat._persist_session_activity("MGC", date(2026, 6, 17), st)
+
+    strat._state["MGC"] = strat._get_state("MGC")
+    strat._state["MGC"]["fades_this_session"] = 0
+    strat._state["MGC"]["sweep_fired_high"] = False
+    strat._state["MGC"]["sweep_fired_low"] = False
+    strat._state["MGC"]["immediate_block_until_inside"] = False
+    strat._restore_session_activity("MGC", date(2026, 6, 17), strat._state["MGC"])
+    assert strat._state["MGC"]["sweep_fired_high"] is True
+
+    sig = strat._fade_signal_after_sweep(
+        "MGC",
+        datetime(2026, 6, 17, 11, 20, tzinfo=ZoneInfo("America/New_York")),
+        "high",
+        4351.60,
+        4340.00,
+        4345.80,
+        11.60,
+        "immediate_stop",
+        bars=[{"close": 4370.0, "high": 4370.0, "low": 4360.0, "open": 4365.0}],
+    )
+    assert sig is None
+
+
+def test_mrr_apply_sweep_guard_from_price_when_still_outside_range():
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True, symbols=["MGC"],
+        max_positions=2, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    bot = type("B", (), {"_is_strategy_replay": True})()
+    strat = MorningRangeReversionStrategy(bot, cfg)
+    st = strat._get_state("MGC")
+    strat._apply_sweep_guard_from_price("MGC", 4351.60, 4340.00, 4378.30, st)
+    assert st["sweep_fired_high"] is True
+    assert st["immediate_block_until_inside"] is True

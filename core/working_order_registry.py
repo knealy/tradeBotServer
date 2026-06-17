@@ -220,6 +220,86 @@ def reset_registry_for_tests() -> None:
 # ───────────────── cancel helper (used by watchdog) ─────────────────
 
 
+async def cancel_working_orders_for_stale_symbols(
+    registry: WorkingOrderRegistry,
+    broker_adapter,
+    monitor,
+    *,
+    max_silence_s: float,
+    reason: str = "unspecified",
+    include_siblings: bool = True,
+) -> int:
+    """Cancel working entries only for symbols where BOTH data paths are stale.
+
+    2026-06-17 fix: blind ``cancel_all_working_orders`` pulled MRR brackets
+    while REST bars were still flowing — the operator never saw working
+    orders.  Only cancel when quote AND bar activity are both dead for
+    the order's symbol.
+    """
+    snapshot = registry.snapshot()
+    if not snapshot:
+        return 0
+
+    stale_symbols = {
+        wo.symbol.upper()
+        for wo in snapshot
+        if monitor.symbol_both_paths_stale(wo.symbol, max_silence_s)
+    }
+    if not stale_symbols:
+        logger.info(
+            "watchdog: zombie reconnect due but no working orders on "
+            "fully-stale symbols — skipping cancel-on-staleness"
+        )
+        return 0
+
+    to_cancel = [wo for wo in snapshot if wo.symbol.upper() in stale_symbols]
+    logger.warning(
+        "🛑 cancel_working_orders_for_stale_symbols: cancelling %d/%d "
+        "working entry order(s) on stale symbols %s — reason: %s",
+        len(to_cancel), len(snapshot), sorted(stale_symbols), reason,
+    )
+
+    issued = 0
+    for wo in to_cancel:
+        issued += 1
+        try:
+            resp = await broker_adapter.cancel_order(
+                order_id=wo.order_id, account_id=wo.account_id,
+            )
+            ok = bool(getattr(resp, "success", False) or (isinstance(resp, dict) and resp.get("success")))
+            logger.warning(
+                "🛑 cancelled entry order %s (%s %s, strategy=%s) -> success=%s",
+                wo.order_id, wo.side, wo.symbol, wo.strategy_name, ok,
+            )
+        except Exception as exc:
+            logger.error(
+                "❌ cancel of entry order %s raised %s: %s",
+                wo.order_id, type(exc).__name__, exc,
+            )
+
+        if include_siblings:
+            for sib in wo.oco_sibling_ids:
+                issued += 1
+                try:
+                    await broker_adapter.cancel_order(
+                        order_id=sib, account_id=wo.account_id,
+                    )
+                    logger.warning(
+                        "🛑 cancelled OCO sibling %s (parent=%s)", sib, wo.order_id,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "sibling cancel %s raised %s: %s",
+                        sib, type(exc).__name__, exc,
+                    )
+
+        registry.mark_status(wo.order_id, "Cancelled")
+        for sib in wo.oco_sibling_ids:
+            registry.mark_status(sib, "Cancelled")
+
+    return issued
+
+
 async def cancel_all_working_orders(
     registry: WorkingOrderRegistry,
     broker_adapter,

@@ -503,7 +503,32 @@ class WebSocketManager:
             return False
     
     async def _handle_network_interruption_and_reconnect(self):
-        """Handle network interruptions (sleep mode, network down) with exponential backoff."""
+        """Handle network interruptions (sleep mode, network down) with exponential backoff.
+
+        2026-06-15 weekend-survival rework: the original ``max_attempts = 10``
+        with the 30s-capped backoff gave the reconnect loop a worst-case
+        lifetime of ~5 minutes — fine for a transient network blip, useless
+        for a Friday 5pm → Sunday 6pm broker maintenance window.  Past the
+        10th attempt the WebSocket connection died silently and downstream
+        consumers (bar aggregator, MRR's stale-data guard) saw nothing but
+        gaps; once the supervise loop respawned the executor it'd hit the
+        same dead broker and burn through its restart budget.
+
+        The new loop has two phases:
+
+          * **Fast phase** (first ``SIGNALR_FAST_RECONNECT_ATTEMPTS`` tries,
+            default 10) — keeps the original 2/4/8/16/30s exponential
+            backoff at INFO log level so transient blips show up loudly.
+          * **Extended phase** (up to ``SIGNALR_MAX_RECONNECT_ATTEMPTS``
+            total, default 1000) — kicks in only after the fast phase
+            fails.  Sleeps ``SIGNALR_EXTENDED_RECONNECT_DELAY_SEC``
+            (default 300 = 5 min) between attempts at DEBUG log level so
+            we don't spam the log with 600 "reconnect failed" lines during
+            a weekend.  Default 1000 × 300s = 83 hours covers any
+            realistic outage window with margin.
+
+        All three are env-tunable for operator override.
+        """
         # Prevent multiple simultaneous reconnection attempts
         with self._lock:
             if self._reconnecting:
@@ -512,26 +537,64 @@ class WebSocketManager:
             if self._connected:
                 return
             self._reconnecting = True
-        
+
+        # ── Env-tunable knobs (2026-06-15) ──────────────────────────────
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return max(int(os.environ.get(name, default) or default), 0)
+            except (TypeError, ValueError):
+                return default
+
+        fast_phase_attempts = _env_int("SIGNALR_FAST_RECONNECT_ATTEMPTS", 10)
+        max_attempts = _env_int("SIGNALR_MAX_RECONNECT_ATTEMPTS", 1000)
+        extended_delay_sec = _env_int("SIGNALR_EXTENDED_RECONNECT_DELAY_SEC", 300)
+        base_delay = 2  # initial fast-phase delay (s)
+
+        # Sanity: extended must be ≥ fast; if operator pins both low, just
+        # honour the larger of the two so we never try more than requested.
+        if max_attempts < fast_phase_attempts:
+            max_attempts = fast_phase_attempts
+
         try:
-            
-            # Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
-            max_attempts = 10
-            base_delay = 2
-            
+            extended_announced = False
+
             for attempt in range(max_attempts):
-                delay = min(base_delay * (2 ** attempt), 30)  # Cap at 30 seconds
-                
-                logger.info(f"Attempting to reconnect SignalR (attempt {attempt + 1}/{max_attempts}) after {delay}s delay...")
+                if attempt < fast_phase_attempts:
+                    delay = min(base_delay * (2 ** attempt), 30)
+                    logger.info(
+                        "Attempting to reconnect SignalR (attempt %d/%d) after %ds delay...",
+                        attempt + 1, max_attempts, delay,
+                    )
+                else:
+                    delay = extended_delay_sec
+                    if not extended_announced:
+                        # Single WARNING line announces the transition so the
+                        # operator can see "OK we're in extended mode now" in
+                        # the log without scrolling through hundreds of retries.
+                        logger.warning(
+                            "⏳ SignalR fast-reconnect exhausted (%d attempts); "
+                            "switching to extended retry mode (every %ds, "
+                            "max total %d attempts ≈ %.1fh).  Likely cause: "
+                            "broker maintenance window or extended network "
+                            "outage — connection will resume automatically.",
+                            fast_phase_attempts, extended_delay_sec, max_attempts,
+                            (max_attempts - fast_phase_attempts) * extended_delay_sec / 3600.0,
+                        )
+                        extended_announced = True
+                    logger.debug(
+                        "SignalR extended-reconnect attempt %d/%d (every %ds)...",
+                        attempt + 1, max_attempts, delay,
+                    )
+
                 await asyncio.sleep(delay)
-                
+
                 # Check if network is available by trying to refresh token
                 try:
                     await self.auth_manager.ensure_valid_token()
                 except Exception as e:
                     logger.debug(f"Network not ready yet (attempt {attempt + 1}): {e}")
                     continue
-                
+
                 # Stop old connection if it exists
                 if self._hub:
                     try:
@@ -539,15 +602,31 @@ class WebSocketManager:
                     except Exception:
                         logger.debug("SignalR hub.stop() failed during network recovery", exc_info=True)
                     self._hub = None
-                
+
                 with self._lock:
                     self._connected = False
-                
+
                 # Try to reconnect
                 try:
                     success = await self.start()
                     if success:
-                        logger.info(f"✅ SignalR reconnected successfully after network interruption (attempt {attempt + 1})")
+                        if extended_announced:
+                            # Loud return-to-normal line after extended outage —
+                            # operator wants to know "broker is back" without
+                            # parsing context.
+                            logger.warning(
+                                "✅ SignalR reconnected after extended outage "
+                                "(attempt %d, %.1fh total). Re-subscribing symbols.",
+                                attempt + 1,
+                                ((attempt - fast_phase_attempts + 1) * extended_delay_sec
+                                 + (fast_phase_attempts * 30)) / 3600.0,
+                            )
+                        else:
+                            logger.info(
+                                "✅ SignalR reconnected successfully after network "
+                                "interruption (attempt %d)",
+                                attempt + 1,
+                            )
                         with self._lock:
                             self._reconnecting = False
                         # Re-subscribe to all symbols
@@ -558,8 +637,16 @@ class WebSocketManager:
                 except Exception as e:
                     logger.debug(f"Reconnection attempt {attempt + 1} error: {e}")
                     continue
-            
-            logger.warning(f"⚠️  SignalR reconnection failed after {max_attempts} attempts")
+
+            logger.warning(
+                "⚠️  SignalR reconnection gave up after %d attempts "
+                "(fast=%d, extended=%d × %ds).  Override via "
+                "SIGNALR_MAX_RECONNECT_ATTEMPTS env var if longer outage "
+                "windows are expected.",
+                max_attempts, fast_phase_attempts,
+                max(max_attempts - fast_phase_attempts, 0),
+                extended_delay_sec,
+            )
             with self._lock:
                 self._reconnecting = False
         except Exception as e:
@@ -695,6 +782,22 @@ class WebSocketManager:
                     raise retry_error
             
         except ValueError as e:
+            error_msg = str(e)
+            # SignalR raises ValueError (not Exception) for hub-not-ready;
+            # route through the same once-per-symbol dedupe as below.
+            if "not running" in error_msg.lower() or "cand send" in error_msg.lower() or "can't send" in error_msg.lower():
+                with self._lock:
+                    if sym not in self._hub_not_running_warned:
+                        logger.warning(
+                            f"Cannot subscribe to quotes for {sym}: Hub is not running (will retry when connected)"
+                        )
+                        self._hub_not_running_warned.add(sym)
+                    else:
+                        logger.debug(
+                            f"Cannot subscribe to quotes for {sym}: Hub is not running (will retry when connected)"
+                        )
+                    self._pending_symbols.add(sym)
+                return False
             logger.warning(f"Cannot subscribe to quotes for {sym}: {e}")
             return False
         except Exception as e:
@@ -796,21 +899,28 @@ class WebSocketManager:
             return self._subscribed_symbols.copy()
     
     async def stop(self):
-        """Stop the SignalR connection."""
+        """Stop the SignalR connection.
+
+        Preserves ``_subscribed_symbols`` so ``_resubscribe_all_symbols``
+        can re-send hub subscriptions after a watchdog reconnect.  Clearing
+        the set here was the root cause of permanent SignalR zombies
+        (reconnect OK, zero quotes) — 2026-06-17 MRR incident.
+        """
         if self._hub:
             try:
                 self._hub.stop()
             except Exception as e:
                 logger.debug(f"Error stopping hub: {e}")
-        
+            self._hub = None
+
         with self._lock:
             self._connected = False
-            self._subscribed_symbols.clear()
+            # Keep _subscribed_symbols — resubscribe needs the intent list.
             self._pending_symbols.clear()
         try:
             self._connect_ready.clear()
         except Exception:
             logger.debug("connect_ready clear after stop", exc_info=True)
-        
+
         logger.info("SignalR Market Hub stopped")
 

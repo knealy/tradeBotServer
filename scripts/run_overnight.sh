@@ -13,6 +13,15 @@ fi
 # Ensure logs directory exists
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
+
+# Source .env so DISCORD_WEBHOOK_URL / PROJECT_X_* reach the headless executor.
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${PROJECT_ROOT}/.env"
+    set +a
+fi
+
 LOG_DIR="${PROJECT_ROOT}/logs"
 if [ -e "$LOG_DIR" ] && [ ! -d "$LOG_DIR" ]; then
     TS="$(date +%Y%m%d_%H%M%S)"
@@ -38,6 +47,12 @@ cd "$PROJECT_ROOT"
 # ``[meta].symbols`` rationale).  Override at the command line to A/B test:
 #   OVERNIGHT_RANGE_SYMBOLS=mnq,mes,mgc ./scripts/run_overnight.sh 1
 SYMBOLS="${OVERNIGHT_RANGE_SYMBOLS:-mnq,mgc}"
+
+export DISCORD_STATUS_INTERVAL_SECONDS="${DISCORD_STATUS_INTERVAL_SECONDS:-1800}"
+export DATA_FEED_DISCORD_ALERTS="${DATA_FEED_DISCORD_ALERTS:-true}"
+export DATA_FEED_DISCORD_ALERT_COOLDOWN_S="${DATA_FEED_DISCORD_ALERT_COOLDOWN_S:-900}"
+export LOG_SUPPRESS_ASYNCIO_SESSION_ERRORS="${LOG_SUPPRESS_ASYNCIO_SESSION_ERRORS:-1}"
+export DATA_FEED_HEALTH_GATE_MODE="${DATA_FEED_HEALTH_GATE_MODE:-warn}"
 
 caffeinate -dimsu python3 core/strategy_executor.py \
   --symbols="${SYMBOLS}" \

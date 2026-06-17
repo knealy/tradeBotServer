@@ -2193,3 +2193,431 @@ def test_far_sweep_guard_low_side(monkeypatch, caplog):
     assert any("sweep too far" in r.message and "L=" in r.message for r in caplog.records), (
         "low-side message must reference L"
     )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Orphan-sweep at session rollover (2026-06-15)
+# ────────────────────────────────────────────────────────────────────────────
+
+class _OrphanSweepMockBot:
+    """Bot stub that records broker calls made by ``_cancel_previous_session_orders``.
+
+    Differs from ``_MockBot`` in one key way: ``_is_strategy_replay`` is False
+    so the cancellation path actually executes (replay mode short-circuits at
+    the top of the helper).
+    """
+
+    def __init__(self, open_orders=None, positions=None):
+        self.open_orders = list(open_orders or [])
+        self.positions = list(positions or [])
+        self.cancel_calls: list[str] = []
+        self.selected_account = {"id": "test", "name": "TEST"}
+        # Live mode — _cancel_previous_session_orders must execute.
+        self._is_strategy_replay = False
+
+    async def get_open_orders(self, *_, **__):
+        return list(self.open_orders)
+
+    async def get_positions(self, *_, **__):
+        return list(self.positions)
+
+    async def cancel_order(self, order_id, *_, **__):
+        self.cancel_calls.append(str(order_id))
+        return {"ok": True}
+
+
+# 2026-06-15 bug-fix note: production tags are TRUNCATED to ``morning_range_re``
+# by ``_generate_unique_custom_tag`` (16-char cap).  The fixtures below use
+# the realistic truncated form so we're testing the actual production path,
+# not a buggy synthetic tag that ``_live_tag_is_entry`` would never see live.
+_MRR_TAG_PREFIX = "TB-stop_entry-morning_range_re"
+_MRR_BRACKET_PREFIX = "TB-stop_bracket-morning_range_re"
+
+
+def test_live_tag_is_entry_matches_truncated_production_tag():
+    """The 16-char tag truncation regression check.
+
+    Pre-2026-06-15 ``_live_tag_is_entry`` looked for the FULL strategy name
+    ``morning_range_reversion`` (23 chars) — but the broker adapter truncates
+    to ``morning_range_re`` (16 chars) before sending the tag.  Result: the
+    matcher silently returned False for every real MRR order in production.
+
+    This test pins the fix: realistic truncated tags must be recognised as
+    entries, SL/TP children must be rejected, and the dash↔underscore
+    normalisation must work both ways.
+    """
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+
+    strat = MorningRangeReversionStrategy(_OrphanSweepMockBot(), None)
+    # ── Real production tag (truncated, underscores) → must match.
+    assert strat._live_tag_is_entry(f"{_MRR_TAG_PREFIX}-260615120000-abc123")
+    assert strat._live_tag_is_entry(f"{_MRR_BRACKET_PREFIX}-260615120000-abc123")
+    # ── Dash-delimited variant (legacy / future tag format).
+    assert strat._live_tag_is_entry("TB-stop-entry-morning-range-re-260615120000-abc123")
+    # ── SL/TP children inherit the marker but MUST be rejected (cancelling
+    #    them naked-legs a live trade).
+    assert not strat._live_tag_is_entry(f"{_MRR_TAG_PREFIX}-260615120000-abc123-sl")
+    assert not strat._live_tag_is_entry(f"{_MRR_TAG_PREFIX}-260615120000-abc123-tp")
+    # ── Other strategies' orders must NOT match.
+    assert not strat._live_tag_is_entry("TB-stop_bracket-overnight_range-260615120000-abc")
+    assert not strat._live_tag_is_entry("TB-bracket-body_reversion-260615120000-abc")
+    # ── Untagged / empty must NOT match.
+    assert not strat._live_tag_is_entry("")
+    assert not strat._live_tag_is_entry("TB-stop_bracket")
+
+
+def test_expected_tag_marker_mirrors_broker_truncation():
+    """``_expected_tag_marker`` must produce the SAME 16-char prefix the
+    broker adapter generates — otherwise the matcher and the emitter drift
+    and every order in flight becomes invisible to the strategy."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from brokers.topstepx_adapter import TopStepXAdapter
+
+    strat = MorningRangeReversionStrategy(_OrphanSweepMockBot(), None)
+    marker = strat._expected_tag_marker()
+    assert marker == "morning_range_re"  # 16-char truncation, pinned.
+
+    # Validate against the adapter's actual generator output.  Build a stub
+    # adapter just to call the helper; no broker connection needed.
+    adapter = TopStepXAdapter.__new__(TopStepXAdapter)
+    sample = adapter._generate_unique_custom_tag("stop_bracket", "morning_range_reversion")
+    assert marker in sample, (
+        f"adapter tag {sample!r} must contain marker {marker!r} — "
+        "otherwise _live_tag_is_entry won't recognise our own orders"
+    )
+
+
+def test_cancel_previous_session_orders_skips_in_replay_mode():
+    """Replay mode short-circuits before the broker round-trip — backtests must
+    never issue real cancel calls."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+
+    bot = _OrphanSweepMockBot(
+        open_orders=[{
+            "id": "ord-1", "symbol": "MNQ",
+            "customTag": f"{_MRR_TAG_PREFIX}-260615120000-abc123",
+        }],
+    )
+    bot._is_strategy_replay = True  # flip into replay
+    strat = MorningRangeReversionStrategy(bot, None)
+    asyncio.run(strat._cancel_previous_session_orders(["MNQ", "MES", "MGC"]))
+    assert bot.cancel_calls == []
+
+
+def test_cancel_previous_session_orders_filters_by_mrr_tag():
+    """Only orders tagged with the MRR strategy + entry markers get cancelled.
+    Overnight-range orders, MRR's own SL/TP children, and untagged orders must
+    survive."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+
+    bot = _OrphanSweepMockBot(open_orders=[
+        # ── KEEP: belongs to overnight_range, not us.
+        {"id": "ord-or", "symbol": "MNQ",
+         "customTag": "TB-stop_bracket-overnight_range-260615120000-x1"},
+        # ── KEEP: MRR SL leg — _live_tag_is_entry rejects -sl / -tp.
+        {"id": "ord-sl", "symbol": "MNQ",
+         "customTag": f"{_MRR_TAG_PREFIX}-260615120000-x2-sl"},
+        # ── KEEP: MRR TP leg.
+        {"id": "ord-tp", "symbol": "MNQ",
+         "customTag": f"{_MRR_TAG_PREFIX}-260615120000-x3-tp"},
+        # ── KEEP: no tag at all — can't safely attribute it to us.
+        {"id": "ord-untagged", "symbol": "MNQ", "customTag": ""},
+        # ── CANCEL: our own stop-entry trigger from the prior session.
+        {"id": "ord-mrr-1", "symbol": "MNQ",
+         "customTag": f"{_MRR_TAG_PREFIX}-260615120000-x4"},
+        {"id": "ord-mrr-2", "symbol": "MGC",
+         "customTag": f"{_MRR_BRACKET_PREFIX}-260615120000-x5"},
+    ])
+    strat = MorningRangeReversionStrategy(bot, None)
+    asyncio.run(strat._cancel_previous_session_orders(["MNQ", "MES", "MGC"]))
+    assert sorted(bot.cancel_calls) == ["ord-mrr-1", "ord-mrr-2"]
+
+
+def test_cancel_previous_session_orders_leaves_live_position_symbols_alone():
+    """If a symbol has a live position, the helper must NOT cancel anything on
+    that symbol — the SL/TP brackets covering the live position would be
+    detagged from the entry and we'd be naked-long until manual cleanup."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+
+    bot = _OrphanSweepMockBot(
+        open_orders=[
+            # Both MNQ orders are MRR-tagged — but MNQ has an open position
+            # below, so the WHOLE symbol is skipped.
+            {"id": "mnq-entry", "symbol": "MNQ",
+             "customTag": f"{_MRR_TAG_PREFIX}-260615120000-y1"},
+            {"id": "mnq-sl", "symbol": "MNQ",
+             "customTag": f"{_MRR_TAG_PREFIX}-260615120000-y2-sl"},
+            # MGC has no live position — entry must still be cancelled.
+            {"id": "mgc-entry", "symbol": "MGC",
+             "customTag": f"{_MRR_TAG_PREFIX}-260615120000-y3"},
+        ],
+        positions=[
+            {"symbol": "MNQ", "quantity": 2},
+        ],
+    )
+    strat = MorningRangeReversionStrategy(bot, None)
+    asyncio.run(strat._cancel_previous_session_orders(["MNQ", "MES", "MGC"]))
+    assert bot.cancel_calls == ["mgc-entry"]
+
+
+def test_cancel_previous_session_orders_swallows_broker_errors(caplog):
+    """A single cancel failure must NOT abort the sweep for the remaining
+    orders, and the error must be logged at WARNING (not raised)."""
+    import logging
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+
+    bot = _OrphanSweepMockBot(open_orders=[
+        {"id": "ord-1", "symbol": "MNQ",
+         "customTag": f"{_MRR_TAG_PREFIX}-260615120000-z1"},
+        {"id": "ord-2", "symbol": "MGC",
+         "customTag": f"{_MRR_TAG_PREFIX}-260615120000-z2"},
+    ])
+
+    async def flaky_cancel(order_id, *_, **__):
+        bot.cancel_calls.append(str(order_id))
+        if order_id == "ord-1":
+            raise RuntimeError("simulated broker error")
+        return {"ok": True}
+
+    bot.cancel_order = flaky_cancel
+    strat = MorningRangeReversionStrategy(bot, None)
+    with caplog.at_level(logging.WARNING, logger="strategies.morning_range_reversion_strategy"):
+        asyncio.run(strat._cancel_previous_session_orders(["MNQ", "MES", "MGC"]))
+    assert sorted(bot.cancel_calls) == ["ord-1", "ord-2"]
+    assert any("could not cancel" in r.message.lower() for r in caplog.records)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Startup reconciliation (2026-06-15)
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_reconcile_skips_in_replay_mode():
+    """Replay/backtest paths must short-circuit at the top — never call broker."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    bot = _OrphanSweepMockBot(
+        open_orders=[{"id": "ord-1", "symbol": "MNQ",
+                      "customTag": f"{_MRR_TAG_PREFIX}-260615120000-x"}],
+        positions=[{"symbol": "MNQ", "quantity": 1}],
+    )
+    bot._is_strategy_replay = True
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True, symbols=["MNQ"],
+        max_positions=1, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    strat = MorningRangeReversionStrategy(bot, cfg)
+
+    asyncio.run(strat._reconcile_with_broker_state())
+    assert strat._did_startup_reconcile is True
+    # Nothing was adopted, nothing was cancelled.
+    assert bot.cancel_calls == []
+    assert strat._live_managed_symbols == set()
+
+
+def test_reconcile_adopts_open_positions():
+    """Live positions on configured symbols must be added to
+    ``_live_managed_symbols`` so the management loop sees them."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    bot = _OrphanSweepMockBot(
+        open_orders=[],
+        positions=[
+            {"symbol": "MNQ", "quantity": 2},
+            # MGC has no position but is configured — must NOT be adopted.
+            # ZZZ is not configured — must be ignored.
+            {"symbol": "ZZZ", "quantity": 5},
+            # Zero-qty entry shouldn't trigger adoption (already flat).
+            {"symbol": "MGC", "quantity": 0},
+        ],
+    )
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True,
+        symbols=["MNQ", "MGC", "MES"],
+        max_positions=3, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    strat = MorningRangeReversionStrategy(bot, cfg)
+    asyncio.run(strat._reconcile_with_broker_state())
+
+    assert "MNQ" in strat._live_managed_symbols
+    assert "MGC" not in strat._live_managed_symbols
+    assert "ZZZ" not in strat._live_managed_symbols
+    # Entry-bar timer seeded to current bar so max_hold_bars clocks freshly.
+    assert strat._entry_bar_seq["MNQ"] == strat._bar_seq
+
+
+def test_reconcile_cancels_prior_session_orders_and_adopts_same_session(monkeypatch):
+    """Working orders are bucketed by the YYMMDD prefix in the tag — orders
+    from prior dates get cancelled, orders from today's session are adopted."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+    from datetime import datetime as _datetime
+    from zoneinfo import ZoneInfo
+
+    # Pin "today" to a deterministic ET date so the tag-date comparison is
+    # stable regardless of when the test runs.
+    fake_now = _datetime(2026, 6, 15, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True, symbols=["MNQ", "MGC"],
+        max_positions=2, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    bot = _OrphanSweepMockBot(
+        open_orders=[
+            # ── Same-session (260615): adopt.
+            {"id": "today-1", "symbol": "MNQ", "side": "SELL",
+             "customTag": f"{_MRR_TAG_PREFIX}-260615093000-a1"},
+            # ── Prior session (260614): cancel.
+            {"id": "yesterday-1", "symbol": "MNQ",
+             "customTag": f"{_MRR_TAG_PREFIX}-260614093000-a2"},
+            # ── Two-days-old: also cancel.
+            {"id": "two-days-old", "symbol": "MGC",
+             "customTag": f"{_MRR_BRACKET_PREFIX}-260613093000-a3"},
+            # ── SL leg: NEVER touch.
+            {"id": "today-sl", "symbol": "MNQ",
+             "customTag": f"{_MRR_TAG_PREFIX}-260615093000-a4-sl"},
+        ],
+        positions=[],
+    )
+
+    strat = MorningRangeReversionStrategy(bot, cfg)
+    # Monkey-patch ``datetime.now`` inside the strategy's module so the
+    # today-vs-prior comparison uses our pinned date.  Use a class so the
+    # ``tzinfo`` argument is honoured (strategy calls
+    # ``datetime.now(self.timezone)``).
+
+    class _FakeDateTime(_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fake_now.replace(tzinfo=None)
+            return fake_now.astimezone(tz)
+
+    monkeypatch.setattr(
+        "strategies.morning_range_reversion_strategy.datetime",
+        _FakeDateTime,
+    )
+    asyncio.run(strat._reconcile_with_broker_state())
+
+    # Same-session entry adopted into _live_managed_symbols.
+    assert "MNQ" in strat._live_managed_symbols
+    # Prior-session entries cancelled (via _cancel_previous_session_orders).
+    assert sorted(bot.cancel_calls) == ["two-days-old", "yesterday-1"]
+    # ``today-1`` (same-session) and ``today-sl`` (SL leg) survive.
+    assert "today-1" not in bot.cancel_calls
+    assert "today-sl" not in bot.cancel_calls
+
+
+def test_reconcile_runs_only_once():
+    """``_did_startup_reconcile`` flag must prevent re-running on every bar."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    call_count = {"n": 0}
+
+    class _CountingBot(_OrphanSweepMockBot):
+        async def get_open_orders(self, *_, **__):
+            call_count["n"] += 1
+            return []
+
+    bot = _CountingBot()
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True, symbols=["MNQ"],
+        max_positions=1, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    strat = MorningRangeReversionStrategy(bot, cfg)
+
+    asyncio.run(strat._reconcile_with_broker_state())
+    asyncio.run(strat._reconcile_with_broker_state())
+    asyncio.run(strat._reconcile_with_broker_state())
+    assert call_count["n"] == 1, "broker should only be queried on the first call"
+
+
+def test_reconcile_swallows_broker_errors_and_marks_complete():
+    """A broker failure during reconciliation must NOT raise (the strategy
+    has to keep running) AND must still set ``_did_startup_reconcile`` so we
+    don't retry on every bar."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    class _BrokenBot(_OrphanSweepMockBot):
+        async def get_open_orders(self, *_, **__):
+            raise RuntimeError("broker temporarily down")
+
+        async def get_positions(self, *_, **__):
+            raise RuntimeError("broker temporarily down")
+
+    bot = _BrokenBot()
+    cfg = StrategyConfig(
+        name="morning_range_reversion", enabled=True, symbols=["MNQ"],
+        max_positions=1, position_size=1, risk_per_trade_percent=0.5,
+        max_daily_trades=12, preferred_conditions=[], avoid_conditions=[],
+        trading_start_time="00:00", trading_end_time="23:59",
+        no_trade_start="", no_trade_end="",
+    )
+    strat = MorningRangeReversionStrategy(bot, cfg)
+    # Must NOT raise.
+    asyncio.run(strat._reconcile_with_broker_state())
+    assert strat._did_startup_reconcile is True
+
+
+def test_configured_symbols_for_orphan_sweep_normalises_and_dedupes():
+    """Helper must uppercase, strip whitespace, dedupe, and fall back to
+    ``self._state`` when ``config.symbols`` is empty."""
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+    from strategies.strategy_base import StrategyConfig
+
+    cfg = StrategyConfig(
+        name="morning_range_reversion",
+        enabled=True,
+        symbols=[" mnq ", "MNQ", "mgc", "MES"],
+        max_positions=1,
+        position_size=1,
+        risk_per_trade_percent=0.5,
+        max_daily_trades=12,
+        preferred_conditions=[],
+        avoid_conditions=[],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        no_trade_start="",
+        no_trade_end="",
+    )
+    bot = _OrphanSweepMockBot()
+    strat = MorningRangeReversionStrategy(bot, cfg)
+    syms = strat._configured_symbols_for_orphan_sweep()
+    assert syms == ["MNQ", "MGC", "MES"]
+
+    # Fallback path: blank config.symbols, but _state has been populated.
+    cfg2 = StrategyConfig(
+        name="morning_range_reversion",
+        enabled=True,
+        symbols=[],
+        max_positions=1,
+        position_size=1,
+        risk_per_trade_percent=0.5,
+        max_daily_trades=12,
+        preferred_conditions=[],
+        avoid_conditions=[],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        no_trade_start="",
+        no_trade_end="",
+    )
+    strat2 = MorningRangeReversionStrategy(bot, cfg2)
+    strat2._state["MNQ"] = {}
+    strat2._state["MES"] = {}
+    fallback = strat2._configured_symbols_for_orphan_sweep()
+    assert sorted(fallback) == ["MES", "MNQ"]
