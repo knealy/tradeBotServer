@@ -59,6 +59,9 @@ changes runtime behavior or conventions adds an entry here AND updates
     Restored on anchor finalize + startup reconcile; price-outside-range guard
     after backfill; adopted same-session orders register in
     ``working_order_registry`` and block duplicate sweeps.
+  - **Replay isolation fix**: ``_persist/_restore_session_activity`` no-op in
+    replay/backtest so walk-forward does not read live ``data/anchors/``
+    ``session_activity`` (was zeroing fold 2 trades via ``max_fades=1``).
   - **GUI WS log storm**: reconnect/connect lines demoted to DEBUG; WARNING
     rate-limited to 1/min; stale port cleared after 5 failures.
   - **Log volume**: ``LOG_SUPPRESS_ASYNCIO_SESSION_ERRORS=1`` silences aiohttp
@@ -131,6 +134,38 @@ changes runtime behavior or conventions adds an entry here AND updates
     11am–12pm instead of 7–8am ET); API now rewrites true ET ISO bounds on read.
   - **v2 dash blank fix:** restored accidental deletion of ``collectRangeDrawables``
     (JS syntax error broke entire page boot).
+  - **Range build-window boxes:** LWC baseline + dashed midline scoped to each
+    strategy's build window (not DOM divs — those sat behind LWC canvases).
+    MRR default-on; OR/ORB opt-in.
+  - **Range backfill stitch:** lazy/API backfill now merges Databento 1m CSV +
+    recent broker API bars (same idea as chart ``auto`` source); trade snapshots
+    override bar-derived ranges when both exist.
+  - **v2 chart trade lines:** entry / SL / TP + working order price lines on the
+    live canvas for the selected symbol.
+  - **v2 legend:** removed redundant bar date under countdown; tick-change strip
+    (66 segments, left of last price). Last price color tracks **forming bar**
+    direction (moss/rose), not per-tick flash.
+  - **Range overlays live merge:** ``/api/chart/range_overlays`` now augments DB
+    history with Databento+API bar reconstruction on every read (sessions after
+    the CSV lag date, e.g. post-June-15).
+  - **Fixes:** trades endpoint ``datetime`` shadowing NameError; log tail UTF-8;
+    ``backfill_range_history.py`` loads ``.env`` for ``DATABASE_URL``.
+  - **Range overlay stability:** normalize naive/aware OHLCV indexes before merge;
+    90s API bar cache (3 fetches not 9); overlay endpoint always returns 200 with
+    partial data; DB backfill is fire-and-forget (no longer blocks HTTP).
+  - **Timezone resilience:** canonical `core.backtest.ohlcv.ohlcv_index_naive_utc()`;
+    documented bar-clock vs session-clock split in `docs/GOTCHAS.md` and
+    `docs/CONVENTIONS.md` (recurring naive/aware merge bugs).
+  - **`/master` now serves v2** (`master_control_v2.html`); legacy UI at
+    `/master/classic`. Chart toolbar: OHLC on hover floats top-left over canvas;
+    compact two-row controls; refresh rate beside data source; session pills
+    toggle off on re-click (removed redundant Off pill). Fixed `SyntaxWarning`
+    for `\\d` in embedded chart HTML template.
+  - **v2 chart polish:** default range **1 day**; live price line with on-chart
+    tag (no duplicate axis label); quieter position/order price lines; improved
+    tick strip; DLL/MLL under balance stats; perf selects hidden when drawer
+    collapsed. **Load perf:** chart paints before deferred range overlays;
+    skip overlay API when pills off; cap ``max_sessions`` to UI count (1–3).
 - **Master GUI v2 — chart legend, DLL/MLL fix, idle list polish (2026-06-16)** —
   - Chart: OHLC hidden until crosshair hovers a bar; countdown moved under
     last price; maximize above price; last-price tick flash (moss/rose).

@@ -1918,7 +1918,11 @@ class MorningRangeReversionStrategy(BaseStrategy):
     def _persist_session_activity(
         self, symbol: str, session_date, st: Dict[str, Any],
     ) -> None:
-        """Disk-backed sweep/fade state survives executor restarts."""
+        """Disk-backed sweep/fade state survives executor restarts (live only)."""
+        if getattr(self.trading_bot, "_is_strategy_replay", False):
+            return
+        if getattr(self.trading_bot, "backtest_engine", None) is not None:
+            return
         try:
             from core.anchor_persistence import patch_session_activity
             patch_session_activity(
@@ -1944,6 +1948,10 @@ class MorningRangeReversionStrategy(BaseStrategy):
         self, symbol: str, session_date, st: Dict[str, Any],
     ) -> None:
         """Reload sweep guards written before a mid-session crash/restart."""
+        if getattr(self.trading_bot, "_is_strategy_replay", False):
+            return
+        if getattr(self.trading_bot, "backtest_engine", None) is not None:
+            return
         try:
             from core.anchor_persistence import load_session_activity
             activity = load_session_activity(
