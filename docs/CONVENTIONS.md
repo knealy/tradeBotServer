@@ -95,6 +95,25 @@ await bus.publish(Event(type=EventType.ORDER_FILLED, data={"id": oid}, source="a
 await bus.publish(Event(event_type="filled", payload={}))
 ```
 
+### Timestamps & time zones
+
+- **Rule:** OHLCV `DataFrame` indexes are **naive UTC**. Session wall clocks in JSON are **tz-aware US/Eastern ISO** (`session_start_et`, `session_end_et`). Chart/LWC uses Unix seconds (UTC instant).
+
+- **Rationale:** Databento + parquet cache use naive UTC; broker/API bars are often tz-aware. Mixing them without normalization causes recurring `Cannot compare tz-naive and tz-aware` bugs and wrong range overlays.
+
+- **Rule:** Before `pd.concat`, `merge`, or slicing bars against session bounds, call `ohlcv_index_naive_utc()` from [core/backtest/ohlcv.py](../core/backtest/ohlcv.py). Convert ET session bounds to naive UTC for slices (see `core/range_history_backfill._session_window_utc_slice`).
+
+- **Rationale:** One canonical helper; full checklist in [GOTCHAS.md](GOTCHAS.md) (*Timestamps & time zones*).
+
+```python
+from core.backtest.ohlcv import ohlcv_index_naive_utc
+
+merged = pd.concat([
+    ohlcv_index_naive_utc(csv_df),
+    ohlcv_index_naive_utc(api_df),
+]).sort_index()
+```
+
 ### Modules & imports
 
 - **Rule:** Lazy-import heavy stacks (`pandas`, `numpy`, `matplotlib`, …) inside functions.

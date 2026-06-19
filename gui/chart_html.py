@@ -10,7 +10,7 @@ import re
 import asyncio
 import math
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
 from collections import defaultdict
@@ -19,6 +19,125 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Rolling window for GUI PnL backfill when AccountTracker is uninitialized
+_GUI_PNL_BACKFILL_DAYS = 30
+
+
+def _gui_account_blocklist() -> set:
+    """Account IDs hidden from the GUI dropdown (comma-separated env)."""
+    raw = os.getenv("GUI_ACCOUNT_BLOCKLIST", "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _account_id_str(acc: Dict[str, Any]) -> str:
+    return str(acc.get("id") or acc.get("accountId") or "")
+
+
+def _gui_eligible_accounts(accounts: List[Dict]) -> List[Dict]:
+    """Drop blocklisted or non-tradeable accounts from GUI rotation."""
+    blocklist = _gui_account_blocklist()
+    eligible: List[Dict] = []
+    for acc in accounts or []:
+        acc_id = _account_id_str(acc)
+        if acc_id and acc_id in blocklist:
+            logger.debug("GUI account blocklist: skipping %s", acc_id)
+            continue
+        status = str(acc.get("status", "active")).lower()
+        if status in ("closed", "inactive", "disabled", "suspended", "archived"):
+            logger.debug("GUI skipping non-active account %s (status=%s)", acc_id, status)
+            continue
+        eligible.append(acc)
+    return eligible
+
+
+def _pick_default_gui_account(accounts: List[Dict]) -> Optional[Dict]:
+    """Prefer ``GUI_DEFAULT_ACCOUNT_ID``, else highest-balance practice account."""
+    if not accounts:
+        return None
+    preferred = os.getenv("GUI_DEFAULT_ACCOUNT_ID", "").strip()
+    if preferred:
+        for acc in accounts:
+            if _account_id_str(acc) == preferred:
+                return acc
+    def _score(acc: Dict) -> Tuple[int, float]:
+        name = (acc.get("name") or acc.get("accountName") or "").upper()
+        bal = float(acc.get("balance", acc.get("currentBalance", 0)) or 0)
+        return (1 if "PRAC" in name else 0, bal)
+    return max(accounts, key=_score)
+
+
+async def _ensure_gui_accounts_ready(trading_bot) -> None:
+    """Load accounts, apply blocklist, auto-select a tradeable account."""
+    try:
+        accounts = getattr(trading_bot, "accounts", None) or []
+        if not accounts:
+            accounts = await trading_bot.list_accounts()
+        eligible = _gui_eligible_accounts(accounts)
+        if not eligible:
+            logger.warning(
+                "No GUI-eligible accounts after blocklist filter — showing all %d broker account(s)",
+                len(accounts),
+            )
+            trading_bot.accounts = accounts or []
+            return
+        if len(eligible) < len(accounts):
+            logger.info(
+                "GUI account filter: %d eligible of %d broker account(s)",
+                len(eligible),
+                len(accounts),
+            )
+        trading_bot.accounts = eligible
+        eligible_ids = {_account_id_str(a) for a in eligible}
+        sel = getattr(trading_bot, "selected_account", None)
+        sel_id = ""
+        if isinstance(sel, dict):
+            sel_id = _account_id_str(sel)
+        elif sel:
+            sel_id = str(sel)
+        if sel_id not in eligible_ids:
+            pick = _pick_default_gui_account(eligible)
+            if pick:
+                acc_id = _account_id_str(pick)
+                await trading_bot.switch_account(acc_id)
+                logger.info(
+                    "GUI auto-selected account %s (id=%s)",
+                    pick.get("name") or pick.get("accountName"),
+                    acc_id,
+                )
+    except Exception as exc:
+        logger.warning("GUI account setup failed: %s", exc)
+
+
+async def _ensure_gui_session_warm(trading_bot, symbol: str, timeframe: str) -> None:
+    """Keep REST session alive and start Market Hub for live chart ticks."""
+    await _ensure_gui_accounts_ready(trading_bot)
+    try:
+        if hasattr(trading_bot, "auth_manager") and trading_bot.auth_manager:
+            await trading_bot.auth_manager.ensure_valid_token()
+    except Exception as exc:
+        logger.warning("GUI token refresh on startup failed: %s", exc)
+    try:
+        await trading_bot.start_keepalive_heartbeat()
+    except Exception as exc:
+        logger.warning("GUI keep-alive heartbeat failed to start: %s", exc)
+    # GUI always attempts Market Hub — unlike strategy_executor, we do not
+    # honour ENABLE_SIGNALR=false here (that flag is for offline/backtest runs).
+    try:
+        ok = await trading_bot.start_market_hub_for_strategies(
+            [str(symbol).upper()],
+            [str(timeframe)],
+        )
+        if ok:
+            logger.info("GUI Market Hub wired for %s (%s)", symbol, timeframe)
+        else:
+            logger.warning(
+                "GUI Market Hub did not connect — chart will use REST quotes (stale last-tick)"
+            )
+    except Exception as exc:
+        logger.warning("GUI Market Hub startup failed: %s", exc)
 
 
 def quote_timeframe_bucket_seconds(timeframe: Optional[str]) -> int:
@@ -42,6 +161,164 @@ def _parse_strategy_settings_blob(settings: Any) -> Dict[str, Any]:
         except (json.JSONDecodeError, TypeError, ValueError):
             return {}
     return {}
+
+
+def _aggregate_trade_legs(legs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Group fill-level trade legs into logical trades.
+
+    The TopStepX ``Trade/search`` API emits one record per filled
+    contract leg. A 3-contract trade closing in a single fill, or a
+    6-contract scale-out across a few minutes, therefore arrives as
+    3-6 separate rows that share the same opening fill (same parent
+    entry order) but were displayed as if they were 3-6 *independent*
+    trades. That triple-counted every metric downstream:
+    trade-count, win rate, streaks, max drawdown, profit factor, and
+    the equity curve. This collapses those legs back into one logical
+    position the way an operator thinks about it.
+
+    Group key, in priority order:
+
+    1. ``(symbol, side, entry_order_id)`` — most precise; legs that
+       share a parent opening order ARE the same logical position. The
+       opener id is attached to each leg dict by the caller (sourced
+       from the FIFO half-turn pairing already done in
+       :func:`handle_get_trades`).
+    2. ``(symbol, side, entry_time bucketed to 2 seconds)`` — fallback
+       for legs whose opener wasn't paired (queue underflow at the
+       window edge), which still share an entry timestamp because the
+       broker fills atomic position opens at the same instant.
+
+    Returns a new list ordered the same way the input was, with each
+    aggregated row carrying:
+
+    * weighted-average ``entry_price`` / ``exit_price`` (qty-weighted)
+    * summed ``quantity`` / ``pnl`` / ``fees``
+    * earliest leg's ``entry_time``, latest leg's ``exit_time``
+    * recomputed ``points`` (signed by position side)
+    * ``legs_count`` and ``legs[]`` for drilldown in the recap modal
+
+    The caller is responsible for recomputing ``cumulative_pnl`` and
+    ``trade_number`` after aggregation since those depend on the
+    collapsed ordering.
+    """
+    if not legs:
+        return []
+
+    def _entry_key(leg: Dict[str, Any]) -> Tuple[Any, ...]:
+        sym = (leg.get("symbol") or "").upper()
+        side = (leg.get("side") or "").upper()
+        eo = leg.get("entry_order_id")
+        if eo not in (None, "", 0, "0"):
+            return ("order", sym, side, str(eo))
+        et = leg.get("entry_time") or ""
+        try:
+            d = datetime.fromisoformat(str(et).replace("Z", "+00:00"))
+            bucket = int(d.timestamp() // 2) * 2
+        except (TypeError, ValueError):
+            bucket = str(et)
+        return ("time", sym, side, bucket)
+
+    grouped: Dict[Any, List[Dict[str, Any]]] = {}
+    insertion_order: List[Any] = []
+    for leg in legs:
+        k = _entry_key(leg)
+        if k not in grouped:
+            grouped[k] = []
+            insertion_order.append(k)
+        grouped[k].append(leg)
+
+    out: List[Dict[str, Any]] = []
+    for k in insertion_order:
+        grp = grouped[k]
+        if len(grp) == 1:
+            t = dict(grp[0])
+            t["legs_count"] = 1
+            t["legs"] = []
+            out.append(t)
+            continue
+
+        grp.sort(key=lambda l: str(l.get("exit_time") or ""))
+        total_qty = sum(int(l.get("quantity", 0) or 0) for l in grp) or len(grp)
+        total_pnl = sum(float(l.get("pnl", 0) or 0) for l in grp)
+        total_fees = sum(float(l.get("fees", 0) or 0) for l in grp)
+
+        def _wavg(field: str) -> float:
+            num = 0.0
+            for l in grp:
+                q = int(l.get("quantity", 0) or 0) or 1
+                num += float(l.get(field, 0) or 0) * q
+            return num / total_qty
+
+        wavg_entry = _wavg("entry_price")
+        wavg_exit = _wavg("exit_price")
+        first = grp[0]
+        last = grp[-1]
+        side_up = (first.get("side") or "").upper()
+        if side_up in ("LONG", "BUY"):
+            points = wavg_exit - wavg_entry
+        else:
+            points = wavg_entry - wavg_exit
+
+        merged = dict(first)
+        merged.update({
+            "id": first.get("id"),
+            "entry_time": first.get("entry_time"),
+            "exit_time": last.get("exit_time"),
+            "entry_price": round(wavg_entry, 2),
+            "exit_price": round(wavg_exit, 2),
+            "quantity": total_qty,
+            "pnl": round(total_pnl, 2),
+            "fees": round(total_fees, 2),
+            "points": round(points, 2),
+            "legs_count": len(grp),
+            "legs": [
+                {
+                    "id": l.get("id"),
+                    "order_id": l.get("order_id"),
+                    "exit_time": l.get("exit_time"),
+                    "quantity": int(l.get("quantity", 0) or 0),
+                    "pnl": round(float(l.get("pnl", 0) or 0), 2),
+                    "exit_price": round(float(l.get("exit_price", 0) or 0), 2),
+                }
+                for l in grp
+            ],
+        })
+        out.append(merged)
+    return out
+
+
+def _classify_order_tag(tag: Optional[str]) -> Dict[str, str]:
+    """Classify a broker ``customTag`` as auto / manual / bracket."""
+    raw = str(tag or "").strip()
+    upper = raw.upper()
+    if not upper:
+        return {"source": "manual", "source_label": "manual", "strategy": "", "custom_tag": ""}
+    if "AUTOBRACKET" in upper or "-SL" in upper or "-TP" in upper:
+        return {"source": "bracket", "source_label": "bracket", "strategy": "", "custom_tag": raw}
+    _known = (
+        "overnight_range",
+        "morning_range_reversion",
+        "opening_range_breakout",
+        "overnight_reversion",
+        "trend_scalping",
+        "mean_reversion",
+    )
+    strategy = ""
+    if upper.startswith("TB-"):
+        for part in raw.split("-"):
+            if part in _known:
+                strategy = part
+                break
+    if not strategy:
+        for name in _known:
+            if name.upper().replace("_", "") in upper.replace("_", ""):
+                strategy = name
+                break
+    if upper.startswith("TB-") or "STOP_BRACKET" in upper or any(
+        k.upper().replace("_", "") in upper.replace("_", "") for k in _known
+    ):
+        return {"source": "auto", "source_label": "auto", "strategy": strategy, "custom_tag": raw}
+    return {"source": "manual", "source_label": "manual", "strategy": "", "custom_tag": raw}
 
 
 def broker_bars_to_chart_rows(bars: List[Any]) -> List[Dict[str, Any]]:
@@ -96,12 +373,774 @@ def broker_bars_to_chart_rows(bars: List[Any]) -> List[Dict[str, Any]]:
     return chart_data
 
 
+# ---------------------------------------------------------------------------
+# Strategy idle-state helpers — feed the dashboard's "ready / sleeping" panel.
+#
+# The bot's range-based strategies (overnight_range, MRR, ORB) trade for a
+# narrow window each weekday and sit dormant the rest of the day. The v2
+# dashboard's "STRATEGIES at rest" empty state used to be just a launcher
+# form, which left the operator blind to the *most useful* questions during
+# the long quiet windows: when does the next session arm, and what's the
+# last range each strategy recorded? These helpers expose both, by combining
+# the persisted strategy_states.settings ranges with hardcoded ET schedules.
+# ---------------------------------------------------------------------------
+
+# Hardcoded launch schedules for the time-gated strategies. Source of truth
+# is each strategy's ``_in_trading_window`` / time-gate logic in
+# ``strategies/<name>_strategy.py``; cross-referenced with the live
+# ``config/strategies/<name>.toml`` (``range_start`` / ``range_end_open``).
+# The ``time_et`` is when the strategy first becomes eligible to act —
+# either the range *start* (range builders that act on the close of the
+# build window) or the *signal* time (overnight_range scans at 09:29 ET
+# and arms breakout brackets that fill at 09:30 ET market open).
+_STRATEGY_SCHEDULES: Dict[str, Dict[str, Any]] = {
+    "overnight_range": {
+        "time_et": (9, 29),
+        "days": "weekday",
+        "label": "Mon\u2013Fri 9:29 AM ET",
+        "kind": "signal",
+    },
+    "morning_range_reversion": {
+        "time_et": (7, 0),
+        "days": "weekday",
+        "label": "Mon\u2013Fri 7:00 AM ET (range build, fade window 8\u201316 ET)",
+        "kind": "range_build",
+    },
+    "opening_range_breakout": {
+        "time_et": (9, 30),
+        "days": "weekday",
+        "label": "Mon\u2013Fri 9:30 AM ET (range build, breakout after 10:30)",
+        "kind": "range_build",
+    },
+}
+
+
+def _compute_next_launch(name: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Compute the next eligible launch window in ET for a registered strategy.
+
+    Returns a dict with ``eta_iso`` (UTC ISO timestamp), ``eta_seconds``
+    (delta from ``now``), a human ``label`` (e.g. "9:29 AM ET tomorrow"),
+    and the ``schedule`` summary string. Strategies without a hardcoded
+    schedule (i.e. operator-launched) report ``manual launch`` and
+    ``eta_iso=None`` so the frontend can render a different chip.
+    """
+    meta = _STRATEGY_SCHEDULES.get(name)
+    if not meta:
+        return {
+            "eta_iso": None,
+            "eta_seconds": None,
+            "label": "manual launch",
+            "schedule": "manual",
+            "kind": "manual",
+        }
+    try:
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+    except ImportError:
+        # zoneinfo missing on this Python — fall back to fixed EDT (-4h).
+        # The dashboard will be off by an hour for ~5 weeks/year on EST,
+        # acceptable degradation for an env without zoneinfo.
+        from datetime import timedelta as _td
+        et = timezone(_td(hours=-4))
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_et = now.astimezone(et)
+    h, m = meta["time_et"]
+    candidate = now_et.replace(hour=h, minute=m, second=0, microsecond=0)
+    if candidate <= now_et:
+        from datetime import timedelta as _td
+        candidate = candidate + _td(days=1)
+    if meta.get("days") == "weekday":
+        from datetime import timedelta as _td
+        while candidate.weekday() >= 5:  # 5=Sat, 6=Sun
+            candidate = candidate + _td(days=1)
+    eta_seconds = int((candidate - now_et).total_seconds())
+    days_diff = (candidate.date() - now_et.date()).days
+    if days_diff == 0:
+        when = "today"
+    elif days_diff == 1:
+        when = "tomorrow"
+    else:
+        when = candidate.strftime("%A")  # "Monday", etc.
+    # %-I is GNU-only; fall back if it raises on Windows runtimes.
+    try:
+        time_label = candidate.strftime("%-I:%M %p ET")
+    except ValueError:
+        time_label = candidate.strftime("%I:%M %p ET").lstrip("0")
+    return {
+        "eta_iso": candidate.astimezone(timezone.utc).isoformat(),
+        "eta_seconds": eta_seconds,
+        "label": f"{time_label} {when}",
+        "schedule": meta["label"],
+        "kind": meta["kind"],
+    }
+
+
+def _strategy_idle_state(
+    name: str,
+    db: Any,
+    account_id: Optional[str],
+) -> Dict[str, Any]:
+    """Build the idle-state block for a non-active registered strategy.
+
+    Pulls the most recent persisted range from ``strategy_states.settings``
+    (the same blob the live chart consumes) plus ``last_started`` /
+    ``last_stopped`` from the row's audit columns, and annotates with the
+    next eligible launch window from :func:`_compute_next_launch`.
+
+    Range source per strategy:
+      - ``overnight_range``           → ``settings.or_ranges``  (high, low)
+      - ``morning_range_reversion``  → ``settings.mrr_ranges`` (high, low,
+        mid, width, session_*)
+      - ``opening_range_breakout``    → ``settings.orb_ranges`` (same shape)
+
+    All other strategies get an empty ``last_ranges`` and ``manual``
+    schedule — the panel renders them as "manual launch" without a
+    countdown.
+    """
+    out: Dict[str, Any] = {
+        "last_ranges": [],
+        "last_started": None,
+        "last_stopped": None,
+        "snapshot_age_seconds": None,
+    }
+    out.update(_compute_next_launch(name))
+    if not (db and account_id):
+        return out
+    try:
+        state = db.get_strategy_state(str(account_id), name) or {}
+    except Exception:
+        logger.debug("idle_state: get_strategy_state(%s) failed", name, exc_info=True)
+        state = {}
+    out["last_started"] = state.get("last_started")
+    out["last_stopped"] = state.get("last_stopped")
+    settings_blob = _parse_strategy_settings_blob(state.get("settings"))
+    metadata_blob = state.get("metadata")
+    if isinstance(metadata_blob, str):
+        try:
+            metadata_blob = json.loads(metadata_blob)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            metadata_blob = {}
+    if not isinstance(metadata_blob, dict):
+        metadata_blob = {}
+    range_key = {
+        "overnight_range": "or_ranges",
+        "morning_range_reversion": "mrr_ranges",
+        "opening_range_breakout": "orb_ranges",
+    }.get(name)
+    ranges_dict = settings_blob.get(range_key) if range_key else None
+    # Pick the right "snapshot age" reference: OR strategy writes
+    # metadata.or_ranges_saved_at every 4s while running; MRR/ORB rely on
+    # the row's updated_at. Fall back to updated_at in either case.
+    snap_ts_iso = None
+    if range_key == "or_ranges":
+        snap_ts_iso = metadata_blob.get("or_ranges_saved_at")
+    if not snap_ts_iso:
+        snap_ts_iso = state.get("updated_at")
+    if snap_ts_iso:
+        try:
+            ts = datetime.fromisoformat(str(snap_ts_iso).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            out["snapshot_age_seconds"] = int(
+                (datetime.now(timezone.utc) - ts).total_seconds()
+            )
+        except (TypeError, ValueError):
+            pass
+    if isinstance(ranges_dict, dict):
+        # Dedupe on (high, low) tuple — strategies write both contract-prefixed
+        # ("F.US.MNQ") and short-form ("MNQ") aliases for the same range, and
+        # the panel only needs one row per logical symbol.
+        seen: set = set()
+        for sym, info in ranges_dict.items():
+            if not isinstance(info, dict):
+                continue
+            try:
+                hi = float(info.get("high", 0) or 0)
+                lo = float(info.get("low", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if hi <= 0 or lo <= 0:
+                continue
+            key = (round(hi, 4), round(lo, 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            sym_up = str(sym).upper()
+            # Prefer the short form ("MNQ" over "F.US.MNQ") for display.
+            if "." in sym_up:
+                short = sym_up.split(".")[-1].strip()
+                if short:
+                    sym_up = short
+            mid = info.get("mid")
+            try:
+                mid_f = float(mid) if mid is not None else (hi + lo) / 2.0
+            except (TypeError, ValueError):
+                mid_f = (hi + lo) / 2.0
+            out["last_ranges"].append({
+                "symbol": sym_up,
+                "high": hi,
+                "low": lo,
+                "mid": round(mid_f, 4),
+                "width": round(hi - lo, 4),
+            })
+        out["last_ranges"].sort(key=lambda r: r["symbol"])
+    return out
+
+
 def _or_ranges_from_strategy_state_row(st_row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not st_row:
         return {}
     blob = _parse_strategy_settings_blob(st_row.get("settings"))
     raw = blob.get("or_ranges") if isinstance(blob, dict) else None
     return raw if isinstance(raw, dict) else {}
+
+
+def _strategy_ranges_from_db(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+    settings_key: str,
+) -> Dict[str, Any]:
+    """Generic DB read of ``strategy_states.settings[settings_key]``.
+
+    Used by ``handle_strategy_details`` to surface MRR (``mrr_ranges``) and ORB
+    (``orb_ranges``) ranges when the strategy runs in a separate executor
+    process and the chart-server's strategy_manager has only an idle (empty
+    ``_state``/``_sessions``) instance. Mirrors the OR-range fallback pattern
+    in ``_overnight_or_ranges_with_executor_fallback``.
+    """
+    db = getattr(trading_bot, "db", None)
+    if not db or not account_id:
+        return {}
+    try:
+        st_primary = db.get_strategy_state(str(account_id), strategy_name)
+    except Exception:
+        logger.debug("get_strategy_state(%s, %s) failed", account_id, strategy_name, exc_info=True)
+        return {}
+    if not st_primary:
+        return {}
+    blob = _parse_strategy_settings_blob(st_primary.get("settings"))
+    raw = blob.get(settings_key) if isinstance(blob, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+_DB_RANGE_SETTINGS_KEYS: Dict[str, str] = {
+    "morning_range_reversion": "mrr_ranges",
+    "opening_range_breakout": "orb_ranges",
+}
+
+_STRATEGY_RANGE_SETTINGS_KEYS: Dict[str, str] = {
+    "overnight_range": "or_ranges",
+    **_DB_RANGE_SETTINGS_KEYS,
+}
+
+_RANGE_HISTORY_MAX = 20
+
+
+def _normalize_symbol_ranges(raw: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Normalize ``settings.{mrr,orb}_ranges`` blobs to chart overlay shape."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for sym, blob in raw.items():
+        if not isinstance(blob, dict):
+            continue
+        hi = blob.get("high")
+        if hi is None:
+            hi = blob.get("H") or blob.get("range_hi")
+        lo = blob.get("low")
+        if lo is None:
+            lo = blob.get("L") or blob.get("range_lo")
+        try:
+            hi_f = float(hi) if hi is not None else None
+            lo_f = float(lo) if lo is not None else None
+        except (TypeError, ValueError):
+            continue
+        if hi_f is None or lo_f is None:
+            continue
+        mid = blob.get("mid")
+        try:
+            mid_f = float(mid) if mid is not None else (hi_f + lo_f) / 2.0
+        except (TypeError, ValueError):
+            mid_f = (hi_f + lo_f) / 2.0
+        merged: Dict[str, Any] = {
+            "high": hi_f,
+            "low": lo_f,
+            "mid": mid_f,
+            "size": hi_f - lo_f,
+        }
+        for opt in ("session_date", "session_start_et", "session_end_et", "phase"):
+            if blob.get(opt) is not None:
+                merged[opt] = blob[opt]
+        out[str(sym).upper()] = merged
+    return out
+
+
+def _enrich_ranges_saved_at(
+    ranges: Dict[str, Dict[str, Any]],
+    saved_at: Optional[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Stamp ``saved_at`` / inferred ``session_date`` when the snapshot lacks them."""
+    if not ranges:
+        return ranges
+    out: Dict[str, Dict[str, Any]] = {}
+    for sym, info in ranges.items():
+        merged = dict(info)
+        if saved_at and not merged.get("session_date"):
+            merged["session_date"] = str(saved_at)[:10]
+        if saved_at:
+            merged["saved_at"] = saved_at
+        out[str(sym).upper()] = merged
+    return out
+
+
+def _range_history_from_settings(
+    settings: Optional[Dict[str, Any]],
+    settings_key: str,
+) -> List[Dict[str, Any]]:
+    """Read normalized ``{key}_history`` entries from strategy_states.settings."""
+    if not isinstance(settings, dict):
+        return []
+    hist_key = f"{settings_key}_history"
+    raw = settings.get(hist_key)
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ranges = _normalize_symbol_ranges(item.get("ranges"))
+        if not ranges:
+            continue
+        saved_at = item.get("saved_at")
+        out.append({
+            "session_date": item.get("session_date"),
+            "saved_at": saved_at,
+            "ranges": _enrich_ranges_saved_at(ranges, saved_at if isinstance(saved_at, str) else None),
+        })
+    out.sort(key=lambda e: str(e.get("session_date") or ""), reverse=True)
+    return out
+
+
+_range_history_backfill_attempted: set = set()
+_range_api_bars_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_RANGE_API_BARS_TTL_SEC = 90.0
+_range_overlays_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_RANGE_OVERLAYS_TTL_SEC = 30.0
+
+
+def _range_overlays_cache_key(
+    account_id: Optional[str],
+    max_sessions: int,
+    strategy_names: Tuple[str, ...],
+) -> str:
+    acct = str(account_id or "")
+    strat = ",".join(sorted(strategy_names))
+    return f"{acct}|{max_sessions}|{strat}"
+
+
+def _parse_range_overlay_strategies(request) -> List[str]:
+    raw = (request.query.get("strategies") or "").strip()
+    if raw:
+        wanted = {s.strip() for s in raw.split(",") if s.strip()}
+        return [s for s in _STRATEGY_RANGE_SETTINGS_KEYS if s in wanted]
+    return list(_STRATEGY_RANGE_SETTINGS_KEYS.keys())
+
+
+async def _get_cached_api_1m_bars(trading_bot: Any, symbol: str) -> List[Dict[str, Any]]:
+    """TTL cache so overlay refresh does not fan out 9+ History/retrieveBars per poll."""
+    import time
+    from core.range_history_backfill import fetch_api_1m_bars_for_backfill
+
+    sym = str(symbol or "").upper()
+    if not sym:
+        return []
+    now = time.time()
+    hit = _range_api_bars_cache.get(sym)
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        bars = await fetch_api_1m_bars_for_backfill(
+            trading_bot, sym, lookback_days=10,
+        )
+    except Exception:
+        logger.debug("api 1m cache fetch failed for %s", sym, exc_info=True)
+        bars = hit[1] if hit else []
+    _range_api_bars_cache[sym] = (now + _RANGE_API_BARS_TTL_SEC, list(bars or []))
+    return list(bars or [])
+
+
+def _range_history_stale(
+    settings: Dict[str, Any],
+    metadata: Dict[str, Any],
+    settings_key: str,
+) -> bool:
+    """True when persisted history is missing or newest session is before yesterday."""
+    hist_key = f"{settings_key}_history"
+    hist = settings.get(hist_key) if isinstance(settings, dict) else None
+    if not isinstance(hist, list) or len(hist) < 2:
+        return True
+    dates: List[str] = []
+    for entry in hist:
+        if not isinstance(entry, dict):
+            continue
+        sd = entry.get("session_date")
+        if sd:
+            dates.append(str(sd)[:10])
+        ranges = entry.get("ranges")
+        if isinstance(ranges, dict):
+            for blob in ranges.values():
+                if isinstance(blob, dict) and blob.get("session_date"):
+                    dates.append(str(blob["session_date"])[:10])
+    if not dates:
+        return True
+    newest = max(dates)
+    yday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    return newest < yday
+
+
+def _should_backfill_range_history(
+    account_id: Optional[str],
+    strategy_name: str,
+    settings: Dict[str, Any],
+    metadata: Dict[str, Any],
+    settings_key: str,
+) -> bool:
+    if not account_id:
+        return False
+    tok = (str(account_id), strategy_name)
+    if tok in _range_history_backfill_attempted and not _range_history_stale(settings, metadata, settings_key):
+        return False
+    if isinstance(metadata, dict) and metadata.get(f"{settings_key}_history_backfilled_at"):
+        if not _range_history_stale(settings, metadata, settings_key):
+            return False
+    return _range_history_stale(settings, metadata, settings_key)
+
+
+def _maybe_backfill_range_history(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+    settings: Dict[str, Any],
+    metadata: Dict[str, Any],
+    settings_key: str,
+) -> None:
+    """Schedule async backfill when history is missing/stale (chart-server event loop)."""
+    if not _should_backfill_range_history(account_id, strategy_name, settings, metadata, settings_key):
+        return
+    tok = (str(account_id), strategy_name)
+    _range_history_backfill_attempted.add(tok)
+    db = getattr(trading_bot, "db", None)
+    if not db:
+        return
+
+    async def _run() -> None:
+        try:
+            from core.range_history_backfill import backfill_strategy_range_history_async
+
+            await backfill_strategy_range_history_async(
+                db, str(account_id), strategy_name, [], trading_bot=trading_bot, max_sessions=20,
+            )
+        except Exception:
+            logger.debug("lazy range history backfill failed for %s", strategy_name, exc_info=True)
+
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        loop.create_task(_run())
+    except RuntimeError:
+        import asyncio
+        asyncio.run(_run())
+
+
+async def _await_range_history_backfill(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+) -> None:
+    """Blocking (for overlay API): refresh history with Databento + API bars before read."""
+    if not account_id:
+        return
+    db = getattr(trading_bot, "db", None)
+    if not db:
+        return
+    try:
+        st = db.get_strategy_state(str(account_id), strategy_name) or {}
+    except Exception:
+        return
+    settings = _parse_strategy_settings_blob(st.get("settings"))
+    metadata = st.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            metadata = {}
+    settings_key = _STRATEGY_RANGE_SETTINGS_KEYS.get(strategy_name)
+    if not settings_key:
+        return
+    if not _should_backfill_range_history(account_id, strategy_name, settings, metadata, settings_key):
+        return
+    tok = (str(account_id), strategy_name)
+    _range_history_backfill_attempted.add(tok)
+    try:
+        from core.range_history_backfill import backfill_strategy_range_history_async
+
+        await backfill_strategy_range_history_async(
+            db, str(account_id), strategy_name, [], trading_bot=trading_bot, max_sessions=20,
+        )
+    except Exception:
+        logger.debug("range history backfill failed for %s", strategy_name, exc_info=True)
+
+
+async def _augment_range_bundle_with_live_bars(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+    bundle: Dict[str, Any],
+    *,
+    max_sessions: int = 20,
+    api_bars_by_symbol: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    """Merge persisted history with live Databento+API bar reconstruction (no DB write)."""
+    try:
+        from core.range_history_backfill import (
+            _BAR_BACKFILL_SYMBOLS,
+            attach_range_window_et,
+            merge_session_maps,
+            ranges_from_bars,
+            ranges_from_trade_snapshots,
+        )
+
+        sym_set = set(str(s).upper() for s in (bundle.get("ranges") or {}).keys())
+        for s in _BAR_BACKFILL_SYMBOLS:
+            sym_set.add(s)
+        if not sym_set:
+            return bundle
+
+        api_by_sym = api_bars_by_symbol or {}
+        bar_maps: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for sym in sorted(sym_set):
+            try:
+                api_bars = api_by_sym.get(sym)
+                if api_bars is None:
+                    api_bars = await _get_cached_api_1m_bars(trading_bot, sym)
+                for sd, blob in ranges_from_bars(
+                    sym, strategy_name, max_sessions=max_sessions, api_bars=api_bars,
+                ).items():
+                    bar_maps.setdefault(sd, {}).update(blob)
+            except Exception:
+                logger.debug("range bar map failed %s %s", strategy_name, sym, exc_info=True)
+
+        snap_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        db = getattr(trading_bot, "db", None)
+        if db and account_id:
+            try:
+                snap_map = ranges_from_trade_snapshots(db, str(account_id), strategy_name)
+            except Exception:
+                logger.debug("range snap map failed %s", strategy_name, exc_info=True)
+
+        db_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for item in bundle.get("range_history") or []:
+            if not isinstance(item, dict):
+                continue
+            sd = str(item.get("session_date") or "")[:10]
+            raw_ranges = item.get("ranges") if isinstance(item.get("ranges"), dict) else {}
+            if sd and raw_ranges:
+                db_map[sd] = dict(raw_ranges)
+
+        sessions = merge_session_maps(db_map, bar_maps, snap_map)[:max_sessions]
+        if not sessions:
+            return bundle
+
+        history_out: List[Dict[str, Any]] = []
+        for sd, sym_blobs in sessions:
+            history_out.append({
+                "session_date": sd,
+                "saved_at": f"{sd}T16:00:00+00:00",
+                "ranges": {
+                    sym: attach_range_window_et(blob, strategy_name, session_date=sd)
+                    for sym, blob in sym_blobs.items()
+                },
+            })
+        bundle["range_history"] = history_out
+        latest_sd, latest_blobs = sessions[0]
+        bundle["ranges"] = {
+            sym: attach_range_window_et(blob, strategy_name, session_date=latest_sd)
+            for sym, blob in latest_blobs.items()
+        }
+        return bundle
+    except Exception:
+        logger.debug("range overlay augment failed for %s", strategy_name, exc_info=True)
+        return bundle
+
+
+def _finalize_strategy_range_details(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+    details: Dict[str, Any],
+) -> None:
+    """Normalize current ranges + attach persisted multi-session history for chart overlays."""
+    settings_key = _STRATEGY_RANGE_SETTINGS_KEYS.get(strategy_name)
+    if not settings_key:
+        return
+    raw_ranges = details.get("ranges") if isinstance(details.get("ranges"), dict) else {}
+    details["ranges"] = _normalize_symbol_ranges(raw_ranges)
+    details["range_history"] = []
+    details["range_saved_at"] = None
+    db = getattr(trading_bot, "db", None)
+    if not db or not account_id:
+        return
+    try:
+        st = db.get_strategy_state(str(account_id), strategy_name) or {}
+    except Exception:
+        logger.debug("get_strategy_state for range finalize failed", exc_info=True)
+        return
+    settings = _parse_strategy_settings_blob(st.get("settings"))
+    metadata = st.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            metadata = {}
+    saved_at = metadata.get(f"{settings_key}_saved_at") if isinstance(metadata, dict) else None
+    _maybe_backfill_range_history(
+        trading_bot, account_id, strategy_name, settings, metadata, settings_key,
+    )
+    try:
+        st = db.get_strategy_state(str(account_id), strategy_name) or {}
+        settings = _parse_strategy_settings_blob(st.get("settings"))
+        metadata = st.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                metadata = {}
+        saved_at = metadata.get(f"{settings_key}_saved_at") if isinstance(metadata, dict) else saved_at
+    except Exception:
+        logger.debug("re-read strategy_state after backfill failed", exc_info=True)
+    if isinstance(saved_at, str):
+        details["range_saved_at"] = saved_at
+    details["ranges"] = _enrich_ranges_saved_at(details["ranges"], saved_at if isinstance(saved_at, str) else None)
+    details["range_history"] = _range_history_from_settings(settings, settings_key)
+
+
+def _external_strategy_details_from_db(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+) -> Dict[str, Any]:
+    """Headless GUI: serve persisted ranges when no in-process strategy instance."""
+    if strategy_name == "overnight_range":
+        raw = _overnight_or_ranges_with_executor_fallback(trading_bot, account_id)
+        ranges = _normalize_symbol_ranges(raw)
+    else:
+        settings_key = _DB_RANGE_SETTINGS_KEYS.get(strategy_name)
+        if settings_key:
+            raw = _strategy_ranges_from_db(
+                trading_bot, account_id, strategy_name, settings_key
+            )
+            ranges = _normalize_symbol_ranges(raw)
+        else:
+            ranges = {}
+    details = {
+        "name": strategy_name,
+        "status": "external",
+        "external": True,
+        "symbols": sorted(ranges.keys()),
+        "timeframe": "N/A",
+        "ranges": ranges,
+        "breakout_levels": {},
+        "atr_data": {},
+        "risk_profile": {},
+        "active_orders": 0,
+        "start_time": None,
+        "runtime_seconds": None,
+        "runtime_str": None,
+    }
+    _finalize_strategy_range_details(trading_bot, account_id, strategy_name, details)
+    return details
+
+
+def _range_overlay_bundle_for_strategy(
+    trading_bot: Any,
+    account_id: Optional[str],
+    strategy_name: str,
+) -> Dict[str, Any]:
+    """DB-first range overlay payload for the chart (current + history)."""
+    from core.range_history_backfill import attach_range_window_et
+
+    if strategy_name == "overnight_range":
+        raw = _overnight_or_ranges_with_executor_fallback(trading_bot, account_id)
+        details: Dict[str, Any] = {
+            "name": strategy_name,
+            "ranges": _normalize_symbol_ranges(raw),
+        }
+    else:
+        settings_key = _DB_RANGE_SETTINGS_KEYS.get(strategy_name)
+        if not settings_key:
+            return {"ranges": {}, "range_history": [], "range_saved_at": None}
+        raw = _strategy_ranges_from_db(
+            trading_bot, account_id, strategy_name, settings_key,
+        )
+        details = {
+            "name": strategy_name,
+            "ranges": _normalize_symbol_ranges(raw),
+        }
+    _finalize_strategy_range_details(trading_bot, account_id, strategy_name, details)
+    ranges = {
+        sym: attach_range_window_et(info, strategy_name)
+        for sym, info in (details.get("ranges") or {}).items()
+        if isinstance(info, dict)
+    }
+    history_out: List[Dict[str, Any]] = []
+    for item in details.get("range_history") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_ranges = item.get("ranges") if isinstance(item.get("ranges"), dict) else {}
+        history_out.append({
+            "session_date": item.get("session_date"),
+            "saved_at": item.get("saved_at"),
+            "ranges": {
+                sym: attach_range_window_et(info, strategy_name, session_date=item.get("session_date"))
+                for sym, info in raw_ranges.items()
+                if isinstance(info, dict)
+            },
+        })
+    return {
+        "ranges": ranges,
+        "range_history": history_out,
+        "range_saved_at": details.get("range_saved_at"),
+    }
+
+
+def _best_range_for_symbol(
+    trading_bot: Any,
+    account_id: Optional[str],
+    symbol: str,
+) -> Optional[Dict[str, Any]]:
+    """Pick the freshest strategy range overlay for a symbol (recap fallback)."""
+    sym_u = str(symbol or "").upper()
+    if not sym_u:
+        return None
+    for strategy_name in ("morning_range_reversion", "opening_range_breakout", "overnight_range"):
+        if strategy_name == "overnight_range":
+            ranges = _overnight_or_ranges_with_executor_fallback(trading_bot, account_id)
+        else:
+            key = _DB_RANGE_SETTINGS_KEYS.get(strategy_name)
+            if not key:
+                continue
+            raw = _strategy_ranges_from_db(trading_bot, account_id, strategy_name, key)
+            ranges = _normalize_symbol_ranges(raw)
+        info = ranges.get(sym_u) if isinstance(ranges, dict) else None
+        if isinstance(info, dict) and info.get("high") is not None and info.get("low") is not None:
+            out = dict(info)
+            out["strategy_name"] = strategy_name
+            return out
+    return None
 
 
 def _overnight_or_ranges_with_executor_fallback(
@@ -336,6 +1375,37 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 response.headers['Access-Control-Allow-Origin'] = '*'
                 return response
 
+            # Ensure AccountTracker knows this account so DLL/MLL limits resolve.
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                aid = str(account_id)
+                if aid not in trading_bot.account_tracker.accounts:
+                    try:
+                        acct_name = (
+                            (trading_bot.selected_account or {}).get('name')
+                            if isinstance(trading_bot.selected_account, dict)
+                            else f"Account-{aid}"
+                        ) or f"Account-{aid}"
+                        acct_type = (
+                            (trading_bot.selected_account or {}).get('type')
+                            or (trading_bot.selected_account or {}).get('account_type')
+                            if isinstance(trading_bot.selected_account, dict)
+                            else 'unknown'
+                        ) or 'unknown'
+                        start_bal = float(
+                            (trading_bot.selected_account or {}).get('balance', 0)
+                            if isinstance(trading_bot.selected_account, dict)
+                            else 0
+                        )
+                        trading_bot.account_tracker.initialize_account(
+                            account_id=aid,
+                            account_name=acct_name,
+                            account_type=acct_type,
+                            starting_balance=start_bal if start_bal > 0 else 0.0,
+                        )
+                        trading_bot.account_tracker.current_account_id = aid
+                    except Exception:
+                        logger.debug("lazy account_tracker init failed", exc_info=True)
+
             # FAST PATH: Try AccountTracker first (it's memory-only, no API calls)
             tracker_state = None
             if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
@@ -357,16 +1427,41 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             unrealized_pnl = float(tracker_state.get('unrealized_pnl', 0.0) if tracker_state else 0.0)
             total_pnl = float(tracker_state.get('total_pnl', realized_pnl + unrealized_pnl) if tracker_state else (realized_pnl + unrealized_pnl))
             current_balance = float(tracker_state.get('current_balance', 0.0) if tracker_state else 0.0)
-            daily_loss_limit = float(tracker_state.get('daily_loss_limit', 0.0) if tracker_state else 0.0)
-            maximum_loss_limit = float(tracker_state.get('maximum_loss_limit', 0.0) if tracker_state else 0.0)
+
+            # DLL + MLL come from ``AccountTracker.get_compliance_status`` —
+            # the canonical risk-state source. ``tracker.get_state`` does
+            # NOT include the limit fields; reading
+            # ``tracker_state['daily_loss_limit']`` always returned 0.0,
+            # which silently hid the head-chip DLL pill in v2 Phase 3.6.
+            # The compliance helper is also where the bot's risk gate
+            # ultimately reads from, so the dashboard chip and the
+            # consec-loss breaker now agree on the same numbers.
+            compliance: Dict[str, Any] = {}
+            if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                try:
+                    compliance = trading_bot.account_tracker.get_compliance_status(
+                        account_id=str(account_id)
+                    ) or {}
+                except Exception:
+                    logger.debug("compliance_status fetch failed", exc_info=True)
+                    compliance = {}
+            daily_loss_limit = float(compliance.get('dll_limit') or 0.0)
+            maximum_loss_limit = float(compliance.get('mll_limit') or 0.0)
 
             if not account_name and tracker_state:
                 account_name = tracker_state.get('account_name')
             if not account_type and tracker_state:
                 account_type = tracker_state.get('account_type')
 
-            # If tracker hasn't been populated with realized PnL yet, derive it from trades stats
-            if (realized_pnl == 0.0 or total_pnl == 0.0) and account_id:
+            # Backfill PnL from trades only when AccountTracker has no state
+            # for this account yet. Do NOT treat realized_pnl==0 as "empty" —
+            # a flat session is valid zero. Session-only trade fetches also
+            # caused alternating 0-trade / N-trade log spam when the selected
+            # account had no fills in the current session.
+            tracker_uninitialized = tracker_state is None or (
+                starting_balance == 0.0 and current_balance == 0.0 and balance == 0.0
+            )
+            if tracker_uninitialized and account_id:
                 try:
                     if not hasattr(handle_account_state, "_trade_stats_cache"):
                         handle_account_state._trade_stats_cache = {}
@@ -377,7 +1472,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     if not stats_cached or (now - stats_cached_ts) > 30.0:
                         from core.cli_command_parser import CLICommandParser
                         parser = CLICommandParser(trading_bot)
-                        trades_result = await parser._handle_trades([])
+                        end_dt = datetime.now(timezone.utc)
+                        start_dt = end_dt - timedelta(days=_GUI_PNL_BACKFILL_DAYS)
+                        trades_result = await parser._handle_trades(
+                            [start_dt.isoformat(), end_dt.isoformat()]
+                        )
                         stats = trades_result.get('statistics', {}) if isinstance(trades_result, dict) else {}
                         trades_list = trades_result.get('trades', []) if isinstance(trades_result, dict) else []
                         total_pnl_stat = stats.get('total_pnl', None)
@@ -422,6 +1521,32 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             if highest_eod_balance == 0.0 and starting_balance:
                 highest_eod_balance = starting_balance
 
+            # Risk chips for the head-summary (DLL + MLL). Values come
+            # straight from ``AccountTracker.get_compliance_status`` so
+            # the dashboard, the consec-loss breaker, and the risk-gate
+            # logic all read identical numbers.
+            #
+            # DLL — daily loss limit. Resets at EOD; capped at the limit
+            #   so profitable sessions report 100% buffer (not 130%).
+            # MLL — maximum loss limit (trailing). Computed from
+            #   ``current_balance - drawdown_threshold`` where
+            #   ``drawdown_threshold = highest_eod_balance - mll_limit``.
+            #   This is the more catastrophic of the two: breaching MLL
+            #   permanently blows the prop account, no daily reset.
+            dll_remaining = float(compliance.get('dll_remaining') or 0.0)
+            mll_remaining = float(compliance.get('mll_remaining') or 0.0)
+            trailing_loss = float(compliance.get('trailing_loss') or 0.0)
+            dll_violated = bool(compliance.get('dll_violated', False))
+            mll_violated = bool(compliance.get('mll_violated', False))
+
+            dll_pct_remaining: Optional[float] = None
+            if daily_loss_limit and daily_loss_limit > 0:
+                dll_pct_remaining = max(0.0, min(1.0, dll_remaining / daily_loss_limit))
+
+            mll_pct_remaining: Optional[float] = None
+            if maximum_loss_limit and maximum_loss_limit > 0:
+                mll_pct_remaining = max(0.0, min(1.0, mll_remaining / maximum_loss_limit))
+
             data = {
                 'account_id': account_id,
                 'account_name': account_name or 'Unknown',
@@ -433,7 +1558,14 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 'unrealized_pnl': unrealized_pnl,
                 'total_pnl': total_pnl,
                 'daily_loss_limit': daily_loss_limit,
-                'maximum_loss_limit': maximum_loss_limit
+                'maximum_loss_limit': maximum_loss_limit,
+                'dll_remaining': round(dll_remaining, 2),
+                'dll_pct_remaining': dll_pct_remaining,
+                'dll_violated': dll_violated,
+                'mll_remaining': round(mll_remaining, 2),
+                'mll_pct_remaining': mll_pct_remaining,
+                'mll_violated': mll_violated,
+                'trailing_loss': round(trailing_loss, 2),
             }
             
             _account_state_cache[cache_key] = data
@@ -1658,34 +2790,186 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             if source not in ("api", "databento", "auto"):
                 source = "auto"
 
+            # Optional explicit time window (Unix seconds OR ISO 8601). When
+            # provided, both the API path and the Databento path slice their
+            # results to [start, end] so callers (e.g. the v2 trade-recap
+            # modal) can fetch the exact window of an old trade.
+            from datetime import datetime as _dt_in, timezone as _tz_in
+            def _parse_ts(raw: Optional[str]) -> Optional[_dt_in]:
+                if raw is None or raw == "":
+                    return None
+                s = str(raw).strip()
+                # Unix seconds (or ms)
+                try:
+                    n = float(s)
+                    if n > 1e12:
+                        n = n / 1000.0
+                    return _dt_in.fromtimestamp(n, tz=_tz_in.utc)
+                except (TypeError, ValueError):
+                    pass
+                # ISO 8601
+                try:
+                    s2 = s.replace("Z", "+00:00")
+                    dt0 = _dt_in.fromisoformat(s2)
+                    if dt0.tzinfo is None:
+                        dt0 = dt0.replace(tzinfo=_tz_in.utc)
+                    return dt0.astimezone(_tz_in.utc)
+                except (TypeError, ValueError):
+                    return None
+            window_start = _parse_ts(request.query.get("start"))
+            window_end = _parse_ts(request.query.get("end"))
+
             chart_data: List[Dict[str, Any]] = []
             history_source: Optional[str] = None
 
-            if source in ("api", "auto"):
+            # AUTO: hybrid Databento + API. The broker API is current-to-the-tick
+            # but only serves the most recent ~5 days of bars; Databento covers
+            # multi-year history but lags by ~1 day. So we stitch:
+            #   • window entirely older than api_horizon  →  Databento only
+            #   • window entirely within api_horizon       →  API only
+            #   • window straddles                         →  Databento up to
+            #     api_horizon + API from api_horizon → now (deduped on time).
+            # Tunable via CHART_API_HORIZON_DAYS env var.
+            try:
+                _api_horizon_days = float(os.environ.get("CHART_API_HORIZON_DAYS", "5"))
+            except (TypeError, ValueError):
+                _api_horizon_days = 5.0
+
+            def _tf_seconds(tf_str: str) -> int:
+                try:
+                    from core.chart_databento_loader import _timeframe_seconds as _tfs
+                    return int(_tfs(tf_str))
+                except Exception:
+                    m = {"1s": 1, "5s": 5, "15s": 15, "30s": 30,
+                         "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+                         "1h": 3600, "4h": 14400, "1d": 86400}
+                    return m.get(str(tf_str).strip().lower(), 60)
+
+            if source == "auto":
+                _now = _dt_in.now(_tz_in.utc)
+                from datetime import timedelta as _td_in
+                _api_horizon = _now - _td_in(days=_api_horizon_days)
+
+                # Resolve effective window. When the caller didn't pass an
+                # explicit start/end, infer from limit × tf back from now.
+                eff_lo = window_start
+                eff_hi = window_end
+                if eff_lo is None and eff_hi is None:
+                    tf_sec = _tf_seconds(reload_timeframe)
+                    eff_hi = _now
+                    eff_lo = _now - _td_in(seconds=max(1, limit * tf_sec))
+
+                # Decide which sources we need.
+                needs_databento = (eff_lo is not None and eff_lo < _api_horizon)
+                needs_api = (eff_hi is None or eff_hi > _api_horizon)
+
+                db_bars: List[Dict[str, Any]] = []
+                api_bars: List[Dict[str, Any]] = []
+
+                if needs_databento:
+                    try:
+                        from core.chart_databento_loader import load_databento_window_for_chart
+                        db_lo = eff_lo
+                        db_hi = min(_api_horizon, eff_hi) if eff_hi is not None else _api_horizon
+                        db_bars, db_err = load_databento_window_for_chart(
+                            reload_symbol, reload_timeframe,
+                            start_utc=db_lo, end_utc=db_hi, limit=limit,
+                        )
+                        if db_err and not db_bars:
+                            logger.debug("auto: databento window err=%s", db_err)
+                    except Exception as e:
+                        logger.warning("auto: databento window failed: %s", e)
+
+                if needs_api:
+                    # When we DON'T need to stitch (window fits inside the API
+                    # horizon), pass start_time=None/end_time=None so the broker
+                    # returns its natural "latest `limit` bars" — same behavior
+                    # as pre-Phase-2.9. Forcing tight start/end on small windows
+                    # caused the broker to return zero bars (likely because
+                    # ``end_time=now`` lands inside the still-open candle), which
+                    # broke "Auto · last 200" / "1 day" / "3 days" presets.
+                    # We only force a tight window when stitching is needed —
+                    # in that case the API slice must START at api_horizon so
+                    # we don't double-cover bars Databento already supplied.
+                    if needs_databento:
+                        api_lo = max(_api_horizon, eff_lo) if eff_lo is not None else _api_horizon
+                        api_hi = eff_hi
+                    else:
+                        api_lo = None
+                        api_hi = None
+                    try:
+                        bars = await trading_bot.get_historical_data(
+                            symbol=reload_symbol,
+                            timeframe=reload_timeframe,
+                            limit=limit,
+                            start_time=api_lo,
+                            end_time=api_hi,
+                        )
+                        api_bars = broker_bars_to_chart_rows(bars)
+                    except Exception as e:
+                        logger.warning("auto: api path failed: %s", e)
+
+                # Stitch — Databento (older) first, then API (recent), deduped.
+                if db_bars and api_bars:
+                    seen: Dict[int, Dict[str, Any]] = {}
+                    for b in db_bars:
+                        try:
+                            t = int(b.get("time"))
+                        except (TypeError, ValueError):
+                            continue
+                        seen[t] = b
+                    # API bars win on overlap (current-to-the-tick).
+                    for b in api_bars:
+                        try:
+                            t = int(b.get("time"))
+                        except (TypeError, ValueError):
+                            continue
+                        seen[t] = b
+                    chart_data = [seen[t] for t in sorted(seen.keys())]
+                    history_source = "databento+api"
+                elif db_bars:
+                    chart_data = db_bars
+                    history_source = "databento"
+                elif api_bars:
+                    chart_data = api_bars
+                    history_source = "api"
+
+                # Trim stitched output to the requested limit, biased toward the
+                # recent edge (older bars drop first if we're over-budget).
+                if limit and len(chart_data) > limit:
+                    chart_data = chart_data[-limit:]
+            elif source == "api":
                 try:
                     bars = await trading_bot.get_historical_data(
                         symbol=reload_symbol,
                         timeframe=reload_timeframe,
                         limit=limit,
+                        start_time=window_start,
+                        end_time=window_end,
                     )
                     chart_data = broker_bars_to_chart_rows(bars)
                     if chart_data:
                         history_source = "api"
-                except Exception as api_exc:
-                    if source == "api":
-                        raise
-                    logger.warning("Chart reload API path failed (%s); trying Databento: %s", source, api_exc)
-
-            if source == "databento" or (source == "auto" and not chart_data):
-                from core.chart_databento_loader import load_databento_bars_for_chart
-
-                db_bars, db_err = load_databento_bars_for_chart(
-                    reload_symbol, reload_timeframe, limit
-                )
+                except Exception:
+                    raise
+            else:  # source == "databento"
+                # Prefer the windowed loader if a window was given; otherwise
+                # fall back to the legacy "tail last N bars" behavior.
+                if window_start is not None or window_end is not None:
+                    from core.chart_databento_loader import load_databento_window_for_chart
+                    db_bars, db_err = load_databento_window_for_chart(
+                        reload_symbol, reload_timeframe,
+                        start_utc=window_start, end_utc=window_end, limit=limit,
+                    )
+                else:
+                    from core.chart_databento_loader import load_databento_bars_for_chart
+                    db_bars, db_err = load_databento_bars_for_chart(
+                        reload_symbol, reload_timeframe, limit
+                    )
                 if db_bars:
                     chart_data = db_bars
                     history_source = "databento"
-                elif source == "databento":
+                else:
                     response = web.json_response(
                         {
                             "error": db_err or "no_databento_csv",
@@ -1698,6 +2982,24 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     )
                     response.headers["Access-Control-Allow-Origin"] = "*"
                     return response
+
+            # Final guard: if the caller specified a time window but the
+            # underlying loader didn't filter (Databento path doesn't natively
+            # take start/end), slice client-side so the response is bounded.
+            if (window_start is not None or window_end is not None) and chart_data:
+                ws = int(window_start.timestamp()) if window_start else None
+                we = int(window_end.timestamp()) if window_end else None
+                def _row_t(row):
+                    t = row.get("time")
+                    if isinstance(t, (int, float)):
+                        return int(t) if t < 1e12 else int(t / 1000)
+                    return None
+                chart_data = [
+                    r for r in chart_data
+                    if (_row_t(r) is not None) and
+                       (ws is None or _row_t(r) >= ws) and
+                       (we is None or _row_t(r) <= we)
+                ]
 
             payload: Dict[str, Any] = {
                 "bars": chart_data,
@@ -1716,6 +3018,268 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             response.headers["Access-Control-Allow-Origin"] = "*"
             return response
     
+    async def handle_trade_recap(request):
+        """Return Databento OHLCV around a specific trade for the recap modal.
+
+        Mirrors :mod:`scripts.walkforward_trade_recap_report` exactly: load the
+        canonical ``historical_data/price/{root}_{tf}_databento.csv`` via
+        :func:`core.backtest.parquet_cache.load_ohlcv_cached`, slice
+        ``[entry - pad, exit + pad]``, convert to LWC bars, and **snap** the
+        entry/exit unix-times to the bar opens that actually contain them so
+        markers always land on real candles (left-labeled bar convention).
+
+        Query:
+            symbol         (required)  e.g. ``MNQ``
+            entry          (required)  ISO 8601 or unix seconds (or ms)
+            exit           (required)  ISO 8601 or unix seconds (or ms)
+            pad_minutes    (optional)  default 120, clamped to [5, 1440]
+            timeframe      (optional)  ``1m`` (default) or ``5m``
+
+        Response:
+            {bars, bar_times, entry_snapped, exit_snapped, timeframe, csv}
+        """
+        try:
+            from datetime import datetime as _dt_in, timezone as _tz_in
+            from pathlib import Path as _PathIn
+
+            symbol = (request.query.get('symbol') or '').strip().upper()
+            if not symbol:
+                return web.json_response({'error': 'symbol required', 'bars': []}, status=400)
+
+            def _parse_ts(raw):
+                if raw is None or raw == '':
+                    return None
+                s = str(raw).strip()
+                try:
+                    n = float(s)
+                    if n > 1e12:
+                        n = n / 1000.0
+                    return _dt_in.fromtimestamp(n, tz=_tz_in.utc)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    s2 = s.replace('Z', '+00:00')
+                    dt0 = _dt_in.fromisoformat(s2)
+                    if dt0.tzinfo is None:
+                        dt0 = dt0.replace(tzinfo=_tz_in.utc)
+                    return dt0.astimezone(_tz_in.utc)
+                except (TypeError, ValueError):
+                    return None
+
+            entry_dt = _parse_ts(request.query.get('entry'))
+            exit_dt = _parse_ts(request.query.get('exit'))
+            if entry_dt is None or exit_dt is None:
+                return web.json_response(
+                    {'error': 'entry/exit required (ISO 8601 or unix seconds)', 'bars': []},
+                    status=400,
+                )
+            if exit_dt < entry_dt:
+                entry_dt, exit_dt = exit_dt, entry_dt
+
+            try:
+                pad_minutes = int(request.query.get('pad_minutes') or 120)
+            except (TypeError, ValueError):
+                pad_minutes = 120
+            pad_minutes = max(5, min(pad_minutes, 1440))
+
+            tf_req = (request.query.get('timeframe') or '1m').strip().lower()
+            if tf_req not in ('1m', '5m'):
+                tf_req = '1m'
+
+            from core.chart_databento_loader import chart_symbol_to_databento_root
+            from core.backtest.parquet_cache import load_ohlcv_cached
+            from core.backtest.ohlcv import (
+                dataframe_to_chart_bars_unix,
+                snap_trade_unix_to_chart_bar_open,
+            )
+
+            root = chart_symbol_to_databento_root(symbol)
+            if not root:
+                return web.json_response(
+                    {'error': f'no Databento CSV for symbol {symbol}', 'bars': []},
+                    status=404,
+                )
+
+            repo_root = _PathIn(__file__).resolve().parent.parent
+            price_dir = repo_root / 'historical_data' / 'price'
+            p1 = price_dir / f'{root}_1m_databento.csv'
+            p5 = price_dir / f'{root}_5m_databento.csv'
+
+            csv_path = None
+            tf_used = None
+            if tf_req == '1m' and p1.is_file():
+                csv_path, tf_used = p1, '1m'
+            elif tf_req == '5m' and p5.is_file():
+                csv_path, tf_used = p5, '5m'
+            elif p1.is_file():
+                csv_path, tf_used = p1, '1m'
+            elif p5.is_file():
+                csv_path, tf_used = p5, '5m'
+            else:
+                return web.json_response(
+                    {'error': f'no canonical CSV under {price_dir}', 'bars': []},
+                    status=404,
+                )
+
+            df = load_ohlcv_cached(csv_path)
+
+            # load_ohlcv_cached returns naive-UTC index; build timezone-naive
+            # window bounds to match.
+            from datetime import timedelta as _td_in
+            pad = _td_in(minutes=pad_minutes)
+            lo = (entry_dt - pad).astimezone(_tz_in.utc).replace(tzinfo=None)
+            hi = (exit_dt + pad).astimezone(_tz_in.utc).replace(tzinfo=None)
+            sub = df.loc[(df.index >= lo) & (df.index <= hi)]
+            if sub is None or len(sub) == 0:
+                return web.json_response({
+                    'error': 'window outside CSV coverage',
+                    'bars': [],
+                    'csv': csv_path.name,
+                    'timeframe': tf_used,
+                    'window': {'lo': lo.isoformat(), 'hi': hi.isoformat()},
+                    'csv_first': str(df.index[0]) if len(df) else None,
+                    'csv_last': str(df.index[-1]) if len(df) else None,
+                }, status=200)
+
+            bars, bar_times = dataframe_to_chart_bars_unix(sub)
+            # LWC expects {time, open, high, low, close, volume}; the helper
+            # already produces "timestamp" — rename for the wire.
+            wire_bars = [
+                {
+                    'time': b['timestamp'],
+                    'open': b['open'],
+                    'high': b['high'],
+                    'low': b['low'],
+                    'close': b['close'],
+                    'volume': b.get('volume', 0),
+                }
+                for b in bars
+            ]
+
+            entry_unix = int(entry_dt.timestamp())
+            exit_unix = int(exit_dt.timestamp())
+            entry_snapped = snap_trade_unix_to_chart_bar_open(entry_unix, bar_times)
+            exit_snapped = snap_trade_unix_to_chart_bar_open(exit_unix, bar_times)
+
+            payload = {
+                'symbol': symbol,
+                'root': root,
+                'timeframe': tf_used,
+                'csv': csv_path.name,
+                'bars': wire_bars,
+                'bar_times': bar_times,
+                'entry_unix': entry_unix,
+                'exit_unix': exit_unix,
+                'entry_snapped': entry_snapped,
+                'exit_snapped': exit_snapped,
+                'pad_minutes': pad_minutes,
+            }
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+            range_snap = _best_range_for_symbol(trading_bot, account_id, symbol)
+            if range_snap:
+                payload['range_snapshot'] = range_snap
+            response = web.json_response(payload)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error("trade_recap error: %s", e, exc_info=True)
+            response = web.json_response({'error': str(e), 'bars': []}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
+    async def handle_trade_snapshot(request):
+        """Return the bars + metadata captured at trade-close time, if any.
+
+        ``GET /api/chart/trade_snapshot/{trade_id}``
+
+        This is the **canonical** path for the dashboard recap modal — the bars
+        were captured the moment the trade closed (Databento or broker API,
+        whichever had data) and locked into Postgres. The frontend should call
+        this first and fall back to ``/api/chart/trade_recap`` (live Databento)
+        only when the snapshot is missing (e.g. trade closed before the snapshot
+        feature was deployed, or the capture failed).
+        """
+        try:
+            trade_id = request.match_info.get('trade_id', '')
+            if not trade_id:
+                response = web.json_response(
+                    {'error': 'missing_trade_id', 'bars': []}, status=400,
+                )
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            db = getattr(trading_bot, 'db', None)
+            if not db:
+                response = web.json_response(
+                    {'error': 'db_unavailable', 'bars': []}, status=503,
+                )
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            snap = db.get_trade_snapshot(str(trade_id))
+            if not snap:
+                response = web.json_response(
+                    {
+                        'error': 'no_snapshot',
+                        'trade_id': trade_id,
+                        'bars': [],
+                    },
+                    status=404,
+                )
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            # bars_json may be a list (psycopg2 JSONB → list) or a string
+            # (legacy / dumps_str). Normalize.
+            raw_bars = snap.get('bars_json')
+            if isinstance(raw_bars, str):
+                try:
+                    raw_bars = json.loads(raw_bars)
+                except (TypeError, ValueError):
+                    raw_bars = []
+            if not isinstance(raw_bars, list):
+                raw_bars = []
+            raw_range = snap.get('range_snapshot_json')
+            if isinstance(raw_range, str):
+                try:
+                    raw_range = json.loads(raw_range)
+                except (TypeError, ValueError):
+                    raw_range = None
+            raw_meta = snap.get('metadata')
+            if isinstance(raw_meta, str):
+                try:
+                    raw_meta = json.loads(raw_meta)
+                except (TypeError, ValueError):
+                    raw_meta = None
+            payload = {
+                'trade_id': snap.get('trade_id'),
+                'account_id': snap.get('account_id'),
+                'strategy_name': snap.get('strategy_name'),
+                'symbol': snap.get('symbol'),
+                'side': snap.get('side'),
+                'quantity': snap.get('quantity'),
+                'entry_time': snap.get('entry_time'),
+                'exit_time': snap.get('exit_time'),
+                'entry_price': snap.get('entry_price'),
+                'exit_price': snap.get('exit_price'),
+                'pnl': snap.get('pnl'),
+                'timeframe': snap.get('timeframe'),
+                'bars': raw_bars,
+                'range_snapshot': raw_range,
+                'metadata': raw_meta,
+                'created_at': snap.get('created_at'),
+            }
+            response = web.json_response(payload)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error("trade_snapshot error: %s", e, exc_info=True)
+            response = web.json_response({'error': str(e), 'bars': []}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
     async def handle_strategy_status(request):
         """Get strategy status - includes all available strategies, not just active ones."""
         try:
@@ -2042,7 +3606,29 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             for name, status in statuses.items():
                 if status.get('active') and name not in active_list:
                     active_list.append(name)
-            
+
+            # Attach idle_state to every non-active strategy so the
+            # dashboard's Ready/Sleeping panel can render schedule +
+            # arms-in countdown + last persisted range without a
+            # second round-trip. Active strategies skip this — the
+            # live state chart already renders their range overlays.
+            try:
+                idle_db = getattr(trading_bot, 'db', None)
+                idle_account_id: Optional[str] = None
+                acct = getattr(trading_bot, 'selected_account', None)
+                if isinstance(acct, dict):
+                    idle_account_id = acct.get('id')
+                elif acct is not None:
+                    idle_account_id = str(acct)
+                for name, status in statuses.items():
+                    if status.get('active'):
+                        continue
+                    status['idle_state'] = _strategy_idle_state(
+                        name, idle_db, idle_account_id
+                    )
+            except Exception:
+                logger.debug("attach idle_state failed", exc_info=True)
+
             response = web.json_response({
                 'strategies': statuses,
                 'available': available_strategies,
@@ -2560,6 +4146,10 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_options('/api/chart/contracts', handle_options)
     app.router.add_get('/api/chart/reload', handle_reload_data)
     app.router.add_options('/api/chart/reload', handle_options)
+    app.router.add_get('/api/chart/trade_recap', handle_trade_recap)
+    app.router.add_options('/api/chart/trade_recap', handle_options)
+    app.router.add_get('/api/chart/trade_snapshot/{trade_id}', handle_trade_snapshot)
+    app.router.add_options('/api/chart/trade_snapshot/{trade_id}', handle_options)
     # Strategy endpoints
     async def handle_strategy_details(request):
         """Get detailed information about a specific strategy."""
@@ -2632,6 +4222,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                     details['runtime_str'] = f"{rs // 3600}h {(rs % 3600) // 60}m"
                             except Exception:
                                 logger.debug('external overnight_range runtime from last_started failed', exc_info=True)
+                    _finalize_strategy_range_details(
+                        trading_bot, account_id, strategy_name, details,
+                    )
+                    response = web.json_response(details)
+                    response.headers['Access-Control-Allow-Origin'] = '*'
+                    return response
+                if strategy_name in _DB_RANGE_SETTINGS_KEYS:
+                    details = _external_strategy_details_from_db(
+                        trading_bot, account_id, strategy_name
+                    )
                     response = web.json_response(details)
                     response.headers['Access-Control-Allow-Origin'] = '*'
                     return response
@@ -2747,6 +4347,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                             range_info['session_start_et'] = st.isoformat()
                         if et is not None and hasattr(et, 'isoformat'):
                             range_info['session_end_et'] = et.isoformat()
+                            if hasattr(et, 'date'):
+                                range_info['session_date'] = et.date().isoformat()
                         details['ranges'][symbol] = range_info
                 
                 # Executor (or other process) runs live OR logic; this chart process may only
@@ -2788,7 +4390,128 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 
                 # Active orders/positions count
                 details['active_orders'] = len(strategy.breakout_active_orders) if hasattr(strategy, 'breakout_active_orders') else 0
-            
+
+            # Range-based strategy ranges (MRR, ORB) — same shape as overnight_range
+            #   details['ranges'][symbol] = {high, low, mid, session_start_et, session_end_et}
+            # so the v2 chart overlay can render shaded boxes + midlines uniformly.
+            if strategy_name in ('morning_range_reversion', 'opening_range_breakout', 'overnight_reversion'):
+                details.setdefault('ranges', {})
+                # Window times in ET (used to render the shaded build-window box)
+                rs_attr = getattr(strategy, 'range_start', None)
+                re_attr = getattr(strategy, 'range_end_open', None)
+                window_start_et = rs_attr.strftime('%H:%M') if rs_attr is not None and hasattr(rs_attr, 'strftime') else None
+                window_end_et = re_attr.strftime('%H:%M') if re_attr is not None and hasattr(re_attr, 'strftime') else None
+                if window_start_et and window_end_et:
+                    details['range_window'] = {
+                        'start_et': window_start_et,
+                        'end_et': window_end_et,
+                        'tz': 'America/New_York',
+                    }
+                # Per-symbol state — different shape per strategy
+                state_dict = None
+                if strategy_name == 'opening_range_breakout' and hasattr(strategy, '_sessions'):
+                    state_dict = strategy._sessions
+                elif strategy_name == 'morning_range_reversion' and hasattr(strategy, '_state'):
+                    state_dict = strategy._state
+                # overnight_reversion: same _state shape as MRR if present
+                elif strategy_name == 'overnight_reversion' and hasattr(strategy, '_state'):
+                    state_dict = strategy._state
+                if state_dict:
+                    from datetime import datetime as _dt_combine
+                    for sym, st in state_dict.items():
+                        # MRR/overnight_reversion store dict; ORB stores a dataclass.
+                        if isinstance(st, dict):
+                            hi = st.get('H') if 'H' in st else st.get('range_hi')
+                            lo = st.get('L') if 'L' in st else st.get('range_lo')
+                            sd = st.get('session_date')
+                        else:
+                            hi = getattr(st, 'range_hi', None)
+                            lo = getattr(st, 'range_lo', None)
+                            sd = getattr(st, 'session_date', None)
+                        if hi is None or lo is None:
+                            continue
+                        try:
+                            hi_f = float(hi)
+                            lo_f = float(lo)
+                        except (TypeError, ValueError):
+                            continue
+                        info = {
+                            'high': hi_f,
+                            'low': lo_f,
+                            'mid': (hi_f + lo_f) / 2.0,
+                            'size': hi_f - lo_f,
+                        }
+                        if sd is not None and hasattr(sd, 'isoformat'):
+                            info['session_date'] = sd.isoformat()
+                            if rs_attr is not None and re_attr is not None:
+                                try:
+                                    info['session_start_et'] = _dt_combine.combine(sd, rs_attr).isoformat()
+                                    info['session_end_et'] = _dt_combine.combine(sd, re_attr).isoformat()
+                                except Exception:
+                                    logger.debug(
+                                        "%s range session combine failed for %s",
+                                        strategy_name, sym, exc_info=True,
+                                    )
+                        details['ranges'][str(sym).upper()] = info
+
+                # DB fallback: when the strategy lives in another process
+                # (production = strategy_executor), the chart-server's
+                # in-memory ``_state``/``_sessions`` is empty. Read the
+                # snapshot the executor wrote to ``strategy_states.settings``
+                # via ``BaseStrategy.persist_range_snapshot``.
+                _settings_key_by_strategy = {
+                    'morning_range_reversion': 'mrr_ranges',
+                    'opening_range_breakout': 'orb_ranges',
+                    # overnight_reversion: not yet persisted; the in-process
+                    # state path above is sufficient for the dashboard's host
+                    # process. If/when an executor runs it standalone we can
+                    # add ``ovr_ranges`` here.
+                }
+                _key = _settings_key_by_strategy.get(strategy_name)
+                if _key:
+                    db_ranges = _strategy_ranges_from_db(
+                        trading_bot, account_id, strategy_name, _key
+                    )
+                    if db_ranges:
+                        for sym, blob in db_ranges.items():
+                            if not isinstance(blob, dict):
+                                continue
+                            try:
+                                hi_f = float(blob['high']) if blob.get('high') is not None else None
+                                lo_f = float(blob['low']) if blob.get('low') is not None else None
+                            except (TypeError, ValueError, KeyError):
+                                continue
+                            sym_u = str(sym).upper()
+                            cur = details['ranges'].get(sym_u)
+                            # Take the DB row when the in-process state is
+                            # missing/empty for this symbol (idle here =
+                            # executor-owned), or when the in-process row
+                            # has no usable bounds.
+                            cur_has_bounds = (
+                                isinstance(cur, dict)
+                                and cur.get('high') is not None
+                                and cur.get('low') is not None
+                            )
+                            if cur_has_bounds:
+                                continue
+                            if hi_f is None or lo_f is None:
+                                continue
+                            merged: Dict[str, Any] = {
+                                'high': hi_f,
+                                'low': lo_f,
+                                'mid': blob.get('mid', (hi_f + lo_f) / 2.0),
+                                'size': blob.get('width', hi_f - lo_f),
+                            }
+                            for opt in ('session_date', 'session_start_et', 'session_end_et', 'phase'):
+                                if blob.get(opt) is not None:
+                                    merged[opt] = blob[opt]
+                            details['ranges'][sym_u] = merged
+
+            if strategy_name in _STRATEGY_RANGE_SETTINGS_KEYS:
+                _finalize_strategy_range_details(
+                    trading_bot, account_id, strategy_name, details,
+                )
+
             response = web.json_response(details)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -2800,8 +4523,100 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
     
+    async def handle_range_overlays(request):
+        """All strategy range overlays in one response (chart range indicator)."""
+        import copy
+        import time
+
+        account_id = request.query.get('account_id')
+        if not account_id and hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+            if isinstance(trading_bot.selected_account, dict):
+                account_id = trading_bot.selected_account.get('id')
+            else:
+                account_id = str(trading_bot.selected_account)
+        try:
+            max_sessions = int(request.query.get('max_sessions', '3'))
+        except (TypeError, ValueError):
+            max_sessions = 3
+        max_sessions = max(1, min(8, max_sessions))
+        strategy_names = _parse_range_overlay_strategies(request)
+        if not strategy_names:
+            response = web.json_response({})
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
+        cache_key = _range_overlays_cache_key(account_id, max_sessions, tuple(strategy_names))
+        now = time.time()
+        hit = _range_overlays_cache.get(cache_key)
+        if hit and hit[0] > now:
+            response = web.json_response(copy.deepcopy(hit[1]))
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['X-Range-Overlays-Cache'] = 'hit'
+            return response
+
+        payload: Dict[str, Any] = {}
+        try:
+            from core.range_history_backfill import _BAR_BACKFILL_SYMBOLS
+
+            # Non-blocking DB backfill — only for strategies the UI requested.
+            if account_id:
+                for strategy_name in strategy_names:
+                    settings_key = _STRATEGY_RANGE_SETTINGS_KEYS.get(strategy_name)
+                    if not settings_key:
+                        continue
+                    try:
+                        db = getattr(trading_bot, "db", None)
+                        st = db.get_strategy_state(str(account_id), strategy_name) or {} if db else {}
+                        settings = _parse_strategy_settings_blob(st.get("settings"))
+                        metadata = st.get("metadata") or {}
+                        if isinstance(metadata, str):
+                            try:
+                                metadata = json.loads(metadata)
+                            except (json.JSONDecodeError, TypeError, ValueError):
+                                metadata = {}
+                        _maybe_backfill_range_history(
+                            trading_bot, account_id, strategy_name, settings, metadata, settings_key,
+                        )
+                    except Exception:
+                        logger.debug("schedule range backfill failed for %s", strategy_name, exc_info=True)
+
+            # One API fetch per symbol per TTL window (shared across requested strategies).
+            api_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+            for sym in _BAR_BACKFILL_SYMBOLS:
+                api_by_sym[sym] = await _get_cached_api_1m_bars(trading_bot, sym)
+
+            for strategy_name in strategy_names:
+                try:
+                    bundle = _range_overlay_bundle_for_strategy(
+                        trading_bot, account_id, strategy_name,
+                    )
+                    payload[strategy_name] = await _augment_range_bundle_with_live_bars(
+                        trading_bot, account_id, strategy_name, bundle,
+                        max_sessions=max_sessions, api_bars_by_symbol=api_by_sym,
+                    )
+                except Exception:
+                    logger.warning("range_overlays strategy %s failed", strategy_name, exc_info=True)
+                    payload[strategy_name] = payload.get(strategy_name) or {
+                        "ranges": {}, "range_history": [], "range_saved_at": None,
+                    }
+            _range_overlays_cache[cache_key] = (now + _RANGE_OVERLAYS_TTL_SEC, copy.deepcopy(payload))
+            response = web.json_response(payload)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['X-Range-Overlays-Cache'] = 'miss'
+            return response
+        except Exception as e:
+            logger.error("range_overlays error: %s", e, exc_info=True)
+            if not payload:
+                for strategy_name in strategy_names:
+                    payload[strategy_name] = {"ranges": {}, "range_history": [], "range_saved_at": None}
+            response = web.json_response(payload)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
     app.router.add_get('/api/chart/strategy/status', handle_strategy_status)
     app.router.add_options('/api/chart/strategy/status', handle_options)
+    app.router.add_get('/api/chart/range_overlays', handle_range_overlays)
+    app.router.add_options('/api/chart/range_overlays', handle_options)
     app.router.add_get('/api/chart/strategy/details/{name}', handle_strategy_details)
     app.router.add_options('/api/chart/strategy/details/{name}', handle_options)
     app.router.add_post('/api/chart/strategy/start', handle_strategy_start)
@@ -2820,7 +4635,171 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_options('/api/chart/close_position', handle_options)
     app.router.add_post('/api/chart/cancel_order', handle_cancel_order)
     app.router.add_options('/api/chart/cancel_order', handle_options)
-    logger.info("✅ Registered close_position and cancel_order routes")
+
+    async def handle_modify_order(request):
+        """Modify working order price/qty from the chart GUI."""
+        try:
+            data = await request.json()
+            order_id = data.get('order_id')
+            if not order_id:
+                response = web.json_response({'success': False, 'error': 'order_id required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = trading_bot.selected_account
+            new_price = data.get('price')
+            new_qty = data.get('quantity')
+            order_type = data.get('order_type')
+            if new_price is not None:
+                try:
+                    new_price = float(new_price)
+                except (TypeError, ValueError):
+                    new_price = None
+            if new_qty is not None:
+                try:
+                    new_qty = int(new_qty)
+                except (TypeError, ValueError):
+                    new_qty = None
+            if order_type is not None:
+                try:
+                    order_type = int(order_type)
+                except (TypeError, ValueError):
+                    order_type = None
+            result = await trading_bot.modify_order(
+                order_id=str(order_id),
+                new_price=new_price,
+                new_quantity=new_qty,
+                account_id=account_id,
+                order_type=order_type,
+            )
+            if isinstance(result, dict) and result.get('success'):
+                if account_id and getattr(trading_bot, 'state_cache', None):
+                    try:
+                        trading_bot.state_cache.invalidate_orders(str(account_id))
+                    except Exception:
+                        pass
+                if hasattr(handle_get_orders, '_cache'):
+                    handle_get_orders._cache.clear()
+                response = web.json_response({'success': True, 'orderId': result.get('orderId')})
+            else:
+                err = result.get('error', 'modify failed') if isinstance(result, dict) else 'modify failed'
+                response = web.json_response({'success': False, 'error': err}, status=400)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error('modify_order error: %s', e, exc_info=True)
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
+    app.router.add_post('/api/chart/modify_order', handle_modify_order)
+    app.router.add_options('/api/chart/modify_order', handle_options)
+
+    async def handle_modify_stop_loss(request):
+        """Modify bracket stop-loss on an open position (chart drag)."""
+        try:
+            data = await request.json()
+            position_id = data.get('position_id')
+            price = data.get('price')
+            if not position_id:
+                response = web.json_response({'success': False, 'error': 'position_id required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            try:
+                new_price = float(price)
+            except (TypeError, ValueError):
+                response = web.json_response({'success': False, 'error': 'price required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = trading_bot.selected_account
+            result = await trading_bot.modify_stop_loss(
+                position_id=str(position_id),
+                new_stop_price=new_price,
+                account_id=account_id,
+            )
+            ok = isinstance(result, dict) and result.get('success')
+            if ok:
+                if account_id and getattr(trading_bot, 'state_cache', None):
+                    try:
+                        trading_bot.state_cache.invalidate_orders(str(account_id))
+                    except Exception:
+                        pass
+                if hasattr(handle_get_orders, '_cache'):
+                    handle_get_orders._cache.clear()
+                response = web.json_response({'success': True, 'result': result})
+            else:
+                err = result.get('error', 'modify stop loss failed') if isinstance(result, dict) else 'modify stop loss failed'
+                response = web.json_response({'success': False, 'error': err}, status=400)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error('modify_stop_loss error: %s', e, exc_info=True)
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
+    async def handle_modify_take_profit(request):
+        """Modify bracket take-profit on an open position (chart drag)."""
+        try:
+            data = await request.json()
+            position_id = data.get('position_id')
+            price = data.get('price')
+            if not position_id:
+                response = web.json_response({'success': False, 'error': 'position_id required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            try:
+                new_price = float(price)
+            except (TypeError, ValueError):
+                response = web.json_response({'success': False, 'error': 'price required'}, status=400)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = trading_bot.selected_account
+            result = await trading_bot.modify_take_profit(
+                position_id=str(position_id),
+                new_tp_price=new_price,
+                account_id=account_id,
+            )
+            ok = isinstance(result, dict) and result.get('success')
+            if ok:
+                if account_id and getattr(trading_bot, 'state_cache', None):
+                    try:
+                        trading_bot.state_cache.invalidate_orders(str(account_id))
+                    except Exception:
+                        pass
+                if hasattr(handle_get_orders, '_cache'):
+                    handle_get_orders._cache.clear()
+                response = web.json_response({'success': True, 'result': result})
+            else:
+                err = result.get('error', 'modify take profit failed') if isinstance(result, dict) else 'modify take profit failed'
+                response = web.json_response({'success': False, 'error': err}, status=400)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error('modify_take_profit error: %s', e, exc_info=True)
+            response = web.json_response({'success': False, 'error': str(e)}, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+
+    app.router.add_post('/api/chart/modify_stop_loss', handle_modify_stop_loss)
+    app.router.add_options('/api/chart/modify_stop_loss', handle_options)
+    app.router.add_post('/api/chart/modify_take_profit', handle_modify_take_profit)
+    app.router.add_options('/api/chart/modify_take_profit', handle_options)
+    logger.info("✅ Registered close_position, cancel_order, modify_order, and bracket modify routes")
     
     async def handle_get_accounts(request):
         """Handle get accounts request."""
@@ -2843,6 +4822,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             
             accounts_list = []
             if hasattr(trading_bot, 'accounts') and trading_bot.accounts:
+                eligible = _gui_eligible_accounts(trading_bot.accounts)
+                if eligible:
+                    trading_bot.accounts = eligible
                 for idx, acc in enumerate(trading_bot.accounts):
                     account_data = {
                         'index': idx,
@@ -3677,7 +5659,6 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     except (TypeError, ValueError):
                         period_days = 0
                     if period_days > 0:
-                        from datetime import datetime, timedelta, timezone
                         start_date = (
                             datetime.now(timezone.utc) - timedelta(days=period_days)
                         ).isoformat()
@@ -3696,6 +5677,66 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 return web.json_response({'trades': [], 'statistics': {}})
             
             trades = trades_result.get('trades', [])
+
+            # Pair half-turn opens with their matching closes so the recap
+            # modal has real entry_time / entry_price (Trade/search returns
+            # one record per fill — opens have profitAndLoss=null and the
+            # CLI parser drops them, leaving us with close-only rows whose
+            # creationTimestamp is the *exit* time). FIFO match within
+            # symbol works for futures because positions are flat-or-one
+            # per symbol on TopStepX prop accounts; for partial scale-outs
+            # the oldest open keeps providing the entry until exhausted.
+            pairings: Dict[str, Dict[str, Any]] = {}
+            order_tag_by_id: Dict[str, str] = {}
+            try:
+                hist_orders = await trading_bot.get_order_history(
+                    account_id=account_id,
+                    limit=2000,
+                    start_timestamp=start_date,
+                    end_timestamp=end_date,
+                )
+                for o in hist_orders or []:
+                    oid = str(o.get("id") or o.get("orderId") or "")
+                    if oid:
+                        order_tag_by_id[oid] = str(o.get("customTag") or o.get("custom_tag") or "")
+            except Exception as hist_exc:
+                logger.debug("order history for trade tags failed: %s", hist_exc, exc_info=True)
+            try:
+                raw_trades = await trading_bot.get_trades_from_api(
+                    account_id=account_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                ) or []
+                raw_sorted = sorted(
+                    raw_trades,
+                    key=lambda t: str(t.get('creationTimestamp') or t.get('timestamp') or ''),
+                )
+                open_q: Dict[str, List[Dict[str, Any]]] = {}
+                for t in raw_sorted:
+                    sym_t = (t.get('symbol') or '').upper()
+                    if not sym_t:
+                        continue
+                    if t.get('is_half_turn', False):
+                        open_q.setdefault(sym_t, []).append(t)
+                    else:
+                        queue = open_q.get(sym_t, [])
+                        if queue:
+                            opener = queue.pop(0)
+                            opener_oid = str(opener.get("order_id") or opener.get("orderId") or "")
+                            pairings[str(t.get('id') or '')] = {
+                                'entry_time': opener.get('creationTimestamp') or opener.get('timestamp'),
+                                'entry_price': opener.get('price'),
+                                'entry_order_id': opener_oid or opener.get('order_id') or opener.get('orderId'),
+                                'entry_order_tag': order_tag_by_id.get(opener_oid, ''),
+                                # Trade/search "side" is the FILL side. The open
+                                # fill's side IS the position direction (BUY=LONG,
+                                # SELL=SHORT) — record it so we can correctly
+                                # label closes whose fill-side is the *opposite*
+                                # of the position.
+                                'position_side': opener.get('side'),
+                            }
+            except Exception as pair_exc:
+                logger.debug("trade pairing failed: %s", pair_exc, exc_info=True)
             
             # Helper function to calculate points
             def calculate_trade_points(trade: Dict) -> float:
@@ -3722,9 +5763,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     defaults = {'MNQ': 2.0, 'MES': 5.0, 'MYM': 1.0, 'M2K': 5.0, 'MGC': 10.0, 'GC': 10.0}
                     return defaults.get(symbol.upper(), 1.0)
             
-            # Enhance trades with additional metrics
+            # Enhance trades with additional metrics. cumulative_pnl is
+            # NOT initialised here — the running sum is computed *after*
+            # leg aggregation (see _aggregate_trade_legs) so multi-leg
+            # trades count once.
             enhanced_trades = []
-            cumulative_pnl = 0.0
             starting_balance = 0.0
             
             # Get starting balance from account state
@@ -3769,7 +5812,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 trade_with_prices['entry_price'] = entry_price
                 trade_with_prices['exit_price'] = exit_price
                 points = calculate_trade_points(trade_with_prices)
-                
+
                 # Get PnL from various possible field names in API response
                 pnl = float(
                     trade.get('pnl') or 
@@ -3780,10 +5823,107 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     trade.get('realizedPnl') or
                     0
                 )
+
+                # First preference: real entry data from the matching half-turn
+                # open fill (paired above). This gives us the actual entry
+                # timestamp AND price from the broker, no derivation needed.
+                derived_entry_from_exit = False
+                paired_entry = pairings.get(str(trade.get('id') or ''))
+
+                # Resolve TRUE position direction. Trade/search returns one
+                # record per fill; the close-fill side is the *opposite* of
+                # the position (sell-to-close LONG, buy-to-close SHORT). The
+                # open fill's side IS the position direction. When pairing
+                # found the open, use it; otherwise fall back to the close
+                # fill side (best we can do).
+                close_side_up = (trade.get('side') or '').upper()
+                position_side_up = close_side_up
+                if paired_entry:
+                    if paired_entry.get('entry_time'):
+                        entry_time = paired_entry['entry_time']
+                    pep = paired_entry.get('entry_price')
+                    if pep is not None:
+                        try:
+                            entry_price = float(pep)
+                        except (TypeError, ValueError):
+                            pass
+                    pside = paired_entry.get('position_side')
+                    if pside is not None:
+                        # Adapter normalizes 0->BUY, 1->SELL on raw fills, but
+                        # accept either form just in case.
+                        if isinstance(pside, str):
+                            position_side_up = pside.upper()
+                        elif isinstance(pside, (int, float)):
+                            position_side_up = 'BUY' if int(pside) == 0 else 'SELL'
+
+                # Fallback: when the broker's Trade/search returns one fill per
+                # record (entry_price == exit_price), points calculated from
+                # prices alone is always 0. Derive points from
+                #   pnl / (point_value * quantity)
+                # so the UI shows the actual price movement of the trade. We
+                # also reconstruct the missing entry price from the exit price
+                # and signed points when no paired open was found, using the
+                # POSITION direction (not the close-fill side):
+                #   LONG  (BUY position): entry = exit - pts
+                #   SHORT (SELL position): entry = exit + pts
+                if abs(points) < 1e-9 and abs(pnl) > 1e-9:
+                    try:
+                        sym = (trade.get('symbol') or '').upper()
+                        qty = float(trade.get('quantity', 0) or 0) or 1.0
+                        pv = float(get_point_value(sym) or 0)
+                        if pv > 0 and qty > 0:
+                            points = pnl / (pv * qty)
+                    except Exception:
+                        logger.debug("derived-points fallback failed", exc_info=True)
+                if abs(points) > 1e-9:
+                    try:
+                        ep_f = float(entry_price or 0)
+                        xp_f = float(exit_price or 0)
+                        if ep_f == xp_f:
+                            # When pairing failed we don't know the position
+                            # direction reliably from the close fill alone, so
+                            # we use the SIGN of pnl to disambiguate:
+                            # for a profit, LONG has exit>entry and SHORT has
+                            # entry>exit. Trust pnl over points sign here.
+                            if pnl >= 0:
+                                # Profit: assume LONG when close-fill=SELL,
+                                # SHORT when close-fill=BUY.
+                                if close_side_up in ('SELL',):
+                                    entry_price = round(xp_f - abs(float(points)), 2)
+                                    position_side_up = 'BUY'
+                                else:  # BUY close-fill -> SHORT
+                                    entry_price = round(xp_f + abs(float(points)), 2)
+                                    position_side_up = 'SELL'
+                            else:
+                                # Loss: LONG has exit<entry, SHORT has exit>entry
+                                if close_side_up in ('SELL',):
+                                    entry_price = round(xp_f + abs(float(points)), 2)
+                                    position_side_up = 'BUY'
+                                else:
+                                    entry_price = round(xp_f - abs(float(points)), 2)
+                                    position_side_up = 'SELL'
+                            derived_entry_from_exit = True
+                    except Exception:
+                        logger.debug("derived-entry-from-exit failed", exc_info=True)
+                # Recompute points using the resolved position direction so
+                # the sign matches the displayed pnl (profit -> +pts, loss -> -pts).
+                try:
+                    ep_f = float(entry_price or 0)
+                    xp_f = float(exit_price or 0)
+                    if position_side_up in ('LONG', 'BUY'):
+                        points = xp_f - ep_f
+                    else:  # SHORT / SELL
+                        points = ep_f - xp_f
+                except Exception:
+                    pass
                 
-                # Calculate cumulative P&L (running total from oldest to newest)
-                cumulative_pnl += pnl
-                
+                # cumulative_pnl is intentionally NOT computed per-leg —
+                # it would double/triple-count multi-leg trades. The
+                # running total is recomputed below over the aggregated
+                # logical-trade list, so the equity curve and the
+                # cumulative column in the trades table both match the
+                # collapsed rows the operator sees.
+
                 # Max RU/DD: use available API fields if present
                 max_ru = (
                     trade.get('max_ru') or trade.get('maxRu') or trade.get('max_runup') or
@@ -3802,40 +5942,126 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     else:
                         serialized_trade[key] = value
 
-                # Ensure normalized fields are present for UI rendering
+                # Ensure normalized fields are present for UI rendering. The
+                # entry_price may have been reconstructed above from exit ± pts
+                # when the broker returned a single fill record.
                 serialized_trade['entry_time'] = entry_time or serialized_trade.get('entry_time') or ''
                 serialized_trade['exit_time'] = exit_time or serialized_trade.get('exit_time') or ''
                 serialized_trade['entry_price'] = float(entry_price) if entry_price is not None else 0.0
                 serialized_trade['exit_price'] = float(exit_price) if exit_price is not None else 0.0
-                
-                # Enhanced trade object
+                # Always emit the POSITION direction in `side` (BUY=long, SELL=short)
+                # so the trades table and recap modal label trades the way humans
+                # think about them, not the way the broker labels the closing fill.
+                serialized_trade['side'] = position_side_up
+                serialized_trade['close_fill_side'] = close_side_up
+
+                # Enhanced trade object. We deliberately do NOT compute
+                # ``cumulative_pnl`` / ``trade_number`` here — both are
+                # recomputed AFTER aggregating legs into logical trades
+                # (otherwise a 3-fill exit would advance cumulative_pnl
+                # 3× and the equity curve would inherit the same triple-
+                # count that broke max-drawdown / win-rate / streaks).
+                # ``entry_order_id`` is the parent-order id of the
+                # opening fill (from the FIFO pairing dict above) and is
+                # the primary group key for aggregation.
+                entry_oid = str(
+                    (paired_entry or {}).get("entry_order_id")
+                    or trade.get("order_id")
+                    or trade.get("orderId")
+                    or ""
+                )
+                entry_tag = (
+                    (paired_entry or {}).get("entry_order_tag")
+                    or order_tag_by_id.get(entry_oid, "")
+                    or trade.get("customTag")
+                    or trade.get("custom_tag")
+                    or ""
+                )
+                src_meta = _classify_order_tag(entry_tag)
                 enhanced_trade = {
                     **serialized_trade,  # Include all original fields (with datetime converted to strings)
-                    'trade_number': len(sorted_trades) - idx,  # Reverse order (newest first)
                     'points': round(points, 2),
                     'fees': round(float(trade.get('quantity', 0) or 0) * 2.40, 2), # $2.40 per round trip
-                    'cumulative_pnl': round(cumulative_pnl, 2),
-                    'cumulative_equity': round(starting_balance + cumulative_pnl, 2)
+                    'derived_entry': derived_entry_from_exit,
+                    'entry_order_id': entry_oid or (paired_entry or {}).get('entry_order_id'),
+                    'custom_tag': src_meta.get('custom_tag') or entry_tag,
+                    'source': src_meta.get('source', 'manual'),
+                    'source_label': src_meta.get('source_label', 'manual'),
+                    'strategy': src_meta.get('strategy') or '',
                 }
                 enhanced_trades.append(enhanced_trade)
-            
-            # Reverse to show newest first
-            enhanced_trades.reverse()
-            
-            # Get statistics
-            statistics = trades_result.get('statistics', {})
-            
+
+            # Collapse fill-level legs into logical trades. See
+            # ``_aggregate_trade_legs`` docstring — this is what fixes
+            # the inflated trade count, win rate, max-DD and equity
+            # curve that operators were seeing in the v2 dashboard.
+            aggregated = _aggregate_trade_legs(enhanced_trades)
+
+            # Recompute cumulative_pnl, cumulative_equity, trade_number
+            # over the *aggregated* sequence (still oldest first).
+            agg_cum = 0.0
+            for a_idx, a in enumerate(aggregated):
+                agg_cum += float(a.get('pnl', 0) or 0)
+                a['cumulative_pnl'] = round(agg_cum, 2)
+                a['cumulative_equity'] = round(starting_balance + agg_cum, 2)
+                a['trade_number'] = len(aggregated) - a_idx  # newest = 1
+
+            total_legs = sum(int(a.get('legs_count', 1) or 1) for a in aggregated)
+
+            # Recompute statistics from the logical-trade granularity so
+            # win-rate / streaks / profit-factor / max-DD all match the
+            # rows the operator sees in the table. Falls back to the
+            # leg-level stats from _handle_trades if the helper isn't
+            # available for some reason.
+            statistics: Dict[str, Any] = {}
+            try:
+                if hasattr(trading_bot, '_calculate_trade_statistics'):
+                    statistics = trading_bot._calculate_trade_statistics(aggregated) or {}
+            except Exception:
+                logger.debug("aggregated stats recompute failed", exc_info=True)
+                statistics = {}
+            if not statistics:
+                statistics = trades_result.get('statistics', {}) or {}
+
+            def _recompute_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+                if not rows:
+                    return {}
+                try:
+                    if hasattr(trading_bot, '_calculate_trade_statistics'):
+                        return trading_bot._calculate_trade_statistics(rows) or {}
+                except Exception:
+                    logger.debug("stats recompute failed", exc_info=True)
+                return {}
+
+            statistics_by_source: Dict[str, Any] = {
+                "all": statistics,
+                "auto": _recompute_stats([a for a in aggregated if a.get("source") == "auto"]),
+                "manual": _recompute_stats([a for a in aggregated if a.get("source") == "manual"]),
+                "bracket": _recompute_stats([a for a in aggregated if a.get("source") == "bracket"]),
+            }
+            for bucket in statistics_by_source.values():
+                if bucket and starting_balance > 0:
+                    max_dd = bucket.get("max_drawdown", 0.0)
+                    bucket["max_drawdown_pct"] = round((max_dd / starting_balance) * 100.0, 2)
+                elif bucket:
+                    bucket["max_drawdown_pct"] = 0.0
+
             # Add max_drawdown_pct if we have starting balance
             if statistics and starting_balance > 0:
                 max_dd = statistics.get('max_drawdown', 0.0)
                 statistics['max_drawdown_pct'] = round((max_dd / starting_balance) * 100.0, 2)
             elif statistics:
                 statistics['max_drawdown_pct'] = 0.0
-            
+
+            # Reverse to show newest first
+            aggregated.reverse()
+
             response = web.json_response({
-                'trades': enhanced_trades,
+                'trades': aggregated,
                 'statistics': statistics,
-                'total_trades': len(enhanced_trades)
+                'statistics_by_source': statistics_by_source,
+                'total_trades': len(aggregated),
+                'total_legs': total_legs,
             })
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -3859,61 +6085,77 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_get('/api/chart/theme/page', handle_page_theme)
     app.router.add_options('/api/chart/theme/page', handle_options)
     
-    # Serve master control HTML
+    # Serve master control HTML (v2 Quiet Trader dashboard)
+    async def _serve_master_v2_html():
+        from pathlib import Path
+        v2_path = Path(__file__).parent / 'master_control_v2.html'
+        if not v2_path.exists():
+            return None
+        html_content = v2_path.read_text(encoding='utf-8')
+        html_content = html_content.replace('{{SERVER_PORT}}', str(port))
+        html_content = html_content.replace('{{SYMBOL}}', _chart_server_symbol or symbol)
+        timeframe_value = _chart_server_timeframe or '5m'
+        html_content = html_content.replace('{{TIMEFRAME}}', timeframe_value)
+        return html_content
+
     async def handle_master_control(request):
-        """Serve the master control HTML page."""
+        """Serve the master control HTML page (v2)."""
         try:
-            # Read master control HTML file
-            from pathlib import Path
-            master_html_path = Path(__file__).parent / 'master_control.html'
-            if not master_html_path.exists():
-                # Return a simple HTML that loads from the generated file
-                html_content = f"""<!DOCTYPE html>
+            html_content = await _serve_master_v2_html()
+            if html_content is None:
+                html_content = """<!DOCTYPE html>
 <html>
 <head>
     <title>Master — Chart</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #1c1814; color: #faf6f0; }}
-        .error {{ color: #ff4444; padding: 20px; text-align: center; }}
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #1c1814; color: #faf6f0; }
+        .error { color: #ff4444; padding: 20px; text-align: center; }
     </style>
 </head>
 <body>
     <div class="error">
         <h1>Master Control HTML Not Found</h1>
-        <p>Please create gui/master_control.html</p>
+        <p>Please create gui/master_control_v2.html</p>
     </div>
 </body>
 </html>"""
-            else:
-                with open(master_html_path, 'r', encoding='utf-8') as f:
-                    html_content = f.read()
-            
-            # Replace placeholders with actual values
-            html_content = html_content.replace('{{SERVER_PORT}}', str(port))
-            html_content = html_content.replace('{{SYMBOL}}', _chart_server_symbol or symbol)
-            timeframe_value = _chart_server_timeframe or '5m'
-            html_content = html_content.replace('{{TIMEFRAME}}', timeframe_value)
-            
-            # Replace timeframe selection in dropdown (simple string replacement)
-            # Remove all selected attributes first
-            import re
-            html_content = re.sub(r'<option value="([^"]+)"([^>]*)\s+selected>', r'<option value="\1"\2>', html_content)
-            # Add selected to the matching timeframe option
-            html_content = re.sub(
-                rf'<option value="{re.escape(timeframe_value)}"([^>]*)>',
-                rf'<option value="{timeframe_value}"\1 selected>',
-                html_content
-            )
             
             response = web.Response(text=html_content, content_type='text/html')
             response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Cache-Control'] = 'no-cache'
             return response
         except Exception as e:
             logger.error(f"Error serving master control: {e}")
             response = web.Response(text=f"Error: {e}", status=500)
             return response
+
+    async def handle_master_classic(request):
+        """Legacy master_control.html (pre-v2)."""
+        try:
+            from pathlib import Path
+            master_html_path = Path(__file__).parent / 'master_control.html'
+            if not master_html_path.exists():
+                return web.Response(status=404, text='master_control.html not found')
+            html_content = master_html_path.read_text(encoding='utf-8')
+            html_content = html_content.replace('{{SERVER_PORT}}', str(port))
+            html_content = html_content.replace('{{SYMBOL}}', _chart_server_symbol or symbol)
+            timeframe_value = _chart_server_timeframe or '5m'
+            html_content = html_content.replace('{{TIMEFRAME}}', timeframe_value)
+            import re
+            html_content = re.sub(r'<option value="([^"]+)"([^>]*)\s+selected>', r'<option value="\1"\2>', html_content)
+            html_content = re.sub(
+                rf'<option value="{re.escape(timeframe_value)}"([^>]*)>',
+                rf'<option value="{timeframe_value}"\1 selected>',
+                html_content,
+            )
+            response = web.Response(text=html_content, content_type='text/html')
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+        except Exception as e:
+            logger.error(f"Error serving master classic: {e}")
+            return web.Response(status=500, text=f'Error: {e}')
     
     # WebSocket support for real-time updates
     _ws_clients = set()
@@ -4045,27 +6287,28 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     async def tail_log_file():
         """Tail the trading_bot.log file and broadcast new lines."""
         log_file_path = Path("trading_bot.log")
-        
-        # Open file and seek to end
-        try:
-            with open(log_file_path, 'r') as f:
-                # Seek to end minus last 10KB for recent history
-                f.seek(0, os.SEEK_END)
-                file_size = f.tell()
-                if file_size > 10240:  # 10KB
-                    f.seek(file_size - 10240)
-                    f.readline()  # Skip partial line
+
+        def _open_log_at_safe_offset():
+            with open(log_file_path, "rb") as fb:
+                fb.seek(0, os.SEEK_END)
+                file_size = fb.tell()
+                if file_size > 10240:
+                    fb.seek(file_size - 10240)
+                    fb.readline()
                 else:
-                    f.seek(0)
-                
-                # Send recent lines
-                recent_lines = f.readlines()
-                for line in recent_lines[-50:]:  # Last 50 lines
-                    log_data = parse_log_line(line)
-                    if log_data:
-                        await broadcast_update({'type': 'log', 'data': log_data})
-                
-                # Now tail for new lines
+                    fb.seek(0)
+                raw = fb.read()
+            return raw.decode("utf-8", errors="replace").splitlines()
+
+        try:
+            recent_lines = _open_log_at_safe_offset()
+            for line in recent_lines[-50:]:
+                log_data = parse_log_line(line)
+                if log_data:
+                    await broadcast_update({'type': 'log', 'data': log_data})
+
+            with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, os.SEEK_END)
                 while True:
                     line = f.readline()
                     if line:
@@ -4073,7 +6316,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         if log_data:
                             await broadcast_update({'type': 'log', 'data': log_data})
                     else:
-                        await asyncio.sleep(0.1)  # Wait for new content
+                        await asyncio.sleep(0.1)
         except FileNotFoundError:
             logger.warning("trading_bot.log not found, log streaming disabled")
         except Exception as e:
@@ -4426,9 +6669,52 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     if not ws_route_exists:
         app.router.add_get('/ws', handle_websocket)
     
+    # Serve design-prototype variants (master_control_preview_{1..4}.html)
+    # Used while iterating on a redesign; each variant is fully self-contained
+    # (mock data, no live wiring) so they have zero impact on the live dashboard.
+    async def handle_master_preview(request):
+        """Serve gui/master_control_preview_{n}.html where n in {1..6}."""
+        try:
+            from pathlib import Path
+            n = request.match_info.get('n', '1')
+            if n not in {'1', '2', '3', '4', '5', '6'}:
+                return web.Response(status=404, text=f'Unknown preview: {n}')
+            preview_path = Path(__file__).parent / f'master_control_preview_{n}.html'
+            if not preview_path.exists():
+                return web.Response(status=404, text=f'Preview file not found: {preview_path.name}')
+            with open(preview_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            response = web.Response(text=html_content, content_type='text/html')
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Cache-Control'] = 'no-cache'
+            return response
+        except Exception as e:
+            logger.error(f"Error serving master preview: {e}")
+            return web.Response(status=500, text=f'Error: {e}')
+
+    app.router.add_get('/master/preview/{n}', handle_master_preview)
+
+    # Master v2 (P6 Quiet Trader) — parallel dashboard at /master/v2.
+    async def handle_master_v2(request):
+        """Serve the master_control_v2.html (alias of /master)."""
+        try:
+            html_content = await _serve_master_v2_html()
+            if html_content is None:
+                return web.Response(status=404, text='master_control_v2.html not found')
+            response = web.Response(text=html_content, content_type='text/html')
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Cache-Control'] = 'no-cache'
+            return response
+        except Exception as e:
+            logger.error(f"Error serving master v2: {e}")
+            return web.Response(status=500, text=f'Error: {e}')
+
+    app.router.add_get('/master/v2', handle_master_v2)
+
     # Register main page routes
     app.router.add_get('/', handle_master_control)
     app.router.add_get('/master', handle_master_control)
+    app.router.add_get('/master/classic', handle_master_classic)
     
     # Add favicon handler to prevent 404 errors
     async def handle_favicon(request):
@@ -4509,6 +6795,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     # Start WebSocket broadcast loop and batch processor
     _ws_broadcast_task = asyncio.create_task(websocket_broadcast_loop())
     _ws_batch_processor_task = asyncio.create_task(_process_broadcast_batch())
+
+    # Broker session warmth + live Market Hub (unaffected by ENABLE_SIGNALR=false)
+    await _ensure_gui_session_warm(trading_bot, symbol, timeframe)
     
     logger.info(f"📡 Chart server started on http://127.0.0.1:{port}")
     logger.info(f"📡 WebSocket endpoint: ws://127.0.0.1:{port}/ws")
@@ -5185,7 +7474,7 @@ def generate_chart_html(
                             hour12: false,
                         }});
                         const s = f.format(d);
-                        const m = s.match(/(\d{{1,2}}):(\d{{2}})/);
+                        const m = s.match(/(\\d{{1,2}}):(\\d{{2}})/);
                         if (!m) return -1;
                         return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
                     }}

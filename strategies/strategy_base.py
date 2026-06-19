@@ -59,6 +59,51 @@ def _resolve_live_breaker_enabled(cfg) -> Optional[bool]:
     return bool(raw)
 
 
+_RANGE_HISTORY_MAX_ENTRIES = 20
+
+
+def _infer_range_session_date(snap: Dict[str, Any]) -> Optional[str]:
+    """Best-effort session_date from a per-symbol range snapshot dict."""
+    if not isinstance(snap, dict):
+        return None
+    for blob in snap.values():
+        if not isinstance(blob, dict):
+            continue
+        sd = blob.get("session_date")
+        if sd is not None:
+            return str(sd)[:10]
+    return None
+
+
+def append_range_history(
+    settings: Dict[str, Any],
+    key: str,
+    snap: Dict[str, Any],
+    saved_at: str,
+    *,
+    max_entries: int = _RANGE_HISTORY_MAX_ENTRIES,
+) -> None:
+    """Append ``snap`` to rolling ``settings[{key}_history]`` (deduped by session_date)."""
+    history_key = f"{key}_history"
+    hist = list(settings.get(history_key) or [])
+    session_date = _infer_range_session_date(snap)
+    if not session_date and saved_at:
+        session_date = str(saved_at)[:10]
+    if not session_date:
+        return
+    entry = {
+        "session_date": session_date,
+        "saved_at": saved_at,
+        "ranges": dict(snap or {}),
+    }
+    hist = [
+        h for h in hist
+        if not (isinstance(h, dict) and h.get("session_date") == session_date)
+    ]
+    hist.insert(0, entry)
+    settings[history_key] = hist[:max_entries]
+
+
 @dataclass
 class StrategyConfig:
     """Base configuration for all strategies."""
@@ -262,7 +307,97 @@ class BaseStrategy(ABC):
         Checks multiple indicators: is_trading flag, ACTIVE status, etc.
         """
         return self.is_trading or self.status == StrategyStatus.ACTIVE
-    
+
+    # ────────────────────────── range DB persistence ────────────────────────
+    # Range-based strategies (overnight_range, MRR, ORB, …) build a per-symbol
+    # high/low/mid box during a session window and the dashboard chart wants
+    # to render it as a shaded overlay. When the strategy runs in a separate
+    # ``strategy_executor`` process (production layout) the chart-server has no
+    # direct handle to the strategy's in-memory state, so we mirror the
+    # snapshot through ``strategy_states.settings[<key>]`` and let the chart
+    # read it back from Postgres. This helper unifies that pattern across
+    # strategies — overnight_range was already doing it inline; MRR + ORB now
+    # call this method too. See ``gui/chart_html.py::handle_strategy_details``
+    # for the read side.
+
+    def persist_range_snapshot(
+        self,
+        snap: Dict[str, Dict[str, Any]],
+        *,
+        key: str = "ranges",
+        throttle_seconds: float = 4.0,
+        attr: str = "_range_db_last_mono",
+    ) -> bool:
+        """
+        Upsert ``snap`` (per-symbol range dict) into ``strategy_states.settings[key]``
+        for the currently selected account so the dashboard can render the box
+        even when this strategy is owned by a different (executor) process.
+
+        Args:
+            snap: ``{symbol: {high, low, [mid, width, session_date, ...]}}`` —
+                values must be JSON-serialisable (``date``/``datetime`` should
+                be ISO strings before calling).
+            key: top-level settings key. Convention: ``or_ranges`` (overnight
+                range), ``mrr_ranges`` (morning_range_reversion),
+                ``orb_ranges`` (opening_range_breakout). Each strategy owns
+                its own slot so they don't clobber each other.
+            throttle_seconds: minimum gap between writes (in monotonic seconds).
+                Range state changes at most once per session, but ``evaluate``
+                may fire many times per minute — the throttle keeps the DB
+                writes negligible.
+            attr: instance attribute used to track the last-write monotonic
+                timestamp; pass distinct values per (strategy, key) when one
+                strategy maintains multiple range types.
+
+        Returns:
+            ``True`` when a write happened, ``False`` when throttled or skipped.
+            Errors are caught and logged at DEBUG so a flaky DB never crashes
+            the strategy hot path.
+        """
+        try:
+            import time as _t
+            now_mono = _t.monotonic()
+            if now_mono - float(getattr(self, attr, 0.0) or 0.0) < float(throttle_seconds):
+                return False
+            db = getattr(self.trading_bot, "db", None)
+            if not db:
+                return False
+            account_id = None
+            acct = getattr(self.trading_bot, "selected_account", None)
+            if isinstance(acct, dict):
+                account_id = acct.get("id")
+            elif acct is not None:
+                account_id = str(acct)
+            if not account_id:
+                return False
+            aid = str(account_id)
+            existing = db.get_strategy_state(aid, self.config.name) or {}
+            settings = dict(existing.get("settings") or {})
+            metadata = dict(existing.get("metadata") or {})
+            from datetime import datetime as _dt, timezone as _tz
+            saved_at = _dt.now(_tz.utc).isoformat()
+            append_range_history(settings, key, snap or {}, saved_at)
+            settings[key] = snap or {}
+            metadata[f"{key}_saved_at"] = saved_at
+            symbols = existing.get("symbols")
+            if not symbols and self.config is not None:
+                symbols = list(getattr(self.config, "symbols", None) or [])
+            db.save_strategy_state(
+                account_id=aid,
+                strategy_name=self.config.name,
+                enabled=bool(existing.get("enabled", True)),
+                symbols=symbols,
+                settings=settings,
+                metadata=metadata,
+                last_started=None,
+                last_stopped=None,
+            )
+            setattr(self, attr, now_mono)
+            return True
+        except Exception as exc:  # noqa: BLE001 — never break hot path on DB hiccup
+            logger.debug("persist_range_snapshot(%s) skipped: %s", key, exc, exc_info=True)
+            return False
+
     @property
     def risk_manager(self):
         """Get or create the centralized risk manager."""
@@ -806,35 +941,38 @@ class BaseStrategy(ABC):
         # surface the degraded condition loudly so the operator knows.
         #
         # Modes (env: ``DATA_FEED_HEALTH_GATE_MODE``):
-        #   * ``warn``   — log a WARNING and proceed (DEFAULT)
+        #   * ``warn``   — mild degradation logs WARNING and proceeds;
+        #                  severe degradation (>300s silence) refuses (DEFAULT)
         #   * ``off``    — silent
-        #   * ``refuse`` — log ERROR + return ``gated_health`` (legacy)
+        #   * ``refuse`` — log ERROR + return ``gated_health`` (legacy strict)
         try:
-            import os as _os
-            _gate_mode = _os.getenv("DATA_FEED_HEALTH_GATE_MODE", "warn").lower()
-            # Back-compat with the original env var: ``DATA_FEED_HEALTH_GATE=false`` → off.
-            if _os.getenv("DATA_FEED_HEALTH_GATE", "true").lower() in ("false", "0", "no"):
-                _gate_mode = "off"
+            from core.data_feed_health import (
+                get_monitor as _get_health_monitor,
+                resolve_health_gate_decision,
+                resolve_health_gate_mode,
+            )
+            _gate_mode = resolve_health_gate_mode()
             if _gate_mode != "off":
-                from core.data_feed_health import get_monitor as _get_health_monitor
-                _verdict = _get_health_monitor().is_safe_to_trade(symbol)
-                if not _verdict.ok:
-                    if _gate_mode == "refuse":
-                        logger.error(
-                            "🛑 %s: REFUSING to place %s %s order — data feed unhealthy: %s",
-                            self.config.name, side, symbol, _verdict.reason,
-                        )
-                        return {
-                            "error": f"data feed unhealthy: {_verdict.reason}",
-                            "orderId": None,
-                            "method": "gated_health",
-                        }
-                    # Default: warn and proceed.  The watchdog + verifier
-                    # + cancel-on-staleness collectively keep us safe.
+                _monitor = _get_health_monitor()
+                _verdict = _monitor.is_safe_to_trade(symbol)
+                _decision, _reason = resolve_health_gate_decision(
+                    _verdict, _monitor, symbol, gate_mode=_gate_mode,
+                )
+                if _decision == "refuse":
+                    logger.error(
+                        "🛑 %s: REFUSING to place %s %s order — data feed unhealthy: %s",
+                        self.config.name, side, symbol, _reason,
+                    )
+                    return {
+                        "error": f"data feed unhealthy: {_reason}",
+                        "orderId": None,
+                        "method": "gated_health",
+                    }
+                if _decision == "warn":
                     logger.warning(
                         "⚠️  %s: data feed degraded but placing %s %s anyway "
                         "(strategy logic is source of truth): %s",
-                        self.config.name, side, symbol, _verdict.reason,
+                        self.config.name, side, symbol, _reason,
                     )
         except Exception as _exc:
             # Never let the gate ITSELF block a trade due to a bug.

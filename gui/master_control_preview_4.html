@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Master · Preview 4 (Whitespace)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root{
+    --bg:#16181b;
+    --ink:#ece8de;
+    --muted:#7e7972;
+    --hairline:rgba(126,121,114,.12);
+    --moss:#9bb39a;
+    --rose:#b88a82;
+    --linen:#d3bb8d;
+    --accent:#9cb3aa;
+    --canvas:#101214;
+    --col:1080px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink)}
+  body{
+    font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
+    font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased;
+  }
+  .num{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-feature-settings:'tnum','zero';font-weight:300;letter-spacing:-.01em}
+  .pos{color:var(--moss)} .neg{color:var(--rose)} .warn{color:var(--linen)}
+  .col{max-width:var(--col);margin:0 auto;padding:0 40px}
+  /* variant switcher */
+  .vs{
+    position:fixed;top:14px;right:18px;z-index:50;
+    display:flex;gap:2px;
+    background:color-mix(in oklab,var(--bg) 75%,transparent);
+    backdrop-filter:blur(10px);
+    border:1px solid var(--hairline);
+    border-radius:999px;padding:3px;
+    font-family:'JetBrains Mono',monospace;font-size:10px;
+  }
+  .vs a{color:var(--muted);text-decoration:none;padding:4px 10px;border-radius:999px;letter-spacing:.04em}
+  .vs a:hover{color:var(--ink)}
+  .vs a.on{background:var(--ink);color:var(--bg)}
+  /* header — minimal type only */
+  .head{
+    padding:96px 0 56px;
+    display:flex;justify-content:space-between;align-items:flex-end;
+    flex-wrap:wrap;gap:24px;
+  }
+  .head .acct-block{display:flex;flex-direction:column;gap:4px}
+  .head .acct-block .lbl{
+    font-size:9px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted);
+  }
+  .head .acct-block select{
+    background:transparent;border:0;color:var(--ink);
+    font-family:inherit;font-size:14px;padding:0;cursor:pointer;outline:none;appearance:none;
+    text-decoration:underline;text-decoration-color:var(--hairline);text-underline-offset:6px;
+  }
+  .head .meta{display:flex;align-items:flex-end;gap:48px}
+  .head .meta .stat{display:flex;flex-direction:column;gap:2px;align-items:flex-end}
+  .head .meta .stat .k{font-size:9px;text-transform:uppercase;letter-spacing:.28em;color:var(--muted)}
+  .head .meta .stat .v{font-family:'JetBrains Mono',monospace;font-weight:300;font-size:16px;font-feature-settings:'tnum'}
+  .head .conn{
+    display:flex;align-items:center;gap:8px;
+    font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);
+    margin-top:8px;
+  }
+  .head .conn .dot{width:5px;height:5px;border-radius:50%;background:var(--moss);display:inline-block}
+  /* sections */
+  section{padding:80px 0}
+  .eyebrow{
+    font-size:9px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted);
+    margin-bottom:32px;
+  }
+  /* chart section */
+  .chart-meta{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin-bottom:18px;
+  }
+  .chart-meta .group{display:flex;align-items:baseline;gap:24px;font-size:12px;color:var(--muted)}
+  .chart-meta select{
+    background:transparent;border:0;color:var(--ink);font-family:inherit;font-size:13px;padding:0;cursor:pointer;outline:none;
+    text-decoration:underline;text-decoration-color:var(--hairline);text-underline-offset:5px;
+  }
+  .chart-meta .last{font-family:'JetBrains Mono',monospace;color:var(--muted);font-size:11px;font-weight:300}
+  .chart-meta .last .lp{color:var(--ink);font-size:14px;margin-left:8px;font-weight:400}
+  .chart-meta .ohlc b{color:var(--ink);font-weight:400}
+  #chart{height:420px;width:100%;background:transparent}
+  .trade-row{
+    display:flex;gap:14px;padding:24px 0 0;
+    align-items:center;font-size:12px;
+  }
+  .trade-row .qty{
+    background:transparent;border:0;color:var(--ink);
+    font-family:'JetBrains Mono',monospace;font-weight:300;width:48px;text-align:center;font-size:18px;padding:6px 0;outline:none;
+    border-bottom:1px solid var(--hairline);
+  }
+  .trade-row select{
+    background:transparent;border:0;color:var(--ink);font-family:inherit;font-size:13px;padding:6px 16px 6px 0;cursor:pointer;outline:none;appearance:none;
+    text-decoration:underline;text-decoration-color:var(--hairline);text-underline-offset:5px;
+  }
+  .trade-row label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+  .trade-row .btn{
+    border:0;background:transparent;font-size:11px;font-weight:500;padding:8px 0;cursor:pointer;
+    font-family:inherit;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+    border-bottom:1px solid var(--hairline);
+  }
+  .trade-row .buy{color:var(--moss);border-bottom-color:rgba(155,179,154,.4)}
+  .trade-row .sell{color:var(--rose);border-bottom-color:rgba(184,138,130,.4)}
+  .trade-row .ghost{color:var(--muted)}
+  .trade-row .spacer{flex:1}
+  /* activity — purely typographic */
+  .activity{display:grid;grid-template-columns:1fr 1fr;gap:80px}
+  .activity h3{
+    margin:0 0 18px;font-family:'Instrument Sans',sans-serif;font-weight:400;
+    font-size:11px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted);
+  }
+  table.list{width:100%;border-collapse:collapse;font-size:13px}
+  table.list th{
+    text-align:left;font-weight:400;color:var(--muted);
+    font-size:9px;text-transform:uppercase;letter-spacing:.24em;
+    padding:0 0 12px;border-bottom:1px solid var(--hairline);
+  }
+  table.list td{padding:12px 0;border-bottom:1px solid var(--hairline);font-size:13px}
+  table.list tbody tr:last-child td{border-bottom:0}
+  table.list .empty{color:var(--muted);font-style:italic;padding:24px 0;font-family:'Instrument Serif',serif;font-size:14px}
+  table.list .right{text-align:right}
+  /* KPI grid: huge numbers, tiny labels */
+  .kpi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:48px 56px}
+  .kpi-grid .cell{display:flex;flex-direction:column;gap:6px}
+  .kpi-grid .k{font-size:9px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted)}
+  .kpi-grid .v{font-family:'JetBrains Mono',monospace;font-weight:300;font-size:34px;font-feature-settings:'tnum';line-height:1.05;letter-spacing:-.02em}
+  .equity-wrap{margin-top:64px}
+  .equity-wrap .lbl{font-size:9px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted);margin-bottom:14px}
+  #equity{height:120px;width:100%;background:transparent}
+  /* trades */
+  .trades-table th,.trades-table td{padding:11px 0}
+  .trades-table tbody tr:hover td{background:rgba(255,255,255,.012)}
+  .side-tag{font-family:'Instrument Sans',sans-serif;font-size:9px;font-weight:500;letter-spacing:.18em}
+  .side-tag.buy{color:var(--moss)}
+  .side-tag.sell{color:var(--rose)}
+  /* terminal */
+  .drawer-toggle{
+    display:inline-flex;align-items:center;gap:10px;cursor:pointer;
+    font-size:9px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted);
+    padding:0;background:transparent;border:0;font-family:inherit;
+  }
+  .drawer-toggle .chev{display:inline-block;transition:transform .2s}
+  .drawer.open .drawer-toggle .chev{transform:rotate(90deg)}
+  .drawer-body{display:none;margin-top:24px}
+  .drawer.open .drawer-body{display:block}
+  .term{
+    font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:300;
+    background:transparent;border:0;
+    padding:0;color:var(--ink);max-height:240px;overflow-y:auto;line-height:1.7;
+  }
+  .term .info{color:var(--muted)} .term .ok{color:var(--moss)} .term .err{color:var(--rose)}
+  /* strategies — single line */
+  .strat-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:32px;font-size:14px}
+  .strat-row .field{display:flex;flex-direction:column;gap:6px}
+  .strat-row .field .lbl{font-size:9px;text-transform:uppercase;letter-spacing:.32em;color:var(--muted)}
+  .strat-row select,.strat-row input{
+    background:transparent;border:0;color:var(--ink);font-family:inherit;font-size:14px;padding:4px 0;outline:none;
+    border-bottom:1px solid var(--hairline);min-width:180px;
+  }
+  .strat-row input{min-width:120px}
+  .strat-row select:focus,.strat-row input:focus{border-bottom-color:var(--accent)}
+  .strat-row .start{
+    background:transparent;border:0;color:var(--ink);
+    font-family:inherit;font-size:11px;font-weight:500;padding:8px 0;cursor:pointer;
+    text-transform:uppercase;letter-spacing:.32em;border-bottom:1px solid var(--ink);align-self:end;
+  }
+</style>
+</head>
+<body>
+<nav class="vs" aria-label="Variant switcher">
+  <a href="/master/preview/1">P1 Pure</a>
+  <a href="/master/preview/2">P2 Bound</a>
+  <a href="/master/preview/3">P3 Reading</a>
+  <a class="on" href="/master/preview/4">P4 White</a>
+  <a href="/master/preview/5">P5 Atelier</a>
+  <a href="/master/preview/6">P6 Quiet</a>
+  <a href="/master" style="margin-left:6px;border-left:1px solid var(--hairline);padding-left:14px">Live</a>
+</nav>
+
+<div class="col">
+  <header class="head">
+    <div class="acct-block">
+      <span class="lbl">Account</span>
+      <select>
+        <option>PRAC-V2-14334-54471239</option>
+        <option>50KTC-V2-DLL-14334-93778375</option>
+        <option>100KTC-V2-14334-46935626</option>
+      </select>
+      <div class="conn"><span class="dot"></span>Connected · 0:08</div>
+    </div>
+    <div class="meta">
+      <div class="stat"><span class="k">Balance</span><span class="v">$152,081.93</span></div>
+      <div class="stat"><span class="k">Unrealized</span><span class="v">$0.00</span></div>
+      <div class="stat"><span class="k">Realized</span><span class="v neg">−$63.24</span></div>
+    </div>
+  </header>
+
+  <section style="padding-top:24px">
+    <div class="eyebrow">Chart &middot; MNQ &middot; 5m &middot; Last 1 week</div>
+    <div class="chart-meta">
+      <div class="group">
+        <select><option>MNQ</option><option>MES</option><option>MGC</option></select>
+        <select><option>1m</option><option selected>5m</option><option>15m</option><option>1h</option></select>
+        <select><option>Auto</option><option selected>Last 1 week</option><option>Last 1 month</option></select>
+      </div>
+      <div class="last">
+        <span class="ohlc"><b>O</b> 29944.5 <b>H</b> 29986.0 <b>L</b> 29928.0 <b>C</b> 29970.25</span>
+        <span class="lp num">29,970.25</span>
+      </div>
+    </div>
+    <div id="chart"></div>
+    <div class="trade-row">
+      <select><option>Market</option><option>Limit</option><option>Stop</option></select>
+      <input class="qty" value="1">
+      <label><input type="checkbox" checked> Bracket</label>
+      <button class="btn buy">Buy</button>
+      <button class="btn sell">Sell</button>
+      <div class="spacer"></div>
+      <button class="btn ghost">Cancel</button>
+      <button class="btn ghost">Flatten</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Active</div>
+    <div class="activity">
+      <div>
+        <h3>Positions</h3>
+        <table class="list">
+          <thead><tr><th>Symbol</th><th>Side</th><th class="right">Qty</th><th class="right">Entry</th><th class="right">P&amp;L</th></tr></thead>
+          <tbody><tr><td colspan="5" class="empty">No open positions.</td></tr></tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Orders</h3>
+        <table class="list">
+          <thead><tr><th>Symbol</th><th>Side</th><th class="right">Qty</th><th class="right">Price</th><th>Type</th></tr></thead>
+          <tbody><tr><td colspan="5" class="empty">No working orders.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow" style="display:flex;justify-content:space-between">
+      <span>Performance &middot; 30 days</span>
+      <span><select style="background:transparent;border:0;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.32em;cursor:pointer;outline:none">
+        <option>Today</option><option>7 days</option><option selected>30 days</option><option>90 days</option><option>1 year</option><option>All</option>
+      </select></span>
+    </div>
+    <div class="kpi-grid">
+      <div class="cell"><span class="k">Trades</span><span class="v">82</span></div>
+      <div class="cell"><span class="k">Win rate</span><span class="v">59.8%</span></div>
+      <div class="cell"><span class="k">Net P&amp;L</span><span class="v pos">+$2,440</span></div>
+      <div class="cell"><span class="k">Avg trade</span><span class="v">$29.77</span></div>
+      <div class="cell"><span class="k">Max drawdown</span><span class="v warn">12.0%</span></div>
+      <div class="cell"><span class="k">Profit factor</span><span class="v">1.07</span></div>
+    </div>
+    <div class="equity-wrap">
+      <div class="lbl">Equity curve</div>
+      <div id="equity"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Trades &middot; 82</div>
+    <table class="list trades-table">
+      <thead><tr><th>#</th><th>Side</th><th>Entry</th><th>Exit</th><th class="right">Entry px</th><th class="right">Exit px</th><th class="right">Pts</th><th class="right">P&amp;L</th><th class="right">Cum</th></tr></thead>
+      <tbody id="trades-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="eyebrow">Strategies</div>
+    <div class="strat-row">
+      <div class="field"><span class="lbl">Strategy</span>
+        <select><option>Overnight Range</option><option>Trend Scalping</option><option>Mean Reversion</option><option>Trend Following</option><option>Simple Momentum</option></select>
+      </div>
+      <div class="field"><span class="lbl">Symbols</span>
+        <input value="MNQ">
+      </div>
+      <div class="field"><span class="lbl">Timeframe</span>
+        <select><option>5s</option><option>15s</option><option>30s</option><option>1m</option><option selected>5m</option><option>15m</option><option>30m</option><option>1h</option></select>
+      </div>
+      <button class="start">Start</button>
+    </div>
+  </section>
+
+  <section class="drawer" id="drawer" style="padding-bottom:120px">
+    <button class="drawer-toggle" onclick="document.getElementById('drawer').classList.toggle('open')">
+      <span class="chev">▸</span> Terminal &middot; 14 logs
+    </button>
+    <div class="drawer-body">
+      <div class="term">
+<span class="info">2026-06-12 18:38:29  📌 Default MNQ contract: CON.F.US.MNQ.U26</span><br>
+<span class="info">2026-06-12 18:38:29  Master server listening on :56909</span><br>
+<span class="ok">2026-06-12 18:38:30  ✅ Connected to TopStepX user hub</span><br>
+<span class="ok">2026-06-12 18:38:30  ✅ Connected to TopStepX market hub</span><br>
+<span class="info">2026-06-12 18:38:30  Strategy registry loaded: 6 strategies</span><br>
+<span class="info">2026-06-12 18:38:32  Account state: PRAC-V2-14334-54471239 ($152,081.93)</span><br>
+<span class="info">2026-06-12 18:39:01  Bar 5m MNQ closed @ 29950.25 (vol 142)</span><br>
+<span class="info">2026-06-12 18:39:30  Risk: 0/3 daily trades, 0/2 pending</span><br>
+<span class="info">2026-06-12 18:40:00  Bar 5m MNQ closed @ 29948.00 (vol 96)</span><br>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const N=180;const start=29900;const out=[];let p=start;let t=Math.floor(Date.now()/1000)-N*300;
+  for(let i=0;i<N;i++){const d=Math.sin(i/9)*1.2+Math.sin(i/27)*4+(Math.random()-.5)*8;const o=p;const c=Math.max(29700,Math.min(30100,p+d));const h=Math.max(o,c)+Math.random()*6;const l=Math.min(o,c)-Math.random()*6;out.push({time:t,open:+o.toFixed(2),high:+h.toFixed(2),low:+l.toFixed(2),close:+c.toFixed(2),volume:Math.round(60+Math.random()*220)});p=c;t+=300}
+  const chart=LightweightCharts.createChart(document.getElementById('chart'),{
+    layout:{background:{type:'solid',color:'transparent'},textColor:'#7e7972',fontFamily:"'JetBrains Mono', monospace",fontSize:10},
+    grid:{vertLines:{visible:false},horzLines:{visible:false}},
+    rightPriceScale:{borderVisible:false,visible:true},
+    timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},
+    crosshair:{vertLine:{color:'rgba(126,121,114,.3)',width:1,style:0,labelBackgroundColor:'#23272b'},horzLine:{color:'rgba(126,121,114,.3)',width:1,style:0,labelBackgroundColor:'#23272b'}},
+    height:420,
+  });
+  const cs=chart.addCandlestickSeries({upColor:'#9bb39a',downColor:'#b88a82',wickUpColor:'#9bb39a',wickDownColor:'#b88a82',borderVisible:false});
+  cs.setData(out);
+  const eq=LightweightCharts.createChart(document.getElementById('equity'),{
+    layout:{background:{type:'solid',color:'transparent'},textColor:'#7e7972',fontFamily:"'JetBrains Mono', monospace",fontSize:9},
+    grid:{vertLines:{visible:false},horzLines:{visible:false}},rightPriceScale:{visible:false},leftPriceScale:{visible:false},
+    timeScale:{visible:false},crosshair:{vertLine:{visible:false},horzLine:{visible:false}},height:120,
+  });
+  const eqLine=eq.addAreaSeries({lineColor:'#ece8de',topColor:'rgba(236,232,222,.06)',bottomColor:'rgba(236,232,222,0)',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  let eqV=0;const eqArr=[];let eqT=Math.floor(Date.now()/1000)-30*86400;
+  for(let i=0;i<30;i++){eqV+=(Math.random()-.4)*120;eqArr.push({time:eqT,value:+eqV.toFixed(2)});eqT+=86400}
+  eqLine.setData(eqArr);
+  const sample=[
+    {side:'SELL',et:'6/12, 1:40 PM',xt:'6/12, 1:40 PM',ep:29692.50,xp:29692.50,pts:0,pl:62.50,cum:2973.75},
+    {side:'SELL',et:'6/11, 10:12 AM',xt:'6/11, 10:12 AM',ep:4073.40,xp:4073.40,pts:0,pl:534,cum:3036.25},
+    {side:'BUY', et:'6/02, 4:12 PM', xt:'6/02, 4:12 PM',ep:30746.75,xp:30746.75,pts:0,pl:2437.5,cum:3570.25},
+    {side:'BUY', et:'6/02, 4:12 PM', xt:'6/02, 4:12 PM',ep:30746.75,xp:30746.75,pts:0,pl:2445,cum:6007.75},
+    {side:'BUY', et:'6/02, 4:12 PM', xt:'6/02, 4:12 PM',ep:30746.75,xp:30746.75,pts:0,pl:2445,cum:8445.25},
+    {side:'BUY', et:'5/29, 4:11 PM', xt:'5/29, 4:11 PM',ep:7596,xp:7596,pts:0,pl:1.25,cum:15780.25},
+    {side:'SELL',et:'5/29, 2:04 PM',xt:'5/29, 2:04 PM',ep:7588,xp:7588,pts:0,pl:20,cum:15781.50},
+    {side:'BUY', et:'5/29, 9:31 AM', xt:'5/29, 9:31 AM',ep:30409,xp:30409,pts:0,pl:75.5,cum:15761.50},
+    {side:'BUY', et:'5/28, 2:52 PM', xt:'5/28, 2:52 PM',ep:30299.75,xp:30299.75,pts:0,pl:65,cum:15837},
+    {side:'BUY', et:'5/28, 2:52 PM', xt:'5/28, 2:52 PM',ep:30299.75,xp:30299.75,pts:0,pl:60,cum:15772},
+  ];
+  const tb=document.getElementById('trades-body');
+  sample.forEach((t,i)=>{const tr=document.createElement('tr');const sc=t.side==='BUY'?'buy':'sell';const pc=t.pl>=0?'pos':'neg';
+    tr.innerHTML=`<td class="num" style="color:var(--muted)">${i+1}</td><td><span class="side-tag ${sc}">${t.side}</span></td><td>${t.et}</td><td>${t.xt}</td><td class="right num">${t.ep.toFixed(2)}</td><td class="right num">${t.xp.toFixed(2)}</td><td class="right num">${t.pts>=0?'+':''}${t.pts.toFixed(2)}</td><td class="right num ${pc}">${t.pl>=0?'+':'−'}$${Math.abs(t.pl).toFixed(2)}</td><td class="right num">$${t.cum.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;tb.appendChild(tr);});
+  new ResizeObserver(()=>chart.applyOptions({width:document.getElementById('chart').clientWidth})).observe(document.getElementById('chart'));
+  new ResizeObserver(()=>eq.applyOptions({width:document.getElementById('equity').clientWidth})).observe(document.getElementById('equity'));
+  chart.applyOptions({width:document.getElementById('chart').clientWidth});
+  eq.applyOptions({width:document.getElementById('equity').clientWidth});
+  chart.timeScale().fitContent();
+</script>
+</body>
+</html>

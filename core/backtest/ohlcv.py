@@ -11,6 +11,24 @@ import numpy as np
 import pandas as pd
 
 
+def ohlcv_index_naive_utc(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """Force a bar DataFrame index to **naive UTC** (canonical bar clock in this repo).
+
+    Databento CSVs, ``parquet_cache.load_ohlcv_cached``, and replay loaders all
+    use naive UTC indexes. Broker/API frames may be tz-aware. **Always normalize
+    before ``pd.concat``, ``sort_index``, or slicing against naive bounds** — see
+    ``docs/GOTCHAS.md`` (Timestamps & time zones).
+
+    Returns a sorted copy; empty/None inputs pass through unchanged.
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    idx = pd.to_datetime(out.index, utc=True)
+    out.index = idx.tz_convert(None)
+    return out.sort_index()
+
+
 def snap_trade_unix_to_chart_bar_open(target_unix: int, bar_times: List[int]) -> int:
     """Map a replay fill instant to the chart bar **open** (``time`` on the x-axis).
 

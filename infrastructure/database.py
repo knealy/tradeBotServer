@@ -12,6 +12,7 @@ Uses connection pooling for efficiency and supports Railway's PostgreSQL.
 
 import os
 import atexit
+import json
 import logging
 import queue
 import threading
@@ -791,6 +792,40 @@ class DatabaseManager:
         CREATE INDEX IF NOT EXISTS idx_cache_type 
             ON cache_metadata(cache_type, last_updated DESC);
 
+        -- Trade snapshots — captured at trade close so the dashboard recap modal
+        -- can render an *exact* historical chart for any past trade without
+        -- having to re-pull bars from the broker (whose history window is
+        -- short) or stitch from Databento (which lags by a day). One row per
+        -- trade; ``bars_json`` holds the OHLCV snippet for the recap window
+        -- (see ``trading_bot.capture_trade_snapshot`` for the capture path).
+        -- ``range_snapshot_json`` carries the strategy's session range
+        -- (high/low/mid + window times) so the recap can render the same
+        -- shaded box as the live chart.
+        CREATE TABLE IF NOT EXISTS trade_snapshots (
+            trade_id VARCHAR(100) PRIMARY KEY,
+            account_id VARCHAR(50),
+            strategy_name VARCHAR(50),
+            symbol VARCHAR(20),
+            side VARCHAR(10),                 -- position direction: BUY/LONG or SELL/SHORT
+            quantity INT,
+            entry_time TIMESTAMPTZ,
+            exit_time TIMESTAMPTZ,
+            entry_price DECIMAL(12, 4),
+            exit_price DECIMAL(12, 4),
+            pnl DECIMAL(12, 2),
+            timeframe VARCHAR(10),            -- e.g. '1m', '5m'
+            bars_json JSONB,                  -- LWC-shaped OHLCV [{time, open, high, low, close, volume}, ...]
+            range_snapshot_json JSONB,        -- {high, low, mid, session_start_et, session_end_et} or null
+            metadata JSONB,                   -- order ids, snap-source, padding window, etc.
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_trade_snapshots_account_exit
+            ON trade_snapshots(account_id, exit_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_trade_snapshots_strategy
+            ON trade_snapshots(strategy_name, exit_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_trade_snapshots_symbol
+            ON trade_snapshots(symbol, exit_time DESC);
+
         -- Strategy state persistence
         CREATE TABLE IF NOT EXISTS strategy_states (
             account_id VARCHAR(50) NOT NULL,
@@ -1308,7 +1343,185 @@ class DatabaseManager:
         """Retrieve a single strategy state."""
         states = self.get_strategy_states(account_id)
         return states.get(strategy_name)
-    
+
+    # ==================== Trade Snapshot Methods ====================
+
+    def save_trade_snapshot(
+        self,
+        trade_id: str,
+        *,
+        account_id: Optional[str] = None,
+        strategy_name: Optional[str] = None,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        quantity: Optional[int] = None,
+        entry_time: Optional[datetime] = None,
+        exit_time: Optional[datetime] = None,
+        entry_price: Optional[float] = None,
+        exit_price: Optional[float] = None,
+        pnl: Optional[float] = None,
+        timeframe: Optional[str] = None,
+        bars: Optional[List[Dict[str, Any]]] = None,
+        range_snapshot: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Persist a trade-recap snapshot. Idempotent on ``trade_id`` — re-saving
+        overwrites the row (useful when the snapshot is captured a second time
+        with a wider bar window after the trade settles).
+        """
+        if not self.pool:
+            return False
+        if not trade_id:
+            logger.warning("save_trade_snapshot: missing trade_id")
+            return False
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO trade_snapshots
+                            (trade_id, account_id, strategy_name, symbol, side,
+                             quantity, entry_time, exit_time, entry_price,
+                             exit_price, pnl, timeframe, bars_json,
+                             range_snapshot_json, metadata)
+                        VALUES (%s, %s, %s, %s, %s,
+                                %s, %s, %s, %s,
+                                %s, %s, %s, %s,
+                                %s, %s)
+                        ON CONFLICT (trade_id) DO UPDATE SET
+                            account_id = EXCLUDED.account_id,
+                            strategy_name = EXCLUDED.strategy_name,
+                            symbol = EXCLUDED.symbol,
+                            side = EXCLUDED.side,
+                            quantity = EXCLUDED.quantity,
+                            entry_time = EXCLUDED.entry_time,
+                            exit_time = EXCLUDED.exit_time,
+                            entry_price = EXCLUDED.entry_price,
+                            exit_price = EXCLUDED.exit_price,
+                            pnl = EXCLUDED.pnl,
+                            timeframe = EXCLUDED.timeframe,
+                            bars_json = EXCLUDED.bars_json,
+                            range_snapshot_json = EXCLUDED.range_snapshot_json,
+                            metadata = EXCLUDED.metadata
+                        """,
+                        (
+                            str(trade_id),
+                            str(account_id) if account_id is not None else None,
+                            strategy_name,
+                            symbol,
+                            side,
+                            int(quantity) if quantity is not None else None,
+                            entry_time,
+                            exit_time,
+                            float(entry_price) if entry_price is not None else None,
+                            float(exit_price) if exit_price is not None else None,
+                            float(pnl) if pnl is not None else None,
+                            timeframe,
+                            dumps_str(bars) if bars else None,
+                            dumps_str(range_snapshot) if range_snapshot else None,
+                            dumps_str(metadata) if metadata else None,
+                        ),
+                    )
+            logger.debug("📸 Saved trade snapshot trade_id=%s (%d bars)",
+                         trade_id, len(bars or []))
+            return True
+        except Exception as e:
+            logger.error("❌ Failed to save trade snapshot %s: %s", trade_id, e)
+            return False
+
+    def get_trade_snapshot(self, trade_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a saved trade snapshot. Returns ``None`` when missing."""
+        if not self.pool or not trade_id:
+            return None
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT trade_id, account_id, strategy_name, symbol, side,
+                               quantity, entry_time, exit_time, entry_price,
+                               exit_price, pnl, timeframe, bars_json,
+                               range_snapshot_json, metadata, created_at
+                        FROM trade_snapshots
+                        WHERE trade_id = %s
+                        """,
+                        (str(trade_id),),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    out = dict(row)
+                    for k in ("entry_time", "exit_time", "created_at"):
+                        v = out.get(k)
+                        if v is not None and hasattr(v, "isoformat"):
+                            out[k] = v.isoformat()
+                    for k in ("entry_price", "exit_price", "pnl"):
+                        v = out.get(k)
+                        if v is not None:
+                            try:
+                                out[k] = float(v)
+                            except (TypeError, ValueError):
+                                pass
+                    return out
+        except Exception as e:
+            logger.error("❌ Failed to load trade snapshot %s: %s", trade_id, e)
+            return None
+
+    def list_trade_range_snapshots(
+        self,
+        account_id: str,
+        *,
+        strategy_name: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Trade snapshots that captured a strategy range (for history backfill)."""
+        if not self.pool or not account_id:
+            return []
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    if strategy_name:
+                        cur.execute(
+                            """
+                            SELECT strategy_name, symbol, exit_time, range_snapshot_json
+                            FROM trade_snapshots
+                            WHERE account_id = %s
+                              AND strategy_name = %s
+                              AND range_snapshot_json IS NOT NULL
+                            ORDER BY exit_time DESC NULLS LAST
+                            LIMIT %s
+                            """,
+                            (str(account_id), str(strategy_name), int(limit)),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT strategy_name, symbol, exit_time, range_snapshot_json
+                            FROM trade_snapshots
+                            WHERE account_id = %s
+                              AND range_snapshot_json IS NOT NULL
+                            ORDER BY exit_time DESC NULLS LAST
+                            LIMIT %s
+                            """,
+                            (str(account_id), int(limit)),
+                        )
+                    rows = cur.fetchall() or []
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                rec = dict(row)
+                raw = rec.get("range_snapshot_json")
+                if isinstance(raw, str):
+                    try:
+                        rec["range_snapshot_json"] = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        rec["range_snapshot_json"] = None
+                if rec.get("range_snapshot_json"):
+                    out.append(rec)
+            return out
+        except Exception as e:
+            logger.error("❌ Failed to list trade range snapshots: %s", e)
+            return []
+
     # ==================== Process State Methods ====================
     
     def save_process_state(

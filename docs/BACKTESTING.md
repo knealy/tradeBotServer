@@ -59,6 +59,8 @@ For backtests and scripts that expect **stable paths** (no job-id suffix), keep 
 | File | Role |
 |------|------|
 | `historical_data/price/{MNQ,MES,MGC}_1m_databento.csv` | **Canonical** 1m outright series (naive UTC). |
+
+**Timezone rule:** bar indexes are naive UTC; session JSON uses tz-aware ET (`session_*_et`). Normalize every frame with `core.backtest.ohlcv.ohlcv_index_naive_utc()` before `pd.concat` or slice — see [GOTCHAS.md](GOTCHAS.md) (*Timestamps & time zones*). Range backfill (`core/range_history_backfill.py`) stitches canonical CSV + live API bars using that helper.
 | `historical_data/price/{MNQ,MES,MGC}_5m_databento.csv` | Optional 5m resample from the canonical 1m (see [`historical_data/resample_ohlcv_csv.py`](../historical_data/resample_ohlcv_csv.py)). |
 
 **One-shot stitch** (merges the batch, then **stitches** into the canonical 1m so **newer timestamps win** on overlap; by default also refreshes the 5m files):

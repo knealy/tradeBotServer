@@ -2278,57 +2278,40 @@ class OvernightRangeStrategy(BaseStrategy):
 
     def _persist_or_ranges_to_db(self) -> None:
         """Write active OR high/low to strategy_states so the chart server can draw lines (headless executor)."""
-        now_mono = time_module.monotonic()
-        if now_mono - getattr(self, "_or_db_last_mono", 0.0) < 4.0:
-            return
-        self._or_db_last_mono = now_mono
-        db = getattr(self.trading_bot, "db", None)
-        if not db:
-            return
-        account_id = None
-        acct = getattr(self.trading_bot, "selected_account", None)
-        if isinstance(acct, dict):
-            account_id = acct.get("id")
-        elif acct is not None:
-            account_id = str(acct)
-        if not account_id:
-            return
-        aid = str(account_id)
-        try:
-            st = db.get_strategy_state(aid, self.config.name) or {}
-            settings = dict(st.get("settings") or {})
-            snap: Dict[str, Dict[str, float]] = {}
-            for sym, r in self.active_ranges.items():
-                try:
-                    hi = float(r.high)
-                    lo = float(r.low)
-                    key = str(sym).upper()
-                    snap[key] = {"high": hi, "low": lo}
-                    # Alias for chart symbol dropdown (e.g. MNQ vs contract-prefixed keys)
-                    if "." in key:
-                        short = key.split(".")[-1].strip()
-                        if short and short != key:
-                            snap[short] = {"high": hi, "low": lo}
-                except (TypeError, ValueError):
-                    continue
-            settings["or_ranges"] = snap
-            metadata = dict(st.get("metadata") or {})
-            metadata["or_ranges_saved_at"] = datetime.now(timezone.utc).isoformat()
-            symbols = st.get("symbols")
-            if not symbols and self.config is not None:
-                symbols = list(getattr(self.config, "symbols", None) or [])
-            db.save_strategy_state(
-                account_id=aid,
-                strategy_name=self.config.name,
-                enabled=bool(st.get("enabled", True)),
-                symbols=symbols,
-                settings=settings,
-                metadata=metadata,
-                last_started=None,
-                last_stopped=None,
-            )
-        except Exception as e:
-            logger.debug("or_ranges DB snapshot skipped: %s", e, exc_info=True)
+        snap: Dict[str, Dict[str, Any]] = {}
+        for sym, r in self.active_ranges.items():
+            try:
+                hi = float(r.high)
+                lo = float(r.low)
+            except (TypeError, ValueError):
+                continue
+            entry: Dict[str, Any] = {
+                "high": hi,
+                "low": lo,
+                "mid": float(r.midpoint),
+                "size": float(r.range_size),
+            }
+            et = getattr(r, "end_time", None)
+            st = getattr(r, "start_time", None)
+            if et is not None:
+                if hasattr(et, "date"):
+                    entry["session_date"] = et.date().isoformat()
+                tz = self.timezone
+                if st is not None:
+                    st_et = st.astimezone(tz) if getattr(st, "tzinfo", None) else st.replace(tzinfo=timezone.utc).astimezone(tz)
+                    entry["session_start_et"] = st_et.isoformat()
+                if hasattr(et, "isoformat"):
+                    et_local = et.astimezone(tz) if getattr(et, "tzinfo", None) else et.replace(tzinfo=timezone.utc).astimezone(tz)
+                    entry["session_end_et"] = et_local.isoformat()
+            key = str(sym).upper()
+            snap[key] = entry
+            if "." in key:
+                short = key.split(".")[-1].strip()
+                if short and short != key:
+                    snap[short] = entry
+        self.persist_range_snapshot(
+            snap, key="or_ranges", attr="_or_db_last_mono",
+        )
     
     async def track_overnight_range(self, symbol: str) -> Optional[OvernightRange]:
         """

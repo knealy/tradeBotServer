@@ -228,6 +228,41 @@ human-readable reports.
   walk-forward — the simplest immediate way to convert v2 brain into
   real PnL.
 
+### Prior-day RTH liquidity-sweep refinement (user note, 2026-06-15)
+
+> **User direction**: "when we are focusing on price action and SMC strategies
+> note that we should target the prior day RTH high/low for a liquidity sweep
+> IF we open RTH inside of the previous RTH range."
+
+This is a deliberate refinement to the prior-day-RTH-sweep thesis below.  The
+2026-06-12 PM probe (``scripts/probe_prior_day_sweep_fade.py``) ran on EVERY
+sweep regardless of where the current RTH opened relative to the prior range.
+That naïve scope showed NO EDGE.
+
+The user's refinement gates the setup on **RTH open inside prior RTH range**
+(``prior_low ≤ today_RTH_open ≤ prior_high``).  The intuition:
+
+* When today's RTH opens INSIDE the prior range, the prior H/L are still
+  "live" liquidity magnets — neither has been swept yet by the overnight
+  session, and institutional stops sit at both extremes.  A wick past one of
+  them is then a genuine stop-run.
+* When today's RTH opens ABOVE prior H (gap up) or BELOW prior L (gap down),
+  the prior level has already been crossed during the gap — institutional
+  flow has already cleared the liquidity, and a re-test is not the same
+  setup.  Probing those scenarios as "sweeps" pollutes the sample.
+
+**Next-iteration probe (deferred until prioritised)**:
+
+Re-run the prior-day sweep-fade probe with a new ``--require-inside-open``
+flag that filters sweep events to those days where the current trading day's
+RTH opening price is inside ``[prior_low, prior_high]``.  Test on MGC SHORT
+(the strongest pocket from the original probe at +0.103 R), then on all
+three symbols.  If the gate moves the verdict from NO_EDGE / MARGINAL to
+PRODUCTIONABLE, this becomes the first standalone PA/SMC strategy worth
+shipping.  Also worth combining with the v2 brain's ``sweep_low_fade`` LONG
+gate (Phase 2 sweep optimization) when the RTH-open-inside condition holds
+— both signals firing on the same day would be a high-conviction setup.
+
 ### Prior-day RTH high/low sweep-fade — viability probe complete: **NOT VIABLE as standalone**
 
 **Verdict (2026-06-12 PM):** the naïve sweep-fade thesis on prior-day RTH high/low **does not work**

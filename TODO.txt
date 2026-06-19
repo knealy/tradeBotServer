@@ -1,0 +1,37 @@
+DESIGN: 
+
+add calendar view for metrics performance ?
+
+add section to GUI for backtesting / simulations + new widgets ?
+
+plans for drawing tools / custom indicators on the chart + accounts / sign in + saved states/drawings?
+
+way to edit/control current positon/orders from the chart canvas 
+
+way to create new orders or drawings from the chart cursor/mouse 
+
+Add tool tips to all of the metrics titles/table headers performance metric ratios etc 
+Both in the master GUI and in the backtest walkforward reports 
+
+change discord notis to be more conservative/informative 
+
+add qnty to all trades in all trade recap/reports 
+
+
+
+STRATEGY:
+
+Solidify how the strategies perform in different regimes
+What signifies the change in regime type 
+What types are conducive to reversion strats (current market conditions)
+especially MGC look at change around the beginning of 2026 (tradingview)
+
+Re test configs over larger timespans 
+
+find more strategies for different conditions/regimes 
+
+find a valid afterhours / all hours strat to take advantage of 
+
+code the ict sweeps/liquidity reversal strat 
+
+

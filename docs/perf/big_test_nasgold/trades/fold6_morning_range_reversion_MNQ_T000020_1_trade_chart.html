@@ -1,0 +1,2202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MNQ 1m Chart</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .header {
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: #ffffff;
+        }
+        .header .info {
+            margin-top: 5px;
+            color: #888;
+            font-size: 14px;
+        }
+        #chart-container {
+            width: 100%;
+            height: 600px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .controls {
+            margin-top: 20px;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 8px;
+        }
+        .controls button {
+            background: #2962ff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+        .controls button:hover {
+            background: #1e53e5;
+        }
+        .controls button.active {
+            background: #26a69a;
+        }
+        .controls button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 10px;
+            color: #888;
+            font-size: 12px;
+        }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #2a2a2a;
+            color: #ffffff;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            min-width: 300px;
+            max-width: 500px;
+            border-left: 4px solid #2962ff;
+            animation: slideIn 0.3s ease-out;
+        }
+        .toast.success {
+            border-left-color: #26a69a;
+        }
+        .toast.error {
+            border-left-color: #ef5350;
+        }
+        .toast.warning {
+            border-left-color: #ffa726;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        .toast-title {
+            font-weight: bold;
+            margin-bottom: 4px;
+            font-size: 14px;
+        }
+        .toast-message {
+            font-size: 12px;
+            color: #d1d5db;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>MNQ 1m Chart</h1>
+            <div class="info">
+                756 bars | Last updated: 2026-06-19 14:20:08 | Axis: America/New_York | 7-8am ET range box
+            </div>
+        </div>
+        <div id="chart-container"></div>
+        
+        <div class="trading-panel" id="tradingPanel" style="background: #2a2a2a; padding: 10px; margin: 10px 0; border-radius: 8px; border: 1px solid #444;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <select id="symbolSelect" onchange="updateSymbol()" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px;">
+                    <option value="MNQ" selected>MNQ</option>
+                </select>
+                <select id="timeframeSelect" onchange="updateTimeframe()" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px;">
+                    <option value="30s">30s</option>
+                    <option value="1m" selected>1m</option>
+                    <option value="5m">5m</option>
+                    <option value="15m">15m</option>
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                    <option value="1d">1d</option>
+                </select>
+                <select id="orderTypeSelect" onchange="updateOrderType()" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 80px;">
+                    <option value="market" selected>Market</option>
+                    <option value="limit">Limit</option>
+                    <option value="stop">Stop</option>
+                    <option value="bracket">Bracket</option>
+                </select>
+                <input type="number" id="quantityInput" value="1" min="1" placeholder="Qty" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 60px;">
+                <input type="number" id="limitPriceInput" step="0.25" placeholder="Limit" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 80px; display: none;">
+                <input type="number" id="stopPriceInput" step="0.25" placeholder="Stop" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 80px; display: none;">
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #888;">
+                    <input type="checkbox" id="enableBracketCheck" onchange="updateBracket()" style="margin: 0;">
+                    <span>Bracket</span>
+                </label>
+                <input type="number" id="stopLossPriceInput" step="0.25" placeholder="SL" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 70px; display: none;">
+                <input type="number" id="takeProfitPriceInput" step="0.25" placeholder="TP" style="background: #1a1a1a; color: #d1d5db; border: 1px solid #444; padding: 6px; border-radius: 4px; font-size: 12px; width: 70px; display: none;">
+                <button onclick="placeOrder('BUY')" style="background: #26a69a; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;">BUY</button>
+                <button onclick="placeOrder('SELL')" style="background: #ef5350; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;">SELL</button>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button onclick="refreshChart()">Refresh Data</button>
+            <button onclick="exportData()">Export CSV</button>
+            <button onclick="lastPositionUpdate=0;lastOrderUpdate=0;lastStrategyLinesUpdate=0;updatePositionLines();updateOrderLines();updateStrategyBreakoutLines();" style="background: #26a69a; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Refresh Lines</button>
+            <button id="realtimeBtn" onclick="toggleRealtime()">Start Real-Time</button>
+            <div style="display: inline-block; margin-left: 10px;">Refresh: <select id="refreshRateSelect" onchange="updateRefreshRate()" style="background: #2a2a2a; color: #d1d5db; border: 1px solid #444; padding: 5px;"><option value="1" selected>1x/sec</option><option value="3">3x/sec</option><option value="6">6x/sec</option><option value="12">12x/sec</option></select></div>
+            
+            
+            
+            
+            
+            <div class="status" id="status">Chart loaded</div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let candlestickSeries = null;
+        let volumeSeries = null;
+        let chartContainer = null; // Global scope for resize handler
+        let positionPriceLines = []; // Position price lines (entry, stop loss, take profit)
+        let orderPriceLines = []; // Order price lines (limit/stop orders)
+        let strategyPriceLines = []; // overnight_range OR high/low + breakout template prices
+        let lastPositionUpdate = 0; // Throttle position updates (max once per 5 seconds)
+        let lastOrderUpdate = 0; // Throttle order updates (max once per 5 seconds)
+        let lastStrategyLinesUpdate = 0;
+        const POSITION_UPDATE_INTERVAL = 3000; // 3 seconds (reduced for faster updates)
+        const ORDER_UPDATE_INTERVAL = 3000; // 3 seconds (reduced for faster updates)
+        const STRATEGY_LINES_INTERVAL = 3000;
+        let chartData = [{"time": 1744698300, "open": 18907.5, "high": 18911.0, "low": 18905.5, "close": 18910.0, "volume": 212}, {"time": 1744698360, "open": 18908.5, "high": 18912.5, "low": 18906.0, "close": 18911.75, "volume": 206}, {"time": 1744698420, "open": 18911.25, "high": 18918.25, "low": 18910.75, "close": 18916.5, "volume": 339}, {"time": 1744698480, "open": 18916.0, "high": 18916.0, "low": 18903.0, "close": 18904.5, "volume": 400}, {"time": 1744698540, "open": 18903.5, "high": 18908.5, "low": 18899.75, "close": 18904.5, "volume": 425}, {"time": 1744698600, "open": 18905.0, "high": 18906.5, "low": 18895.75, "close": 18902.25, "volume": 575}, {"time": 1744698660, "open": 18903.0, "high": 18907.0, "low": 18902.5, "close": 18907.0, "volume": 244}, {"time": 1744698720, "open": 18906.5, "high": 18910.0, "low": 18902.25, "close": 18906.0, "volume": 274}, {"time": 1744698780, "open": 18905.25, "high": 18909.25, "low": 18904.5, "close": 18906.5, "volume": 143}, {"time": 1744698840, "open": 18906.5, "high": 18912.0, "low": 18905.5, "close": 18912.0, "volume": 170}, {"time": 1744698900, "open": 18912.0, "high": 18912.75, "low": 18907.25, "close": 18908.0, "volume": 121}, {"time": 1744698960, "open": 18907.25, "high": 18911.25, "low": 18904.25, "close": 18907.0, "volume": 145}, {"time": 1744699020, "open": 18907.75, "high": 18915.75, "low": 18907.75, "close": 18915.25, "volume": 132}, {"time": 1744699080, "open": 18914.5, "high": 18920.0, "low": 18914.5, "close": 18918.5, "volume": 338}, {"time": 1744699140, "open": 18917.75, "high": 18917.75, "low": 18913.5, "close": 18916.5, "volume": 204}, {"time": 1744699200, "open": 18916.5, "high": 18923.5, "low": 18916.0, "close": 18917.25, "volume": 447}, {"time": 1744699260, "open": 18917.25, "high": 18922.0, "low": 18914.5, "close": 18921.75, "volume": 243}, {"time": 1744699320, "open": 18921.25, "high": 18923.5, "low": 18919.25, "close": 18921.0, "volume": 189}, {"time": 1744699380, "open": 18920.75, "high": 18921.5, "low": 18918.75, "close": 18920.0, "volume": 83}, {"time": 1744699440, "open": 18919.75, "high": 18921.0, "low": 18916.5, "close": 18919.25, "volume": 174}, {"time": 1744699500, "open": 18919.0, "high": 18922.25, "low": 18917.5, "close": 18920.5, "volume": 171}, {"time": 1744699560, "open": 18919.0, "high": 18921.5, "low": 18917.25, "close": 18918.25, "volume": 260}, {"time": 1744699620, "open": 18917.5, "high": 18919.75, "low": 18915.25, "close": 18919.5, "volume": 176}, {"time": 1744699680, "open": 18919.25, "high": 18920.25, "low": 18914.5, "close": 18916.5, "volume": 192}, {"time": 1744699740, "open": 18917.0, "high": 18918.75, "low": 18915.75, "close": 18917.25, "volume": 76}, {"time": 1744699800, "open": 18918.25, "high": 18919.75, "low": 18915.75, "close": 18917.0, "volume": 89}, {"time": 1744699860, "open": 18916.25, "high": 18917.0, "low": 18914.5, "close": 18916.0, "volume": 78}, {"time": 1744699920, "open": 18916.5, "high": 18918.0, "low": 18913.25, "close": 18917.0, "volume": 144}, {"time": 1744699980, "open": 18917.25, "high": 18919.25, "low": 18911.25, "close": 18915.75, "volume": 291}, {"time": 1744700040, "open": 18915.75, "high": 18916.5, "low": 18912.0, "close": 18913.75, "volume": 148}, {"time": 1744700100, "open": 18914.0, "high": 18914.0, "low": 18908.75, "close": 18909.5, "volume": 263}, {"time": 1744700160, "open": 18909.5, "high": 18914.75, "low": 18908.5, "close": 18911.25, "volume": 176}, {"time": 1744700220, "open": 18912.5, "high": 18915.5, "low": 18911.0, "close": 18914.25, "volume": 92}, {"time": 1744700280, "open": 18914.0, "high": 18918.0, "low": 18911.75, "close": 18916.5, "volume": 222}, {"time": 1744700340, "open": 18916.5, "high": 18922.0, "low": 18915.5, "close": 18920.5, "volume": 322}, {"time": 1744700400, "open": 18921.5, "high": 18934.75, "low": 18917.5, "close": 18933.5, "volume": 1213}, {"time": 1744700460, "open": 18933.0, "high": 18935.75, "low": 18924.5, "close": 18934.75, "volume": 720}, {"time": 1744700520, "open": 18934.5, "high": 18943.5, "low": 18934.0, "close": 18940.0, "volume": 874}, {"time": 1744700580, "open": 18939.75, "high": 18944.25, "low": 18933.5, "close": 18944.25, "volume": 728}, {"time": 1744700640, "open": 18942.75, "high": 18983.0, "low": 18941.25, "close": 18982.0, "volume": 2823}, {"time": 1744700700, "open": 18981.5, "high": 19005.0, "low": 18981.5, "close": 19001.25, "volume": 2488}, {"time": 1744700760, "open": 19001.5, "high": 19015.0, "low": 18988.75, "close": 18990.25, "volume": 2074}, {"time": 1744700820, "open": 18990.25, "high": 19000.0, "low": 18989.5, "close": 18999.75, "volume": 760}, {"time": 1744700880, "open": 18999.5, "high": 19002.25, "low": 18986.75, "close": 18987.5, "volume": 674}, {"time": 1744700940, "open": 18987.5, "high": 18997.25, "low": 18986.75, "close": 18988.0, "volume": 610}, {"time": 1744701000, "open": 18987.75, "high": 18991.5, "low": 18981.25, "close": 18987.25, "volume": 717}, {"time": 1744701060, "open": 18987.5, "high": 19003.0, "low": 18981.25, "close": 18996.75, "volume": 966}, {"time": 1744701120, "open": 18997.0, "high": 18999.25, "low": 18986.25, "close": 18989.0, "volume": 553}, {"time": 1744701180, "open": 18989.0, "high": 18995.25, "low": 18982.75, "close": 18993.0, "volume": 549}, {"time": 1744701240, "open": 18993.0, "high": 18993.5, "low": 18986.75, "close": 18993.25, "volume": 271}, {"time": 1744701300, "open": 18992.0, "high": 19017.25, "low": 18992.0, "close": 19007.25, "volume": 1469}, {"time": 1744701360, "open": 19006.75, "high": 19014.5, "low": 18998.5, "close": 19003.0, "volume": 766}, {"time": 1744701420, "open": 19003.25, "high": 19007.25, "low": 18992.0, "close": 19001.0, "volume": 786}, {"time": 1744701480, "open": 19000.75, "high": 19006.0, "low": 18998.25, "close": 19003.25, "volume": 415}, {"time": 1744701540, "open": 19004.5, "high": 19016.5, "low": 18999.25, "close": 19014.25, "volume": 687}, {"time": 1744701600, "open": 19014.25, "high": 19029.0, "low": 19012.0, "close": 19019.75, "volume": 1449}, {"time": 1744701660, "open": 19020.0, "high": 19020.5, "low": 19008.5, "close": 19014.75, "volume": 646}, {"time": 1744701720, "open": 19014.25, "high": 19017.25, "low": 19005.0, "close": 19012.0, "volume": 635}, {"time": 1744701780, "open": 19011.5, "high": 19013.25, "low": 18992.0, "close": 18998.25, "volume": 1104}, {"time": 1744701840, "open": 18998.5, "high": 19000.5, "low": 18994.75, "close": 18997.5, "volume": 380}, {"time": 1744701900, "open": 18997.75, "high": 19004.0, "low": 18997.25, "close": 19003.0, "volume": 530}, {"time": 1744701960, "open": 19002.75, "high": 19010.25, "low": 18996.25, "close": 18999.75, "volume": 520}, {"time": 1744702020, "open": 19000.5, "high": 19002.25, "low": 18997.0, "close": 19000.0, "volume": 326}, {"time": 1744702080, "open": 19000.75, "high": 19007.5, "low": 18994.5, "close": 18999.25, "volume": 557}, {"time": 1744702140, "open": 18999.25, "high": 19004.5, "low": 18999.0, "close": 19002.0, "volume": 244}, {"time": 1744702200, "open": 19003.0, "high": 19010.0, "low": 18999.0, "close": 19007.75, "volume": 469}, {"time": 1744702260, "open": 19007.75, "high": 19012.5, "low": 19002.25, "close": 19009.25, "volume": 386}, {"time": 1744702320, "open": 19009.25, "high": 19014.0, "low": 19004.75, "close": 19007.0, "volume": 424}, {"time": 1744702380, "open": 19007.75, "high": 19018.5, "low": 19006.75, "close": 19017.0, "volume": 479}, {"time": 1744702440, "open": 19016.5, "high": 19023.75, "low": 19012.5, "close": 19013.5, "volume": 714}, {"time": 1744702500, "open": 19013.0, "high": 19023.25, "low": 19010.0, "close": 19023.25, "volume": 485}, {"time": 1744702560, "open": 19023.0, "high": 19039.5, "low": 19022.75, "close": 19039.5, "volume": 1204}, {"time": 1744702620, "open": 19039.0, "high": 19040.5, "low": 19024.5, "close": 19024.75, "volume": 836}, {"time": 1744702680, "open": 19024.75, "high": 19029.25, "low": 19022.0, "close": 19027.25, "volume": 392}, {"time": 1744702740, "open": 19027.0, "high": 19031.5, "low": 19022.25, "close": 19028.0, "volume": 498}, {"time": 1744702800, "open": 19028.0, "high": 19028.25, "low": 19020.0, "close": 19025.25, "volume": 389}, {"time": 1744702860, "open": 19026.0, "high": 19027.0, "low": 19017.75, "close": 19020.5, "volume": 389}, {"time": 1744702920, "open": 19020.5, "high": 19031.0, "low": 19018.5, "close": 19026.0, "volume": 504}, {"time": 1744702980, "open": 19025.0, "high": 19031.0, "low": 19023.75, "close": 19029.5, "volume": 344}, {"time": 1744703040, "open": 19029.25, "high": 19034.25, "low": 19026.5, "close": 19028.0, "volume": 414}, {"time": 1744703100, "open": 19027.25, "high": 19028.75, "low": 19020.25, "close": 19020.75, "volume": 359}, {"time": 1744703160, "open": 19021.0, "high": 19028.0, "low": 19016.0, "close": 19025.5, "volume": 484}, {"time": 1744703220, "open": 19025.25, "high": 19029.5, "low": 19018.0, "close": 19022.25, "volume": 399}, {"time": 1744703280, "open": 19022.0, "high": 19025.25, "low": 19008.5, "close": 19010.25, "volume": 707}, {"time": 1744703340, "open": 19010.0, "high": 19015.75, "low": 19009.25, "close": 19010.25, "volume": 418}, {"time": 1744703400, "open": 19010.5, "high": 19014.25, "low": 19005.0, "close": 19005.25, "volume": 750}, {"time": 1744703460, "open": 19005.75, "high": 19006.75, "low": 18999.5, "close": 19003.25, "volume": 680}, {"time": 1744703520, "open": 19003.0, "high": 19009.0, "low": 19001.5, "close": 19004.75, "volume": 311}, {"time": 1744703580, "open": 19005.0, "high": 19010.25, "low": 19001.25, "close": 19003.5, "volume": 309}, {"time": 1744703640, "open": 19004.0, "high": 19008.0, "low": 19000.25, "close": 19001.5, "volume": 305}, {"time": 1744703700, "open": 19000.75, "high": 19007.25, "low": 18997.0, "close": 19002.5, "volume": 463}, {"time": 1744703760, "open": 19002.0, "high": 19012.75, "low": 19001.25, "close": 19012.5, "volume": 364}, {"time": 1744703820, "open": 19012.25, "high": 19012.5, "low": 19004.5, "close": 19012.0, "volume": 473}, {"time": 1744703880, "open": 19011.0, "high": 19013.0, "low": 19007.5, "close": 19009.5, "volume": 276}, {"time": 1744703940, "open": 19009.75, "high": 19010.75, "low": 19004.0, "close": 19010.5, "volume": 281}, {"time": 1744704000, "open": 19010.0, "high": 19017.75, "low": 18970.0, "close": 18992.75, "volume": 4989}, {"time": 1744704060, "open": 18991.75, "high": 18999.0, "low": 18973.25, "close": 18992.0, "volume": 1570}, {"time": 1744704120, "open": 18991.75, "high": 19005.25, "low": 18991.0, "close": 18998.5, "volume": 1067}, {"time": 1744704180, "open": 18999.0, "high": 19007.0, "low": 18990.25, "close": 18995.25, "volume": 808}, {"time": 1744704240, "open": 18995.5, "high": 18996.75, "low": 18964.25, "close": 18972.0, "volume": 1574}, {"time": 1744704300, "open": 18973.0, "high": 18992.25, "low": 18971.5, "close": 18991.25, "volume": 1347}, {"time": 1744704360, "open": 18990.75, "high": 19003.5, "low": 18990.25, "close": 19002.0, "volume": 1013}, {"time": 1744704420, "open": 19002.5, "high": 19005.25, "low": 18993.75, "close": 18996.5, "volume": 582}, {"time": 1744704480, "open": 18997.25, "high": 19004.5, "low": 18993.75, "close": 18996.75, "volume": 414}, {"time": 1744704540, "open": 18996.0, "high": 18999.0, "low": 18986.75, "close": 18986.75, "volume": 432}, {"time": 1744704600, "open": 18987.25, "high": 19004.5, "low": 18986.75, "close": 19004.5, "volume": 537}, {"time": 1744704660, "open": 19003.75, "high": 19009.75, "low": 19003.0, "close": 19005.5, "volume": 587}, {"time": 1744704720, "open": 19006.25, "high": 19012.0, "low": 19003.0, "close": 19003.0, "volume": 657}, {"time": 1744704780, "open": 19003.5, "high": 19008.25, "low": 19000.75, "close": 19002.0, "volume": 450}, {"time": 1744704840, "open": 19001.75, "high": 19006.75, "low": 18998.0, "close": 19002.75, "volume": 529}, {"time": 1744704900, "open": 19003.75, "high": 19007.5, "low": 18993.75, "close": 19000.25, "volume": 585}, {"time": 1744704960, "open": 19000.5, "high": 19010.75, "low": 19000.5, "close": 19006.5, "volume": 399}, {"time": 1744705020, "open": 19006.75, "high": 19015.0, "low": 19005.25, "close": 19010.75, "volume": 363}, {"time": 1744705080, "open": 19011.75, "high": 19015.5, "low": 19009.25, "close": 19009.25, "volume": 363}, {"time": 1744705140, "open": 19009.0, "high": 19010.5, "low": 19002.0, "close": 19002.25, "volume": 411}, {"time": 1744705200, "open": 19001.5, "high": 19011.0, "low": 18996.0, "close": 19004.75, "volume": 500}, {"time": 1744705260, "open": 19004.0, "high": 19011.0, "low": 19000.5, "close": 19010.75, "volume": 254}, {"time": 1744705320, "open": 19011.0, "high": 19020.75, "low": 19009.25, "close": 19019.75, "volume": 655}, {"time": 1744705380, "open": 19019.75, "high": 19019.75, "low": 19006.25, "close": 19007.5, "volume": 411}, {"time": 1744705440, "open": 19006.75, "high": 19012.75, "low": 19003.0, "close": 19003.0, "volume": 398}, {"time": 1744705500, "open": 19003.0, "high": 19004.25, "low": 18992.0, "close": 18992.25, "volume": 497}, {"time": 1744705560, "open": 18992.5, "high": 19006.75, "low": 18988.0, "close": 19002.5, "volume": 622}, {"time": 1744705620, "open": 19003.5, "high": 19009.75, "low": 19000.0, "close": 19003.5, "volume": 299}, {"time": 1744705680, "open": 19004.0, "high": 19007.25, "low": 18997.0, "close": 18999.0, "volume": 295}, {"time": 1744705740, "open": 18999.0, "high": 19000.75, "low": 18989.0, "close": 18992.75, "volume": 487}, {"time": 1744705800, "open": 18992.75, "high": 19008.5, "low": 18991.75, "close": 18998.0, "volume": 712}, {"time": 1744705860, "open": 18997.25, "high": 19000.75, "low": 18985.75, "close": 18987.75, "volume": 570}, {"time": 1744705920, "open": 18987.75, "high": 18989.75, "low": 18974.5, "close": 18977.5, "volume": 881}, {"time": 1744705980, "open": 18976.75, "high": 18980.25, "low": 18972.75, "close": 18976.25, "volume": 574}, {"time": 1744706040, "open": 18977.0, "high": 18979.25, "low": 18973.0, "close": 18976.0, "volume": 435}, {"time": 1744706100, "open": 18976.25, "high": 18976.75, "low": 18969.5, "close": 18971.75, "volume": 602}, {"time": 1744706160, "open": 18972.25, "high": 18975.5, "low": 18964.75, "close": 18966.75, "volume": 733}, {"time": 1744706220, "open": 18966.75, "high": 18980.75, "low": 18966.0, "close": 18977.5, "volume": 762}, {"time": 1744706280, "open": 18976.5, "high": 18983.5, "low": 18975.75, "close": 18982.75, "volume": 367}, {"time": 1744706340, "open": 18983.0, "high": 18989.25, "low": 18983.0, "close": 18987.5, "volume": 471}, {"time": 1744706400, "open": 18987.75, "high": 18991.75, "low": 18984.25, "close": 18991.0, "volume": 572}, {"time": 1744706460, "open": 18991.25, "high": 18993.5, "low": 18987.25, "close": 18988.25, "volume": 482}, {"time": 1744706520, "open": 18988.0, "high": 18995.75, "low": 18980.0, "close": 18990.25, "volume": 1030}, {"time": 1744706580, "open": 18990.0, "high": 18994.5, "low": 18986.25, "close": 18989.0, "volume": 479}, {"time": 1744706640, "open": 18989.0, "high": 18997.0, "low": 18989.0, "close": 18996.25, "volume": 269}, {"time": 1744706700, "open": 18996.0, "high": 19000.0, "low": 18990.5, "close": 18993.0, "volume": 370}, {"time": 1744706760, "open": 18993.0, "high": 18999.0, "low": 18990.0, "close": 18997.25, "volume": 320}, {"time": 1744706820, "open": 18997.0, "high": 18998.0, "low": 18992.0, "close": 18995.25, "volume": 204}, {"time": 1744706880, "open": 18995.75, "high": 18999.0, "low": 18986.75, "close": 18988.25, "volume": 286}, {"time": 1744706940, "open": 18987.5, "high": 18994.0, "low": 18986.0, "close": 18989.75, "volume": 288}, {"time": 1744707000, "open": 18990.75, "high": 18997.0, "low": 18986.0, "close": 18990.75, "volume": 379}, {"time": 1744707060, "open": 18990.25, "high": 18990.75, "low": 18984.0, "close": 18988.5, "volume": 300}, {"time": 1744707120, "open": 18988.5, "high": 18998.75, "low": 18986.5, "close": 18994.25, "volume": 405}, {"time": 1744707180, "open": 18995.75, "high": 18997.5, "low": 18986.0, "close": 18986.5, "volume": 404}, {"time": 1744707240, "open": 18986.0, "high": 18989.5, "low": 18979.0, "close": 18982.75, "volume": 406}, {"time": 1744707300, "open": 18982.75, "high": 18992.5, "low": 18980.75, "close": 18990.25, "volume": 554}, {"time": 1744707360, "open": 18990.75, "high": 18997.25, "low": 18990.5, "close": 18995.5, "volume": 566}, {"time": 1744707420, "open": 18995.5, "high": 18998.0, "low": 18992.25, "close": 18993.5, "volume": 683}, {"time": 1744707480, "open": 18994.25, "high": 18998.5, "low": 18989.75, "close": 18995.0, "volume": 453}, {"time": 1744707540, "open": 18994.5, "high": 19004.5, "low": 18994.5, "close": 19000.75, "volume": 593}, {"time": 1744707600, "open": 19000.0, "high": 19000.0, "low": 18982.25, "close": 18989.0, "volume": 636}, {"time": 1744707660, "open": 18988.75, "high": 18997.75, "low": 18986.75, "close": 18991.5, "volume": 307}, {"time": 1744707720, "open": 18990.75, "high": 18994.5, "low": 18987.0, "close": 18987.25, "volume": 350}, {"time": 1744707780, "open": 18986.75, "high": 18997.5, "low": 18983.0, "close": 18997.25, "volume": 359}, {"time": 1744707840, "open": 18995.5, "high": 18998.25, "low": 18992.5, "close": 18993.0, "volume": 252}, {"time": 1744707900, "open": 18993.75, "high": 18999.75, "low": 18993.25, "close": 18999.0, "volume": 228}, {"time": 1744707960, "open": 18998.25, "high": 18999.25, "low": 18988.25, "close": 18988.25, "volume": 384}, {"time": 1744708020, "open": 18988.5, "high": 18994.25, "low": 18987.0, "close": 18991.0, "volume": 200}, {"time": 1744708080, "open": 18990.75, "high": 18995.25, "low": 18987.75, "close": 18989.5, "volume": 199}, {"time": 1744708140, "open": 18989.25, "high": 18994.5, "low": 18987.0, "close": 18994.0, "volume": 225}, {"time": 1744708200, "open": 18992.75, "high": 18996.5, "low": 18990.75, "close": 18992.25, "volume": 181}, {"time": 1744708260, "open": 18991.5, "high": 18991.5, "low": 18979.25, "close": 18982.5, "volume": 428}, {"time": 1744708320, "open": 18981.75, "high": 18988.75, "low": 18981.75, "close": 18988.75, "volume": 263}, {"time": 1744708380, "open": 18989.0, "high": 18989.5, "low": 18978.0, "close": 18979.75, "volume": 394}, {"time": 1744708440, "open": 18979.75, "high": 18980.25, "low": 18975.0, "close": 18977.25, "volume": 272}, {"time": 1744708500, "open": 18977.5, "high": 18992.0, "low": 18975.75, "close": 18991.25, "volume": 459}, {"time": 1744708560, "open": 18991.5, "high": 18995.0, "low": 18980.5, "close": 18980.75, "volume": 368}, {"time": 1744708620, "open": 18980.75, "high": 18986.0, "low": 18973.75, "close": 18975.25, "volume": 493}, {"time": 1744708680, "open": 18975.0, "high": 18977.5, "low": 18968.75, "close": 18970.0, "volume": 545}, {"time": 1744708740, "open": 18969.0, "high": 18983.0, "low": 18968.0, "close": 18980.25, "volume": 434}, {"time": 1744708800, "open": 18981.0, "high": 18987.75, "low": 18979.5, "close": 18985.25, "volume": 389}, {"time": 1744708860, "open": 18985.75, "high": 18985.75, "low": 18980.25, "close": 18982.5, "volume": 243}, {"time": 1744708920, "open": 18982.75, "high": 18987.25, "low": 18981.25, "close": 18981.75, "volume": 157}, {"time": 1744708980, "open": 18981.25, "high": 19005.0, "low": 18981.0, "close": 18998.75, "volume": 966}, {"time": 1744709040, "open": 18998.5, "high": 19003.0, "low": 18996.5, "close": 19001.0, "volume": 534}, {"time": 1744709100, "open": 19000.75, "high": 19008.0, "low": 18998.0, "close": 19003.0, "volume": 395}, {"time": 1744709160, "open": 19004.75, "high": 19010.75, "low": 19002.5, "close": 19008.5, "volume": 624}, {"time": 1744709220, "open": 19008.5, "high": 19018.0, "low": 19008.0, "close": 19010.75, "volume": 849}, {"time": 1744709280, "open": 19011.75, "high": 19016.0, "low": 19009.0, "close": 19012.5, "volume": 321}, {"time": 1744709340, "open": 19013.25, "high": 19015.0, "low": 19010.25, "close": 19014.0, "volume": 212}, {"time": 1744709400, "open": 19013.5, "high": 19021.5, "low": 19011.0, "close": 19018.5, "volume": 681}, {"time": 1744709460, "open": 19017.75, "high": 19026.5, "low": 19017.25, "close": 19018.75, "volume": 610}, {"time": 1744709520, "open": 19018.5, "high": 19022.5, "low": 19014.25, "close": 19018.25, "volume": 386}, {"time": 1744709580, "open": 19018.5, "high": 19021.75, "low": 19016.5, "close": 19019.75, "volume": 247}, {"time": 1744709640, "open": 19019.25, "high": 19020.75, "low": 19017.0, "close": 19020.75, "volume": 166}, {"time": 1744709700, "open": 19019.25, "high": 19019.75, "low": 19014.25, "close": 19016.75, "volume": 251}, {"time": 1744709760, "open": 19016.25, "high": 19016.75, "low": 19005.5, "close": 19006.25, "volume": 526}, {"time": 1744709820, "open": 19005.25, "high": 19006.5, "low": 19000.25, "close": 19001.5, "volume": 656}, {"time": 1744709880, "open": 19002.0, "high": 19002.75, "low": 18994.5, "close": 18995.25, "volume": 420}, {"time": 1744709940, "open": 18995.25, "high": 18995.5, "low": 18988.75, "close": 18988.75, "volume": 506}, {"time": 1744710000, "open": 18989.25, "high": 18989.75, "low": 18984.0, "close": 18987.0, "volume": 479}, {"time": 1744710060, "open": 18987.0, "high": 18987.25, "low": 18975.25, "close": 18978.0, "volume": 719}, {"time": 1744710120, "open": 18978.0, "high": 18980.0, "low": 18974.75, "close": 18977.75, "volume": 414}, {"time": 1744710180, "open": 18977.5, "high": 18981.0, "low": 18974.5, "close": 18975.25, "volume": 349}, {"time": 1744710240, "open": 18976.0, "high": 18979.25, "low": 18967.75, "close": 18972.25, "volume": 858}, {"time": 1744710300, "open": 18973.0, "high": 18975.25, "low": 18968.5, "close": 18973.25, "volume": 454}, {"time": 1744710360, "open": 18972.0, "high": 18980.75, "low": 18971.75, "close": 18980.0, "volume": 475}, {"time": 1744710420, "open": 18980.0, "high": 18980.25, "low": 18972.25, "close": 18976.0, "volume": 406}, {"time": 1744710480, "open": 18976.0, "high": 18977.0, "low": 18972.75, "close": 18975.0, "volume": 210}, {"time": 1744710540, "open": 18975.5, "high": 18978.75, "low": 18972.75, "close": 18977.75, "volume": 256}, {"time": 1744710600, "open": 18977.0, "high": 18980.75, "low": 18973.5, "close": 18976.0, "volume": 328}, {"time": 1744710660, "open": 18976.25, "high": 18983.0, "low": 18975.25, "close": 18980.0, "volume": 416}, {"time": 1744710720, "open": 18982.5, "high": 18982.5, "low": 18961.0, "close": 18971.25, "volume": 1154}, {"time": 1744710780, "open": 18972.25, "high": 18975.0, "low": 18969.75, "close": 18971.25, "volume": 274}, {"time": 1744710840, "open": 18972.5, "high": 18976.25, "low": 18971.25, "close": 18972.25, "volume": 266}, {"time": 1744710900, "open": 18972.0, "high": 18980.75, "low": 18972.0, "close": 18979.0, "volume": 376}, {"time": 1744710960, "open": 18978.75, "high": 18982.75, "low": 18977.0, "close": 18978.5, "volume": 350}, {"time": 1744711020, "open": 18978.0, "high": 18984.75, "low": 18971.0, "close": 18982.25, "volume": 664}, {"time": 1744711080, "open": 18982.75, "high": 18983.0, "low": 18977.25, "close": 18980.25, "volume": 201}, {"time": 1744711140, "open": 18979.75, "high": 18981.75, "low": 18972.75, "close": 18980.0, "volume": 467}, {"time": 1744711200, "open": 18980.0, "high": 18988.75, "low": 18964.75, "close": 18987.75, "volume": 1258}, {"time": 1744711260, "open": 18988.5, "high": 18994.5, "low": 18986.25, "close": 18993.0, "volume": 622}, {"time": 1744711320, "open": 18993.0, "high": 18997.0, "low": 18991.0, "close": 18993.75, "volume": 536}, {"time": 1744711380, "open": 18994.0, "high": 18997.5, "low": 18987.75, "close": 18992.25, "volume": 559}, {"time": 1744711440, "open": 18991.75, "high": 18995.5, "low": 18989.75, "close": 18990.5, "volume": 181}, {"time": 1744711500, "open": 18991.0, "high": 18992.25, "low": 18978.5, "close": 18990.5, "volume": 557}, {"time": 1744711560, "open": 18990.5, "high": 18991.75, "low": 18985.25, "close": 18990.25, "volume": 256}, {"time": 1744711620, "open": 18990.25, "high": 18997.0, "low": 18987.5, "close": 18995.25, "volume": 315}, {"time": 1744711680, "open": 18995.75, "high": 19001.75, "low": 18994.25, "close": 19000.0, "volume": 474}, {"time": 1744711740, "open": 18999.75, "high": 19000.75, "low": 18996.75, "close": 18999.0, "volume": 326}, {"time": 1744711800, "open": 18998.5, "high": 19001.5, "low": 18992.75, "close": 18993.75, "volume": 311}, {"time": 1744711860, "open": 18994.0, "high": 19001.0, "low": 18991.0, "close": 18999.0, "volume": 248}, {"time": 1744711920, "open": 18999.0, "high": 19004.0, "low": 18993.0, "close": 18993.5, "volume": 459}, {"time": 1744711980, "open": 18994.25, "high": 18997.5, "low": 18993.0, "close": 18996.25, "volume": 184}, {"time": 1744712040, "open": 18995.75, "high": 18998.5, "low": 18994.5, "close": 18997.25, "volume": 106}, {"time": 1744712100, "open": 18997.25, "high": 18997.25, "low": 18988.0, "close": 18988.0, "volume": 435}, {"time": 1744712160, "open": 18988.0, "high": 18991.75, "low": 18986.5, "close": 18990.25, "volume": 334}, {"time": 1744712220, "open": 18990.75, "high": 18993.0, "low": 18987.5, "close": 18989.0, "volume": 236}, {"time": 1744712280, "open": 18989.75, "high": 18994.25, "low": 18987.75, "close": 18992.5, "volume": 184}, {"time": 1744712340, "open": 18993.5, "high": 18995.5, "low": 18989.25, "close": 18993.75, "volume": 211}, {"time": 1744712400, "open": 18994.25, "high": 19004.0, "low": 18993.5, "close": 19003.75, "volume": 475}, {"time": 1744712460, "open": 19003.0, "high": 19008.0, "low": 19000.5, "close": 19002.0, "volume": 614}, {"time": 1744712520, "open": 19001.5, "high": 19003.25, "low": 18991.25, "close": 18992.25, "volume": 314}, {"time": 1744712580, "open": 18992.5, "high": 18998.0, "low": 18990.25, "close": 18997.25, "volume": 432}, {"time": 1744712640, "open": 18998.0, "high": 19003.75, "low": 18997.5, "close": 18999.0, "volume": 529}, {"time": 1744712700, "open": 18999.0, "high": 19002.25, "low": 18997.75, "close": 19000.25, "volume": 163}, {"time": 1744712760, "open": 18999.75, "high": 19004.5, "low": 18997.75, "close": 19001.5, "volume": 266}, {"time": 1744712820, "open": 19000.75, "high": 19002.0, "low": 18997.5, "close": 19000.0, "volume": 228}, {"time": 1744712880, "open": 18999.0, "high": 19000.75, "low": 18997.5, "close": 18999.0, "volume": 132}, {"time": 1744712940, "open": 18999.25, "high": 19000.75, "low": 18995.5, "close": 18998.0, "volume": 250}, {"time": 1744713000, "open": 18997.5, "high": 19005.0, "low": 18992.25, "close": 18993.0, "volume": 498}, {"time": 1744713060, "open": 18993.0, "high": 19006.75, "low": 18992.25, "close": 19005.75, "volume": 442}, {"time": 1744713120, "open": 19006.0, "high": 19006.75, "low": 18992.0, "close": 18996.5, "volume": 287}, {"time": 1744713180, "open": 18996.5, "high": 18998.5, "low": 18986.75, "close": 18987.0, "volume": 356}, {"time": 1744713240, "open": 18988.25, "high": 18995.75, "low": 18986.75, "close": 18991.75, "volume": 321}, {"time": 1744713300, "open": 18992.25, "high": 18999.0, "low": 18990.75, "close": 18991.25, "volume": 237}, {"time": 1744713360, "open": 18992.25, "high": 18994.25, "low": 18985.25, "close": 18994.0, "volume": 365}, {"time": 1744713420, "open": 18994.25, "high": 18997.0, "low": 18991.0, "close": 18993.5, "volume": 223}, {"time": 1744713480, "open": 18993.25, "high": 18996.5, "low": 18987.75, "close": 18988.25, "volume": 167}, {"time": 1744713540, "open": 18987.75, "high": 18991.5, "low": 18987.5, "close": 18989.25, "volume": 129}, {"time": 1744713600, "open": 18990.25, "high": 18994.5, "low": 18988.5, "close": 18988.5, "volume": 148}, {"time": 1744713660, "open": 18988.75, "high": 18990.0, "low": 18969.75, "close": 18975.0, "volume": 981}, {"time": 1744713720, "open": 18975.0, "high": 18975.0, "low": 18969.5, "close": 18970.25, "volume": 429}, {"time": 1744713780, "open": 18969.75, "high": 18973.5, "low": 18969.25, "close": 18970.75, "volume": 265}, {"time": 1744713840, "open": 18971.0, "high": 18974.0, "low": 18968.75, "close": 18970.0, "volume": 295}, {"time": 1744713900, "open": 18969.25, "high": 18977.25, "low": 18966.0, "close": 18974.0, "volume": 612}, {"time": 1744713960, "open": 18974.0, "high": 18978.0, "low": 18969.25, "close": 18969.25, "volume": 345}, {"time": 1744714020, "open": 18970.25, "high": 18970.75, "low": 18950.25, "close": 18953.0, "volume": 1282}, {"time": 1744714080, "open": 18952.75, "high": 18963.0, "low": 18948.5, "close": 18963.0, "volume": 714}, {"time": 1744714140, "open": 18963.25, "high": 18968.0, "low": 18961.25, "close": 18961.5, "volume": 478}, {"time": 1744714200, "open": 18962.25, "high": 18964.75, "low": 18954.0, "close": 18962.25, "volume": 496}, {"time": 1744714260, "open": 18961.5, "high": 18972.25, "low": 18958.0, "close": 18972.0, "volume": 617}, {"time": 1744714320, "open": 18970.25, "high": 18975.75, "low": 18970.0, "close": 18975.75, "volume": 447}, {"time": 1744714380, "open": 18975.5, "high": 18978.0, "low": 18972.5, "close": 18973.25, "volume": 460}, {"time": 1744714440, "open": 18973.75, "high": 18975.25, "low": 18969.75, "close": 18971.75, "volume": 305}, {"time": 1744714500, "open": 18972.25, "high": 18975.25, "low": 18970.25, "close": 18970.75, "volume": 216}, {"time": 1744714560, "open": 18970.75, "high": 18974.5, "low": 18970.0, "close": 18972.75, "volume": 146}, {"time": 1744714620, "open": 18973.0, "high": 18976.0, "low": 18968.5, "close": 18974.5, "volume": 284}, {"time": 1744714680, "open": 18975.0, "high": 18976.0, "low": 18965.5, "close": 18973.25, "volume": 404}, {"time": 1744714740, "open": 18972.5, "high": 18984.75, "low": 18971.25, "close": 18983.25, "volume": 757}, {"time": 1744714800, "open": 18983.75, "high": 18993.75, "low": 18979.75, "close": 18985.25, "volume": 1102}, {"time": 1744714860, "open": 18985.0, "high": 18987.25, "low": 18973.75, "close": 18979.0, "volume": 866}, {"time": 1744714920, "open": 18979.25, "high": 18980.75, "low": 18968.0, "close": 18973.0, "volume": 686}, {"time": 1744714980, "open": 18973.25, "high": 18982.5, "low": 18969.5, "close": 18981.75, "volume": 452}, {"time": 1744715040, "open": 18981.5, "high": 18987.0, "low": 18979.0, "close": 18982.5, "volume": 390}, {"time": 1744715100, "open": 18981.75, "high": 18984.0, "low": 18979.25, "close": 18980.0, "volume": 178}, {"time": 1744715160, "open": 18979.5, "high": 18979.5, "low": 18964.25, "close": 18974.0, "volume": 688}, {"time": 1744715220, "open": 18973.75, "high": 18976.5, "low": 18971.75, "close": 18972.25, "volume": 168}, {"time": 1744715280, "open": 18972.25, "high": 18976.25, "low": 18970.25, "close": 18975.25, "volume": 167}, {"time": 1744715340, "open": 18975.0, "high": 18984.0, "low": 18972.0, "close": 18979.5, "volume": 668}, {"time": 1744715400, "open": 18979.5, "high": 18979.5, "low": 18972.5, "close": 18973.5, "volume": 289}, {"time": 1744715460, "open": 18974.25, "high": 18976.0, "low": 18966.75, "close": 18976.0, "volume": 340}, {"time": 1744715520, "open": 18975.75, "high": 18976.0, "low": 18963.5, "close": 18964.5, "volume": 343}, {"time": 1744715580, "open": 18965.0, "high": 18965.75, "low": 18955.0, "close": 18959.0, "volume": 654}, {"time": 1744715640, "open": 18959.25, "high": 18964.0, "low": 18955.0, "close": 18955.5, "volume": 366}, {"time": 1744715700, "open": 18956.5, "high": 18961.75, "low": 18955.5, "close": 18961.0, "volume": 354}, {"time": 1744715760, "open": 18960.75, "high": 18965.25, "low": 18958.5, "close": 18963.25, "volume": 303}, {"time": 1744715820, "open": 18962.75, "high": 18965.25, "low": 18957.0, "close": 18961.5, "volume": 342}, {"time": 1744715880, "open": 18961.0, "high": 18965.25, "low": 18959.75, "close": 18962.5, "volume": 261}, {"time": 1744715940, "open": 18962.25, "high": 18963.5, "low": 18957.5, "close": 18959.5, "volume": 295}, {"time": 1744716000, "open": 18958.75, "high": 18965.25, "low": 18956.75, "close": 18958.75, "volume": 316}, {"time": 1744716060, "open": 18959.0, "high": 18963.0, "low": 18955.5, "close": 18959.25, "volume": 323}, {"time": 1744716120, "open": 18959.25, "high": 18960.25, "low": 18955.0, "close": 18957.5, "volume": 333}, {"time": 1744716180, "open": 18957.5, "high": 18960.0, "low": 18955.75, "close": 18958.0, "volume": 166}, {"time": 1744716240, "open": 18957.25, "high": 18966.0, "low": 18956.75, "close": 18963.75, "volume": 396}, {"time": 1744716300, "open": 18963.75, "high": 18974.0, "low": 18960.75, "close": 18971.5, "volume": 702}, {"time": 1744716360, "open": 18971.25, "high": 18974.75, "low": 18968.0, "close": 18971.25, "volume": 462}, {"time": 1744716420, "open": 18971.5, "high": 18979.75, "low": 18965.0, "close": 18976.0, "volume": 720}, {"time": 1744716480, "open": 18976.75, "high": 18981.25, "low": 18975.75, "close": 18977.75, "volume": 434}, {"time": 1744716540, "open": 18977.0, "high": 18978.0, "low": 18967.75, "close": 18969.75, "volume": 452}, {"time": 1744716600, "open": 18971.0, "high": 18981.25, "low": 18965.25, "close": 18979.5, "volume": 600}, {"time": 1744716660, "open": 18978.75, "high": 18984.0, "low": 18978.25, "close": 18982.75, "volume": 497}, {"time": 1744716720, "open": 18982.0, "high": 18986.0, "low": 18979.0, "close": 18983.75, "volume": 394}, {"time": 1744716780, "open": 18983.25, "high": 18983.25, "low": 18969.25, "close": 18973.0, "volume": 555}, {"time": 1744716840, "open": 18971.75, "high": 18971.75, "low": 18960.0, "close": 18961.5, "volume": 580}, {"time": 1744716900, "open": 18961.5, "high": 18961.5, "low": 18946.0, "close": 18947.75, "volume": 1029}, {"time": 1744716960, "open": 18946.75, "high": 18957.0, "low": 18932.0, "close": 18952.75, "volume": 2055}, {"time": 1744717020, "open": 18953.0, "high": 18958.0, "low": 18945.5, "close": 18949.25, "volume": 1074}, {"time": 1744717080, "open": 18948.25, "high": 18952.5, "low": 18946.5, "close": 18949.25, "volume": 458}, {"time": 1744717140, "open": 18949.0, "high": 18953.25, "low": 18938.5, "close": 18947.5, "volume": 881}, {"time": 1744717200, "open": 18947.5, "high": 18956.5, "low": 18947.5, "close": 18955.75, "volume": 510}, {"time": 1744717260, "open": 18955.75, "high": 18956.25, "low": 18946.5, "close": 18952.75, "volume": 368}, {"time": 1744717320, "open": 18953.25, "high": 18957.5, "low": 18935.25, "close": 18935.25, "volume": 750}, {"time": 1744717380, "open": 18935.25, "high": 18939.75, "low": 18927.5, "close": 18929.5, "volume": 1302}, {"time": 1744717440, "open": 18930.0, "high": 18932.25, "low": 18923.25, "close": 18925.25, "volume": 823}, {"time": 1744717500, "open": 18926.0, "high": 18931.25, "low": 18918.25, "close": 18920.75, "volume": 1275}, {"time": 1744717560, "open": 18920.75, "high": 18920.75, "low": 18898.5, "close": 18910.5, "volume": 2487}, {"time": 1744717620, "open": 18910.5, "high": 18914.5, "low": 18897.75, "close": 18898.75, "volume": 1040}, {"time": 1744717680, "open": 18898.75, "high": 18907.75, "low": 18894.25, "close": 18907.75, "volume": 879}, {"time": 1744717740, "open": 18906.5, "high": 18906.75, "low": 18887.0, "close": 18891.5, "volume": 1549}, {"time": 1744717800, "open": 18892.0, "high": 18898.25, "low": 18879.75, "close": 18883.75, "volume": 1556}, {"time": 1744717860, "open": 18883.5, "high": 18889.5, "low": 18870.0, "close": 18876.5, "volume": 1954}, {"time": 1744717920, "open": 18875.5, "high": 18892.25, "low": 18875.5, "close": 18887.25, "volume": 1295}, {"time": 1744717980, "open": 18888.0, "high": 18893.5, "low": 18884.5, "close": 18892.5, "volume": 901}, {"time": 1744718040, "open": 18893.25, "high": 18902.5, "low": 18893.0, "close": 18901.5, "volume": 1349}, {"time": 1744718100, "open": 18901.75, "high": 18904.0, "low": 18893.75, "close": 18898.25, "volume": 873}, {"time": 1744718160, "open": 18897.75, "high": 18906.25, "low": 18896.0, "close": 18898.75, "volume": 816}, {"time": 1744718220, "open": 18899.5, "high": 18912.0, "low": 18890.5, "close": 18891.5, "volume": 1809}, {"time": 1744718280, "open": 18892.0, "high": 18894.25, "low": 18881.75, "close": 18887.75, "volume": 1183}, {"time": 1744718340, "open": 18887.5, "high": 18889.75, "low": 18878.0, "close": 18888.0, "volume": 1026}, {"time": 1744718400, "open": 18888.5, "high": 18895.25, "low": 18882.25, "close": 18887.5, "volume": 1100}, {"time": 1744718460, "open": 18887.75, "high": 18897.75, "low": 18882.0, "close": 18897.75, "volume": 860}, {"time": 1744718520, "open": 18897.25, "high": 18906.5, "low": 18897.25, "close": 18902.0, "volume": 1100}, {"time": 1744718580, "open": 18902.75, "high": 18910.75, "low": 18900.75, "close": 18906.0, "volume": 746}, {"time": 1744718640, "open": 18906.25, "high": 18910.75, "low": 18902.0, "close": 18908.0, "volume": 747}, {"time": 1744718700, "open": 18907.0, "high": 18916.25, "low": 18903.5, "close": 18910.25, "volume": 1043}, {"time": 1744718760, "open": 18910.5, "high": 18912.5, "low": 18900.0, "close": 18910.25, "volume": 777}, {"time": 1744718820, "open": 18910.0, "high": 18919.75, "low": 18908.75, "close": 18914.75, "volume": 1021}, {"time": 1744718880, "open": 18914.0, "high": 18926.5, "low": 18914.0, "close": 18923.75, "volume": 982}, {"time": 1744718940, "open": 18924.0, "high": 18927.0, "low": 18917.5, "close": 18919.25, "volume": 701}, {"time": 1744719000, "open": 18920.25, "high": 18927.0, "low": 18914.5, "close": 18914.5, "volume": 882}, {"time": 1744719060, "open": 18915.25, "high": 18917.25, "low": 18905.75, "close": 18912.75, "volume": 1110}, {"time": 1744719120, "open": 18913.5, "high": 18923.75, "low": 18911.25, "close": 18918.75, "volume": 779}, {"time": 1744719180, "open": 18918.5, "high": 18922.5, "low": 18913.75, "close": 18917.0, "volume": 412}, {"time": 1744719240, "open": 18917.5, "high": 18919.5, "low": 18915.5, "close": 18916.25, "volume": 262}, {"time": 1744719300, "open": 18915.75, "high": 18916.25, "low": 18901.75, "close": 18907.0, "volume": 1215}, {"time": 1744719360, "open": 18906.0, "high": 18908.5, "low": 18895.5, "close": 18907.0, "volume": 1127}, {"time": 1744719420, "open": 18907.25, "high": 18913.25, "low": 18898.5, "close": 18900.25, "volume": 945}, {"time": 1744719480, "open": 18900.5, "high": 18902.0, "low": 18893.25, "close": 18896.0, "volume": 845}, {"time": 1744719540, "open": 18896.5, "high": 18904.75, "low": 18885.75, "close": 18887.5, "volume": 1181}, {"time": 1744719600, "open": 18888.0, "high": 18895.75, "low": 18874.75, "close": 18876.25, "volume": 1719}, {"time": 1744719660, "open": 18875.5, "high": 18878.75, "low": 18854.0, "close": 18863.5, "volume": 2306}, {"time": 1744719720, "open": 18862.25, "high": 18872.5, "low": 18858.25, "close": 18866.25, "volume": 878}, {"time": 1744719780, "open": 18866.25, "high": 18874.5, "low": 18862.0, "close": 18867.5, "volume": 951}, {"time": 1744719840, "open": 18867.25, "high": 18875.25, "low": 18864.25, "close": 18864.25, "volume": 891}, {"time": 1744719900, "open": 18865.0, "high": 18872.75, "low": 18861.0, "close": 18872.75, "volume": 632}, {"time": 1744719960, "open": 18872.25, "high": 18872.25, "low": 18852.5, "close": 18856.0, "volume": 953}, {"time": 1744720020, "open": 18855.0, "high": 18863.25, "low": 18840.25, "close": 18844.0, "volume": 1705}, {"time": 1744720080, "open": 18844.25, "high": 18850.75, "low": 18835.25, "close": 18844.25, "volume": 1300}, {"time": 1744720140, "open": 18844.25, "high": 18865.5, "low": 18841.25, "close": 18857.75, "volume": 1127}, {"time": 1744720200, "open": 18855.5, "high": 18872.0, "low": 18855.25, "close": 18867.5, "volume": 1407}, {"time": 1744720260, "open": 18867.75, "high": 18874.0, "low": 18862.25, "close": 18870.75, "volume": 1075}, {"time": 1744720320, "open": 18871.0, "high": 18878.0, "low": 18867.0, "close": 18872.5, "volume": 893}, {"time": 1744720380, "open": 18872.5, "high": 18880.0, "low": 18871.5, "close": 18873.25, "volume": 760}, {"time": 1744720440, "open": 18873.0, "high": 18878.0, "low": 18871.25, "close": 18873.5, "volume": 638}, {"time": 1744720500, "open": 18874.25, "high": 18883.0, "low": 18867.75, "close": 18872.25, "volume": 1041}, {"time": 1744720560, "open": 18872.25, "high": 18881.75, "low": 18872.0, "close": 18879.5, "volume": 529}, {"time": 1744720620, "open": 18880.75, "high": 18897.5, "low": 18879.5, "close": 18890.0, "volume": 1541}, {"time": 1744720680, "open": 18890.5, "high": 18898.5, "low": 18885.75, "close": 18890.5, "volume": 1197}, {"time": 1744720740, "open": 18891.0, "high": 18902.25, "low": 18890.5, "close": 18896.0, "volume": 840}, {"time": 1744720800, "open": 18896.25, "high": 18902.75, "low": 18892.75, "close": 18894.0, "volume": 706}, {"time": 1744720860, "open": 18894.75, "high": 18905.5, "low": 18894.25, "close": 18901.5, "volume": 731}, {"time": 1744720920, "open": 18900.25, "high": 18902.25, "low": 18896.0, "close": 18897.75, "volume": 534}, {"time": 1744720980, "open": 18898.25, "high": 18918.0, "low": 18898.0, "close": 18916.25, "volume": 1433}, {"time": 1744721040, "open": 18916.0, "high": 18923.25, "low": 18914.75, "close": 18920.5, "volume": 1503}, {"time": 1744721100, "open": 18920.0, "high": 18920.5, "low": 18904.0, "close": 18909.0, "volume": 1328}, {"time": 1744721160, "open": 18909.0, "high": 18911.25, "low": 18900.5, "close": 18902.5, "volume": 845}, {"time": 1744721220, "open": 18902.75, "high": 18905.0, "low": 18895.0, "close": 18902.5, "volume": 1187}, {"time": 1744721280, "open": 18902.75, "high": 18925.0, "low": 18902.5, "close": 18915.25, "volume": 1548}, {"time": 1744721340, "open": 18916.25, "high": 18916.25, "low": 18902.75, "close": 18907.25, "volume": 733}, {"time": 1744721400, "open": 18906.5, "high": 18907.75, "low": 18900.0, "close": 18905.0, "volume": 634}, {"time": 1744721460, "open": 18905.0, "high": 18913.25, "low": 18904.0, "close": 18911.0, "volume": 557}, {"time": 1744721520, "open": 18910.25, "high": 18915.0, "low": 18905.75, "close": 18914.0, "volume": 498}, {"time": 1744721580, "open": 18914.25, "high": 18925.5, "low": 18913.0, "close": 18924.25, "volume": 729}, {"time": 1744721640, "open": 18924.25, "high": 18929.25, "low": 18915.0, "close": 18926.5, "volume": 1210}, {"time": 1744721700, "open": 18925.75, "high": 18930.75, "low": 18923.5, "close": 18925.5, "volume": 823}, {"time": 1744721760, "open": 18925.25, "high": 18935.0, "low": 18924.0, "close": 18928.75, "volume": 914}, {"time": 1744721820, "open": 18928.75, "high": 18936.5, "low": 18925.5, "close": 18934.75, "volume": 736}, {"time": 1744721880, "open": 18935.0, "high": 18943.75, "low": 18934.0, "close": 18934.5, "volume": 1225}, {"time": 1744721940, "open": 18935.0, "high": 18937.0, "low": 18933.25, "close": 18936.0, "volume": 440}, {"time": 1744722000, "open": 18936.0, "high": 18948.25, "low": 18936.0, "close": 18946.25, "volume": 1646}, {"time": 1744722060, "open": 18947.25, "high": 18953.5, "low": 18940.75, "close": 18949.0, "volume": 1400}, {"time": 1744722120, "open": 18949.25, "high": 18953.5, "low": 18947.0, "close": 18953.25, "volume": 958}, {"time": 1744722180, "open": 18951.75, "high": 18955.5, "low": 18947.5, "close": 18953.25, "volume": 912}, {"time": 1744722240, "open": 18953.0, "high": 18954.75, "low": 18950.5, "close": 18951.0, "volume": 614}, {"time": 1744722300, "open": 18950.75, "high": 18953.25, "low": 18947.0, "close": 18950.75, "volume": 759}, {"time": 1744722360, "open": 18951.25, "high": 18962.0, "low": 18945.0, "close": 18959.25, "volume": 1262}, {"time": 1744722420, "open": 18958.75, "high": 18962.75, "low": 18951.5, "close": 18955.75, "volume": 959}, {"time": 1744722480, "open": 18955.25, "high": 18963.0, "low": 18954.25, "close": 18954.5, "volume": 795}, {"time": 1744722540, "open": 18954.75, "high": 18956.0, "low": 18948.75, "close": 18950.5, "volume": 808}, {"time": 1744722600, "open": 18951.0, "high": 18961.25, "low": 18951.0, "close": 18959.75, "volume": 782}, {"time": 1744722660, "open": 18960.25, "high": 18961.0, "low": 18955.5, "close": 18957.5, "volume": 521}, {"time": 1744722720, "open": 18957.5, "high": 18972.5, "low": 18957.5, "close": 18959.75, "volume": 2060}, {"time": 1744722780, "open": 18960.5, "high": 18966.0, "low": 18953.5, "close": 18962.0, "volume": 815}, {"time": 1744722840, "open": 18962.5, "high": 18963.75, "low": 18954.25, "close": 18956.75, "volume": 670}, {"time": 1744722900, "open": 18957.5, "high": 18965.0, "low": 18955.5, "close": 18961.5, "volume": 840}, {"time": 1744722960, "open": 18961.25, "high": 18966.75, "low": 18959.0, "close": 18962.0, "volume": 746}, {"time": 1744723020, "open": 18961.5, "high": 18964.25, "low": 18957.0, "close": 18957.25, "volume": 730}, {"time": 1744723080, "open": 18957.0, "high": 18960.0, "low": 18952.0, "close": 18953.5, "volume": 880}, {"time": 1744723140, "open": 18954.0, "high": 18957.25, "low": 18949.75, "close": 18952.75, "volume": 1236}, {"time": 1744723200, "open": 18952.75, "high": 18961.25, "low": 18950.0, "close": 18950.75, "volume": 929}, {"time": 1744723260, "open": 18950.75, "high": 18959.0, "low": 18950.25, "close": 18957.25, "volume": 663}, {"time": 1744723320, "open": 18958.25, "high": 18962.25, "low": 18955.75, "close": 18957.0, "volume": 775}, {"time": 1744723380, "open": 18957.5, "high": 18959.75, "low": 18954.5, "close": 18957.25, "volume": 519}, {"time": 1744723440, "open": 18957.0, "high": 18958.5, "low": 18952.5, "close": 18956.25, "volume": 499}, {"time": 1744723500, "open": 18955.75, "high": 18959.0, "low": 18946.75, "close": 18957.5, "volume": 1617}, {"time": 1744723560, "open": 18957.25, "high": 18962.5, "low": 18954.5, "close": 18961.5, "volume": 922}, {"time": 1744723620, "open": 18962.0, "high": 18980.25, "low": 18959.0, "close": 18963.0, "volume": 2352}, {"time": 1744723680, "open": 18963.0, "high": 18983.0, "low": 18962.75, "close": 18973.75, "volume": 1958}, {"time": 1744723740, "open": 18974.5, "high": 18988.75, "low": 18972.25, "close": 18987.0, "volume": 2211}, {"time": 1744723800, "open": 18987.0, "high": 18992.0, "low": 18968.0, "close": 18984.5, "volume": 6073}, {"time": 1744723860, "open": 18984.25, "high": 19006.5, "low": 18976.0, "close": 18991.75, "volume": 7555}, {"time": 1744723920, "open": 18992.0, "high": 19028.75, "low": 18985.5, "close": 19014.75, "volume": 7491}, {"time": 1744723980, "open": 19014.5, "high": 19042.75, "low": 19002.75, "close": 19003.0, "volume": 8285}, {"time": 1744724040, "open": 19002.75, "high": 19024.0, "low": 18985.0, "close": 19014.25, "volume": 7713}, {"time": 1744724100, "open": 19013.5, "high": 19016.75, "low": 18972.25, "close": 18975.75, "volume": 7018}, {"time": 1744724160, "open": 18975.75, "high": 19019.0, "low": 18975.5, "close": 18986.0, "volume": 6906}, {"time": 1744724220, "open": 18986.0, "high": 19016.25, "low": 18978.0, "close": 19011.75, "volume": 4769}, {"time": 1744724280, "open": 19012.75, "high": 19038.75, "low": 19006.5, "close": 19037.25, "volume": 6220}, {"time": 1744724340, "open": 19037.5, "high": 19068.25, "low": 19035.5, "close": 19059.75, "volume": 9645}, {"time": 1744724400, "open": 19059.25, "high": 19073.25, "low": 19052.25, "close": 19061.25, "volume": 5871}, {"time": 1744724460, "open": 19060.75, "high": 19072.75, "low": 19042.75, "close": 19050.75, "volume": 6296}, {"time": 1744724520, "open": 19050.25, "high": 19085.25, "low": 19044.25, "close": 19080.5, "volume": 7168}, {"time": 1744724580, "open": 19080.5, "high": 19086.75, "low": 19061.75, "close": 19065.25, "volume": 5117}, {"time": 1744724640, "open": 19065.5, "high": 19072.75, "low": 19052.75, "close": 19070.25, "volume": 4270}, {"time": 1744724700, "open": 19070.25, "high": 19072.75, "low": 19037.75, "close": 19049.75, "volume": 6191}, {"time": 1744724760, "open": 19049.75, "high": 19076.5, "low": 19035.25, "close": 19067.75, "volume": 6104}, {"time": 1744724820, "open": 19067.75, "high": 19080.75, "low": 19067.75, "close": 19075.25, "volume": 3706}, {"time": 1744724880, "open": 19075.5, "high": 19100.0, "low": 19075.5, "close": 19098.75, "volume": 6562}, {"time": 1744724940, "open": 19098.5, "high": 19104.25, "low": 19085.75, "close": 19089.25, "volume": 5187}, {"time": 1744725000, "open": 19089.75, "high": 19093.75, "low": 19076.5, "close": 19086.5, "volume": 4549}, {"time": 1744725060, "open": 19086.75, "high": 19116.25, "low": 19079.5, "close": 19104.0, "volume": 6868}, {"time": 1744725120, "open": 19104.25, "high": 19117.75, "low": 19084.25, "close": 19096.75, "volume": 6483}, {"time": 1744725180, "open": 19097.0, "high": 19108.0, "low": 19091.25, "close": 19104.25, "volume": 3475}, {"time": 1744725240, "open": 19104.25, "high": 19111.0, "low": 19099.0, "close": 19104.0, "volume": 3263}, {"time": 1744725300, "open": 19104.5, "high": 19116.75, "low": 19090.5, "close": 19116.25, "volume": 4908}, {"time": 1744725360, "open": 19116.0, "high": 19116.25, "low": 19088.0, "close": 19097.5, "volume": 4512}, {"time": 1744725420, "open": 19097.75, "high": 19111.75, "low": 19081.25, "close": 19084.5, "volume": 5032}, {"time": 1744725480, "open": 19085.25, "high": 19092.25, "low": 19065.5, "close": 19090.75, "volume": 7562}, {"time": 1744725540, "open": 19091.0, "high": 19096.75, "low": 19066.75, "close": 19067.5, "volume": 5313}, {"time": 1744725600, "open": 19067.75, "high": 19088.0, "low": 19056.75, "close": 19076.0, "volume": 7768}, {"time": 1744725660, "open": 19076.75, "high": 19091.5, "low": 19066.5, "close": 19072.25, "volume": 5116}, {"time": 1744725720, "open": 19072.25, "high": 19086.5, "low": 19065.25, "close": 19077.75, "volume": 3484}, {"time": 1744725780, "open": 19078.75, "high": 19100.0, "low": 19076.25, "close": 19091.0, "volume": 5739}, {"time": 1744725840, "open": 19091.0, "high": 19095.75, "low": 19071.0, "close": 19076.75, "volume": 4105}, {"time": 1744725900, "open": 19077.5, "high": 19096.75, "low": 19062.75, "close": 19092.0, "volume": 5376}, {"time": 1744725960, "open": 19092.75, "high": 19105.5, "low": 19078.0, "close": 19101.5, "volume": 4572}, {"time": 1744726020, "open": 19102.25, "high": 19114.0, "low": 19094.5, "close": 19112.0, "volume": 5041}, {"time": 1744726080, "open": 19112.5, "high": 19113.75, "low": 19098.5, "close": 19111.5, "volume": 3278}, {"time": 1744726140, "open": 19110.5, "high": 19114.25, "low": 19081.25, "close": 19090.0, "volume": 4709}, {"time": 1744726200, "open": 19089.75, "high": 19111.0, "low": 19082.75, "close": 19106.75, "volume": 4646}, {"time": 1744726260, "open": 19107.25, "high": 19131.75, "low": 19101.75, "close": 19128.75, "volume": 6825}, {"time": 1744726320, "open": 19128.0, "high": 19138.0, "low": 19123.5, "close": 19133.5, "volume": 5788}, {"time": 1744726380, "open": 19133.0, "high": 19144.75, "low": 19115.75, "close": 19117.25, "volume": 6455}, {"time": 1744726440, "open": 19117.5, "high": 19120.75, "low": 19077.75, "close": 19086.5, "volume": 8266}, {"time": 1744726500, "open": 19086.25, "high": 19104.75, "low": 19080.25, "close": 19100.5, "volume": 4981}, {"time": 1744726560, "open": 19100.5, "high": 19113.75, "low": 19088.5, "close": 19090.0, "volume": 5036}, {"time": 1744726620, "open": 19089.5, "high": 19106.75, "low": 19040.75, "close": 19049.25, "volume": 11301}, {"time": 1744726680, "open": 19050.25, "high": 19064.5, "low": 19010.5, "close": 19012.0, "volume": 12073}, {"time": 1744726740, "open": 19012.25, "high": 19013.5, "low": 18960.25, "close": 18974.75, "volume": 14844}, {"time": 1744726800, "open": 18973.5, "high": 18979.75, "low": 18925.75, "close": 18975.0, "volume": 14015}, {"time": 1744726860, "open": 18974.25, "high": 19002.75, "low": 18958.25, "close": 19002.75, "volume": 9862}, {"time": 1744726920, "open": 19002.5, "high": 19033.5, "low": 18998.0, "close": 19019.0, "volume": 9757}, {"time": 1744726980, "open": 19018.5, "high": 19024.5, "low": 18979.75, "close": 18990.5, "volume": 7152}, {"time": 1744727040, "open": 18990.25, "high": 18995.5, "low": 18971.0, "close": 18972.25, "volume": 4861}, {"time": 1744727100, "open": 18972.5, "high": 18987.0, "low": 18950.5, "close": 18954.75, "volume": 6596}, {"time": 1744727160, "open": 18955.25, "high": 18967.0, "low": 18935.0, "close": 18938.75, "volume": 6745}, {"time": 1744727220, "open": 18939.0, "high": 18964.25, "low": 18934.25, "close": 18955.0, "volume": 5432}, {"time": 1744727280, "open": 18955.0, "high": 18990.75, "low": 18952.5, "close": 18984.25, "volume": 6441}, {"time": 1744727340, "open": 18983.75, "high": 18990.0, "low": 18964.75, "close": 18967.75, "volume": 4743}, {"time": 1744727400, "open": 18968.0, "high": 19006.75, "low": 18966.75, "close": 19003.5, "volume": 7070}, {"time": 1744727460, "open": 19003.75, "high": 19007.0, "low": 18987.25, "close": 18991.75, "volume": 4250}, {"time": 1744727520, "open": 18992.5, "high": 19014.0, "low": 18987.5, "close": 19013.25, "volume": 4903}, {"time": 1744727580, "open": 19012.25, "high": 19033.75, "low": 19010.5, "close": 19031.75, "volume": 5996}, {"time": 1744727640, "open": 19031.5, "high": 19040.25, "low": 19023.75, "close": 19034.0, "volume": 4782}, {"time": 1744727700, "open": 19034.25, "high": 19045.5, "low": 19011.0, "close": 19015.75, "volume": 6333}, {"time": 1744727760, "open": 19016.25, "high": 19042.25, "low": 19009.5, "close": 19029.5, "volume": 5093}, {"time": 1744727820, "open": 19029.0, "high": 19033.75, "low": 18999.5, "close": 19009.25, "volume": 5236}, {"time": 1744727880, "open": 19009.75, "high": 19017.5, "low": 18994.0, "close": 19004.25, "volume": 4291}, {"time": 1744727940, "open": 19005.5, "high": 19007.5, "low": 18988.0, "close": 18997.75, "volume": 4621}, {"time": 1744728000, "open": 18997.0, "high": 19004.75, "low": 18979.0, "close": 19002.75, "volume": 5233}, {"time": 1744728060, "open": 19003.0, "high": 19021.0, "low": 18988.5, "close": 19020.75, "volume": 4774}, {"time": 1744728120, "open": 19020.25, "high": 19041.25, "low": 19019.25, "close": 19032.75, "volume": 5394}, {"time": 1744728180, "open": 19031.75, "high": 19072.5, "low": 19030.0, "close": 19070.0, "volume": 6690}, {"time": 1744728240, "open": 19070.0, "high": 19077.75, "low": 19063.0, "close": 19070.0, "volume": 5212}, {"time": 1744728300, "open": 19069.5, "high": 19073.0, "low": 19049.0, "close": 19066.75, "volume": 5259}, {"time": 1744728360, "open": 19067.0, "high": 19068.75, "low": 18970.0, "close": 19036.5, "volume": 12042}, {"time": 1744728420, "open": 19037.75, "high": 19056.25, "low": 19013.0, "close": 19027.75, "volume": 7150}, {"time": 1744728480, "open": 19027.25, "high": 19028.0, "low": 19001.5, "close": 19011.75, "volume": 5108}, {"time": 1744728540, "open": 19012.0, "high": 19039.5, "low": 19003.75, "close": 19028.5, "volume": 4455}, {"time": 1744728600, "open": 19028.0, "high": 19034.75, "low": 18992.25, "close": 18995.0, "volume": 5574}, {"time": 1744728660, "open": 18995.25, "high": 19031.25, "low": 18990.25, "close": 19024.0, "volume": 5157}, {"time": 1744728720, "open": 19024.0, "high": 19037.75, "low": 19009.75, "close": 19011.25, "volume": 4258}, {"time": 1744728780, "open": 19011.5, "high": 19044.0, "low": 19008.5, "close": 19024.5, "volume": 4822}, {"time": 1744728840, "open": 19024.5, "high": 19042.0, "low": 19022.0, "close": 19034.75, "volume": 3476}, {"time": 1744728900, "open": 19034.75, "high": 19048.75, "low": 19022.0, "close": 19046.0, "volume": 4473}, {"time": 1744728960, "open": 19045.25, "high": 19058.0, "low": 19040.75, "close": 19049.25, "volume": 4304}, {"time": 1744729020, "open": 19049.5, "high": 19062.0, "low": 19039.75, "close": 19053.5, "volume": 3537}, {"time": 1744729080, "open": 19053.25, "high": 19055.75, "low": 19023.25, "close": 19037.75, "volume": 4283}, {"time": 1744729140, "open": 19038.5, "high": 19048.0, "low": 19015.0, "close": 19018.25, "volume": 3745}, {"time": 1744729200, "open": 19019.0, "high": 19048.25, "low": 19009.0, "close": 19045.75, "volume": 4437}, {"time": 1744729260, "open": 19046.25, "high": 19055.0, "low": 19041.0, "close": 19047.5, "volume": 2840}, {"time": 1744729320, "open": 19047.0, "high": 19054.75, "low": 19031.5, "close": 19048.0, "volume": 2799}, {"time": 1744729380, "open": 19047.5, "high": 19050.5, "low": 19027.25, "close": 19040.25, "volume": 2503}, {"time": 1744729440, "open": 19039.75, "high": 19054.25, "low": 19033.5, "close": 19049.75, "volume": 1849}, {"time": 1744729500, "open": 19049.75, "high": 19059.75, "low": 19035.5, "close": 19051.25, "volume": 3095}, {"time": 1744729560, "open": 19051.25, "high": 19056.75, "low": 19023.25, "close": 19025.75, "volume": 3205}, {"time": 1744729620, "open": 19026.25, "high": 19028.75, "low": 19010.25, "close": 19025.25, "volume": 3788}, {"time": 1744729680, "open": 19024.0, "high": 19035.5, "low": 19016.0, "close": 19022.25, "volume": 2405}, {"time": 1744729740, "open": 19022.5, "high": 19033.5, "low": 19014.75, "close": 19030.75, "volume": 2172}, {"time": 1744729800, "open": 19031.0, "high": 19043.5, "low": 19011.5, "close": 19042.25, "volume": 4001}, {"time": 1744729860, "open": 19042.5, "high": 19051.0, "low": 19013.25, "close": 19016.5, "volume": 4083}, {"time": 1744729920, "open": 19016.0, "high": 19057.0, "low": 19013.0, "close": 19054.5, "volume": 4351}, {"time": 1744729980, "open": 19054.75, "high": 19058.0, "low": 19037.75, "close": 19040.5, "volume": 2804}, {"time": 1744730040, "open": 19040.0, "high": 19064.75, "low": 19040.0, "close": 19059.0, "volume": 3275}, {"time": 1744730100, "open": 19059.75, "high": 19067.0, "low": 19052.75, "close": 19059.25, "volume": 2588}, {"time": 1744730160, "open": 19059.75, "high": 19070.25, "low": 19059.25, "close": 19063.5, "volume": 3166}, {"time": 1744730220, "open": 19063.25, "high": 19070.5, "low": 19053.5, "close": 19069.0, "volume": 3226}, {"time": 1744730280, "open": 19069.0, "high": 19077.5, "low": 19064.5, "close": 19065.5, "volume": 3062}, {"time": 1744730340, "open": 19065.5, "high": 19071.5, "low": 19060.5, "close": 19068.25, "volume": 2167}, {"time": 1744730400, "open": 19069.0, "high": 19086.0, "low": 19068.25, "close": 19081.75, "volume": 4806}, {"time": 1744730460, "open": 19082.75, "high": 19085.0, "low": 19065.25, "close": 19077.25, "volume": 3382}, {"time": 1744730520, "open": 19078.0, "high": 19089.25, "low": 19073.75, "close": 19074.75, "volume": 2789}, {"time": 1744730580, "open": 19075.5, "high": 19082.75, "low": 19059.5, "close": 19065.75, "volume": 3314}, {"time": 1744730640, "open": 19065.25, "high": 19078.25, "low": 19064.75, "close": 19071.75, "volume": 2307}, {"time": 1744730700, "open": 19072.0, "high": 19073.25, "low": 19034.75, "close": 19036.25, "volume": 5386}, {"time": 1744730760, "open": 19036.25, "high": 19037.25, "low": 19020.75, "close": 19030.25, "volume": 4653}, {"time": 1744730820, "open": 19030.75, "high": 19037.25, "low": 19024.75, "close": 19029.75, "volume": 2816}, {"time": 1744730880, "open": 19030.25, "high": 19031.0, "low": 19016.5, "close": 19019.75, "volume": 3375}, {"time": 1744730940, "open": 19020.0, "high": 19026.25, "low": 19007.5, "close": 19012.25, "volume": 4259}, {"time": 1744731000, "open": 19012.25, "high": 19033.5, "low": 19003.0, "close": 19029.0, "volume": 5250}, {"time": 1744731060, "open": 19028.5, "high": 19062.5, "low": 19026.5, "close": 19060.25, "volume": 5332}, {"time": 1744731120, "open": 19060.25, "high": 19066.25, "low": 19045.0, "close": 19045.0, "volume": 3770}, {"time": 1744731180, "open": 19045.0, "high": 19047.75, "low": 19035.25, "close": 19040.0, "volume": 2625}, {"time": 1744731240, "open": 19040.0, "high": 19041.5, "low": 19022.0, "close": 19028.25, "volume": 3280}, {"time": 1744731300, "open": 19028.5, "high": 19040.0, "low": 19006.75, "close": 19034.25, "volume": 4969}, {"time": 1744731360, "open": 19035.0, "high": 19038.75, "low": 19002.25, "close": 19004.5, "volume": 3471}, {"time": 1744731420, "open": 19005.0, "high": 19009.5, "low": 18989.25, "close": 19006.75, "volume": 4892}, {"time": 1744731480, "open": 19006.5, "high": 19006.5, "low": 18990.0, "close": 18999.0, "volume": 2843}, {"time": 1744731540, "open": 18998.75, "high": 19021.5, "low": 18998.25, "close": 19019.25, "volume": 3047}, {"time": 1744731600, "open": 19019.0, "high": 19024.25, "low": 19007.25, "close": 19021.5, "volume": 3585}, {"time": 1744731660, "open": 19022.0, "high": 19029.25, "low": 19015.75, "close": 19023.0, "volume": 2617}, {"time": 1744731720, "open": 19023.0, "high": 19030.0, "low": 19014.25, "close": 19017.5, "volume": 2320}, {"time": 1744731780, "open": 19017.25, "high": 19031.25, "low": 19014.25, "close": 19019.0, "volume": 2700}, {"time": 1744731840, "open": 19019.5, "high": 19031.0, "low": 19018.0, "close": 19022.25, "volume": 1818}, {"time": 1744731900, "open": 19022.5, "high": 19039.0, "low": 19017.0, "close": 19035.75, "volume": 2832}, {"time": 1744731960, "open": 19035.5, "high": 19037.75, "low": 19016.75, "close": 19021.75, "volume": 2615}, {"time": 1744732020, "open": 19022.25, "high": 19024.75, "low": 18995.5, "close": 19012.5, "volume": 4861}, {"time": 1744732080, "open": 19012.0, "high": 19014.25, "low": 18993.25, "close": 18997.5, "volume": 2795}, {"time": 1744732140, "open": 18997.5, "high": 19010.25, "low": 18994.0, "close": 19004.25, "volume": 2902}, {"time": 1744732200, "open": 19004.75, "high": 19016.5, "low": 18992.0, "close": 18993.25, "volume": 3144}, {"time": 1744732260, "open": 18994.0, "high": 18997.5, "low": 18983.0, "close": 18986.5, "volume": 3271}, {"time": 1744732320, "open": 18986.0, "high": 19050.0, "low": 18985.75, "close": 19040.25, "volume": 7245}, {"time": 1744732380, "open": 19040.0, "high": 19067.75, "low": 19035.5, "close": 19059.0, "volume": 5645}, {"time": 1744732440, "open": 19058.75, "high": 19069.0, "low": 19041.75, "close": 19048.5, "volume": 3502}, {"time": 1744732500, "open": 19048.5, "high": 19049.0, "low": 19032.5, "close": 19040.5, "volume": 2813}, {"time": 1744732560, "open": 19040.5, "high": 19047.0, "low": 19019.0, "close": 19020.5, "volume": 3158}, {"time": 1744732620, "open": 19020.25, "high": 19048.75, "low": 19017.5, "close": 19048.0, "volume": 3966}, {"time": 1744732680, "open": 19048.25, "high": 19050.0, "low": 19033.25, "close": 19045.75, "volume": 2250}, {"time": 1744732740, "open": 19046.0, "high": 19050.75, "low": 19041.0, "close": 19050.0, "volume": 2145}, {"time": 1744732800, "open": 19050.0, "high": 19057.0, "low": 19044.0, "close": 19049.5, "volume": 2685}, {"time": 1744732860, "open": 19049.0, "high": 19072.25, "low": 19047.25, "close": 19067.5, "volume": 3355}, {"time": 1744732920, "open": 19067.5, "high": 19070.5, "low": 19059.75, "close": 19065.5, "volume": 2031}, {"time": 1744732980, "open": 19065.75, "high": 19075.0, "low": 19065.5, "close": 19070.25, "volume": 2126}, {"time": 1744733040, "open": 19070.5, "high": 19074.5, "low": 19059.75, "close": 19069.25, "volume": 2221}, {"time": 1744733100, "open": 19068.75, "high": 19077.25, "low": 19062.0, "close": 19064.0, "volume": 2172}, {"time": 1744733160, "open": 19063.5, "high": 19077.0, "low": 19063.25, "close": 19073.5, "volume": 1993}, {"time": 1744733220, "open": 19073.0, "high": 19073.25, "low": 19047.0, "close": 19047.75, "volume": 3157}, {"time": 1744733280, "open": 19047.75, "high": 19052.0, "low": 19039.25, "close": 19043.25, "volume": 2475}, {"time": 1744733340, "open": 19043.25, "high": 19053.5, "low": 19041.0, "close": 19051.0, "volume": 1920}, {"time": 1744733400, "open": 19050.5, "high": 19058.0, "low": 19042.25, "close": 19056.5, "volume": 2025}, {"time": 1744733460, "open": 19057.25, "high": 19069.5, "low": 19051.25, "close": 19057.25, "volume": 2642}, {"time": 1744733520, "open": 19057.25, "high": 19067.5, "low": 19047.0, "close": 19055.5, "volume": 2230}, {"time": 1744733580, "open": 19056.0, "high": 19058.25, "low": 19042.75, "close": 19044.0, "volume": 1935}, {"time": 1744733640, "open": 19044.5, "high": 19057.25, "low": 19038.25, "close": 19056.25, "volume": 2240}, {"time": 1744733700, "open": 19056.5, "high": 19067.0, "low": 19050.5, "close": 19066.75, "volume": 2053}, {"time": 1744733760, "open": 19066.5, "high": 19079.0, "low": 19059.25, "close": 19067.0, "volume": 2926}, {"time": 1744733820, "open": 19067.25, "high": 19069.0, "low": 19047.75, "close": 19048.25, "volume": 2735}, {"time": 1744733880, "open": 19048.5, "high": 19057.25, "low": 19040.5, "close": 19042.5, "volume": 1957}, {"time": 1744733940, "open": 19042.5, "high": 19055.25, "low": 19038.5, "close": 19053.5, "volume": 1965}, {"time": 1744734000, "open": 19053.25, "high": 19055.75, "low": 19040.75, "close": 19054.75, "volume": 1571}, {"time": 1744734060, "open": 19054.5, "high": 19062.5, "low": 19045.5, "close": 19051.25, "volume": 1834}, {"time": 1744734120, "open": 19051.5, "high": 19071.75, "low": 19045.0, "close": 19070.75, "volume": 1978}, {"time": 1744734180, "open": 19070.5, "high": 19080.5, "low": 19067.75, "close": 19077.5, "volume": 3053}, {"time": 1744734240, "open": 19077.5, "high": 19079.75, "low": 19068.5, "close": 19074.75, "volume": 1875}, {"time": 1744734300, "open": 19074.75, "high": 19088.5, "low": 19071.25, "close": 19084.0, "volume": 3008}, {"time": 1744734360, "open": 19084.25, "high": 19090.75, "low": 19081.25, "close": 19083.75, "volume": 2237}, {"time": 1744734420, "open": 19083.5, "high": 19088.75, "low": 19071.0, "close": 19088.25, "volume": 2496}, {"time": 1744734480, "open": 19088.25, "high": 19088.75, "low": 19068.0, "close": 19069.5, "volume": 2283}, {"time": 1744734540, "open": 19069.5, "high": 19072.25, "low": 19064.0, "close": 19068.0, "volume": 1940}, {"time": 1744734600, "open": 19068.25, "high": 19080.0, "low": 19064.25, "close": 19080.0, "volume": 2582}, {"time": 1744734660, "open": 19079.75, "high": 19082.75, "low": 19065.75, "close": 19067.75, "volume": 2171}, {"time": 1744734720, "open": 19067.5, "high": 19080.5, "low": 19066.0, "close": 19077.0, "volume": 1418}, {"time": 1744734780, "open": 19077.5, "high": 19079.5, "low": 19059.0, "close": 19063.5, "volume": 2139}, {"time": 1744734840, "open": 19063.0, "high": 19064.5, "low": 19055.5, "close": 19058.5, "volume": 1943}, {"time": 1744734900, "open": 19059.75, "high": 19069.75, "low": 19056.0, "close": 19061.25, "volume": 2189}, {"time": 1744734960, "open": 19061.0, "high": 19064.0, "low": 19053.25, "close": 19061.25, "volume": 1934}, {"time": 1744735020, "open": 19060.5, "high": 19063.25, "low": 19050.0, "close": 19052.25, "volume": 1912}, {"time": 1744735080, "open": 19053.0, "high": 19054.75, "low": 19042.25, "close": 19051.25, "volume": 2086}, {"time": 1744735140, "open": 19051.0, "high": 19051.75, "low": 19036.25, "close": 19038.5, "volume": 2231}, {"time": 1744735200, "open": 19038.0, "high": 19046.0, "low": 19028.75, "close": 19044.5, "volume": 2954}, {"time": 1744735260, "open": 19045.0, "high": 19046.75, "low": 19025.75, "close": 19026.5, "volume": 2522}, {"time": 1744735320, "open": 19026.75, "high": 19043.25, "low": 19023.5, "close": 19041.0, "volume": 2246}, {"time": 1744735380, "open": 19041.0, "high": 19047.5, "low": 19038.0, "close": 19043.5, "volume": 1672}, {"time": 1744735440, "open": 19043.0, "high": 19062.0, "low": 19042.25, "close": 19058.0, "volume": 2806}, {"time": 1744735500, "open": 19058.5, "high": 19067.25, "low": 19055.25, "close": 19064.75, "volume": 2197}, {"time": 1744735560, "open": 19065.0, "high": 19071.25, "low": 19062.75, "close": 19065.75, "volume": 2072}, {"time": 1744735620, "open": 19065.75, "high": 19071.25, "low": 19059.5, "close": 19069.0, "volume": 1903}, {"time": 1744735680, "open": 19068.25, "high": 19068.75, "low": 19044.75, "close": 19052.25, "volume": 2554}, {"time": 1744735740, "open": 19052.0, "high": 19054.5, "low": 19043.5, "close": 19050.0, "volume": 1633}, {"time": 1744735800, "open": 19050.75, "high": 19052.25, "low": 19033.25, "close": 19034.5, "volume": 2305}, {"time": 1744735860, "open": 19034.5, "high": 19038.5, "low": 19027.5, "close": 19031.25, "volume": 1884}, {"time": 1744735920, "open": 19031.25, "high": 19031.25, "low": 19008.5, "close": 19009.0, "volume": 3225}, {"time": 1744735980, "open": 19008.5, "high": 19015.5, "low": 19003.5, "close": 19006.5, "volume": 2425}, {"time": 1744736040, "open": 19006.25, "high": 19007.5, "low": 18988.5, "close": 18993.0, "volume": 4071}, {"time": 1744736100, "open": 18992.75, "high": 18993.5, "low": 18963.25, "close": 18964.5, "volume": 5572}, {"time": 1744736160, "open": 18964.75, "high": 18983.25, "low": 18962.75, "close": 18970.25, "volume": 4622}, {"time": 1744736220, "open": 18970.5, "high": 18970.75, "low": 18946.5, "close": 18950.0, "volume": 5271}, {"time": 1744736280, "open": 18949.5, "high": 18967.5, "low": 18945.0, "close": 18964.25, "volume": 3819}, {"time": 1744736340, "open": 18964.25, "high": 18975.25, "low": 18960.25, "close": 18964.0, "volume": 3077}, {"time": 1744736400, "open": 18964.5, "high": 18970.0, "low": 18941.75, "close": 18946.25, "volume": 4946}, {"time": 1744736460, "open": 18946.5, "high": 18973.5, "low": 18942.75, "close": 18972.75, "volume": 3781}, {"time": 1744736520, "open": 18972.5, "high": 18975.0, "low": 18960.75, "close": 18970.5, "volume": 2448}, {"time": 1744736580, "open": 18970.25, "high": 18995.5, "low": 18968.0, "close": 18992.0, "volume": 4684}, {"time": 1744736640, "open": 18991.0, "high": 18996.75, "low": 18983.0, "close": 18994.5, "volume": 2806}, {"time": 1744736700, "open": 18995.0, "high": 19005.25, "low": 18986.75, "close": 18996.75, "volume": 3607}, {"time": 1744736760, "open": 18997.25, "high": 19009.0, "low": 18995.5, "close": 19001.75, "volume": 2663}, {"time": 1744736820, "open": 19001.25, "high": 19005.75, "low": 18995.0, "close": 19000.25, "volume": 1935}, {"time": 1744736880, "open": 18999.75, "high": 19000.25, "low": 18981.5, "close": 18991.0, "volume": 3256}, {"time": 1744736940, "open": 18991.0, "high": 18999.25, "low": 18975.0, "close": 18978.25, "volume": 2968}, {"time": 1744737000, "open": 18978.25, "high": 18985.5, "low": 18966.5, "close": 18979.75, "volume": 2726}, {"time": 1744737060, "open": 18979.5, "high": 18989.25, "low": 18978.0, "close": 18983.25, "volume": 1968}, {"time": 1744737120, "open": 18983.5, "high": 18987.0, "low": 18962.75, "close": 18972.5, "volume": 2883}, {"time": 1744737180, "open": 18972.0, "high": 18993.25, "low": 18972.0, "close": 18982.5, "volume": 2430}, {"time": 1744737240, "open": 18983.25, "high": 18989.75, "low": 18978.5, "close": 18988.25, "volume": 1310}, {"time": 1744737300, "open": 18988.0, "high": 18992.75, "low": 18975.0, "close": 18979.0, "volume": 1902}, {"time": 1744737360, "open": 18978.75, "high": 18987.0, "low": 18955.0, "close": 18957.0, "volume": 2968}, {"time": 1744737420, "open": 18956.75, "high": 18963.75, "low": 18945.5, "close": 18950.75, "volume": 3465}, {"time": 1744737480, "open": 18950.25, "high": 18969.75, "low": 18945.5, "close": 18964.75, "volume": 2602}, {"time": 1744737540, "open": 18964.5, "high": 18968.5, "low": 18952.5, "close": 18957.0, "volume": 2158}, {"time": 1744737600, "open": 18956.75, "high": 18962.5, "low": 18947.75, "close": 18961.75, "volume": 2519}, {"time": 1744737660, "open": 18962.25, "high": 18967.5, "low": 18946.25, "close": 18948.5, "volume": 2116}, {"time": 1744737720, "open": 18948.25, "high": 18951.75, "low": 18930.5, "close": 18933.0, "volume": 4369}, {"time": 1744737780, "open": 18933.0, "high": 18934.5, "low": 18906.5, "close": 18923.0, "volume": 5418}, {"time": 1744737840, "open": 18923.25, "high": 18939.25, "low": 18923.0, "close": 18938.0, "volume": 2777}, {"time": 1744737900, "open": 18938.0, "high": 18943.75, "low": 18912.5, "close": 18914.5, "volume": 3746}, {"time": 1744737960, "open": 18914.75, "high": 18941.5, "low": 18906.5, "close": 18940.25, "volume": 3908}, {"time": 1744738020, "open": 18941.25, "high": 18948.75, "low": 18929.75, "close": 18931.25, "volume": 3461}, {"time": 1744738080, "open": 18930.5, "high": 18940.5, "low": 18923.25, "close": 18937.25, "volume": 2289}, {"time": 1744738140, "open": 18936.5, "high": 18938.75, "low": 18921.0, "close": 18924.75, "volume": 1992}, {"time": 1744738200, "open": 18924.5, "high": 18961.25, "low": 18922.0, "close": 18960.5, "volume": 4703}, {"time": 1744738260, "open": 18960.25, "high": 18961.0, "low": 18944.5, "close": 18956.25, "volume": 2779}, {"time": 1744738320, "open": 18956.5, "high": 18961.25, "low": 18939.75, "close": 18945.5, "volume": 2811}, {"time": 1744738380, "open": 18944.5, "high": 18954.25, "low": 18936.75, "close": 18940.5, "volume": 2220}, {"time": 1744738440, "open": 18939.5, "high": 18949.5, "low": 18929.75, "close": 18936.0, "volume": 2439}, {"time": 1744738500, "open": 18936.0, "high": 18947.0, "low": 18929.0, "close": 18936.75, "volume": 2523}, {"time": 1744738560, "open": 18935.5, "high": 18947.25, "low": 18919.0, "close": 18943.75, "volume": 3451}, {"time": 1744738620, "open": 18943.5, "high": 18964.25, "low": 18938.25, "close": 18963.5, "volume": 3135}, {"time": 1744738680, "open": 18962.25, "high": 18972.5, "low": 18955.0, "close": 18961.25, "volume": 3310}, {"time": 1744738740, "open": 18961.25, "high": 18969.75, "low": 18959.75, "close": 18968.0, "volume": 1795}, {"time": 1744738800, "open": 18968.0, "high": 18987.75, "low": 18966.5, "close": 18986.0, "volume": 3747}, {"time": 1744738860, "open": 18986.0, "high": 18989.0, "low": 18965.0, "close": 18971.0, "volume": 2951}, {"time": 1744738920, "open": 18970.25, "high": 18976.25, "low": 18965.5, "close": 18965.75, "volume": 2072}, {"time": 1744738980, "open": 18965.25, "high": 18980.75, "low": 18963.5, "close": 18974.5, "volume": 2481}, {"time": 1744739040, "open": 18975.5, "high": 18980.5, "low": 18968.5, "close": 18970.75, "volume": 1773}, {"time": 1744739100, "open": 18970.0, "high": 18975.75, "low": 18952.5, "close": 18959.75, "volume": 3267}, {"time": 1744739160, "open": 18959.5, "high": 18973.0, "low": 18958.25, "close": 18965.5, "volume": 2119}, {"time": 1744739220, "open": 18965.5, "high": 18978.0, "low": 18963.0, "close": 18966.25, "volume": 1886}, {"time": 1744739280, "open": 18966.25, "high": 18975.75, "low": 18954.5, "close": 18973.0, "volume": 2600}, {"time": 1744739340, "open": 18972.75, "high": 18978.5, "low": 18965.75, "close": 18977.25, "volume": 1873}, {"time": 1744739400, "open": 18978.0, "high": 18982.5, "low": 18965.5, "close": 18971.0, "volume": 2314}, {"time": 1744739460, "open": 18971.0, "high": 18979.75, "low": 18955.0, "close": 18957.25, "volume": 2164}, {"time": 1744739520, "open": 18957.0, "high": 18961.0, "low": 18945.0, "close": 18947.5, "volume": 3605}, {"time": 1744739580, "open": 18947.25, "high": 18949.5, "low": 18916.25, "close": 18920.25, "volume": 5171}, {"time": 1744739640, "open": 18920.25, "high": 18930.0, "low": 18915.25, "close": 18916.0, "volume": 2730}, {"time": 1744739700, "open": 18915.5, "high": 18937.0, "low": 18911.75, "close": 18925.25, "volume": 3790}, {"time": 1744739760, "open": 18925.75, "high": 18939.25, "low": 18923.25, "close": 18929.0, "volume": 2175}, {"time": 1744739820, "open": 18929.75, "high": 18941.5, "low": 18922.0, "close": 18939.0, "volume": 2723}, {"time": 1744739880, "open": 18939.0, "high": 18962.5, "low": 18937.25, "close": 18952.75, "volume": 4273}, {"time": 1744739940, "open": 18952.25, "high": 18955.0, "low": 18948.0, "close": 18952.0, "volume": 1485}, {"time": 1744740000, "open": 18951.5, "high": 18968.25, "low": 18946.25, "close": 18961.75, "volume": 3249}, {"time": 1744740060, "open": 18962.0, "high": 18964.0, "low": 18939.25, "close": 18943.5, "volume": 2829}, {"time": 1744740120, "open": 18943.5, "high": 18954.75, "low": 18936.75, "close": 18941.25, "volume": 2858}, {"time": 1744740180, "open": 18941.75, "high": 18948.25, "low": 18924.25, "close": 18936.25, "volume": 3514}, {"time": 1744740240, "open": 18936.5, "high": 18944.5, "low": 18925.75, "close": 18940.75, "volume": 2669}, {"time": 1744740300, "open": 18940.5, "high": 18945.75, "low": 18919.0, "close": 18922.25, "volume": 2827}, {"time": 1744740360, "open": 18922.0, "high": 18933.0, "low": 18920.5, "close": 18927.75, "volume": 2080}, {"time": 1744740420, "open": 18927.75, "high": 18945.25, "low": 18910.75, "close": 18944.75, "volume": 4492}, {"time": 1744740480, "open": 18944.75, "high": 18945.5, "low": 18929.0, "close": 18932.5, "volume": 2535}, {"time": 1744740540, "open": 18932.25, "high": 18945.0, "low": 18930.75, "close": 18942.0, "volume": 1785}, {"time": 1744740600, "open": 18942.25, "high": 18946.75, "low": 18928.0, "close": 18932.75, "volume": 2161}, {"time": 1744740660, "open": 18932.5, "high": 18936.75, "low": 18923.5, "close": 18923.5, "volume": 1780}, {"time": 1744740720, "open": 18923.5, "high": 18929.25, "low": 18908.5, "close": 18919.0, "volume": 2666}, {"time": 1744740780, "open": 18918.75, "high": 18921.75, "low": 18906.5, "close": 18907.75, "volume": 2523}, {"time": 1744740840, "open": 18907.25, "high": 18910.25, "low": 18891.5, "close": 18907.5, "volume": 4282}, {"time": 1744740900, "open": 18907.25, "high": 18915.75, "low": 18884.5, "close": 18885.0, "volume": 4584}, {"time": 1744740960, "open": 18884.75, "high": 18913.25, "low": 18884.75, "close": 18903.25, "volume": 3361}, {"time": 1744741020, "open": 18903.0, "high": 18906.25, "low": 18890.75, "close": 18903.75, "volume": 2333}, {"time": 1744741080, "open": 18904.5, "high": 18909.75, "low": 18901.0, "close": 18908.5, "volume": 1855}, {"time": 1744741140, "open": 18908.25, "high": 18910.5, "low": 18890.25, "close": 18897.25, "volume": 2098}, {"time": 1744741200, "open": 18897.25, "high": 18902.75, "low": 18888.75, "close": 18895.75, "volume": 1785}, {"time": 1744741260, "open": 18895.5, "high": 18898.5, "low": 18887.5, "close": 18897.5, "volume": 1362}, {"time": 1744741320, "open": 18897.75, "high": 18919.75, "low": 18894.0, "close": 18916.0, "volume": 3437}, {"time": 1744741380, "open": 18916.25, "high": 18922.25, "low": 18908.0, "close": 18910.25, "volume": 3115}, {"time": 1744741440, "open": 18910.0, "high": 18914.25, "low": 18906.5, "close": 18911.0, "volume": 1477}, {"time": 1744741500, "open": 18910.5, "high": 18939.5, "low": 18908.5, "close": 18927.75, "volume": 3700}, {"time": 1744741560, "open": 18927.25, "high": 18938.75, "low": 18922.75, "close": 18924.0, "volume": 2673}, {"time": 1744741620, "open": 18923.75, "high": 18929.5, "low": 18904.0, "close": 18907.5, "volume": 3138}, {"time": 1744741680, "open": 18907.5, "high": 18921.5, "low": 18906.75, "close": 18913.25, "volume": 2018}, {"time": 1744741740, "open": 18913.25, "high": 18925.75, "low": 18912.75, "close": 18918.25, "volume": 1712}, {"time": 1744741800, "open": 18918.0, "high": 18927.25, "low": 18916.0, "close": 18921.5, "volume": 1885}, {"time": 1744741860, "open": 18921.25, "high": 18937.25, "low": 18921.25, "close": 18934.0, "volume": 2785}, {"time": 1744741920, "open": 18934.5, "high": 18946.0, "low": 18931.5, "close": 18944.75, "volume": 2839}, {"time": 1744741980, "open": 18945.25, "high": 18951.5, "low": 18935.25, "close": 18940.0, "volume": 2724}, {"time": 1744742040, "open": 18940.5, "high": 18949.5, "low": 18940.0, "close": 18948.25, "volume": 1425}, {"time": 1744742100, "open": 18948.25, "high": 18955.0, "low": 18940.25, "close": 18942.25, "volume": 2534}, {"time": 1744742160, "open": 18942.25, "high": 18959.0, "low": 18942.0, "close": 18953.5, "volume": 2038}, {"time": 1744742220, "open": 18953.5, "high": 18953.75, "low": 18928.5, "close": 18938.5, "volume": 2886}, {"time": 1744742280, "open": 18938.25, "high": 18940.0, "low": 18926.75, "close": 18929.5, "volume": 1983}, {"time": 1744742340, "open": 18929.5, "high": 18938.5, "low": 18927.0, "close": 18937.5, "volume": 1615}, {"time": 1744742400, "open": 18937.0, "high": 18943.5, "low": 18932.25, "close": 18935.0, "volume": 1708}, {"time": 1744742460, "open": 18934.75, "high": 18957.25, "low": 18933.25, "close": 18956.5, "volume": 2421}, {"time": 1744742520, "open": 18956.0, "high": 18957.5, "low": 18943.0, "close": 18949.75, "volume": 1916}, {"time": 1744742580, "open": 18950.0, "high": 18953.5, "low": 18945.25, "close": 18953.0, "volume": 1399}, {"time": 1744742640, "open": 18952.25, "high": 18973.5, "low": 18951.25, "close": 18970.0, "volume": 2836}, {"time": 1744742700, "open": 18970.0, "high": 18984.0, "low": 18969.5, "close": 18981.75, "volume": 2765}, {"time": 1744742760, "open": 18981.75, "high": 18994.75, "low": 18974.25, "close": 18976.75, "volume": 4209}, {"time": 1744742820, "open": 18976.25, "high": 18983.0, "low": 18968.5, "close": 18973.25, "volume": 2133}, {"time": 1744742880, "open": 18974.0, "high": 18978.0, "low": 18957.5, "close": 18965.0, "volume": 2648}, {"time": 1744742940, "open": 18965.5, "high": 18968.0, "low": 18959.5, "close": 18964.25, "volume": 1317}, {"time": 1744743000, "open": 18964.25, "high": 18968.75, "low": 18956.25, "close": 18965.25, "volume": 1764}, {"time": 1744743060, "open": 18965.75, "high": 18971.0, "low": 18953.75, "close": 18970.0, "volume": 2443}, {"time": 1744743120, "open": 18969.5, "high": 18970.75, "low": 18947.75, "close": 18949.75, "volume": 2963}, {"time": 1744743180, "open": 18950.0, "high": 18972.0, "low": 18949.5, "close": 18965.5, "volume": 2077}, {"time": 1744743240, "open": 18965.25, "high": 18974.25, "low": 18963.0, "close": 18970.5, "volume": 1290}, {"time": 1744743300, "open": 18970.75, "high": 18979.0, "low": 18967.5, "close": 18974.5, "volume": 2047}, {"time": 1744743360, "open": 18974.25, "high": 18983.75, "low": 18971.5, "close": 18973.0, "volume": 1794}, {"time": 1744743420, "open": 18972.75, "high": 18988.0, "low": 18970.75, "close": 18984.5, "volume": 1841}, {"time": 1744743480, "open": 18984.75, "high": 18990.0, "low": 18977.0, "close": 18987.75, "volume": 1815}, {"time": 1744743540, "open": 18987.25, "high": 18988.25, "low": 18974.75, "close": 18975.5, "volume": 1922}, {"time": 1744743600, "open": 18975.5, "high": 18978.75, "low": 18964.0, "close": 18976.75, "volume": 2850}];
+        (function dedupeChartDataByBarTime() {
+            const m = new Map();
+            for (let i = 0; i < chartData.length; i++) {
+                const b = chartData[i];
+                const t = Number(b.time);
+                if (!isFinite(t)) continue;
+                m.set(t, Object.assign({}, b, { time: t }));
+            }
+            chartData = Array.from(m.keys()).sort((a, b) => a - b).map((k) => m.get(k));
+        })();
+        let tradeOverlays = [{"trade_id": "T000020", "side": "BUY", "entry_time": 1744719900, "exit_time": 1744722000, "entry_price": 18871.125, "exit_price": 18947.25, "exit_reason": "take_profit", "signal_time": 1744719600, "signal_price": 18864.25, "signal_label": "sweep_close (advance stop)"}];
+        let tradeRecapPriceLines = [];
+        let tradeRecapConnectorSeries = [];
+        let realtimeActive = false;
+        let backtestMode = false; // Mode enabled, not necessarily running
+        let backtestActive = false; // Actually running
+        let backtestPaused = false; // Paused state
+        let backtestIndex = 0;
+        let backtestInterval = null;
+        let realtimeInterval = null;
+        let realtimeRefreshRate = 1; // Updates per second (default: 1x/sec)
+        let serverPort = null;
+        let backtestSpeed = 1.0; // Speed multiplier (can be changed via dropdown)
+        const baseBacktestIntervalMs = 150000; // Base interval (2.5 minutes for 5m bars)
+        const symbol = 'MNQ';
+        const timeframe = '1m';
+        let testModeActive = false; // Flag to prevent backtest from interfering with test mode
+        
+        // Debug: Log initial state
+        console.log('Chart initialized:', {
+            chartDataLength: chartData.length,
+            backtestMode: backtestMode,
+            backtestActive: backtestActive,
+            firstBar: chartData[0],
+            lastBar: chartData[chartData.length - 1]
+        });
+        
+        // Calculate interval based on timeframe (in seconds)
+        function getTimeframeSeconds(tf) {
+            const match = tf.match(/(\d+)([mhd])/);
+            if (!match) return 60;
+            const value = parseInt(match[1]);
+            const unit = match[2];
+            if (unit === 'm') return value * 60;
+            if (unit === 'h') return value * 3600;
+            if (unit === 'd') return value * 86400;
+            return 60;
+        }
+        
+        const axisTimeZone = "America/New_York";
+        const morningRangeEtShade = true;
+        const overnightRangeEtShade = false;
+        const overnightRangeSegments = [];
+        function _fmtBarTime(d, opts) {
+            const o = Object.assign({}, opts || {});
+            if (axisTimeZone) o.timeZone = axisTimeZone;
+            return d.toLocaleString(undefined, o);
+        }
+        
+        const timeframeSeconds = getTimeframeSeconds(timeframe);
+        const backtestIntervalMs = (timeframeSeconds * 1000) / backtestSpeed;
+
+        function overlayUnixSeconds(v) {
+            if (v == null || v === '') return NaN;
+            if (typeof v === 'number' && isFinite(v)) {
+                const n = Math.floor(v);
+                return v > 1e12 ? Math.floor(v / 1000) : n;
+            }
+            if (typeof v === 'string') {
+                const t = v.trim();
+                if (/^-?\d+(\.\d+)?$/.test(t)) {
+                    const num = parseFloat(t);
+                    if (!isFinite(num)) return NaN;
+                    return num > 1e12 ? Math.floor(num / 1000) : Math.floor(num);
+                }
+                const ms = Date.parse(t);
+                return isNaN(ms) ? NaN : Math.floor(ms / 1000);
+            }
+            return NaN;
+        }
+
+        function applyTradeOverlays() {
+            if (!tradeOverlays || tradeOverlays.length === 0) return;
+            if (!chart || !candlestickSeries) return;
+            try {
+                for (let i = 0; i < tradeRecapPriceLines.length; i++) {
+                    try { tradeRecapPriceLines[i].remove(); } catch (e) {}
+                }
+                tradeRecapPriceLines = [];
+                for (let i = 0; i < tradeRecapConnectorSeries.length; i++) {
+                    try { chart.removeSeries(tradeRecapConnectorSeries[i]); } catch (e) {}
+                }
+                tradeRecapConnectorSeries = [];
+                const overlayMarkers = [];
+                if (typeof candlestickSeries.setMarkers === 'function') {
+                    candlestickSeries.setMarkers([]);
+                }
+                for (const t of tradeOverlays) {
+                    const ep = t.entry_price != null ? parseFloat(t.entry_price) : NaN;
+                    const xp = t.exit_price != null ? parseFloat(t.exit_price) : NaN;
+                    const entryLineColor = '#2196f3';
+                    const exitLineColor = '#cfd8dc';
+                    if (!isNaN(ep) && typeof candlestickSeries.createPriceLine === 'function') {
+                        tradeRecapPriceLines.push(candlestickSeries.createPriceLine({
+                            price: ep,
+                            title: '',
+                            color: entryLineColor,
+                            lineWidth: 1,
+                            lineStyle: 0,
+                            axisLabelVisible: true,
+                        }));
+                    }
+                    if (!isNaN(xp) && typeof candlestickSeries.createPriceLine === 'function') {
+                        tradeRecapPriceLines.push(candlestickSeries.createPriceLine({
+                            price: xp,
+                            title: '',
+                            color: exitLineColor,
+                            lineWidth: 1,
+                            lineStyle: 0,
+                            axisLabelVisible: true,
+                        }));
+                    }
+                    const et = overlayUnixSeconds(t.entry_time);
+                    let xt = overlayUnixSeconds(t.exit_time);
+                    let xtDraw = xt;
+                    if (isFinite(et) && isFinite(xt) && xt <= et) {
+                        xtDraw = et + timeframeSeconds;
+                    }
+                    if (isFinite(et) && isFinite(xtDraw) && !isNaN(ep) && !isNaN(xp)
+                            && typeof chart.addLineSeries === 'function') {
+                        try {
+                            const ln = chart.addLineSeries({
+                                color: 'rgba(100, 181, 246, 0.95)',
+                                lineWidth: 2,
+                                lineStyle: 0,
+                                priceScaleId: 'right',
+                                lastValueVisible: false,
+                                priceLineVisible: false,
+                                crosshairMarkerVisible: false,
+                            });
+                            ln.setData([
+                                { time: et, value: ep },
+                                { time: xtDraw, value: xp },
+                            ]);
+                            tradeRecapConnectorSeries.push(ln);
+                        } catch (eLn) {
+                            console.warn('trade recap connector:', eLn);
+                        }
+                    }
+                    const sideUp = (t.side || '').toString().toUpperCase();
+                    const isLong = sideUp === 'BUY' || sideUp === 'LONG';
+                    if (isFinite(et) && !isNaN(ep)) {
+                        overlayMarkers.push({
+                            time: et,
+                            position: isLong ? 'belowBar' : 'aboveBar',
+                            color: isLong ? '#42a5f5' : '#ef5350',
+                            shape: isLong ? 'arrowUp' : 'arrowDown',
+                            text: 'entry',
+                        });
+                    }
+                    if (isFinite(xt) && !isNaN(xp)) {
+                        overlayMarkers.push({
+                            time: xt,
+                            position: isLong ? 'aboveBar' : 'belowBar',
+                            color: '#90a4ae',
+                            shape: 'square',
+                            text: t.exit_reason ? String(t.exit_reason) : 'exit',
+                        });
+                    }
+                    const sig = overlayUnixSeconds(t.signal_time);
+                    if (isFinite(sig)) {
+                        overlayMarkers.push({
+                            time: sig,
+                            position: isLong ? 'belowBar' : 'aboveBar',
+                            color: '#ffd54f',
+                            shape: 'circle',
+                            text: t.signal_label ? String(t.signal_label) : 'signal',
+                        });
+                    }
+                }
+                if (overlayMarkers.length && typeof candlestickSeries.setMarkers === 'function') {
+                    overlayMarkers.sort((a, b) => a.time - b.time);
+                    try { candlestickSeries.setMarkers(overlayMarkers); } catch (eMk) { console.warn('overlay markers:', eMk); }
+                }
+            } catch (e) {
+                console.warn('applyTradeOverlays:', e);
+            }
+        }
+        
+        function showToast(title, message, type = 'info') {
+            // Remove existing toasts
+            const existingToasts = document.querySelectorAll('.toast');
+            existingToasts.forEach(toast => toast.remove());
+            
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <div class="toast-title">${title}</div>
+                <div class="toast-message">${message}</div>
+            `;
+            document.body.appendChild(toast);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease-out reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 5000);
+        }
+        
+        function showError(message) {
+            const statusEl = document.getElementById('status');
+            if (statusEl) {
+                statusEl.textContent = 'Error: ' + message;
+                statusEl.style.color = '#ef5350';
+            }
+            showToast('Error', message, 'error');
+            console.error(message);
+        }
+        
+        function updateStatus(message) {
+            const statusEl = document.getElementById('status');
+            if (statusEl) {
+                statusEl.textContent = message;
+                statusEl.style.color = '#888';
+            }
+        }
+        
+        // Initialize chart after library loads
+        function initChart() {
+            try {
+                // Prevent double initialization
+                if (chart) {
+                    console.log('Chart already initialized, skipping');
+                    return;
+                }
+                
+                // Check if library loaded
+                if (typeof LightweightCharts === 'undefined') {
+                    showError('TradingView library failed to load');
+                    return;
+                }
+                
+                if (!chartData || chartData.length === 0) {
+                    showError('No chart data available');
+                    return;
+                }
+                
+                // Get chart container (assign to global variable)
+                chartContainer = document.getElementById('chart-container');
+                if (!chartContainer) {
+                    showError('Chart container not found');
+                    return;
+                }
+                
+                // Ensure container has dimensions
+                const containerWidth = chartContainer.clientWidth || chartContainer.offsetWidth || 1200;
+                const containerHeight = 600;
+                
+                console.log('Chart container dimensions:', containerWidth, 'x', containerHeight);
+                
+                // Create chart
+                chart = LightweightCharts.createChart(chartContainer, {
+                    layout: {
+                        background: { color: '#1a1a1a' },
+                        textColor: '#d1d5db',
+                    },
+                    grid: {
+                        vertLines: { color: '#2a2a2a' },
+                        horzLines: { color: '#2a2a2a' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: '#2a2a2a',
+                        autoScale: true,
+                    },
+                    localization: {
+                        locale: navigator.language || 'en-US',
+                        timeFormatter: (timestamp) => {
+                            const date = new Date(timestamp * 1000);
+                            return _fmtBarTime(date, {
+                                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                            });
+                        },
+                    },
+                    timeScale: {
+                        borderColor: '#2a2a2a',
+                        timeVisible: true,
+                        secondsVisible: false,
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            const T = LightweightCharts.TickMarkType;
+                            const ts = (typeof time === 'number') ? time : (time?.timestamp ?? null);
+                            if (typeof ts === 'number') {
+                                const d = new Date(ts * 1000);
+                                if (typeof tickMarkType === 'number' && T && (
+                                    tickMarkType === T.DayOfMonth || tickMarkType === T.Month || tickMarkType === T.Year
+                                )) {
+                                    return _fmtBarTime(d, {
+                                        weekday: 'short', month: 'short', day: 'numeric'
+                                    });
+                                }
+                                return _fmtBarTime(d, {
+                                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                                });
+                            }
+                            if (time && typeof time === 'object' && 'year' in time && 'month' in time && 'day' in time) {
+                                const d = new Date(time.year, time.month - 1, time.day);
+                                return d.toLocaleDateString(locale || undefined, {
+                                    weekday: 'short', month: 'short', day: 'numeric'
+                                });
+                            }
+                            return '';
+                        },
+                    },
+                    width: containerWidth,
+                    height: containerHeight,
+                });
+                
+                console.log('Chart created successfully');
+                
+                let morningRangeSeriesList = [];
+                if (morningRangeEtShade && !backtestMode && chartData.length > 0) {
+                    const tzShade = axisTimeZone || 'America/New_York';
+                    const m7 = 7 * 60;
+                    const m8 = 8 * 60;
+                    function minutesSinceMidnightInZone(tsSec) {
+                        const d = new Date(tsSec * 1000);
+                        const f = new Intl.DateTimeFormat('en-US', {
+                            timeZone: tzShade,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                        });
+                        const s = f.format(d);
+                        const m = s.match(/(\d{1,2}):(\d{2})/);
+                        if (!m) return -1;
+                        return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+                    }
+                    function etDateKey(tsSec) {
+                        const d = new Date(tsSec * 1000);
+                        const f = new Intl.DateTimeFormat('en-CA', {
+                            timeZone: tzShade,
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                        });
+                        return f.format(d);
+                    }
+                    const dayMap = new Map();
+                    for (const b of chartData) {
+                        const mins = minutesSinceMidnightInZone(b.time);
+                        if (mins < m7 || mins >= m8) continue;
+                        const dk = etDateKey(b.time);
+                        if (!dayMap.has(dk)) dayMap.set(dk, []);
+                        dayMap.get(dk).push(b);
+                    }
+                    if (typeof chart.addBaselineSeries === 'function') {
+                        for (const [dk, winBars] of dayMap.entries()) {
+                            if (!winBars || winBars.length === 0) continue;
+                            let hi = -Infinity;
+                            let lo = Infinity;
+                            for (const b of winBars) {
+                                hi = Math.max(hi, parseFloat(b.high));
+                                lo = Math.min(lo, parseFloat(b.low));
+                            }
+                            if (!(hi > lo) || !isFinite(hi) || !isFinite(lo)) continue;
+                            const sorted = winBars.slice().sort((a, b) => a.time - b.time);
+                            const seg = sorted.map((b) => ({ time: b.time, value: hi }));
+                            try {
+                                const s = chart.addBaselineSeries({
+                                    priceScaleId: 'right',
+                                    baseValue: { type: 'price', price: lo },
+                                    topFillColor1: 'rgba(99, 102, 241, 0.28)',
+                                    topFillColor2: 'rgba(129, 140, 248, 0.14)',
+                                    topLineColor: 'rgba(0,0,0,0)',
+                                    bottomFillColor1: 'rgba(0,0,0,0)',
+                                    bottomFillColor2: 'rgba(0,0,0,0)',
+                                    bottomLineColor: 'rgba(0,0,0,0)',
+                                    lineWidth: 0,
+                                    lineVisible: false,
+                                    priceLineVisible: false,
+                                    lastValueVisible: false,
+                                    crosshairMarkerVisible: false,
+                                });
+                                s.setData(seg);
+                                morningRangeSeriesList.push(s);
+                                const mid = (hi + lo) / 2;
+                                const midSeg = sorted.map((b) => ({ time: b.time, value: mid }));
+                                try {
+                                    const midLn = chart.addLineSeries({
+                                        color: 'rgba(226, 232, 240, 0.72)',
+                                        lineWidth: 1,
+                                        lineStyle: 2,
+                                        priceScaleId: 'right',
+                                        lastValueVisible: false,
+                                        priceLineVisible: false,
+                                        crosshairMarkerVisible: false,
+                                    });
+                                    midLn.setData(midSeg);
+                                    morningRangeSeriesList.push(midLn);
+                                } catch (e2) {
+                                    console.warn('morning range ET midline ' + dk + ':', e2);
+                                }
+                            } catch (e) {
+                                console.warn('morning range ET box ' + dk + ':', e);
+                            }
+                        }
+                    }
+                }
+
+                let overnightRangeSeriesList = [];
+                if (overnightRangeEtShade && !backtestMode && chartData.length > 0
+                        && overnightRangeSegments && overnightRangeSegments.length > 0) {
+                    if (typeof chart.addBaselineSeries === 'function') {
+                        for (let si = 0; si < overnightRangeSegments.length; si++) {
+                            const seg = overnightRangeSegments[si];
+                            const hi = parseFloat(seg.hi);
+                            const lo = parseFloat(seg.lo);
+                            const ts = seg.times || [];
+                            if (!(hi > lo) || !isFinite(hi) || !isFinite(lo) || ts.length === 0) continue;
+                            const sorted = ts.slice().sort((a, b) => a - b);
+                            const dataPts = sorted.map((t) => ({ time: t, value: hi }));
+                            try {
+                                const s = chart.addBaselineSeries({
+                                    priceScaleId: 'right',
+                                    baseValue: { type: 'price', price: lo },
+                                    topFillColor1: 'rgba(245, 158, 11, 0.28)',
+                                    topFillColor2: 'rgba(251, 191, 36, 0.14)',
+                                    topLineColor: 'rgba(0,0,0,0)',
+                                    bottomFillColor1: 'rgba(0,0,0,0)',
+                                    bottomFillColor2: 'rgba(0,0,0,0)',
+                                    bottomLineColor: 'rgba(0,0,0,0)',
+                                    lineWidth: 0,
+                                    lineVisible: false,
+                                    priceLineVisible: false,
+                                    lastValueVisible: false,
+                                    crosshairMarkerVisible: false,
+                                });
+                                s.setData(dataPts);
+                                overnightRangeSeriesList.push(s);
+                            } catch (e) {
+                                console.warn('overnight range ET box seg ' + si + ':', e);
+                            }
+                        }
+                    }
+                }
+
+                // Volume first so candlesticks (added next) paint on top in the shared pane margin.
+                volumeSeries = chart.addHistogramSeries({
+                    color: '#26a69a',
+                    priceFormat: {
+                        type: 'volume',
+                    },
+                    priceScaleId: 'volume',
+                    scaleMargins: {
+                        top: 0.8,
+                        bottom: 0,
+                    },
+                });
+                chart.priceScale('volume').applyOptions({
+                    scaleMargins: {
+                        top: 0.8,
+                        bottom: 0,
+                    },
+                });
+
+                // Create candlestick series
+                if (typeof chart.addCandlestickSeries !== 'function') {
+                    showError('addCandlestickSeries not available');
+                    console.error('Available methods:', Object.getOwnPropertyNames(chart));
+                    return;
+                }
+                
+                candlestickSeries = chart.addCandlestickSeries({
+                    upColor: '#26a69a',
+                    downColor: '#ef5350',
+                    borderVisible: false,
+                    wickUpColor: '#26a69a',
+                    wickDownColor: '#ef5350',
+                    priceScaleId: 'right',
+                    visible: true,
+                });
+                
+                // Prepare initial data
+                if (!backtestMode) {
+                    // Normal mode: load all data immediately
+                    const candlestickData = chartData.map(bar => ({
+                        time: bar.time,
+                        open: parseFloat(bar.open),
+                        high: parseFloat(bar.high),
+                        low: parseFloat(bar.low),
+                        close: parseFloat(bar.close),
+                    }));
+                    
+                    const volumeData = chartData.map(bar => ({
+                        time: bar.time,
+                        value: parseInt(bar.volume) || 0,
+                        color: parseFloat(bar.close) >= parseFloat(bar.open) ? '#26a69a80' : '#ef535080',
+                    }));
+                    
+                    // Set data
+                    candlestickSeries.setData(candlestickData);
+                    volumeSeries.setData(volumeData);
+                    applyTradeOverlays();
+                    
+                    // Explicitly set visible range to show all data
+                    // Use requestAnimationFrame to ensure chart has processed setData()
+                    if (candlestickData.length > 0) {
+                        const firstBar = candlestickData[0];
+                        const lastBar = candlestickData[candlestickData.length - 1];
+                        
+                        requestAnimationFrame(() => {
+                            try {
+                                chart.timeScale().setVisibleRange({
+                                    from: firstBar.time,
+                                    to: lastBar.time
+                                });
+                                console.log('Normal mode: Set visible range from', firstBar.time, 'to', lastBar.time);
+                            } catch (e) {
+                                console.error('Error setting visible range:', e);
+                                chart.timeScale().fitContent();
+                            }
+                        });
+                    } else {
+                        chart.timeScale().fitContent();
+                    }
+                    
+                    updateStatus('Chart ready - ' + chartData.length + ' bars loaded');
+                } else {
+                    // Backtest mode: initialize with empty arrays, ready for replay
+                    candlestickSeries.setData([]);
+                    volumeSeries.setData([]);
+                    
+                    updateStatus('Chart ready - ' + chartData.length + ' bars loaded. Click "Start Backtest" to begin replay.');
+                    console.log('Backtest mode: Chart initialized with empty series, ready for replay');
+                }
+                
+                // Load contracts and initialize UI
+                if (serverPort) {
+                    loadContracts();
+                    updateOrderType(); // Initialize order type visibility
+                    updateBracket(); // Initialize bracket visibility
+                    
+                    // Initialize position/order lines after chart is ready
+                    setTimeout(async () => {
+                        console.log('Chart initialized, updating position/order lines...');
+                        lastPositionUpdate = 0; // Reset throttle to force update
+                        lastOrderUpdate = 0; // Reset throttle to force update
+                        lastStrategyLinesUpdate = 0;
+                        await updatePositionLines();
+                        await updateOrderLines();
+                        await updateStrategyBreakoutLines();
+                        
+                        // Note: Position/order lines are now event-based only (refresh on order placement/fill)
+                        // No periodic refresh interval - lines update when orders are placed or filled
+                    }, 1500);
+                }
+                
+                // Auto-start real-time if enabled (start immediately)
+                if (realtimeActive && serverPort) {
+                    // Small delay to ensure everything is initialized
+                    setTimeout(() => {
+                        toggleRealtime();
+                    }, 100);
+                }
+            } catch (error) {
+                showError('Chart error: ' + error.message);
+                console.error('Full error:', error);
+            }
+        }
+        
+        // Real-time update function
+        async function updateRealtime() {
+            if (!serverPort) {
+                updateStatus('Real-time server not available');
+                return;
+            }
+            
+            try {
+                // Get current symbol from dropdown
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                const currentTf = document.getElementById('timeframeSelect')?.value || timeframe;
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/quote?symbol=${encodeURIComponent(currentSymbol)}&timeframe=${encodeURIComponent(currentTf)}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                
+                // Update position and order lines periodically (throttled)
+                const now = Date.now();
+                if (now - lastPositionUpdate > POSITION_UPDATE_INTERVAL) {
+                    lastPositionUpdate = now;
+                    updatePositionLines().catch(err => console.debug('Position update error:', err));
+                }
+                if (now - lastOrderUpdate > ORDER_UPDATE_INTERVAL) {
+                    lastOrderUpdate = now;
+                    updateOrderLines().catch(err => console.debug('Order update error:', err));
+                }
+                updateStrategyBreakoutLines().catch(err => console.debug('Strategy lines error:', err));
+                
+                if (data.latest_bar) {
+                    const bar = data.latest_bar;
+                    if (!chartData || chartData.length === 0) {
+                        console.warn('No chart data available for real-time update');
+                        return;
+                    }
+                    
+                    const lastBar = chartData[chartData.length - 1];
+                    
+                    // Normalize timestamps to numbers for comparison
+                    // TradingView expects timestamps as Unix seconds (number)
+                    const barTime = typeof bar.time === 'number' ? bar.time : (typeof bar.time === 'string' ? parseInt(bar.time) : null);
+                    const lastBarTime = typeof lastBar.time === 'number' ? lastBar.time : (typeof lastBar.time === 'string' ? parseInt(lastBar.time) : null);
+                    
+                    if (barTime === null || lastBarTime === null) {
+                        console.warn('Invalid timestamp format in real-time update:', { barTime, lastBarTime, bar, lastBar });
+                        return;
+                    }
+                    
+                    // Check if this is a new bar or update to current bar
+                    if (barTime === lastBarTime) {
+                        // Update current bar
+                        lastBar.high = Math.max(lastBar.high, bar.close);
+                        lastBar.low = Math.min(lastBar.low, bar.close);
+                        lastBar.close = bar.close;
+                        lastBar.volume = bar.volume;
+                        
+                        // Update chart
+                        try {
+                            candlestickSeries.update({
+                                time: barTime,
+                                open: lastBar.open,
+                                high: lastBar.high,
+                                low: lastBar.low,
+                                close: lastBar.close,
+                            });
+                            
+                            volumeSeries.update({
+                                time: barTime,
+                                value: bar.volume,
+                                color: bar.close >= lastBar.open ? '#26a69a80' : '#ef535080',
+                            });
+                        } catch (updateError) {
+                            console.warn('Chart update error (same time):', updateError);
+                        }
+                    } else if (barTime > lastBarTime) {
+                        // New bar - ensure timestamp is normalized
+                        const newBar = {
+                            ...bar,
+                            time: barTime
+                        };
+                        chartData.push(newBar);
+                        
+                        try {
+                            candlestickSeries.update({
+                                time: barTime,
+                                open: bar.open,
+                                high: bar.high,
+                                low: bar.low,
+                                close: bar.close,
+                            });
+                            
+                            volumeSeries.update({
+                                time: barTime,
+                                value: bar.volume,
+                                color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
+                            });
+                        } catch (updateError) {
+                            console.warn('Chart update error (new bar):', updateError);
+                            // Remove the bar we just added if update failed
+                            chartData.pop();
+                        }
+                    } else {
+                        // barTime < lastBarTime - this should not happen, but handle gracefully
+                        console.warn(`Skipping real-time update: new bar time (${barTime}) is older than last bar time (${lastBarTime}). This may indicate clock skew or delayed data.`);
+                        // Don't update the chart - TradingView doesn't allow updating older bars
+                    }
+                    
+                    updateStatus(`Real-time: ${data.quote.last || data.quote.bid || 'N/A'} | ${new Date().toLocaleTimeString()}`);
+                }
+            } catch (error) {
+                console.error('Real-time update error:', error);
+                updateStatus('Real-time update failed: ' + error.message);
+            }
+        }
+        
+        // Toggle real-time updates
+        function toggleRealtime() {
+            const btn = document.getElementById('realtimeBtn');
+            if (!btn) return;
+            
+            if (realtimeActive) {
+                // Stop
+                if (realtimeInterval) {
+                    clearInterval(realtimeInterval);
+                    realtimeInterval = null;
+                }
+                // Note: positionOrderRefreshInterval continues running even when real-time is stopped
+                // This ensures lines update when positions/orders are closed
+                realtimeActive = false;
+                btn.textContent = 'Start Real-Time';
+                btn.classList.remove('active');
+                updateStatus('Real-time updates stopped');
+            } else {
+                // Start
+                if (!serverPort) {
+                    showError('Real-time server not available. Start chart with --realtime flag.');
+                    return;
+                }
+                realtimeActive = true;
+                btn.textContent = 'Stop Real-Time';
+                btn.classList.add('active');
+                updateRealtime(); // Immediate update
+                
+                // Calculate interval based on refresh rate (updates per second)
+                const intervalMs = 1000 / realtimeRefreshRate;
+                realtimeInterval = setInterval(updateRealtime, intervalMs);
+                updateStatus(`Real-time updates started at ${realtimeRefreshRate}x/sec`);
+            }
+        }
+        
+        // Backtesting function
+        function playBacktestBar() {
+            // Don't play if paused - keep all rendered candles visible
+            if (backtestPaused) {
+                return;
+            }
+            
+            if (backtestIndex >= chartData.length) {
+                // Finished
+                toggleBacktest();
+                updateStatus('Backtest complete - ' + chartData.length + ' bars replayed');
+                return;
+            }
+            
+            const bar = chartData[backtestIndex];
+            
+            try {
+                if (!candlestickSeries || !volumeSeries) {
+                    console.error('Chart series not initialized');
+                    showError('Chart series not initialized');
+                    return;
+                }
+                
+                // Prepare bar data
+                const barData = {
+                    time: bar.time,
+                    open: parseFloat(bar.open),
+                    high: parseFloat(bar.high),
+                    low: parseFloat(bar.low),
+                    close: parseFloat(bar.close),
+                };
+                
+                const volumeData = {
+                    time: bar.time,
+                    value: parseInt(bar.volume) || 0,
+                    color: parseFloat(bar.close) >= parseFloat(bar.open) ? '#26a69a80' : '#ef535080',
+                };
+                
+                // Use update() to add/update bars
+                candlestickSeries.update(barData);
+                volumeSeries.update(volumeData);
+                
+                // Verify update worked
+                const currentData = candlestickSeries.data();
+                if (backtestIndex < 5) {
+                    console.log('Backtest bar', backtestIndex + 1, ':', barData);
+                    console.log('Total bars in series:', currentData.length);
+                }
+                
+                // Don't auto-fit content - let user control zoom/pan manually
+                // Removed fitContent() calls to allow manual zoom control
+                
+                const date = new Date(bar.time * 1000);
+                updateStatus(`Backtest: ${backtestIndex + 1}/${chartData.length} | Speed: ${backtestSpeed}x | ${date.toLocaleString()}`);
+            } catch (error) {
+                console.error('Error playing backtest bar:', error);
+                console.error('Bar data:', bar);
+                showError('Error playing bar ' + (backtestIndex + 1) + ': ' + error.message);
+            }
+            
+            backtestIndex++;
+        }
+        
+        // Toggle backtesting
+        function toggleBacktest() {
+            console.log('🔔 toggleBacktest() called');
+            console.trace('Call stack:');
+            
+            // Don't allow backtest to start if we're in test mode
+            if (testModeActive && !backtestActive) {
+                console.log('⚠️  Ignoring toggleBacktest() call - test mode is active');
+                return;
+            }
+            
+            const btn = document.getElementById('backtestBtn');
+            if (!btn) {
+                console.error('Backtest button not found');
+                return;
+            }
+            
+            if (backtestActive) {
+                // Stop
+                if (backtestInterval) {
+                    clearInterval(backtestInterval);
+                    backtestInterval = null;
+                }
+                backtestActive = false;
+                backtestPaused = false; // Reset pause state when stopping
+                btn.textContent = 'Start Backtest';
+                btn.classList.remove('active');
+                
+                // Hide pause button
+                const pauseBtn = document.getElementById('pauseBtn');
+                if (pauseBtn) {
+                    pauseBtn.style.display = 'none';
+                }
+                
+                updateStatus('Backtest stopped at bar ' + backtestIndex + '/' + chartData.length);
+            } else {
+                // Start
+                if (!chart || !candlestickSeries || !volumeSeries) {
+                    showError('Chart not initialized. Please wait...');
+                    return;
+                }
+                
+                if (!chartData || chartData.length === 0) {
+                    showError('No chart data available for backtest');
+                    return;
+                }
+                
+                backtestActive = true;
+                backtestPaused = false; // Reset pause state when starting
+                backtestIndex = 0;
+                btn.textContent = 'Stop Backtest';
+                btn.classList.add('active');
+                
+                // Show pause button
+                const pauseBtn = document.getElementById('pauseBtn');
+                if (pauseBtn) {
+                    pauseBtn.style.display = 'inline-block';
+                    pauseBtn.textContent = 'Pause';
+                    pauseBtn.style.background = '#666';
+                }
+                
+                // Clear existing data and start fresh
+                try {
+                    console.log('Starting backtest with', chartData.length, 'bars');
+                    console.log('Backtest interval:', backtestIntervalMs, 'ms');
+                    console.log('First bar:', chartData[0]);
+                    
+                    // Reset index
+                    backtestIndex = 0;
+                    
+                    // Clear series
+                    candlestickSeries.setData([]);
+                    volumeSeries.setData([]);
+                    
+                    // Small delay to ensure chart is ready, then start
+                    setTimeout(() => {
+                        if (chartData.length > 0) {
+                            // Set first bar using setData() to initialize the series
+                            const firstBar = chartData[0];
+                            const firstBarData = {
+                                time: firstBar.time,
+                                open: parseFloat(firstBar.open),
+                                high: parseFloat(firstBar.high),
+                                low: parseFloat(firstBar.low),
+                                close: parseFloat(firstBar.close),
+                            };
+                            
+                            const firstVolumeData = {
+                                time: firstBar.time,
+                                value: parseInt(firstBar.volume) || 0,
+                                color: parseFloat(firstBar.close) >= parseFloat(firstBar.open) ? '#26a69a80' : '#ef535080',
+                            };
+                            
+                            console.log('Setting first bar:', firstBarData);
+                            
+                            try {
+                            candlestickSeries.setData([firstBarData]);
+                            volumeSeries.setData([firstVolumeData]);
+                            
+                            console.log('First bar set, data count:', candlestickSeries.data().length);
+                            
+                            // Set visible range to show first ~100 bars (zoomed out for better overview)
+                            const timeframeSeconds = getTimeframeSeconds(timeframe);
+                            const visibleBars = 100; // Increased from 50 for better zoom out
+                            const lastVisibleBar = chartData[Math.min(visibleBars - 1, chartData.length - 1)];
+                            chart.timeScale().setVisibleRange({
+                                from: firstBar.time,
+                                to: lastVisibleBar.time + (timeframeSeconds * 10) // Add some padding
+                            });
+                            console.log('Set visible range to show first', visibleBars, 'bars (zoomed out)');
+                                
+                                // Verify data was set
+                                const verifyData = candlestickSeries.data();
+                                console.log('Verified data after setData:', verifyData.length, 'bars');
+                                if (verifyData.length > 0) {
+                                    console.log('First bar in series:', verifyData[0]);
+                                }
+                                
+                                // Update index and status
+                                backtestIndex = 1;
+                                const date = new Date(firstBar.time * 1000);
+                                const intervalMs = baseBacktestIntervalMs / backtestSpeed;
+                                updateStatus(`Backtest: 1/${chartData.length} | Speed: ${backtestSpeed}x | ${date.toLocaleString()}`);
+                                
+                                // Start interval for remaining bars
+                                if (chartData.length > 1) {
+                                    backtestInterval = setInterval(() => {
+                                        playBacktestBar();
+                                    }, intervalMs);
+                                    console.log('Backtest interval started, next bar in', intervalMs, 'ms (speed:', backtestSpeed + 'x)');
+                                } else {
+                                    // Only one bar, already shown
+                                    toggleBacktest();
+                                    updateStatus('Backtest complete - 1 bar displayed');
+                                }
+                                
+                                updateStatus('Backtest started - ' + chartData.length + ' bars to replay');
+                            } catch (setError) {
+                                console.error('Error setting first bar:', setError);
+                                showError('Error setting first bar: ' + setError.message);
+                                backtestActive = false;
+                                btn.textContent = 'Start Backtest';
+                                btn.classList.remove('active');
+                            }
+                        } else {
+                            showError('No chart data available');
+                        }
+                    }, 100);
+                } catch (error) {
+                    showError('Error starting backtest: ' + error.message);
+                    console.error('Backtest start error:', error);
+                    console.error('Error stack:', error.stack);
+                    backtestActive = false;
+                    btn.textContent = 'Start Backtest';
+                    btn.classList.remove('active');
+                }
+            }
+        }
+        
+        // Wait for DOM and library, ensure container is visible
+        function tryInitChart() {
+            const container = document.getElementById('chart-container');
+            if (container && (container.clientWidth > 0 || container.offsetWidth > 0)) {
+                initChart();
+            } else {
+                console.log('Container not ready, retrying...');
+                setTimeout(tryInitChart, 100);
+            }
+        }
+        
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                setTimeout(tryInitChart, 200);
+            });
+        } else {
+            setTimeout(tryInitChart, 200);
+        }
+        
+        window.addEventListener('load', function() {
+            if (!chart) {
+                setTimeout(tryInitChart, 200);
+            }
+        });
+        
+        // Refresh chart
+        function refreshChart() {
+            updateStatus('Refresh not available. Re-run chart command to update.');
+        }
+        
+        // Exit test mode and allow backtest to run
+        function exitTestMode() {
+            testModeActive = false;
+            console.log('🚪 Test mode deactivated - backtest can now run');
+            updateStatus('Test mode exited - you can now start backtest');
+        }
+        
+        // Update real-time refresh rate from dropdown
+        function updateRefreshRate() {
+            const select = document.getElementById('refreshRateSelect');
+            if (select) {
+                realtimeRefreshRate = parseInt(select.value);
+                console.log('Real-time refresh rate updated to', realtimeRefreshRate, 'updates/sec');
+                
+                // If real-time is running, restart with new rate
+                if (realtimeActive && realtimeInterval) {
+                    clearInterval(realtimeInterval);
+                    const intervalMs = 1000 / realtimeRefreshRate;
+                    realtimeInterval = setInterval(updateRealtime, intervalMs);
+                    updateStatus(`Real-time refresh rate: ${realtimeRefreshRate}x/sec`);
+                }
+            }
+        }
+        
+        // Toggle pause/play for backtest
+        function togglePause() {
+            const pauseBtn = document.getElementById('pauseBtn');
+            if (!pauseBtn) {
+                console.error('Pause button not found');
+                return;
+            }
+            
+            if (!backtestActive) {
+                console.log('Cannot pause - backtest is not running');
+                return;
+            }
+            
+            if (backtestPaused) {
+                // Resume
+                backtestPaused = false;
+                pauseBtn.textContent = 'Pause';
+                pauseBtn.style.background = '#666';
+                updateStatus('Backtest resumed at bar ' + (backtestIndex + 1) + '/' + chartData.length);
+                console.log('▶️  Backtest resumed at bar', backtestIndex + 1);
+            } else {
+                // Pause
+                backtestPaused = true;
+                pauseBtn.textContent = '▶ Play';
+                pauseBtn.style.background = '#26a69a';
+                updateStatus('Backtest paused at bar ' + backtestIndex + '/' + chartData.length + ' - All candles remain visible');
+                console.log('⏸️  Backtest paused at bar', backtestIndex);
+            }
+        }
+        
+        // Update backtest speed from dropdown
+        function updateBacktestSpeed() {
+            const select = document.getElementById('speedSelect');
+            if (select) {
+                backtestSpeed = parseInt(select.value);
+                console.log('Backtest speed updated to', backtestSpeed + 'x');
+                
+                // If backtest is running, restart with new speed
+                if (backtestActive) {
+                    clearInterval(backtestInterval);
+                    const intervalMs = baseBacktestIntervalMs / backtestSpeed;
+                    backtestInterval = setInterval(() => {
+                        playBacktestBar();
+                    }, intervalMs);
+                    console.log('Backtest interval updated to', intervalMs, 'ms');
+                    updateStatus('Backtest speed: ' + backtestSpeed + 'x');
+                }
+            }
+        }
+        
+        // Test function: Load all bars at once to verify chart works
+        function loadAllBars() {
+            if (!chart || !candlestickSeries || !volumeSeries) {
+                showError('Chart not initialized');
+                return;
+            }
+            
+            // Set test mode flag to prevent backtest from interfering
+            testModeActive = true;
+            console.log('🧪 Test mode activated');
+            
+            try {
+                console.log('Loading all', chartData.length, 'bars at once (test)...');
+                
+                // Sort data by time to ensure chronological order
+                const sortedChartData = [...chartData].sort((a, b) => a.time - b.time);
+                const dedupMap = new Map();
+                for (let i = 0; i < sortedChartData.length; i++) {
+                    const b = sortedChartData[i];
+                    const t = Number(b.time);
+                    if (!isFinite(t)) continue;
+                    dedupMap.set(t, Object.assign({}, b, { time: t }));
+                }
+                const dedupedChartData = Array.from(dedupMap.keys()).sort((a, b) => a - b).map((k) => dedupMap.get(k));
+                
+                const candlestickData = dedupedChartData.map(bar => ({
+                    time: Number(bar.time), // Ensure it's a number (TradingView expects Unix timestamp in seconds)
+                    open: parseFloat(bar.open),
+                    high: parseFloat(bar.high),
+                    low: parseFloat(bar.low),
+                    close: parseFloat(bar.close),
+                }));
+                
+                const volumeData = dedupedChartData.map(bar => ({
+                    time: Number(bar.time), // Ensure it's a number
+                    value: parseInt(bar.volume) || 0,
+                    color: parseFloat(bar.close) >= parseFloat(bar.open) ? '#26a69a80' : '#ef535080',
+                }));
+                
+                // Verify time format - must be numbers, not strings
+                const invalidTimes = candlestickData.filter(bar => typeof bar.time !== 'number' || isNaN(bar.time));
+                if (invalidTimes.length > 0) {
+                    console.error('Invalid time format found:', invalidTimes.slice(0, 3));
+                }
+                
+                console.log('First 3 bars sample:', candlestickData.slice(0, 3));
+                console.log('Last 3 bars sample:', candlestickData.slice(-3));
+                console.log('Time range:', candlestickData[0].time, 'to', candlestickData[candlestickData.length - 1].time);
+                console.log('All times are numbers:', candlestickData.every(bar => typeof bar.time === 'number' && !isNaN(bar.time)));
+                
+                // Log price range for debugging
+                const minPrice = Math.min(...candlestickData.map(b => b.low));
+                const maxPrice = Math.max(...candlestickData.map(b => b.high));
+                console.log('Price range:', minPrice, 'to', maxPrice);
+                
+                candlestickSeries.setData(candlestickData);
+                volumeSeries.setData(volumeData);
+                applyTradeOverlays();
+                
+                console.log('Data set. Series data count:', candlestickSeries.data().length);
+                
+                // Force price axis to auto-scale
+                candlestickSeries.priceScale().applyOptions({
+                    autoScale: true,
+                });
+                volumeSeries.priceScale().applyOptions({
+                    autoScale: true,
+                });
+                
+                // Force resize and fit
+                const container = document.getElementById('chart-container');
+                if (container) {
+                    const width = container.clientWidth || container.offsetWidth || 1200;
+                    chart.applyOptions({ width: width, height: 600 });
+                    console.log('Chart resized to:', width, 'x 600');
+                }
+                
+                // Verify data before fitting
+                const verifyCount = candlestickSeries.data().length;
+                const firstBar = candlestickSeries.data()[0];
+                const lastBar = candlestickSeries.data()[verifyCount - 1];
+                console.log('All bars loaded. Series has', verifyCount, 'bars');
+                console.log('First bar:', firstBar);
+                console.log('Last bar:', lastBar);
+                
+                // Explicitly set visible range to show all data
+                // The issue: fitContent() seems to fit to wrong range, so we MUST use setVisibleRange
+                if (firstBar && lastBar) {
+                    const firstTime = Number(firstBar.time);
+                    const lastTime = Number(lastBar.time);
+                    
+                    console.log('Attempting to set visible range from', firstTime, 'to', lastTime);
+                    
+                    // Use requestAnimationFrame to ensure chart has processed setData() first
+                    requestAnimationFrame(() => {
+                        try {
+                            chart.timeScale().setVisibleRange({
+                                from: firstTime,
+                                to: lastTime
+                            });
+                            console.log('✅ setVisibleRange called');
+                            
+                            // Verify after a frame
+                            requestAnimationFrame(() => {
+                                const range = chart.timeScale().getVisibleRange();
+                                console.log('Visible range after setVisibleRange:', range);
+                                if (range && (range.from > firstTime || range.to < lastTime)) {
+                                    console.error('❌ Range still wrong! Trying scrollToRealTime...');
+                                    // Last resort: try scrolling to the first bar
+                                    chart.timeScale().scrollToRealTime();
+                                    // Then set range again
+                                    setTimeout(() => {
+                                        chart.timeScale().setVisibleRange({ from: firstTime, to: lastTime });
+                                    }, 100);
+                                } else if (range) {
+                                    console.log('✅ Range is correct!');
+                                    
+                                    // Force chart to redraw by applying options
+                                    chart.applyOptions({
+                                        timeScale: {
+                                            visible: true,
+                                        },
+                                    });
+                                    
+                                    // Force price scale to autoscale
+                                    candlestickSeries.priceScale().applyOptions({
+                                        autoScale: true,
+                                    });
+                                    
+                                    console.log('Forced chart redraw and autoscale');
+                                }
+                            });
+                        } catch (e) {
+                            console.error('Error in setVisibleRange:', e);
+                        }
+                    });
+                }
+                
+                updateStatus('All ' + verifyCount + ' bars loaded (test mode)');
+                console.log('✅ All bars loaded successfully in test mode');
+            } catch (error) {
+                console.error('Error loading all bars:', error);
+                console.error('Error stack:', error.stack);
+                showError('Error: ' + error.message);
+            } finally {
+                // Keep test mode active so backtest doesn't interfere
+                console.log('🧪 Test mode remains active (bars should be visible)');
+            }
+        }
+        
+        // Place order from chart
+        async function placeOrder(side) {
+            if (!serverPort) {
+                showError('Trading server not available');
+                return;
+            }
+            
+            try {
+                const orderType = document.getElementById('orderTypeSelect').value;
+                const quantity = parseInt(document.getElementById('quantityInput').value) || 1;
+                const limitPrice = parseFloat(document.getElementById('limitPriceInput').value) || null;
+                const stopPrice = parseFloat(document.getElementById('stopPriceInput').value) || null;
+                const enableBracket = document.getElementById('enableBracketCheck').checked;
+                const stopLossPrice = parseFloat(document.getElementById('stopLossPriceInput').value) || null;
+                const takeProfitPrice = parseFloat(document.getElementById('takeProfitPriceInput').value) || null;
+                
+                // Validate required fields
+                if (orderType === 'limit' && !limitPrice) {
+                    showError('Limit price required for limit orders');
+                    return;
+                }
+                if (orderType === 'stop' && !stopPrice) {
+                    showError('Stop price required for stop orders');
+                    return;
+                }
+                // Validate bracket prices - check both enableBracket checkbox and orderType === 'bracket'
+                if ((enableBracket || orderType === 'bracket') && (!stopLossPrice || !takeProfitPrice)) {
+                    showError('Stop loss and take profit prices required for bracket orders');
+                    return;
+                }
+                
+                const symbolSelect = document.getElementById('symbolSelect');
+                const orderSymbol = symbolSelect?.value || symbol;
+                
+                if (!orderSymbol || orderSymbol.trim() === '' || orderSymbol === 'UNKNOWN') {
+                    showError('Please select a symbol first');
+                    return;
+                }
+                
+                updateStatus(`Placing ${side} ${orderType} order...`);
+                
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/order`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: orderSymbol,
+                        side: side,
+                        quantity: quantity,
+                        order_type: orderType,
+                        limit_price: limitPrice,
+                        stop_price: stopPrice,
+                        stop_loss_price: stopLossPrice,
+                        take_profit_price: takeProfitPrice,
+                        enable_bracket: enableBracket
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.error) {
+                    showError(`Order failed: ${result.error}`);
+                } else {
+                    const orderId = result.get?.('order_id') || result.order_id || result.id || 'N/A';
+                    const orderTypeDisplay = orderType === 'bracket' ? 'Bracket' : orderType.charAt(0).toUpperCase() + orderType.slice(1);
+                    updateStatus(`✅ Order placed successfully!`);
+                    showToast('Order Placed', `${side} ${orderTypeDisplay} order placed successfully${orderId !== 'N/A' ? ' (ID: ' + orderId + ')' : ''}`, 'success');
+                    // Update position lines and order lines (force update, ignore throttle)
+                    lastPositionUpdate = 0; // Reset throttle to force update
+                    lastOrderUpdate = 0; // Reset throttle to force update
+                    lastStrategyLinesUpdate = 0;
+                    await updatePositionLines();
+                    await updateOrderLines();
+                    await updateStrategyBreakoutLines();
+                }
+            } catch (error) {
+                showError(`Order error: ${error.message}`);
+                console.error('Order placement error:', error);
+            }
+        }
+        
+        // Pre-fill prices with last traded price
+        async function prefillPrices() {
+            if (!serverPort) return;
+            
+            try {
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                const currentTf = document.getElementById('timeframeSelect')?.value || timeframe;
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/quote?symbol=${encodeURIComponent(currentSymbol)}&timeframe=${encodeURIComponent(currentTf)}`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const quote = data.quote;
+                if (!quote) return;
+                
+                const lastPrice = parseFloat(quote.last || quote.lastPrice || quote.bid || quote.ask || 0);
+                if (!lastPrice || lastPrice === 0) return;
+                
+                // Pre-fill all price inputs with last traded price
+                const limitInput = document.getElementById('limitPriceInput');
+                const stopInput = document.getElementById('stopPriceInput');
+                const stopLossInput = document.getElementById('stopLossPriceInput');
+                const takeProfitInput = document.getElementById('takeProfitPriceInput');
+                
+                // Only pre-fill if field is visible and empty
+                if (limitInput && limitInput.style.display !== 'none' && !limitInput.value) {
+                    limitInput.value = lastPrice.toFixed(2);
+                }
+                if (stopInput && stopInput.style.display !== 'none' && !stopInput.value) {
+                    stopInput.value = lastPrice.toFixed(2);
+                }
+                if (stopLossInput && stopLossInput.style.display !== 'none' && !stopLossInput.value) {
+                    stopLossInput.value = lastPrice.toFixed(2);
+                }
+                if (takeProfitInput && takeProfitInput.style.display !== 'none' && !takeProfitInput.value) {
+                    takeProfitInput.value = lastPrice.toFixed(2);
+                }
+            } catch (error) {
+                console.debug('Failed to pre-fill prices:', error);
+            }
+        }
+        
+        // Update order type UI visibility
+        function updateOrderType() {
+            const orderType = document.getElementById('orderTypeSelect').value;
+            const limitInput = document.getElementById('limitPriceInput');
+            const stopInput = document.getElementById('stopPriceInput');
+            const bracketCheck = document.getElementById('enableBracketCheck');
+            
+            if (orderType === 'limit') {
+                limitInput.style.display = 'inline-block';
+                stopInput.style.display = 'none';
+                bracketCheck.disabled = false;
+            } else if (orderType === 'stop') {
+                limitInput.style.display = 'none';
+                stopInput.style.display = 'inline-block';
+                bracketCheck.disabled = false;
+            } else if (orderType === 'bracket') {
+                limitInput.style.display = 'none';
+                stopInput.style.display = 'none';
+                bracketCheck.checked = true;
+                bracketCheck.disabled = true; // Bracket type always has brackets enabled
+            } else {
+                limitInput.style.display = 'none';
+                stopInput.style.display = 'none';
+                bracketCheck.disabled = false;
+            }
+            updateBracket(); // Also update bracket visibility
+            prefillPrices(); // Pre-fill prices when order type changes
+        }
+        
+        // Update bracket UI visibility
+        function updateBracket() {
+            const enableBracket = document.getElementById('enableBracketCheck').checked;
+            const slInput = document.getElementById('stopLossPriceInput');
+            const tpInput = document.getElementById('takeProfitPriceInput');
+            
+            if (enableBracket) {
+                slInput.style.display = 'inline-block';
+                tpInput.style.display = 'inline-block';
+            } else {
+                slInput.style.display = 'none';
+                tpInput.style.display = 'none';
+            }
+            prefillPrices(); // Pre-fill prices when bracket visibility changes
+        }
+        
+        // Load available contracts and populate symbol dropdown
+        async function loadContracts() {
+            if (!serverPort) {
+                console.log('No server port, skipping contract load');
+                return;
+            }
+            
+            try {
+                console.log('Loading contracts from server...');
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/contracts`);
+                if (!response.ok) {
+                    console.error('Failed to fetch contracts:', response.status);
+                    return;
+                }
+                const data = await response.json();
+                console.log('Contracts response:', data);
+                const symbols = data.symbols || [];
+                
+                if (symbols.length === 0) {
+                    console.warn('No symbols returned from contracts endpoint');
+                    return;
+                }
+                
+                const select = document.getElementById('symbolSelect');
+                if (!select) {
+                    console.error('Symbol select element not found');
+                    return;
+                }
+                
+                const currentValue = select.value || 'MNQ';
+                select.innerHTML = '';
+                
+                symbols.forEach(sym => {
+                    const option = document.createElement('option');
+                    option.value = sym;
+                    option.textContent = sym;
+                    if (sym === currentValue || (currentValue === 'MNQ' && sym === 'MNQ')) {
+                        option.selected = true;
+                    }
+                    select.appendChild(option);
+                });
+                
+                // If no symbol was selected and we have symbols, select the first one or the default
+                if (select.selectedIndex === -1 && symbols.length > 0) {
+                    const defaultSymbol = 'MNQ';
+                    const foundDefault = symbols.find(s => s === defaultSymbol);
+                    if (foundDefault) {
+                        select.value = foundDefault;
+                    } else {
+                        select.selectedIndex = 0;
+                    }
+                }
+                
+                console.log('Contracts loaded:', symbols.length, 'symbols');
+                // Pre-fill prices after contracts are loaded
+                prefillPrices();
+            } catch (error) {
+                console.error('Error loading contracts:', error);
+                updateStatus('Failed to load contracts: ' + error.message);
+            }
+        }
+        
+        // Pre-fill prices when symbol changes
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                const symbolSelect = document.getElementById('symbolSelect');
+                if (symbolSelect) {
+                    symbolSelect.addEventListener('change', prefillPrices);
+                }
+                // Initial pre-fill after a short delay
+                setTimeout(prefillPrices, 1000);
+            });
+        } else {
+            // DOM already loaded
+            const symbolSelect = document.getElementById('symbolSelect');
+            if (symbolSelect) {
+                symbolSelect.addEventListener('change', prefillPrices);
+            }
+            setTimeout(prefillPrices, 1000);
+        }
+        
+        // Reload chart data for new symbol/timeframe
+        async function reloadChartData() {
+            if (!serverPort || !chart || !candlestickSeries) return;
+            
+            const symbolSelect = document.getElementById('symbolSelect');
+            const newSymbol = symbolSelect?.value || 'MNQ';
+            const newTimeframe = document.getElementById('timeframeSelect').value || '1m';
+            
+            if (!newSymbol || newSymbol.trim() === '') {
+                showError('Please select a symbol first');
+                return;
+            }
+            
+            updateStatus(`Loading ${newSymbol} ${newTimeframe}...`);
+            
+            try {
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/reload?symbol=${encodeURIComponent(newSymbol)}&timeframe=${encodeURIComponent(newTimeframe)}&limit=3500&source=auto`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(`Failed to reload: ${data.error}`);
+                    return;
+                }
+                
+                if (!data.bars || data.bars.length === 0) {
+                    showError('No data available for this symbol/timeframe');
+                    return;
+                }
+                
+                const rawFull = data.bars.map(bar => ({
+                    time: Number(bar.time),
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                    volume: bar.volume,
+                }));
+                const byT = new Map();
+                for (let i = 0; i < rawFull.length; i++) {
+                    const b = rawFull[i];
+                    if (!isFinite(b.time)) continue;
+                    byT.set(b.time, b);
+                }
+                const times = Array.from(byT.keys()).sort((a, b) => a - b);
+                const chartBars = times.map((k) => {
+                    const b = byT.get(k);
+                    return {
+                        time: k,
+                        open: b.open,
+                        high: b.high,
+                        low: b.low,
+                        close: b.close,
+                    };
+                });
+                
+                candlestickSeries.setData(chartBars);
+                
+                // Update volume if available
+                if (volumeSeries && data.bars[0].volume !== undefined) {
+                    const volumeBars = times.map((k) => {
+                        const b = byT.get(k);
+                        return {
+                            time: k,
+                            value: parseInt(b.volume, 10) || 0,
+                            color: parseFloat(b.close) >= parseFloat(b.open) ? '#26a69a80' : '#ef535080'
+                        };
+                    });
+                    volumeSeries.setData(volumeBars);
+                }
+                
+                // Update chart title
+                document.querySelector('.header h1').textContent = `${newSymbol} ${newTimeframe} Chart`;
+                
+                // Fit content to show all bars
+                chart.timeScale().fitContent();
+                
+                // Update position and order lines after chart is initialized
+                setTimeout(async () => {
+                    console.log('Initializing position/order lines after chart load...');
+                    lastPositionUpdate = 0; // Reset throttle to force update
+                    lastOrderUpdate = 0; // Reset throttle to force update
+                    lastStrategyLinesUpdate = 0;
+                    await updatePositionLines();
+                    await updateOrderLines();
+                    await updateStrategyBreakoutLines();
+                    
+                    // Note: Position/order lines are event-based only (refresh on order placement/fill)
+                }, 1000);
+                
+                updateStatus(`✅ Chart updated: ${data.bars.length} bars`);
+            } catch (error) {
+                showError(`Error reloading chart: ${error.message}`);
+                console.error('Reload error:', error);
+            }
+        }
+        
+        // Update symbol (reload chart data)
+        function updateSymbol() {
+            reloadChartData();
+        }
+        
+        // Update timeframe (reload chart data)
+        function updateTimeframe() {
+            reloadChartData();
+        }
+        
+        // Update position lines on chart (using price lines like TradingChart.tsx)
+        async function updatePositionLines() {
+            if (!serverPort || !chart || !candlestickSeries) {
+                console.log('updatePositionLines: Missing requirements', {
+                    serverPort: !!serverPort,
+                    chart: !!chart,
+                    candlestickSeries: !!candlestickSeries
+                });
+                return;
+            }
+            
+            // Throttle updates to prevent rate limiting
+            const now = Date.now();
+            if (now - lastPositionUpdate < POSITION_UPDATE_INTERVAL) {
+                console.debug('updatePositionLines: Throttled');
+                return; // Skip if called too soon
+            }
+            lastPositionUpdate = now;
+            
+            try {
+                // Remove existing position price lines
+                positionPriceLines.forEach(line => {
+                    try {
+                        candlestickSeries.removePriceLine(line);
+                    } catch (e) {
+                        console.debug('Error removing position price line:', e);
+                    }
+                });
+                positionPriceLines = [];
+                
+                console.log('Fetching positions from server...');
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/positions`);
+                if (!response.ok) {
+                    console.error('Failed to fetch positions:', response.status, response.statusText);
+                    return;
+                }
+                const data = await response.json();
+                const positions = data.positions || [];
+                console.log('📋 Raw positions from API:', positions.length, positions);
+                
+                // Find position for current symbol (exact match like TradingChart.tsx)
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                console.log('🔍 Looking for position with symbol:', currentSymbol);
+                console.log('📊 Available positions:', positions.map(p => ({
+                    id: p.id,
+                    symbol: p.symbol,
+                    side: p.side,
+                    quantity: p.quantity,
+                    entry_price: p.entry_price,
+                    contractId: p.contractId
+                })));
+                
+                // Simple exact match like TradingChart.tsx: pos.symbol === symbol
+                const position = positions.find(p => {
+                    const posSymbol = p.symbol;
+                    const matchesSymbol = posSymbol && posSymbol.toUpperCase() === currentSymbol.toUpperCase();
+                    const hasQuantity = (p.quantity || p.size || 0) !== 0;
+                    
+                    if (matchesSymbol && hasQuantity) {
+                        console.log('Found matching position:', p);
+                        return true;
+                    }
+                    return false;
+                });
+                
+                if (!position) {
+                    console.log('No position found for symbol:', currentSymbol, 'Available positions:', positions.map(p => ({
+                        symbol: p.symbol,
+                        contractId: p.contractId,
+                        contract_id: p.contract_id,
+                        quantity: p.quantity,
+                        size: p.size
+                    })));
+                    return;
+                }
+                
+                console.log('Processing position:', position);
+                
+                // Extract values exactly like TradingChart.tsx
+                const entryPrice = Number(position.entry_price || position.entryPrice || 0);
+                if (!entryPrice || !isFinite(entryPrice)) {
+                    console.warn('Entry price is invalid:', entryPrice, 'Position:', position);
+                    return;
+                }
+                
+                const isLong = position.side === 'LONG';
+                const quantity = Number(position.quantity ?? position.size ?? 0);
+                
+                console.log('Position values:', {
+                    entryPrice,
+                    quantity,
+                    isLong,
+                    side: position.side
+                });
+                
+                // Extract stop loss and take profit if available
+                const stopLoss = position.stop_loss || position.stopLoss;
+                const takeProfit = position.take_profit || position.takeProfit;
+                
+                // Add entry price line (exactly like TradingChart.tsx)
+                try {
+                    console.log('Creating entry price line at:', entryPrice);
+                    const entryLine = candlestickSeries.createPriceLine({
+                        price: entryPrice,
+                        color: isLong ? '#26A69A' : '#EF5350',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `${position.side} ${quantity}@${entryPrice.toFixed(2)}`
+                    });
+                    positionPriceLines.push(entryLine);
+                    console.log('✅ Entry price line created successfully');
+                } catch (error) {
+                    console.error('❌ Error creating entry price line:', error);
+                }
+                
+                // Add stop loss price line if available
+                if (stopLoss && Number(stopLoss) > 0) {
+                    try {
+                        const stopLine = candlestickSeries.createPriceLine({
+                            price: Number(stopLoss),
+                            color: '#EF5350',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Dashed,
+                            axisLabelVisible: true,
+                            title: `Stop Loss: ${Number(stopLoss).toFixed(2)}`
+                        });
+                        positionPriceLines.push(stopLine);
+                        console.log('✅ Stop loss line created at:', stopLoss);
+                    } catch (error) {
+                        console.error('❌ Error creating stop loss price line:', error);
+                    }
+                }
+                
+                // Add take profit price line if available
+                if (takeProfit && Number(takeProfit) > 0) {
+                    try {
+                        const tpLine = candlestickSeries.createPriceLine({
+                            price: Number(takeProfit),
+                            color: '#26A69A',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Dashed,
+                            axisLabelVisible: true,
+                            title: `Take Profit: ${Number(takeProfit).toFixed(2)}`
+                        });
+                        positionPriceLines.push(tpLine);
+                        console.log('✅ Take profit line created at:', takeProfit);
+                    } catch (error) {
+                        console.error('❌ Error creating take profit price line:', error);
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating position lines:', error);
+            }
+        }
+        
+        // Update order lines on chart
+        async function updateOrderLines() {
+            if (!serverPort || !chart || !candlestickSeries) return;
+            
+            // Throttle updates to prevent rate limiting
+            const now = Date.now();
+            if (now - lastOrderUpdate < ORDER_UPDATE_INTERVAL) {
+                return; // Skip if called too soon
+            }
+            lastOrderUpdate = now;
+            
+            try {
+                // Remove existing order price lines
+                orderPriceLines.forEach(line => {
+                    try {
+                        candlestickSeries.removePriceLine(line);
+                    } catch (e) {
+                        console.debug('Error removing order price line:', e);
+                    }
+                });
+                orderPriceLines = [];
+                
+                // Fetch open orders
+                const response = await fetch(`http://127.0.0.1:${serverPort}/api/chart/orders`);
+                if (!response.ok) {
+                    console.debug('Failed to fetch orders:', response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                const orders = data.orders || [];
+                
+                console.log('📋 Raw orders from API:', orders.length, orders);
+                
+                // Find orders for current symbol (exactly like TradingChart.tsx)
+                const currentSymbol = document.getElementById('symbolSelect')?.value || symbol;
+                console.log('🔍 Filtering orders for symbol:', currentSymbol);
+                
+                const relevantOrders = orders.filter(o => {
+                    // Extract symbol from multiple possible fields
+                    const orderSymbol = o.symbol || o.contractId?.split('.')?.[2] || o.symbolId?.split('.')?.[2] || '';
+                    const matchesSymbol = orderSymbol && orderSymbol.toUpperCase() === currentSymbol.toUpperCase();
+                    
+                    // Accept PENDING, OPEN, or status 1 (all mean open/pending)
+                    // Also accept numeric status 1 or string '1'
+                    const status = o.status;
+                    const isPending = status === 'PENDING' || 
+                                    status === 'OPEN' || 
+                                    status === 'Open' || 
+                                    status === 1 || 
+                                    status === '1' ||
+                                    String(status).toUpperCase() === 'OPEN' ||
+                                    String(status).toUpperCase() === 'PENDING';
+                    
+                    // Check for any price field (price, stop_price, limitPrice, stopPrice)
+                    // Also check for null/undefined explicitly
+                    const price = o.price;
+                    const stop_price = o.stop_price;
+                    const limitPrice = o.limitPrice || o.limit_price;
+                    const stopPrice = o.stopPrice;
+                    const hasPrice = (price != null && price !== 0 && price !== '0') || 
+                                   (stop_price != null && stop_price !== 0 && stop_price !== '0') || 
+                                   (limitPrice != null && limitPrice !== 0 && limitPrice !== '0') || 
+                                   (stopPrice != null && stopPrice !== 0 && stopPrice !== '0');
+                    
+                    const shouldInclude = matchesSymbol && isPending && hasPrice;
+                    
+                    if (!shouldInclude) {
+                        console.warn('❌ Filtered out order:', {
+                            id: o.id,
+                            symbol: orderSymbol,
+                            currentSymbol: currentSymbol,
+                            matchesSymbol,
+                            status: status,
+                            isPending,
+                            price: price,
+                            stop_price: stop_price,
+                            limitPrice: limitPrice,
+                            stopPrice: stopPrice,
+                            hasPrice,
+                            fullOrder: o
+                        });
+                    } else {
+                        console.log('✅ Including order:', {
+                            id: o.id,
+                            symbol: orderSymbol,
+                            side: o.side,
+                            type: o.type,
+                            price: price || stop_price || limitPrice || stopPrice
+                        });
+                    }
+                    return shouldInclude;
+                });
+                
+                console.log('📊 Relevant orders for', currentSymbol, ':', relevantOrders.length, 'out of', orders.length);
+                console.log('📋 Relevant orders details:', relevantOrders.map(o => ({
+                    id: o.id,
+                    symbol: o.symbol,
+                    side: o.side,
+                    type: o.type,
+                    status: o.status,
+                    price: o.price,
+                    stop_price: o.stop_price,
+                    limitPrice: o.limitPrice,
+                    stopPrice: o.stopPrice
+                })));
+                
+                // Add price lines for each order (exactly like TradingChart.tsx)
+                relevantOrders.forEach(order => {
+                    // Use stopPrice/stop_price for STOP orders, price/limitPrice for LIMIT orders
+                    const orderTypeNum = order.type;
+                    let orderPrice = null;
+                    
+                    console.log('🔍 Processing order:', {
+                        id: order.id,
+                        type: orderTypeNum,
+                        price: order.price,
+                        stop_price: order.stop_price,
+                        limitPrice: order.limitPrice,
+                        stopPrice: order.stopPrice
+                    });
+                    
+                    if (orderTypeNum === 4 || orderTypeNum === 'STOP' || order.type === 'STOP') {
+                        // STOP order - use stopPrice/stop_price first
+                        orderPrice = order.stopPrice || order.stop_price || order.price || order.limitPrice || order.limit_price;
+                    } else {
+                        // LIMIT or other order - use price/limitPrice first
+                        orderPrice = order.price || order.limitPrice || order.limit_price || order.stopPrice || order.stop_price;
+                    }
+                    
+                    // Convert to number and validate
+                    const priceNum = Number(orderPrice);
+                    if (!orderPrice || priceNum === 0 || !isFinite(priceNum) || isNaN(priceNum)) {
+                        console.warn('❌ Skipping order with no valid price:', {
+                            id: order.id,
+                            orderPrice: orderPrice,
+                            priceNum: priceNum,
+                            order: order
+                        });
+                        return;
+                    }
+                    
+                    console.log('✅ Order has valid price:', {
+                        id: order.id,
+                        orderPrice: priceNum,
+                        type: orderTypeNum
+                    });
+                    
+                    const isLongOrder = order.side === 'BUY';
+                    // Convert numeric order type to string (1=LIMIT, 4=STOP, etc.)
+                    let orderType = order.type;
+                    if (typeof orderType === 'number') {
+                        orderType = orderType == 1 ? 'LIMIT' : orderType == 4 ? 'STOP' : 'ORDER';
+                    } else {
+                        orderType = orderType || 'LIMIT';
+                    }
+                    const isStopOrder = orderType === 'STOP' || order.stop_price || order.stopPrice;
+                    
+                    try {
+                        // Use the validated numeric price
+                        const finalPrice = priceNum;
+                        console.log('🎨 Creating order price line at:', finalPrice, 'Type:', orderType);
+                        
+                        // Ensure quantity is a number and format label correctly
+                        const qty = Number(order.quantity || order.size || 1);
+                        // orderType is already converted to string above, so just use it directly
+                        const label = `${order.side} ${qty} ${orderType}`;
+                        console.log('📝 Order label:', label, 'qty:', qty, 'orderType:', orderType, 'price:', finalPrice);
+                        
+                        const priceLine = candlestickSeries.createPriceLine({
+                            price: finalPrice,
+                            color: isLongOrder ? '#10B981' : '#F59E0B',
+                            lineWidth: 2,
+                            lineStyle: isStopOrder ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+                            axisLabelVisible: true,
+                            title: label
+                        });
+                        orderPriceLines.push(priceLine);
+                        console.log('✅ Order price line created successfully:', {
+                            id: order.id,
+                            price: finalPrice,
+                            label: label,
+                            side: order.side,
+                            type: orderType
+                        });
+                    } catch (error) {
+                        console.error('❌ Error creating order price line:', error, 'Order:', order);
+                    }
+                });
+            } catch (error) {
+                console.error('Error updating order lines:', error);
+            }
+        }
+        
+        async function updateStrategyBreakoutLines() {
+            if (!serverPort || !chart || !candlestickSeries) {
+                return;
+            }
+            const nowMs = Date.now();
+            if (nowMs - lastStrategyLinesUpdate < STRATEGY_LINES_INTERVAL) {
+                return;
+            }
+            lastStrategyLinesUpdate = nowMs;
+            try {
+                strategyPriceLines.forEach(line => {
+                    try {
+                        candlestickSeries.removePriceLine(line);
+                    } catch (e) {
+                        console.debug('Error removing strategy price line:', e);
+                    }
+                });
+                strategyPriceLines = [];
+                const currentSymbol = (document.getElementById('symbolSelect')?.value || symbol || '').toUpperCase();
+                const stResp = await fetch(`http://127.0.0.1:${serverPort}/api/chart/strategy/status`);
+                if (!stResp.ok) return;
+                const st = await stResp.json();
+                const activeNames = st.active || [];
+                if (!Array.isArray(activeNames) || !activeNames.includes('overnight_range')) {
+                    return;
+                }
+                const detResp = await fetch(`http://127.0.0.1:${serverPort}/api/chart/strategy/details/overnight_range`);
+                if (!detResp.ok) return;
+                const d = await detResp.json();
+                if (d.error || !d.breakout_levels) return;
+                const levels = d.breakout_levels[currentSymbol];
+                const rg = (d.ranges && d.ranges[currentSymbol]) ? d.ranges[currentSymbol] : null;
+                function addLine(price, color, title, styleName) {
+                    const p = Number(price);
+                    if (!isFinite(p) || p <= 0) return;
+                    let ls = LightweightCharts.LineStyle.Solid;
+                    if (styleName === 'dotted') ls = LightweightCharts.LineStyle.Dotted;
+                    else if (styleName === 'dashed') ls = LightweightCharts.LineStyle.Dashed;
+                    const pl = candlestickSeries.createPriceLine({
+                        price: p,
+                        color: color,
+                        lineWidth: 2,
+                        lineStyle: ls,
+                        axisLabelVisible: true,
+                        title: title
+                    });
+                    strategyPriceLines.push(pl);
+                }
+                if (rg) {
+                    if (rg.high != null) addLine(rg.high, '#AB47BC', 'OR High', 'solid');
+                    if (rg.low != null) addLine(rg.low, '#AB47BC', 'OR Low', 'solid');
+                }
+                if (levels) {
+                    if (levels.long_entry != null) addLine(levels.long_entry, '#22C55E', 'OR Long', 'solid');
+                    if (levels.long_stop != null) addLine(levels.long_stop, '#EF4444', 'OR L SL', 'dotted');
+                    if (levels.long_tp != null) addLine(levels.long_tp, '#86EFAC', 'OR L TP', 'dashed');
+                    if (levels.short_entry != null) addLine(levels.short_entry, '#F59E0B', 'OR Short', 'solid');
+                    if (levels.short_stop != null) addLine(levels.short_stop, '#F87171', 'OR S SL', 'dotted');
+                    if (levels.short_tp != null) addLine(levels.short_tp, '#FBBF24', 'OR S TP', 'dashed');
+                }
+            } catch (err) {
+                console.debug('updateStrategyBreakoutLines:', err);
+            }
+        }
+        
+        // Export data to CSV
+        function exportData() {
+            try {
+                const csv = [
+                    ['Time', 'Open', 'High', 'Low', 'Close', 'Volume'].join(','),
+                    ...chartData.map(bar => {
+                        const date = new Date(bar.time * 1000);
+                        return [
+                            date.toISOString(),
+                            bar.open,
+                            bar.high,
+                            bar.low,
+                            bar.close,
+                            bar.volume
+                        ].join(',');
+                    })
+                ].join('\n');
+                
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'MNQ_1m_20260619_142008.csv';
+                a.click();
+                window.URL.revokeObjectURL(url);
+                updateStatus('CSV exported');
+            } catch (error) {
+                showError('Export error: ' + error.message);
+            }
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (chart && chartContainer) {
+                chart.applyOptions({ width: chartContainer.clientWidth });
+            } else if (chart) {
+                // Fallback: get container again if not in scope
+                const container = document.getElementById('chart-container');
+                if (container) {
+                    chart.applyOptions({ width: container.clientWidth });
+                }
+            }
+        });
+    </script>
+</body>
+</html>

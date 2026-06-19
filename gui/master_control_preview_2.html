@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Master · Preview 2 (Bound Paper)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root{
+    --bg:#15171a;
+    --bg-soft:#181a1d;
+    --ink:#e9e5dd;
+    --muted:#8e8a82;
+    --hairline:rgba(142,138,130,.20);
+    --hairline-strong:rgba(142,138,130,.34);
+    --moss:#9bb39a;
+    --rose:#b88a82;
+    --linen:#c9b387;
+    --accent:#8aa39b;
+    --canvas:#101214;
+    --col:1240px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink)}
+  body{
+    font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
+    font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .num{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-feature-settings:'tnum','zero';letter-spacing:-.01em}
+  .pos{color:var(--moss)} .neg{color:var(--rose)} .warn{color:var(--linen)}
+  .col{max-width:var(--col);margin:0 auto;padding:0 28px}
+  /* variant switcher */
+  .vs{
+    position:fixed;top:14px;right:18px;z-index:50;
+    display:flex;gap:2px;
+    background:color-mix(in oklab,var(--bg) 75%,transparent);
+    backdrop-filter:blur(10px);
+    border:1px solid var(--hairline);
+    border-radius:999px;padding:3px;
+    font-family:'JetBrains Mono',monospace;font-size:10px;
+  }
+  .vs a{color:var(--muted);text-decoration:none;padding:4px 10px;border-radius:999px;letter-spacing:.04em}
+  .vs a:hover{color:var(--ink)}
+  .vs a.on{background:var(--ink);color:var(--bg)}
+  /* sticky stat strip */
+  .strip-wrap{
+    position:sticky;top:0;z-index:30;
+    background:color-mix(in oklab,var(--bg) 88%,transparent);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip{
+    display:flex;align-items:center;gap:28px;
+    padding:14px 0;
+  }
+  .strip .acct{display:flex;align-items:center;gap:10px;padding-right:28px;border-right:1px solid var(--hairline)}
+  .strip .acct .label{font-size:9px;text-transform:uppercase;letter-spacing:.22em;color:var(--muted)}
+  .strip .acct select{
+    background:transparent;border:0;color:var(--ink);
+    font-family:inherit;font-size:13px;padding:0 12px 0 0;cursor:pointer;outline:none;appearance:none;
+    background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+    background-position:calc(100% - 6px) 6px,calc(100% - 2px) 6px;
+    background-size:4px 4px,4px 4px;background-repeat:no-repeat;
+  }
+  .strip .kpi{display:flex;flex-direction:column;gap:2px}
+  .strip .kpi .k{font-size:9px;text-transform:uppercase;letter-spacing:.22em;color:var(--muted)}
+  .strip .kpi .v{font-family:'JetBrains Mono',monospace;font-size:14px;font-feature-settings:'tnum'}
+  .strip .spacer{flex:1}
+  .strip .meta{display:flex;align-items:center;gap:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.18em}
+  .strip .dot{width:6px;height:6px;border-radius:50%;background:var(--moss);display:inline-block;margin-right:6px;vertical-align:middle}
+  /* sections */
+  main{padding:28px 0 80px}
+  .card{
+    background:var(--bg-soft);
+    border:1px solid var(--hairline);
+    margin-bottom:20px;
+  }
+  .card-head{
+    display:flex;align-items:baseline;justify-content:space-between;
+    padding:14px 22px;border-bottom:1px solid var(--hairline);
+  }
+  .card-head h2{
+    margin:0;font-family:'Instrument Sans',sans-serif;font-weight:500;
+    font-size:11px;text-transform:uppercase;letter-spacing:.22em;color:var(--ink);
+  }
+  .card-head .meta{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted)}
+  .card-head select{
+    background:transparent;border:0;color:var(--muted);
+    font-family:inherit;font-size:11px;padding:2px 4px;outline:none;cursor:pointer;
+  }
+  .card-body{padding:20px 22px}
+  /* chart card has no body padding */
+  .card.chart-card .card-body{padding:0}
+  .chart-controls{
+    display:flex;align-items:center;gap:14px;
+    padding:10px 22px;border-bottom:1px solid var(--hairline);
+    font-size:11px;color:var(--muted);
+  }
+  .chart-controls .group{display:flex;align-items:baseline;gap:6px}
+  .chart-controls .group .k{font-size:9px;text-transform:uppercase;letter-spacing:.18em}
+  .chart-controls select,.chart-controls input{
+    background:transparent;border:0;border-bottom:1px solid var(--hairline-strong);
+    color:var(--ink);font-family:inherit;font-size:12px;padding:2px 4px;outline:none;cursor:pointer;
+  }
+  .chart-controls select:focus{border-bottom-color:var(--accent)}
+  .chart-controls .last{margin-left:auto;display:flex;gap:14px;align-items:baseline;font-family:'JetBrains Mono',monospace;font-size:11px}
+  .chart-controls .last .lp{color:var(--ink);font-size:14px}
+  .chart-controls .ohlc{font-family:'JetBrains Mono',monospace;color:var(--muted)}
+  .chart-controls .ohlc b{color:var(--ink);font-weight:500}
+  #chart{height:380px;width:100%;background:var(--canvas)}
+  .trade-row{display:flex;gap:8px;padding:12px 22px;border-top:1px solid var(--hairline);align-items:center;font-size:11px}
+  .trade-row .qty{
+    background:transparent;border:1px solid var(--hairline-strong);color:var(--ink);
+    border-radius:4px;font-family:'JetBrains Mono',monospace;width:54px;text-align:center;font-size:12px;padding:5px 6px;
+  }
+  .trade-row select{background:transparent;border:1px solid var(--hairline-strong);color:var(--ink);border-radius:4px;font-size:11px;padding:5px 8px}
+  .trade-row label{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+  .trade-row .btn{
+    border:0;border-radius:4px;font-size:11px;font-weight:500;padding:6px 16px;cursor:pointer;
+    font-family:inherit;letter-spacing:.04em;
+  }
+  .trade-row .buy{background:var(--moss);color:#0e1311}
+  .trade-row .sell{background:var(--rose);color:#1a0c0a}
+  .trade-row .ghost{background:transparent;color:var(--muted);border:1px solid var(--hairline-strong)}
+  .trade-row .spacer{flex:1}
+  /* activity 2-col */
+  .activity{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .activity > div{padding:0}
+  .activity > div + div{border-left:1px solid var(--hairline)}
+  .activity h3{
+    margin:0;padding:14px 22px;font-size:9px;text-transform:uppercase;letter-spacing:.22em;
+    color:var(--muted);font-weight:500;border-bottom:1px solid var(--hairline);
+  }
+  .card.activity-card .card-body{padding:0}
+  table.list{width:100%;border-collapse:collapse;font-size:12px}
+  table.list th{
+    text-align:left;font-weight:400;color:var(--muted);
+    font-size:9px;text-transform:uppercase;letter-spacing:.18em;
+    padding:10px 22px;border-bottom:1px solid var(--hairline);
+  }
+  table.list td{padding:10px 22px;border-bottom:1px solid var(--hairline);font-size:12px}
+  table.list tbody tr:last-child td{border-bottom:0}
+  table.list .empty{color:var(--muted);font-style:italic;padding:18px 22px}
+  table.list .right{text-align:right}
+  /* kpi grid */
+  .kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:0;border-top:1px solid var(--hairline)}
+  .kpi-grid .cell{padding:18px 22px;border-right:1px solid var(--hairline)}
+  .kpi-grid .cell:last-child{border-right:0}
+  .kpi-grid .k{font-size:9px;text-transform:uppercase;letter-spacing:.22em;color:var(--muted);margin-bottom:6px}
+  .kpi-grid .v{font-family:'JetBrains Mono',monospace;font-size:18px;font-feature-settings:'tnum'}
+  .equity-wrap{padding:0 22px 18px;border-top:1px solid var(--hairline);background:var(--bg-soft)}
+  .equity-wrap .lbl{font-size:9px;text-transform:uppercase;letter-spacing:.22em;color:var(--muted);padding:14px 0 6px}
+  #equity{height:90px;width:100%;background:transparent}
+  /* trades table */
+  .trades-table{font-size:11.5px}
+  .trades-table th,.trades-table td{padding:7px 22px}
+  .trades-table tbody tr:hover{background:rgba(255,255,255,.02)}
+  .side-tag{font-size:9px;font-weight:600;letter-spacing:.12em;padding:1px 6px;border-radius:2px}
+  .side-tag.buy{color:var(--moss);background:rgba(155,179,154,.1)}
+  .side-tag.sell{color:var(--rose);background:rgba(184,138,130,.1)}
+  /* terminal collapsed */
+  .drawer-toggle{
+    display:flex;align-items:center;gap:10px;cursor:pointer;
+    font-size:10px;text-transform:uppercase;letter-spacing:.22em;color:var(--muted);
+    padding:14px 22px;border-bottom:1px solid var(--hairline);
+  }
+  .drawer-toggle .chev{display:inline-block;transition:transform .2s}
+  .drawer.open .drawer-toggle .chev{transform:rotate(90deg)}
+  .drawer-body{display:none}
+  .drawer.open .drawer-body{display:block}
+  .term{
+    font-family:'JetBrains Mono',monospace;font-size:11px;
+    background:var(--canvas);border:0;
+    padding:14px 22px;color:var(--ink);max-height:220px;overflow-y:auto;
+  }
+  .term .info{color:var(--muted)} .term .ok{color:var(--moss)} .term .err{color:var(--rose)}
+  /* strategies */
+  .strat-row{display:grid;grid-template-columns:1.4fr 1fr 1fr auto;gap:18px;align-items:end;padding:0 22px 18px}
+  .strat-row label{display:flex;flex-direction:column;gap:6px;font-size:9px;text-transform:uppercase;letter-spacing:.22em;color:var(--muted)}
+  .strat-row select,.strat-row input{
+    background:transparent;border:0;border-bottom:1px solid var(--hairline-strong);
+    color:var(--ink);font-family:inherit;font-size:13px;padding:4px 0;outline:none;
+  }
+  .strat-row select:focus,.strat-row input:focus{border-bottom-color:var(--accent)}
+  .strat-row button{
+    background:var(--ink);color:var(--bg);border:0;border-radius:4px;
+    font-family:inherit;font-size:11px;font-weight:500;padding:9px 18px;cursor:pointer;letter-spacing:.04em;
+  }
+</style>
+</head>
+<body>
+<nav class="vs" aria-label="Variant switcher">
+  <a href="/master/preview/1">P1 Pure</a>
+  <a class="on" href="/master/preview/2">P2 Bound</a>
+  <a href="/master/preview/3">P3 Reading</a>
+  <a href="/master/preview/4">P4 White</a>
+  <a href="/master/preview/5">P5 Atelier</a>
+  <a href="/master/preview/6">P6 Quiet</a>
+  <a href="/master" style="margin-left:6px;border-left:1px solid var(--hairline);padding-left:14px">Live</a>
+</nav>
+
+<div class="strip-wrap">
+  <header class="strip col">
+    <div class="acct">
+      <span class="label">Account</span>
+      <select>
+        <option>PRAC-V2-14334-54471239</option>
+        <option>50KTC-V2-DLL-14334-93778375</option>
+        <option>100KTC-V2-14334-46935626</option>
+      </select>
+    </div>
+    <div class="kpi"><span class="k">Balance</span><span class="v">$152,081.93</span></div>
+    <div class="kpi"><span class="k">Unrealized</span><span class="v">$0.00</span></div>
+    <div class="kpi"><span class="k">Realized</span><span class="v neg">−$63.24</span></div>
+    <div class="kpi"><span class="k">Open</span><span class="v">0 / 0</span></div>
+    <div class="spacer"></div>
+    <div class="meta"><span class="dot"></span>Connected · 0:08</div>
+  </header>
+</div>
+
+<main class="col">
+  <article class="card chart-card">
+    <div class="card-head">
+      <h2>Chart</h2>
+      <span class="meta">MNQ · 5m · Last 1 week</span>
+    </div>
+    <div class="card-body">
+      <div class="chart-controls">
+        <div class="group"><span class="k">Symbol</span>
+          <select><option>MNQ</option><option>MES</option><option>MGC</option></select>
+        </div>
+        <div class="group"><span class="k">TF</span>
+          <select><option>1m</option><option selected>5m</option><option>15m</option><option>1h</option></select>
+        </div>
+        <div class="group"><span class="k">Range</span>
+          <select><option>Auto</option><option selected>Last 1 week</option><option>Last 1 month</option></select>
+        </div>
+        <div class="last">
+          <div class="ohlc"><b>O</b> 29944.5 <b>H</b> 29986.0 <b>L</b> 29928.0 <b>C</b> 29970.25</div>
+          <div class="lp num">29,970.25</div>
+        </div>
+      </div>
+      <div id="chart"></div>
+      <div class="trade-row">
+        <select><option>Market</option><option>Limit</option><option>Stop</option></select>
+        <input class="qty" value="1">
+        <label><input type="checkbox" checked> Bracket</label>
+        <button class="btn buy">Buy</button>
+        <button class="btn sell">Sell</button>
+        <div class="spacer"></div>
+        <button class="btn ghost">Cancel</button>
+        <button class="btn ghost">Flatten</button>
+      </div>
+    </div>
+  </article>
+
+  <article class="card activity-card">
+    <div class="card-head"><h2>Active</h2><span class="meta">0 positions · 0 orders</span></div>
+    <div class="card-body activity">
+      <div>
+        <h3>Positions</h3>
+        <table class="list">
+          <thead><tr><th>Symbol</th><th>Side</th><th class="right">Qty</th><th class="right">Entry</th><th class="right">P&amp;L</th></tr></thead>
+          <tbody><tr><td colspan="5" class="empty">No open positions</td></tr></tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Orders</h3>
+        <table class="list">
+          <thead><tr><th>Symbol</th><th>Side</th><th class="right">Qty</th><th class="right">Price</th><th>Type</th></tr></thead>
+          <tbody><tr><td colspan="5" class="empty">No working orders</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </article>
+
+  <article class="card">
+    <div class="card-head">
+      <h2>Performance</h2>
+      <select><option>Today</option><option>7 days</option><option selected>30 days</option><option>90 days</option><option>1 year</option><option>All</option></select>
+    </div>
+    <div class="kpi-grid">
+      <div class="cell"><div class="k">Trades</div><div class="v">82</div></div>
+      <div class="cell"><div class="k">Win rate</div><div class="v">59.8%</div></div>
+      <div class="cell"><div class="k">Net P&amp;L</div><div class="v pos">+$2,440.93</div></div>
+      <div class="cell"><div class="k">Avg trade</div><div class="v">$29.77</div></div>
+      <div class="cell"><div class="k">Max DD</div><div class="v warn">12.0%</div></div>
+      <div class="cell"><div class="k">Profit factor</div><div class="v">1.07</div></div>
+    </div>
+    <div class="equity-wrap">
+      <div class="lbl">Equity Curve · 30d</div>
+      <div id="equity"></div>
+    </div>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>Trades</h2><span class="meta">82 trades · 30 days</span></div>
+    <table class="list trades-table">
+      <thead><tr><th>#</th><th>Side</th><th>Entry</th><th>Exit</th><th class="right">Entry px</th><th class="right">Exit px</th><th class="right">Pts</th><th class="right">P&amp;L</th><th class="right">Cum P&amp;L</th></tr></thead>
+      <tbody id="trades-body"></tbody>
+    </table>
+  </article>
+
+  <article class="card">
+    <div class="card-head"><h2>Strategies</h2><span class="meta">no active strategies</span></div>
+    <div class="card-body" style="padding:18px 0 0">
+      <div class="strat-row">
+        <label>Strategy
+          <select><option>Overnight Range</option><option>Trend Scalping</option><option>Mean Reversion</option><option>Trend Following</option><option>Simple Momentum</option></select>
+        </label>
+        <label>Symbols
+          <input value="MNQ">
+        </label>
+        <label>Timeframe
+          <select><option>5s</option><option>15s</option><option>30s</option><option>1m</option><option selected>5m</option><option>15m</option><option>30m</option><option>1h</option></select>
+        </label>
+        <button>Start</button>
+      </div>
+    </div>
+  </article>
+
+  <article class="card drawer" id="drawer">
+    <div class="drawer-toggle" onclick="document.getElementById('drawer').classList.toggle('open')">
+      <span class="chev">▸</span> Terminal · 14 logs
+    </div>
+    <div class="drawer-body">
+      <div class="term">
+<span class="info">2026-06-12 18:38:29  📌 Default MNQ contract: CON.F.US.MNQ.U26</span><br>
+<span class="info">2026-06-12 18:38:29  Master server listening on :56909</span><br>
+<span class="ok">2026-06-12 18:38:30  ✅ Connected to TopStepX user hub</span><br>
+<span class="ok">2026-06-12 18:38:30  ✅ Connected to TopStepX market hub</span><br>
+<span class="info">2026-06-12 18:38:30  Strategy registry loaded: 6 strategies</span><br>
+<span class="info">2026-06-12 18:38:32  Account state: PRAC-V2-14334-54471239 ($152,081.93)</span><br>
+<span class="info">2026-06-12 18:39:01  Bar 5m MNQ closed @ 29950.25 (vol 142)</span><br>
+<span class="info">2026-06-12 18:39:30  Risk: 0/3 daily trades, 0/2 pending</span><br>
+<span class="info">2026-06-12 18:40:00  Bar 5m MNQ closed @ 29948.00 (vol 96)</span><br>
+      </div>
+    </div>
+  </article>
+</main>
+
+<script>
+  const N=180;const start=29900;const out=[];let p=start;let t=Math.floor(Date.now()/1000)-N*300;
+  for(let i=0;i<N;i++){const d=Math.sin(i/9)*1.2+Math.sin(i/27)*4+(Math.random()-.5)*8;const o=p;const c=Math.max(29700,Math.min(30100,p+d));const h=Math.max(o,c)+Math.random()*6;const l=Math.min(o,c)-Math.random()*6;out.push({time:t,open:+o.toFixed(2),high:+h.toFixed(2),low:+l.toFixed(2),close:+c.toFixed(2),volume:Math.round(60+Math.random()*220)});p=c;t+=300}
+  const chart=LightweightCharts.createChart(document.getElementById('chart'),{
+    layout:{background:{type:'solid',color:'#101214'},textColor:'#c9c4bc',fontFamily:"'JetBrains Mono', monospace",fontSize:10},
+    grid:{vertLines:{color:'rgba(142,138,130,.06)'},horzLines:{color:'rgba(142,138,130,.06)'}},
+    rightPriceScale:{borderColor:'rgba(142,138,130,.18)'},
+    timeScale:{borderColor:'rgba(142,138,130,.18)',timeVisible:true,secondsVisible:false},
+    crosshair:{vertLine:{color:'rgba(142,138,130,.4)',width:1,style:0,labelBackgroundColor:'#23272b'},horzLine:{color:'rgba(142,138,130,.4)',width:1,style:0,labelBackgroundColor:'#23272b'}},
+    height:380,
+  });
+  const cs=chart.addCandlestickSeries({upColor:'#9bb39a',downColor:'#b88a82',wickUpColor:'#9bb39a',wickDownColor:'#b88a82',borderVisible:false});
+  cs.setData(out);
+  const vol=chart.addHistogramSeries({color:'rgba(142,138,130,.35)',priceFormat:{type:'volume'},priceScaleId:'',scaleMargins:{top:.85,bottom:0}});
+  vol.setData(out.map(b=>({time:b.time,value:b.volume,color:b.close>=b.open?'rgba(155,179,154,.4)':'rgba(184,138,130,.4)'})));
+  const eq=LightweightCharts.createChart(document.getElementById('equity'),{
+    layout:{background:{type:'solid',color:'transparent'},textColor:'#8e8a82',fontFamily:"'JetBrains Mono', monospace",fontSize:9},
+    grid:{vertLines:{visible:false},horzLines:{visible:false}},rightPriceScale:{visible:false},leftPriceScale:{visible:false},
+    timeScale:{visible:false},crosshair:{vertLine:{visible:false},horzLine:{visible:false}},height:90,
+  });
+  const eqLine=eq.addAreaSeries({lineColor:'#8aa39b',topColor:'rgba(138,163,155,.18)',bottomColor:'rgba(138,163,155,0)',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  let eqV=0;const eqArr=[];let eqT=Math.floor(Date.now()/1000)-30*86400;
+  for(let i=0;i<30;i++){eqV+=(Math.random()-.4)*120;eqArr.push({time:eqT,value:+eqV.toFixed(2)});eqT+=86400}
+  eqLine.setData(eqArr);
+  const sample=[
+    {side:'SELL',et:'6/12, 1:40 PM',xt:'6/12, 1:40 PM',ep:29692.50,xp:29692.50,pts:0,pl:62.50,cum:2973.75},
+    {side:'SELL',et:'6/11, 10:12 AM',xt:'6/11, 10:12 AM',ep:4073.40,xp:4073.40,pts:0,pl:534,cum:3036.25},
+    {side:'BUY', et:'6/02, 4:12 PM', xt:'6/02, 4:12 PM',ep:30746.75,xp:30746.75,pts:0,pl:2437.5,cum:3570.25},
+    {side:'BUY', et:'6/02, 4:12 PM', xt:'6/02, 4:12 PM',ep:30746.75,xp:30746.75,pts:0,pl:2445,cum:6007.75},
+    {side:'BUY', et:'6/02, 4:12 PM', xt:'6/02, 4:12 PM',ep:30746.75,xp:30746.75,pts:0,pl:2445,cum:8445.25},
+    {side:'BUY', et:'5/29, 4:11 PM', xt:'5/29, 4:11 PM',ep:7596,xp:7596,pts:0,pl:1.25,cum:15780.25},
+    {side:'SELL',et:'5/29, 2:04 PM',xt:'5/29, 2:04 PM',ep:7588,xp:7588,pts:0,pl:20,cum:15781.50},
+    {side:'BUY', et:'5/29, 9:31 AM', xt:'5/29, 9:31 AM',ep:30409,xp:30409,pts:0,pl:75.5,cum:15761.50},
+    {side:'BUY', et:'5/28, 2:52 PM', xt:'5/28, 2:52 PM',ep:30299.75,xp:30299.75,pts:0,pl:65,cum:15837},
+    {side:'BUY', et:'5/28, 2:52 PM', xt:'5/28, 2:52 PM',ep:30299.75,xp:30299.75,pts:0,pl:60,cum:15772},
+  ];
+  const tb=document.getElementById('trades-body');
+  sample.forEach((t,i)=>{const tr=document.createElement('tr');const sc=t.side==='BUY'?'buy':'sell';const pc=t.pl>=0?'pos':'neg';
+    tr.innerHTML=`<td class="num" style="color:var(--muted)">${i+1}</td><td><span class="side-tag ${sc}">${t.side}</span></td><td>${t.et}</td><td>${t.xt}</td><td class="right num">${t.ep.toFixed(2)}</td><td class="right num">${t.xp.toFixed(2)}</td><td class="right num">${t.pts>=0?'+':''}${t.pts.toFixed(2)}</td><td class="right num ${pc}">${t.pl>=0?'+':'−'}$${Math.abs(t.pl).toFixed(2)}</td><td class="right num">$${t.cum.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`;tb.appendChild(tr);});
+  new ResizeObserver(()=>chart.applyOptions({width:document.getElementById('chart').clientWidth})).observe(document.getElementById('chart'));
+  new ResizeObserver(()=>eq.applyOptions({width:document.getElementById('equity').clientWidth})).observe(document.getElementById('equity'));
+  chart.applyOptions({width:document.getElementById('chart').clientWidth});
+  eq.applyOptions({width:document.getElementById('equity').clientWidth});
+  chart.timeScale().fitContent();
+</script>
+</body>
+</html>

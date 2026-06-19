@@ -1,6 +1,6 @@
 {
-  "captured_at_utc": "2026-06-11T22:46:29+00:00",
-  "git_head": "a9f89a999",
+  "captured_at_utc": "2026-06-17T20:59:53+00:00",
+  "git_head": "0de5b963b",
   "strategies": {
     "morning_range_reversion": {
       "source_path": "/Users/risu/tradeBotServer/config/strategies/morning_range_reversion.toml",
@@ -52,7 +52,7 @@
           "skip_weekdays": [
             "Fri"
           ],
-          "max_bar_staleness_seconds": 600,
+          "max_bar_staleness_seconds": 900,
           "require_high_atr": false,
           "atr_period": 14,
           "atr_regime_lookback": 500,
@@ -88,9 +88,13 @@
               "sl_fixed_pts": 0,
               "sl_mult": 3.3,
               "sl_max_pts": 29,
+              "sl_min_pts": 28.0,
               "tp_mult": 1.85,
               "reentry_threshold_points": 0.0,
               "min_range_width_points": 4,
+              "skip_weekdays_long": [
+                "Tue"
+              ],
               "max_range_width_points": 46
             }
           },
@@ -103,6 +107,9 @@
                 "Mon",
                 "Thu",
                 "Fri"
+              ],
+              "skip_weekdays_long": [
+                "Wed"
               ],
               "sl_fixed_pts": 50,
               "tp_mult": 1.25
@@ -122,7 +129,7 @@
     "BACKTEST_FAST_LOOP": "1"
   },
   "args": {
-    "days": 9,
+    "days": 15,
     "folds": 3,
     "strategies": [
       "morning_range_reversion"

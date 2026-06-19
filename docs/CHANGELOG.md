@@ -161,11 +161,17 @@ changes runtime behavior or conventions adds an entry here AND updates
     compact two-row controls; refresh rate beside data source; session pills
     toggle off on re-click (removed redundant Off pill). Fixed `SyntaxWarning`
     for `\\d` in embedded chart HTML template.
-  - **v2 chart polish:** default range **1 day**; live price line with on-chart
-    tag (no duplicate axis label); quieter position/order price lines; improved
-    tick strip; DLL/MLL under balance stats; perf selects hidden when drawer
-    collapsed. **Load perf:** chart paints before deferred range overlays;
-    skip overlay API when pills off; cap ``max_sessions`` to UI count (1–3).
+  - **v2 chart polish:** default range **1 day**; live price on-chart tag; quieter
+    trade lines; DLL/MLL under balance stats; perf selects hidden when drawer
+    collapsed. **Load perf:** deferred overlays, MRR-only fetch, ``max_sessions``
+    cap, 30s server cache on ``range_overlays``, Performance+Trades drawers collapsed
+    on boot. **Fix:** ``loadChartData`` ``rangeKey`` used-before-define broke all
+    bar loads; API source no longer sends tight start/end window.
+  - **Chart canvas interaction (v2):** Ptr / Order / Line mode pills; click chart
+    in Order mode to set limit/stop price; Line mode adds horizontal guides
+    (shift+click removes); drag order handles to modify price; drag **SL/TP**
+    handles on open positions; Close/Cancel on entry/working orders.
+    ``POST /api/chart/modify_order|modify_stop_loss|modify_take_profit``.
 - **Master GUI v2 — chart legend, DLL/MLL fix, idle list polish (2026-06-16)** —
   - Chart: OHLC hidden until crosshair hovers a bar; countdown moved under
     last price; maximize above price; last-price tick flash (moss/rose).

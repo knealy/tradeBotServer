@@ -567,6 +567,10 @@ class AccountTracker:
             starting_balance=starting_balance
         )
     
+    def get_compliance_status(self, account_id: Optional[str] = None) -> Dict:
+        """Canonical compliance snapshot for dashboards and risk gates."""
+        return self.check_compliance(account_id)
+
     def check_compliance(self, account_id: Optional[str] = None) -> Dict:
         """
         Check compliance for current or specified account.

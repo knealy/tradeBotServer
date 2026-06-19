@@ -361,6 +361,12 @@ class UserHubHandlers:
         Called from sync ``on_trade`` via ``_defer_coro_from_sync`` because the
         SignalR callback runs on a hub thread and cannot ``await`` directly.
         Best-effort: a publish failure on one trade must not block the others.
+
+        Side effect: after publishing, schedule a background snapshot capture so
+        ``trade_snapshots`` rows are written for the dashboard recap modal. The
+        capture is deliberately fire-and-forget — a slow Databento read or
+        broker API hiccup must never delay the consec-loss breaker which also
+        consumes TRADE_CLOSED.
         """
         if not self._bot.event_bus or not completed_trades:
             return
@@ -396,6 +402,226 @@ class UserHubHandlers:
                     "Could not publish TRADE_CLOSED for trade %s: %s",
                     t.trade_id, exc,
                 )
+            # Background snapshot capture (does not block the breaker).
+            try:
+                asyncio.create_task(self._capture_trade_snapshot(t, account_id))
+            except Exception as exc:
+                logger.debug(
+                    "Could not schedule trade snapshot for %s: %s",
+                    getattr(t, "trade_id", None), exc,
+                )
+
+    async def _capture_trade_snapshot(self, t, account_id: str) -> None:
+        """Persist an OHLCV+metadata snapshot of a closed trade so the dashboard
+        recap modal can render it precisely later (without re-pulling from a
+        broker history window that may have rolled off, or from a Databento
+        CSV that lags by a day).
+
+        Source priority for the bar window:
+          1. Canonical Databento CSV via :func:`load_databento_window_for_chart`
+             (covers MNQ/MES/MGC; deep history; up-to-yesterday).
+          2. Broker historical API for the recent edge (today's bars).
+
+        Fire-and-forget: any error is logged at DEBUG; we never propagate.
+        """
+        try:
+            db = getattr(self._bot, "db", None)
+            if not db:
+                return
+            symbol = str(getattr(t, "symbol", "") or "")
+            entry_time = getattr(t, "entry_time", None)
+            exit_time = getattr(t, "exit_time", None)
+            if not symbol or entry_time is None or exit_time is None:
+                logger.debug("snapshot skip: missing symbol/times for trade %s", getattr(t, "trade_id", None))
+                return
+
+            # Coerce datetimes to tz-aware UTC for the windowed loaders.
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+            def _to_utc(x):
+                if isinstance(x, _dt):
+                    return x.astimezone(_tz.utc) if x.tzinfo else x.replace(tzinfo=_tz.utc)
+                try:
+                    n = float(x)
+                    return _dt.fromtimestamp(n, tz=_tz.utc)
+                except (TypeError, ValueError):
+                    return None
+
+            entry_utc = _to_utc(entry_time)
+            exit_utc = _to_utc(exit_time)
+            if entry_utc is None or exit_utc is None:
+                return
+
+            timeframe = "1m"
+            pad = _td(minutes=30)  # ±30 min for context on either side
+            win_lo = entry_utc - pad
+            win_hi = exit_utc + pad
+
+            bars: list = []
+            snap_source = None
+
+            # Try Databento canonical CSV first (deep history, parquet-cached).
+            try:
+                from core.chart_databento_loader import load_databento_window_for_chart
+                db_bars, db_err = load_databento_window_for_chart(
+                    symbol, timeframe,
+                    start_utc=win_lo, end_utc=win_hi, limit=1500,
+                )
+                if db_bars:
+                    bars = db_bars
+                    snap_source = "databento"
+                elif db_err:
+                    logger.debug("snapshot databento miss for %s: %s", symbol, db_err)
+            except Exception as exc:
+                logger.debug("snapshot databento load failed for %s: %s", symbol, exc)
+
+            # Fall back to broker API (current-edge bars for today's trades).
+            if not bars:
+                try:
+                    api_bars = await self._bot.get_historical_data(
+                        symbol=symbol, timeframe=timeframe, limit=1500,
+                        start_time=win_lo, end_time=win_hi,
+                    )
+                    bars = self._broker_bars_to_chart_rows(api_bars or [])
+                    if bars:
+                        snap_source = "api"
+                except Exception as exc:
+                    logger.debug("snapshot api load failed for %s: %s", symbol, exc)
+
+            # Strategy range for the trade's session (best-effort): pull whichever
+            # of {or_ranges, mrr_ranges, orb_ranges} matches the symbol from the
+            # currently-running strategy_states row.
+            range_snap = None
+            strategy_name = None
+            try:
+                states = db.get_strategy_states(str(account_id)) or {}
+                sym_u = symbol.upper()
+                for sname, srow in states.items():
+                    settings = srow.get("settings") or {}
+                    for slot in ("or_ranges", "mrr_ranges", "orb_ranges"):
+                        blob = settings.get(slot) if isinstance(settings, dict) else None
+                        if not isinstance(blob, dict):
+                            continue
+                        if sym_u in blob and isinstance(blob[sym_u], dict):
+                            cand = blob[sym_u]
+                            if cand.get("high") is not None and cand.get("low") is not None:
+                                range_snap = dict(cand)
+                                range_snap["__slot"] = slot
+                                strategy_name = sname
+                                break
+                    if range_snap is not None:
+                        break
+            except Exception as exc:
+                logger.debug("snapshot strategy-range lookup failed: %s", exc)
+
+            metadata = {
+                "snap_source": snap_source,
+                "pad_minutes": int(pad.total_seconds() / 60),
+                "captured_at": _dt.now(_tz.utc).isoformat(),
+                "session_id": getattr(t, "session_id", None),
+            }
+            # KEY CHOICE — the dashboard fetches trades from the broker's
+            # ``Trade/search`` API where each row's ``id`` is a *fill* id; the
+            # closing fill's id == ``Trade.exit_fill_id``. Saving the snapshot
+            # under ``exit_fill_id`` lets the recap modal look up by
+            # ``trade.id`` directly. Also persist a second alias-row keyed by
+            # the session-tracker's internal ``trade_id`` for any callers that
+            # have it.
+            primary_key = str(getattr(t, "exit_fill_id", "") or "") or str(t.trade_id)
+            metadata["session_trade_id"] = str(t.trade_id)
+            metadata["entry_fill_id"] = str(getattr(t, "entry_fill_id", "") or "") or None
+            metadata["exit_fill_id"] = str(getattr(t, "exit_fill_id", "") or "") or None
+            db.save_trade_snapshot(
+                trade_id=primary_key,
+                account_id=str(account_id),
+                strategy_name=strategy_name,
+                symbol=symbol,
+                side=str(getattr(t, "side", "") or "") or None,
+                quantity=int(getattr(t, "quantity", 0) or 0) or None,
+                entry_time=entry_utc,
+                exit_time=exit_utc,
+                entry_price=float(getattr(t, "entry_price", 0.0) or 0.0) or None,
+                exit_price=float(getattr(t, "exit_price", 0.0) or 0.0) or None,
+                pnl=float(getattr(t, "net_pnl", 0.0) or 0.0),
+                timeframe=timeframe,
+                bars=bars,
+                range_snapshot=range_snap,
+                metadata=metadata,
+            )
+            # Optional alias under the session_trade_id for tools that have it.
+            if primary_key != str(t.trade_id):
+                try:
+                    db.save_trade_snapshot(
+                        trade_id=str(t.trade_id),
+                        account_id=str(account_id),
+                        strategy_name=strategy_name,
+                        symbol=symbol,
+                        side=str(getattr(t, "side", "") or "") or None,
+                        quantity=int(getattr(t, "quantity", 0) or 0) or None,
+                        entry_time=entry_utc,
+                        exit_time=exit_utc,
+                        entry_price=float(getattr(t, "entry_price", 0.0) or 0.0) or None,
+                        exit_price=float(getattr(t, "exit_price", 0.0) or 0.0) or None,
+                        pnl=float(getattr(t, "net_pnl", 0.0) or 0.0),
+                        timeframe=timeframe,
+                        bars=bars,
+                        range_snapshot=range_snap,
+                        metadata={**metadata, "alias_for": primary_key},
+                    )
+                except Exception as exc:
+                    logger.debug("trade snapshot alias save failed for %s: %s", t.trade_id, exc)
+            logger.info(
+                "📸 trade snapshot saved: key=%s sid=%s sym=%s bars=%d source=%s range=%s",
+                primary_key, t.trade_id, symbol, len(bars),
+                snap_source or "none", bool(range_snap),
+            )
+        except Exception as exc:
+            logger.debug("trade snapshot capture failed for %s: %s",
+                         getattr(t, "trade_id", None), exc, exc_info=True)
+
+    @staticmethod
+    def _broker_bars_to_chart_rows(bars) -> list:
+        """Convert broker historical-data bars to LWC chart rows. Mirrors
+        ``gui.chart_html.broker_bars_to_chart_rows`` — duplicated here to avoid
+        a circular import (chart_html imports trading_bot, which owns this
+        handler at runtime).
+        """
+        out = []
+        for b in bars or []:
+            try:
+                ts = None
+                if hasattr(b, "timestamp"):
+                    ts = b.timestamp
+                elif isinstance(b, dict):
+                    ts = b.get("timestamp") or b.get("time") or b.get("t")
+                if ts is None:
+                    continue
+                if hasattr(ts, "timestamp"):
+                    t_unix = int(ts.timestamp())
+                else:
+                    try:
+                        t_unix = int(float(ts))
+                        if t_unix > 1e12:
+                            t_unix = int(t_unix / 1000)
+                    except (TypeError, ValueError):
+                        continue
+                def _f(name):
+                    if hasattr(b, name):
+                        return float(getattr(b, name))
+                    if isinstance(b, dict):
+                        return float(b.get(name, 0.0) or 0.0)
+                    return 0.0
+                out.append({
+                    "time": t_unix,
+                    "open": _f("open"),
+                    "high": _f("high"),
+                    "low": _f("low"),
+                    "close": _f("close"),
+                    "volume": _f("volume"),
+                })
+            except Exception:
+                continue
+        return out
 
     def on_trade(self, data: Dict):
         """Callback for User Hub trade updates."""

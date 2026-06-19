@@ -461,6 +461,10 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                                 symbol, hi, lo, hi - lo, count,
                             )
                             st._logged_range_built = True
+                    # Mirror the live ORB box to ``strategy_states.settings.orb_ranges``
+                    # so the dashboard chart can render the shaded overlay even when
+                    # the strategy runs in a separate executor process.
+                    self._persist_orb_ranges_to_db()
 
             # ── Past flat_before? cooled session.
             if t_close >= self.flat_before:
@@ -583,6 +587,54 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
     async def cleanup(self) -> None:
         """Strategy-level cleanup.  Sessions / signaled markers retained for diag."""
         return None
+
+    def _persist_orb_ranges_to_db(self) -> None:
+        """Snapshot today's ORB ranges into ``strategy_states.settings.orb_ranges`` so
+        the dashboard chart server can render the shaded box even when this strategy
+        runs in a separate executor process. Mirrors
+        ``OvernightRangeStrategy._persist_or_ranges_to_db`` via
+        ``BaseStrategy.persist_range_snapshot``.
+        """
+        snap: Dict[str, Dict[str, Any]] = {}
+        for sym, st in self._sessions.items():
+            try:
+                hi = getattr(st, "range_hi", None)
+                lo = getattr(st, "range_lo", None)
+                if hi is None or lo is None:
+                    continue
+                hi_f = float(hi)
+                lo_f = float(lo)
+            except (TypeError, ValueError):
+                continue
+            entry: Dict[str, Any] = {
+                "high": hi_f,
+                "low": lo_f,
+                "mid": (hi_f + lo_f) / 2.0,
+                "width": hi_f - lo_f,
+                "phase": getattr(st, "phase", None),
+                "bars_in_build": int(getattr(st, "bars_in_build", 0) or 0),
+            }
+            sd = getattr(st, "session_date", None)
+            if sd is not None and hasattr(sd, "isoformat"):
+                entry["session_date"] = sd.isoformat()
+                try:
+                    from datetime import timedelta as _td
+                    start_et = datetime.combine(sd, self.range_start, tzinfo=self._tz)
+                    end_open = datetime.combine(sd, self.range_end_open, tzinfo=self._tz)
+                    entry["session_start_et"] = start_et.isoformat()
+                    entry["session_end_et"] = (end_open - _td(microseconds=1)).isoformat()
+                except Exception:
+                    pass
+            key = str(sym).upper()
+            snap[key] = entry
+            if "." in key:
+                short = key.split(".")[-1].strip()
+                if short and short != key:
+                    snap[short] = entry
+        self.persist_range_snapshot(
+            snap, key="orb_ranges",
+            attr="_orb_ranges_db_last_mono",
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Diagnostic snapshot — used by ``master`` CLI and dashboard."""

@@ -4,7 +4,60 @@
 
 Dense reference for behavior that is easy to misread or break. Prefer the cited files over this list when in doubt.
 
-### Historical OHLCV data
+## Timestamps & time zones (recurring bugs)
+
+We have hit the same timezone mistakes repeatedly (merge failures, range overlays stopping at CSV lag dates, `Cannot compare tz-naive and tz-aware`, mislabeled `*_et` fields). **Follow this split and normalize at boundaries.**
+
+### Two clocks — do not mix them
+
+| Kind | Representation | Examples |
+|------|----------------|----------|
+| **Bar OHLCV index** | `pandas.DatetimeIndex`, **naive UTC** | Databento CSV, `parquet_cache`, replay `_BarRow.name`, API bars after normalization |
+| **Session wall clock** | **tz-aware ISO in US/Eastern** | `session_start_et`, `session_end_et`, `attach_range_window_et()` output |
+| **Chart / LWC `time`** | Unix seconds (UTC instant) | `gui/chart_html.py`, trade recap snap |
+
+Naive UTC bar indexes are **not** “UTC mislabeled as local”. They are UTC instants with `tzinfo=None` — the convention inherited from Databento + parquet cache.
+
+### Mandatory before any OHLCV merge or slice
+
+```python
+from core.backtest.ohlcv import ohlcv_index_naive_utc
+
+left = ohlcv_index_naive_utc(csv_df)
+right = ohlcv_index_naive_utc(api_df)
+merged = pd.concat([left, right]).sort_index()
+merged = merged[~merged.index.duplicated(keep="last")]
+```
+
+Call sites today: `core/range_history_backfill.merge_ohlcv_dataframes`, `chart_bars_to_ohlcv_df`, `strategies/morning_range_reversion_strategy._ensure_ohlcv_index_naive_utc` (same semantics — prefer consolidating on `ohlcv_index_naive_utc` in new code).
+
+### Session bounds → bar slice
+
+When slicing naive-UTC bars for an ET session window, convert **aware ET → UTC → strip tzinfo**:
+
+```python
+t0 = pd.Timestamp(start_et.astimezone(timezone.utc).replace(tzinfo=None))
+t1 = pd.Timestamp(end_et.astimezone(timezone.utc).replace(tzinfo=None))
+window = df.loc[t0:t1]
+```
+
+See `core/range_history_backfill._session_window_utc_slice`. Never store naive UTC strings in fields named `*_et`.
+
+### Footguns (checklist)
+
+1. **Merging CSV + API / live bars** without `ohlcv_index_naive_utc` on **both** frames → `TypeError` or silent empty slices.
+2. **`session_*_et` as naive UTC** → overlays and range pills draw on the wrong calendar day.
+3. **Inner `from datetime import datetime`** inside a handler that already uses the module-level `datetime` → `NameError` on later lines (e.g. `gui/chart_html.py` trades endpoint).
+4. **Assuming `load_ohlcv_cached` output is tz-aware** — it is naive UTC; broker frames often are not.
+5. **Comparing `datetime.now()` (naive local)** to aware ET bounds — use `zoneinfo` / `core.time_utils` patterns from strategies.
+
+### Regression test
+
+`tests/test_range_history_backfill.py::test_merge_ohlcv_dataframes_api_wins_on_overlap` — tz-aware API frame merged with naive CSV; API wins on overlap.
+
+---
+
+## Historical OHLCV data
 
 - **Quarterly futures rolls interleave two contracts** in the canonical Databento CSVs under `historical_data/price/*_1m_databento.csv` and `*_5m_databento.csv`. Around the 10th–17th of every Mar/Jun/Sep/Dec (≈3–7 trading days before the third-Friday expiry), individual minutes alternate between front-month and back-month bars, with a price spread of ~150–300 pt on MNQ (cost-of-carry basis). Rendered as-is, you get **two parallel candle sequences** at the same x-positions, and intrabar replay fills can trip on prices the contract you would actually trade never touched. `core/backtest/ohlcv.deroll_dual_contract_bars` removes the non-continuing-contract bars and is wired into both `dataframe_to_chart_bars_unix` and `replay_bars_from_ohlcv_df` by default (pass `deroll=False` to opt out). Symptoms when disabled: trade exit prices that don't line up with any visible OHLC bar, "double vision" candles on Mar/Jun/Sep/Dec recap charts, and `cluster_spread` > 200 pt in `_two_means_1d` on rolling days.
 
