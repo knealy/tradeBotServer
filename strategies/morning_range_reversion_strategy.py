@@ -816,6 +816,12 @@ class MorningRangeReversionStrategy(BaseStrategy):
         except Exception:
             self.replay_active_window_et = None
         self.max_hold_bars: int = int(self._cfg.get_int("signal.max_hold_bars", 96))
+        # Scratch exit (replay): if held >= scratch_check_bars and unrealized R
+        # < scratch_min_r, flatten at market with exit_reason="scratch".
+        # 0 check bars disables. Used to cut the long-hold loser bucket without
+        # waiting for max_hold_bars / flat_before.
+        self.scratch_check_bars: int = int(self._cfg.get_int("signal.scratch_check_bars", 0) or 0)
+        self.scratch_min_r: float = float(self._cfg.get_float("signal.scratch_min_r", 0.5) or 0.0)
         self.allow_long: bool = bool(self._cfg.get_bool("signal.allow_long", True))
         self.allow_short: bool = bool(self._cfg.get_bool("signal.allow_short", True))
         # Execution geometry knobs (can be overridden by replay runner via setattr)
@@ -1519,6 +1525,85 @@ class MorningRangeReversionStrategy(BaseStrategy):
             raw = self._cfg.get(f"signal.{key}", default=None)
         return self._parse_weekday_tokens(raw, key)
 
+    def discord_daily_brief(self, now_et: Optional[datetime] = None) -> List[str]:
+        """ET session plan for Discord hourly digest."""
+        if now_et is None:
+            now_et = datetime.now(self._tz)
+        d = now_et.date()
+        t = now_et.time()
+        lines: List[str] = []
+        syms = [str(s).upper() for s in (self.config.symbols or [])]
+        if not syms:
+            lines.append("no symbols configured")
+            return lines
+
+        entry_thresh = self._reentry_threshold_pts(syms[0])
+        entry_mode = (
+            f"advance-stop {entry_thresh:.1f}pt"
+            if entry_thresh > 0
+            else ("reentry-close" if self.require_reentry_close else "immediate-at-extreme")
+        )
+
+        def _hhmm(t: time) -> str:
+            return t.strftime("%H:%M")
+
+        lines.append(
+            f"window: range {_hhmm(self.range_start)}–{_hhmm(self.range_end_open)} ET, "
+            f"fade until {_hhmm(self.flat_before)} ET ({self.timeframe})"
+        )
+        lines.append(
+            f"entry: {entry_mode} | long={'on' if self.allow_long else 'off'} "
+            f"short={'on' if self.allow_short else 'off'}"
+        )
+
+        for sym in syms:
+            skip = self._skip_weekdays(sym)
+            if d.weekday() in skip:
+                skip_names = ",".join(sorted(self._WEEKDAY_ALIASES_INV[i] for i in skip))
+                lines.append(f"{sym}: SKIP today ({d.strftime('%a')} in skip_weekdays={skip_names})")
+                continue
+
+            br = self._consec_loss_breaker_status(sym, d)
+            if br.get("blocked"):
+                streak = br.get("streak", "?")
+                reason = br.get("reason", "breaker")
+                lines.append(f"{sym}: PAUSED consec-loss breaker (streak={streak}, {reason})")
+                continue
+
+            st = self._state.get(sym, {})
+            if st.get("session_date") == d:
+                phase = st.get("phase", "?")
+                fades = int(st.get("fades_this_session", 0) or 0)
+                max_fades = self.max_fades_per_session
+                if max_fades > 0 and fades >= max_fades:
+                    lines.append(
+                        f"{sym}: DONE max_fades_per_session={max_fades} reached "
+                        f"(broker fades={fades})"
+                    )
+                    continue
+                if st.get("range_ready") and st.get("H") is not None:
+                    lines.append(
+                        f"{sym}: {phase} H={st['H']:.2f} L={st['L']:.2f} "
+                        f"width={st.get('width', 0):.2f} fades={fades}"
+                    )
+                    continue
+                lines.append(f"{sym}: {phase} (session active, range not finalized yet)")
+                continue
+
+            # New session today — describe schedule vs clock
+            if t < self.range_start:
+                lines.append(
+                    f"{sym}: WAIT range builds at {_hhmm(self.range_start)}–{_hhmm(self.range_end_open)} ET"
+                )
+            elif t < self.range_end_open:
+                lines.append(f"{sym}: BUILD morning range now")
+            elif t < self.flat_before:
+                lines.append(f"{sym}: SCAN for sweep → fade (range window closed at {_hhmm(self.range_end_open)})")
+            else:
+                lines.append(f"{sym}: DONE past flat_before {_hhmm(self.flat_before)} ET")
+
+        return lines
+
     def _bars_are_stale(self, symbol: str, bars: List[Dict[str, Any]]) -> bool:
         """Return True if the most recent bar is older than the configured guard.
 
@@ -1946,12 +2031,15 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
     def _restore_session_activity(
         self, symbol: str, session_date, st: Dict[str, Any],
-    ) -> None:
-        """Reload sweep guards written before a mid-session crash/restart."""
+    ) -> bool:
+        """Reload sweep guards written before a mid-session crash/restart.
+
+        Returns True when persisted activity for this (symbol, date) was found.
+        """
         if getattr(self.trading_bot, "_is_strategy_replay", False):
-            return
+            return False
         if getattr(self.trading_bot, "backtest_engine", None) is not None:
-            return
+            return False
         try:
             from core.anchor_persistence import load_session_activity
             activity = load_session_activity(
@@ -1960,7 +2048,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 session_date_et=session_date,
             )
             if not activity:
-                return
+                return False
             for key in (
                 "sweep_fired_high",
                 "sweep_fired_low",
@@ -1983,11 +2071,13 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     st.get("sweep_fired_high"),
                     st.get("sweep_fired_low"),
                 )
+            return True
         except Exception as exc:
             logger.debug(
                 "morning_range_reversion %s: session_activity restore skipped (%s)",
                 symbol, exc,
             )
+        return False
 
     def _apply_sweep_guard_from_price(
         self,
@@ -2001,6 +2091,10 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
         Prevents a mid-session executor restart from re-firing ``immediate_stop``
         hours after the market already swept (2026-06-17 MGC re-place at 11:20).
+
+        Only invoked after ``_restore_session_activity`` finds prior disk state —
+        NOT on fresh range finalisation (2026-06-29 bug: first 08:05 close above
+        H was marked ``sweep_fired_high`` without placing the fade).
         """
         threshold_pts = float(getattr(self, "sweep_points_threshold", 0.0) or 0.0)
         if threshold_pts > 0.0:
@@ -2275,6 +2369,10 @@ class MorningRangeReversionStrategy(BaseStrategy):
             return None
         if sweep == "low" and st.get("sweep_fired_low"):
             return None
+        # Anti-spam after an Invalid-price reject (or successful immediate fade):
+        # do not re-arm until price closes back inside the box (cleared in analyze).
+        if st.get("immediate_block_until_inside"):
+            return None
 
         # Time-of-day entry window — skip entries outside [entry_start_et, entry_end_et]
         # so we can clip first-N-minutes / last-N-minutes regimes that
@@ -2473,14 +2571,7 @@ class MorningRangeReversionStrategy(BaseStrategy):
             f"mid={mid:.2f} W={width:.2f}"
         )
         logger.info("🎯 %-5s %-3s @ %9.2f  (%s)", action, symbol, entry, reason)
-        st["fades_this_session"] = int(st.get("fades_this_session", 0) or 0) + 1
-        if sweep == "high":
-            st["sweep_fired_high"] = True
-        else:
-            st["sweep_fired_low"] = True
-        st["immediate_block_until_inside"] = True
-        self._persist_session_activity(symbol, bar_et.date(), st)
-        return {
+        signal = {
             "action": action,
             "symbol": symbol,
             "entry_price": entry,
@@ -2488,7 +2579,93 @@ class MorningRangeReversionStrategy(BaseStrategy):
             "take_profit": tp,
             "confidence": 0.5,
             "reason": reason,
+            "sweep": sweep,
         }
+        # Replay/backtest has no broker reject path — count immediately.
+        if getattr(self.trading_bot, "_is_strategy_replay", False) or getattr(
+            self.trading_bot, "backtest_engine", None
+        ):
+            self._commit_successful_fade(symbol, bar_et.date(), sweep)
+        return signal
+
+    def _commit_successful_fade(
+        self, symbol: str, session_date: date, sweep: str,
+    ) -> None:
+        """Count a fade and persist sweep guards only after broker accepts the order."""
+        st = self._get_state(symbol)
+        st["fades_this_session"] = int(st.get("fades_this_session", 0) or 0) + 1
+        if sweep == "high":
+            st["sweep_fired_high"] = True
+        elif sweep == "low":
+            st["sweep_fired_low"] = True
+        st["immediate_block_until_inside"] = True
+        self._persist_session_activity(symbol, session_date, st)
+
+    @staticmethod
+    def _is_invalid_price_reject(error: str) -> bool:
+        """True for TopStepX Code-2 / out-of-band entry rejects (retriable)."""
+        e = (error or "").lower()
+        return "invalid price" in e or "outside allowed range" in e
+
+    def _commit_broker_reject(
+        self, symbol: str, session_date: date, sweep: str, error: str,
+    ) -> None:
+        """Handle broker rejection without consuming ``max_fades``.
+
+        ``Invalid price`` / ``outside allowed range`` (TopStepX Code 2) is
+        usually a timing problem — the stop at H/L is outside the broker's
+        band relative to the current print (2026-05-29 / 2026-07-08 /
+        2026-07-09 MGC). Marking ``sweep_fired_*`` in that case permanently
+        killed the fade and left the chart showing ``↑ swept`` with zero
+        working orders.
+
+        For those rejects we only set ``immediate_block_until_inside`` so
+        analyze() stops spamming while price stays outside the box, then
+        re-arms after a close back inside ``[L, H]``. Other reject classes
+        still permanently mark the sweep (anti-spam for non-retriable errors).
+        """
+        st = self._get_state(symbol)
+        st["immediate_block_until_inside"] = True
+        if self._is_invalid_price_reject(error):
+            self._persist_session_activity(symbol, session_date, st)
+            logger.warning(
+                "morning_range_reversion broker rejected %s %s sweep=%s: %s "
+                "— invalid-price; will retry after close back inside range "
+                "(fade not counted, sweep NOT marked)",
+                "LONG" if sweep == "low" else "SHORT",
+                symbol,
+                sweep,
+                error,
+            )
+            return
+        if sweep == "high":
+            st["sweep_fired_high"] = True
+        elif sweep == "low":
+            st["sweep_fired_low"] = True
+        self._persist_session_activity(symbol, session_date, st)
+        logger.warning(
+            "morning_range_reversion broker rejected %s %s sweep=%s: %s "
+            "— sweep marked attempted (fade not counted)",
+            "LONG" if sweep == "low" else "SHORT",
+            symbol,
+            sweep,
+            error,
+        )
+
+    def _clear_phantom_fade_state(
+        self, symbol: str, session_date: date, st: Dict[str, Any], *, reason: str,
+    ) -> None:
+        """Drop persisted fade counters with no matching broker orders/positions."""
+        st["fades_this_session"] = 0
+        st["sweep_fired_high"] = False
+        st["sweep_fired_low"] = False
+        st["immediate_block_until_inside"] = False
+        st.pop("_logged_max_fades", None)
+        self._persist_session_activity(symbol, session_date, st)
+        logger.warning(
+            "📋 %-3s cleared phantom fade state (%s) — retry allowed",
+            symbol, reason,
+        )
 
     async def _reconcile_with_broker_state(self) -> None:
         """One-shot startup reconciliation against the broker's view of the world.
@@ -2805,6 +2982,32 @@ class MorningRangeReversionStrategy(BaseStrategy):
                             strategy_name=self.NAME,
                             oco_sibling_ids=siblings,
                         )
+
+            broker_evidence_syms: set[str] = set(self._live_managed_symbols)
+            for sym, _oid, _side, _order in same_session_orders:
+                broker_evidence_syms.add(str(sym).upper())
+            for pos_label in adopted_positions:
+                sym_part = str(pos_label).split("×", 1)[0].strip().upper()
+                if sym_part:
+                    broker_evidence_syms.add(sym_part)
+            for sym in symbols:
+                sym_u = str(sym).upper()
+                st = self._get_state(sym_u)
+                self._restore_session_activity(sym_u, today_et, st)
+                fades = int(st.get("fades_this_session", 0) or 0)
+                if fades <= 0:
+                    continue
+                if sym_u in broker_evidence_syms:
+                    continue
+                self._clear_phantom_fade_state(
+                    sym_u,
+                    today_et,
+                    st,
+                    reason=(
+                        f"persisted fades={fades} but no open "
+                        f"{self.NAME} orders/positions at broker"
+                    ),
+                )
         except Exception as exc:
             logger.error(
                 "📋 reconcile: unexpected error (continuing): %s",
@@ -3266,8 +3469,9 @@ class MorningRangeReversionStrategy(BaseStrategy):
 
                 st["phase"] = "scan"
                 st["sweep_side"] = None
-                self._restore_session_activity(symbol, d, st)
-                self._apply_sweep_guard_from_price(symbol, H, L, c, st)
+                restored_activity = self._restore_session_activity(symbol, d, st)
+                if restored_activity:
+                    self._apply_sweep_guard_from_price(symbol, H, L, c, st)
                 if st.get("immediate_block_until_inside") or st.get("sweep_fired_high") or st.get("sweep_fired_low"):
                     self._persist_session_activity(symbol, d, st)
 
@@ -3372,8 +3576,6 @@ class MorningRangeReversionStrategy(BaseStrategy):
                             bars,
                             entry_depth_pts=threshold_pts,
                         )
-                        if sig:
-                            st["immediate_block_until_inside"] = True
                         return sig
                     st["sweep_side"] = sweep
                     if self.require_reentry_close:
@@ -3386,8 +3588,6 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     sig = self._fade_signal_after_sweep(
                         symbol, bar_et, sweep, H, L, mid, width, "immediate_stop", bars
                     )
-                    if sig:
-                        st["immediate_block_until_inside"] = True
                     return sig
                 if c < L:
                     sweep = "low"
@@ -3406,8 +3606,6 @@ class MorningRangeReversionStrategy(BaseStrategy):
                             bars,
                             entry_depth_pts=threshold_pts,
                         )
-                        if sig:
-                            st["immediate_block_until_inside"] = True
                         return sig
                     st["sweep_side"] = sweep
                     if self.require_reentry_close:
@@ -3420,8 +3618,6 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     sig = self._fade_signal_after_sweep(
                         symbol, bar_et, sweep, H, L, mid, width, "immediate_stop", bars
                     )
-                    if sig:
-                        st["immediate_block_until_inside"] = True
                     return sig
                 return None
 
@@ -3528,26 +3724,109 @@ class MorningRangeReversionStrategy(BaseStrategy):
                 partial_tp_scalp_r=partial_r,
             )
             if result and result.get("error"):
-                logger.warning(
-                    "morning_range_reversion execute rejected %s %s: %s",
-                    signal["action"],
-                    signal["symbol"],
-                    result.get("error"),
+                err = str(result.get("error") or "")
+                sweep = str(signal.get("sweep") or "")
+                if not sweep and "sweep=" in str(signal.get("reason") or ""):
+                    for token in str(signal.get("reason") or "").split():
+                        if token.startswith("sweep="):
+                            sweep = token.split("=", 1)[1]
+                            break
+                self._commit_broker_reject(
+                    symbol,
+                    datetime.now(self._tz).date(),
+                    sweep,
+                    err,
                 )
                 return False
             if not getattr(self.trading_bot, "_is_strategy_replay", False):
                 self._live_managed_symbols.add(str(signal["symbol"]).upper())
-                st = self._get_state(symbol)
-                d = datetime.now(self._tz).date()
-                self._persist_session_activity(symbol, d, st)
+                sym = str(signal["symbol"]).upper()
+                sweep = str(signal.get("sweep") or "")
+                if not sweep and "sweep=" in str(signal.get("reason") or ""):
+                    for token in str(signal["reason"]).split():
+                        if token.startswith("sweep="):
+                            sweep = token.split("=", 1)[1]
+                            break
+                self._commit_successful_fade(
+                    sym, datetime.now(self._tz).date(), sweep,
+                )
             self.daily_trades += 1
             return True
         except Exception as exc:
             logger.error("morning_range_reversion.execute error: %s", exc, exc_info=True)
             return False
 
+    def _held_bars_for_position(self, engine: Any, sym: str, pos: Any) -> Optional[int]:
+        """Bars since fill (prefer engine entry_bar_index)."""
+        entry_bar_idx = getattr(pos, "entry_bar_index", None)
+        if entry_bar_idx is not None and hasattr(engine, "current_bar_index"):
+            return int(engine.current_bar_index) - int(entry_bar_idx)
+        entry_seq = self._entry_bar_seq.get(sym)
+        if entry_seq is None:
+            return None
+        return int(self._bar_seq) - int(entry_seq)
+
+    @staticmethod
+    def _unrealized_r(pos: Any) -> Optional[float]:
+        """Signed R multiple from entry vs stop; None if risk unknown."""
+        from core.backtest.models import OrderSide
+
+        entry = float(getattr(pos, "entry_price", 0.0) or 0.0)
+        stop = getattr(pos, "stop_loss", None)
+        px = float(getattr(pos, "current_price", entry) or entry)
+        if stop is None or entry <= 0:
+            return None
+        risk_pts = abs(entry - float(stop))
+        if risk_pts <= 1e-12:
+            return None
+        side = getattr(pos, "side", None)
+        if side == OrderSide.BUY:
+            return (px - entry) / risk_pts
+        return (entry - px) / risk_pts
+
+    def _replay_market_close_position(
+        self, engine: Any, sym: str, pos: Any, *, exit_reason: str
+    ) -> None:
+        pending = getattr(engine, "pending_orders", None) or []
+        for o in list(pending):
+            if getattr(o, "symbol", "") != sym:
+                continue
+            if not getattr(o, "oco_group", None):
+                continue
+            try:
+                pending.remove(o)
+            except ValueError:
+                pass
+
+        from core.backtest.models import OrderSide, OrderType
+
+        close_side = (
+            OrderSide.SELL if getattr(pos, "side", None) == OrderSide.BUY else OrderSide.BUY
+        )
+        try:
+            close_id = engine.place_order(
+                symbol=sym,
+                side=close_side,
+                quantity=int(getattr(pos, "quantity", 1)),
+                order_type=OrderType.MARKET,
+                price=float(getattr(pos, "current_price", getattr(pos, "entry_price", 0.0))),
+            )
+            for o in engine.pending_orders:
+                if o.order_id == close_id:
+                    o.exit_reason = exit_reason
+                    break
+        except Exception as exc:
+            logger.debug(
+                "morning_range_reversion %s-close failed for %s: %s",
+                exit_reason,
+                sym,
+                exc,
+            )
+        finally:
+            self._entry_bar_seq.pop(sym, None)
+
     async def manage_positions(self) -> None:
-        if self.max_hold_bars <= 0:
+        if self.max_hold_bars <= 0 and self.scratch_check_bars <= 0:
             return None
         bot = self.trading_bot
         engine = getattr(bot, "backtest_engine", None) or getattr(self, "_replay_engine", None)
@@ -3577,68 +3856,37 @@ class MorningRangeReversionStrategy(BaseStrategy):
                     pass
 
         for sym, pos in list(positions.items()):
-            # ── max_hold_bars is "bars since the entry FILLED", not "bars since
-            # the signal was emitted". For threshold/advance-stop mode the
-            # entry order can sit pending for an hour or more before price
-            # retraces back to the trigger; counting from the signal bar made
-            # the trade time out *prematurely* relative to the user's intent.
-            # Example: 2026-03-30 MNQ — sweep at 09:25 ET, entry filled at
-            # 11:00 ET, ``max_hold_bars=46`` (3h50m). Old code counted from
-            # 09:25 → timed out at 13:15 ET after only 2h15m of actual hold,
-            # *before* price would have hit either the SL or TP. The
-            # ``BacktestPosition`` records ``entry_bar_index`` at the actual
-            # fill, so prefer that. Falls back to the legacy ``_entry_bar_seq``
-            # (which is what live mode still uses, since it has no engine).
-            entry_bar_idx = getattr(pos, "entry_bar_index", None)
-            if entry_bar_idx is not None and hasattr(engine, "current_bar_index"):
-                held = int(engine.current_bar_index) - int(entry_bar_idx)
-            else:
-                entry_seq = self._entry_bar_seq.get(sym)
-                if entry_seq is None:
+            # ── max_hold_bars / scratch count from entry FILL, not signal bar.
+            held = self._held_bars_for_position(engine, sym, pos)
+            if held is None:
+                continue
+
+            # Scratch first: cut stagnant fades before hard timeout.
+            if self.scratch_check_bars > 0 and held >= self.scratch_check_bars:
+                r_mult = self._unrealized_r(pos)
+                if r_mult is not None and r_mult < float(self.scratch_min_r):
+                    logger.debug(
+                        "morning_range_reversion scratch-close %s after %d bars "
+                        "(need R>=%.2f, have %.2f)",
+                        sym,
+                        held,
+                        self.scratch_min_r,
+                        r_mult,
+                    )
+                    self._replay_market_close_position(
+                        engine, sym, pos, exit_reason="scratch"
+                    )
                     continue
-                held = self._bar_seq - entry_seq
-            if held < self.max_hold_bars:
+
+            if self.max_hold_bars <= 0 or held < self.max_hold_bars:
                 continue
             logger.debug(
-                "morning_range_reversion timeout-close %s after %d bars (max=%d, "
-                "entry_bar_idx=%s)",
+                "morning_range_reversion timeout-close %s after %d bars (max=%d)",
                 sym,
                 held,
                 self.max_hold_bars,
-                entry_bar_idx,
             )
-            pending = getattr(engine, "pending_orders", None) or []
-            for o in list(pending):
-                if getattr(o, "symbol", "") != sym:
-                    continue
-                if not getattr(o, "oco_group", None):
-                    continue
-                try:
-                    pending.remove(o)
-                except ValueError:
-                    pass
-
-            from core.backtest.models import OrderSide, OrderType
-
-            close_side = (
-                OrderSide.SELL if getattr(pos, "side", None) == OrderSide.BUY else OrderSide.BUY
-            )
-            try:
-                close_id = engine.place_order(
-                    symbol=sym,
-                    side=close_side,
-                    quantity=int(getattr(pos, "quantity", 1)),
-                    order_type=OrderType.MARKET,
-                    price=float(getattr(pos, "current_price", getattr(pos, "entry_price", 0.0))),
-                )
-                for o in engine.pending_orders:
-                    if o.order_id == close_id:
-                        o.exit_reason = "timeout"
-                        break
-            except Exception as exc:
-                logger.debug("morning_range_reversion timeout-close failed for %s: %s", sym, exc)
-            finally:
-                self._entry_bar_seq.pop(sym, None)
+            self._replay_market_close_position(engine, sym, pos, exit_reason="timeout")
         return None
 
     async def _manage_positions_live(self) -> None:

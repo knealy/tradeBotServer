@@ -109,6 +109,9 @@ def _serialize_backtest_bundle(
     mc = _strip_mc_bulk(monte_carlo)
     if mc is not None:
         out["monte_carlo"] = mc
+    carry = bundle.get("dynamic_sizing_carry")
+    if carry:
+        out["dynamic_sizing_carry"] = carry
     return out
 
 
@@ -747,12 +750,14 @@ class BacktestExecutor:
         )
         
         # Run replay
+        carry_in = strategy_params.pop("dynamic_sizing_carry", None)
         result = await replay_engine.replay(
             symbol=symbol,
             bars=bars,
             tick_size=self._get_tick_size(symbol),
             replay_timeframe=replay_timeframe,
             bars_1m=bars_1m,
+            dynamic_sizing_carry=carry_in,
         )
         
         # Print results
@@ -763,11 +768,15 @@ class BacktestExecutor:
         cache_key = f"{strategy_name}_{symbol}_replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.results_cache[cache_key] = result
         
-        return {
+        out: Dict[str, Any] = {
             'result': result,
             'cache_key': cache_key,
             'data': bars
         }
+        end_carry = replay_engine.get_dynamic_sizing_carry()
+        if end_carry is not None:
+            out['dynamic_sizing_carry'] = end_carry
+        return out
     
     def _get_strategy_class(self, strategy_name: str):
         """Get strategy class by name."""

@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward metrics — overnight_range / MNQ, MGC</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.qty-sized { color: var(--accent); font-weight: 650; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+pre { background: var(--panel2); padding: 0.75rem 1rem; border-radius: 6px; overflow: auto; font-size: 0.78rem; line-height: 1.45; color: #d8d8e0; }
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+details > summary { cursor: pointer; padding: 0.3rem 0; color: var(--link); font-weight: 500; user-select: none; }
+details[open] > summary { margin-bottom: 0.5rem; }
+h2#config-snapshot { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
+</style>
+</head>
+<body>
+  <p><a href="index.html">← Back to report hub</a></p>
+  <h1>Walk-forward performance (replay)</h1>
+  <p class="muted">Fold × strategy × symbol from <code>backtest_executor.py --replay --include-trades</code>.
+    <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
+    <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
+    <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
+  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a> · <a href="monte_carlo.json">monte_carlo.json</a> · <a href="#monte-carlo">Monte Carlo ↓</a> · <a href="strategy_configs.json">strategy_configs.json</a> · <a href="#config-snapshot">replay config ↓</a></nav>
+  <div class="banner">
+    <strong>All folds pooled:</strong> 104 trades · PnL <strong>-3637.15</strong>
+    · expectancy <strong>-34.973</strong> / trade · σ <strong>157.883</strong>
+    · PF <strong>0.63</strong> · max consecutive losses <strong>8</strong>
+    · max DD (sequential) <strong>4106.95</strong>
+  </div>
+  <div class="callout">
+    <strong>Survivability read:</strong> high <em>max consecutive losses</em> inside a fold with negative expectancy
+    usually means the edge is not stable across that window. Compare the <em>rollup</em> table (all folds merged
+    per strategy×symbol) to per-fold rows — widening σ or falling PF in later folds is a simple walk-forward stress signal.
+  </div>
+  <h2>Per fold</h2>
+  <table>
+    <thead><tr><th title="Walk-forward fold index (non-overlapping calendar windows).">fold</th><th title="First calendar date in this fold (inclusive).">start</th><th title="Last calendar date in this fold (inclusive).">end</th><th title="Strategy id replayed with its committed TOML config.">strategy</th><th title="Instrument symbol (e.g. MNQ, MGC).">sym</th><th class="num" title="Number of completed round-trip trades in the window.">n</th><th class="num" title="Sum of realized P&amp;L ($) across all trades in the row.">PnL</th><th class="num" title="Win rate — percentage of trades with positive realized P&amp;L.">WR%</th><th class="num" title="Expectancy — average realized P&amp;L per completed trade.">E/trade</th><th class="num" title="Standard deviation of per-trade realized P&amp;L.">σ PnL</th><th class="num" title="Profit factor — sum(winning $) ÷ |sum(losing $)|. &gt;1 means gross wins exceed gross losses.">PF</th><th class="num" title="Max drawdown — peak-to-trough decline on cumulative P&amp;L within the trade sequence.">maxDD</th><th title="Count of trades with positive realized P&amp;L.">win</th><th title="Count of trades with zero or negative realized P&amp;L.">loss</th><th title="Longest streak of consecutive winning trades in the fold.">max win str</th><th title="Longest streak of consecutive losing trades — survivability stress signal.">max loss str</th><th class="num" title="Average number of bars held from entry fill to exit fill.">avg bars</th><th class="num" title="ΣR — sum of (trade PnL ÷ initial_risk_dollars) where initial risk was recorded at entry.">ΣR</th></tr></thead>
+    <tbody><tr><td>0</td><td>2026-04-24</td><td>2026-05-08</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>11</td><td class='num'>256.80</td><td class='num'>54.5%</td><td class='num'>23.345</td><td class='num'>140.695</td><td class='num'>1.42</td><td class='num'>472.00</td><td>6</td><td>5</td><td>4</td><td>4</td><td class='num'>6.0</td><td class='num'>3.32</td></tr><tr><td>0</td><td>2026-04-24</td><td>2026-05-08</td><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>8</td><td class='num'>-403.00</td><td class='num'>25.0%</td><td class='num'>-50.375</td><td class='num'>154.038</td><td class='num'>0.49</td><td class='num'>606.50</td><td>2</td><td>6</td><td>1</td><td>4</td><td class='num'>6.9</td><td class='num'>-3.16</td></tr><tr><td>1</td><td>2026-05-09</td><td>2026-05-23</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>10</td><td class='num'>-675.70</td><td class='num'>20.0%</td><td class='num'>-67.570</td><td class='num'>154.137</td><td class='num'>0.39</td><td class='num'>675.70</td><td>2</td><td>8</td><td>1</td><td>3</td><td class='num'>9.2</td><td class='num'>-5.21</td></tr><tr><td>1</td><td>2026-05-09</td><td>2026-05-23</td><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>9</td><td class='num'>-1245.00</td><td class='num'>0.0%</td><td class='num'>-138.333</td><td class='num'>19.564</td><td class='num'>0.00</td><td class='num'>1245.00</td><td>0</td><td>9</td><td>0</td><td>9</td><td class='num'>5.2</td><td class='num'>-9.38</td></tr><tr><td>2</td><td>2026-05-24</td><td>2026-06-07</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>9</td><td class='num'>111.95</td><td class='num'>44.4%</td><td class='num'>12.439</td><td class='num'>145.765</td><td class='num'>1.21</td><td class='num'>411.55</td><td>4</td><td>5</td><td>2</td><td>4</td><td class='num'>5.2</td><td class='num'>1.56</td></tr><tr><td>2</td><td>2026-05-24</td><td>2026-06-07</td><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>6</td><td class='num'>-441.50</td><td class='num'>16.7%</td><td class='num'>-73.583</td><td class='num'>157.295</td><td class='num'>0.36</td><td class='num'>688.00</td><td>1</td><td>5</td><td>1</td><td>5</td><td class='num'>6.0</td><td class='num'>-3.65</td></tr><tr><td>3</td><td>2026-06-08</td><td>2026-06-22</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>9</td><td class='num'>-1039.30</td><td class='num'>22.2%</td><td class='num'>-115.478</td><td class='num'>163.434</td><td class='num'>0.24</td><td class='num'>1039.30</td><td>2</td><td>7</td><td>2</td><td>4</td><td class='num'>5.8</td><td class='num'>-4.81</td></tr><tr><td>3</td><td>2026-06-08</td><td>2026-06-22</td><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>6</td><td class='num'>302.50</td><td class='num'>50.0%</td><td class='num'>50.417</td><td class='num'>196.612</td><td class='num'>1.84</td><td class='num'>147.00</td><td>3</td><td>3</td><td>2</td><td>1</td><td class='num'>9.8</td><td class='num'>1.50</td></tr><tr><td>4</td><td>2026-06-23</td><td>2026-07-07</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>9</td><td class='num'>-224.15</td><td class='num'>33.3%</td><td class='num'>-24.906</td><td class='num'>210.020</td><td class='num'>0.77</td><td class='num'>368.20</td><td>3</td><td>6</td><td>1</td><td>2</td><td class='num'>3.6</td><td class='num'>-1.51</td></tr><tr><td>4</td><td>2026-06-23</td><td>2026-07-07</td><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>9</td><td class='num'>97.50</td><td class='num'>44.4%</td><td class='num'>10.833</td><td class='num'>185.229</td><td class='num'>1.14</td><td class='num'>423.00</td><td>4</td><td>5</td><td>4</td><td>3</td><td class='num'>9.2</td><td class='num'>1.44</td></tr><tr><td>5</td><td>2026-07-08</td><td>2026-07-23</td><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>9</td><td class='num'>-181.75</td><td class='num'>33.3%</td><td class='num'>-20.194</td><td class='num'>168.712</td><td class='num'>0.77</td><td class='num'>394.70</td><td>3</td><td>6</td><td>1</td><td>3</td><td class='num'>5.3</td><td class='num'>-1.59</td></tr><tr><td>5</td><td>2026-07-08</td><td>2026-07-23</td><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>9</td><td class='num'>-195.50</td><td class='num'>33.3%</td><td class='num'>-21.722</td><td class='num'>127.558</td><td class='num'>0.67</td><td class='num'>436.00</td><td>3</td><td>6</td><td>1</td><td>3</td><td class='num'>16.2</td><td class='num'>-1.06</td></tr></tbody>
+  </table>
+  <h2>Rollup — all folds merged (per strategy × symbol)</h2>
+  <table>
+    <thead><tr><th title="Strategy id replayed with its committed TOML config.">strategy</th><th title="Instrument symbol (e.g. MNQ, MGC).">sym</th><th class="num" title="Number of completed round-trip trades in the window.">n</th><th class="num" title="Sum of realized P&amp;L ($) across all trades in the row.">PnL</th><th class="num" title="Win rate — percentage of trades with positive realized P&amp;L.">WR%</th><th class="num" title="Expectancy — average realized P&amp;L per completed trade.">E/trade</th><th class="num" title="Standard deviation of per-trade realized P&amp;L.">σ PnL</th><th class="num" title="Profit factor — sum(winning $) ÷ |sum(losing $)|. &gt;1 means gross wins exceed gross losses.">PF</th><th class="num" title="Max drawdown — peak-to-trough decline on cumulative P&amp;L within the trade sequence.">maxDD</th><th title="Longest streak of consecutive losing trades — survivability stress signal.">max loss str</th><th class="num" title="Average number of bars held from entry fill to exit fill.">avg bars</th><th class="num" title="ΣR — sum of (trade PnL ÷ initial_risk_dollars) where initial risk was recorded at entry.">ΣR</th></tr></thead>
+    <tbody><tr><td><code>overnight_range</code></td><td><code>MGC</code></td><td class='num'>47</td><td class='num'>-1885.00</td><td class='num'>27.7%</td><td class='num'>-40.106</td><td class='num'>151.855</td><td class='num'>0.57</td><td class='num'>2539.50</td><td>18</td><td class='num'>9.1</td><td class='num'>-14.31</td></tr><tr><td><code>overnight_range</code></td><td><code>MNQ</code></td><td class='num'>57</td><td class='num'>-1752.15</td><td class='num'>35.1%</td><td class='num'>-30.739</td><td class='num'>163.907</td><td class='num'>0.67</td><td class='num'>2008.95</td><td>5</td><td class='num'>5.9</td><td class='num'>-8.23</td></tr></tbody>
+  </table>
+  <h2>Simulated account equity</h2>
+  <p class="muted">Starting balance <strong>$2,000.00</strong>. Every completed trade in this run is sorted by <strong>exit time</strong>
+    and applied in sequence to one notional account (all legs, all folds). This shows combined PnL path stress;
+    it does <em>not</em> model margin, cross-margin, or whether every leg would run on the same live account.</p>
+  <div class="banner">
+    <strong>Equity path:</strong> final <strong>-1,637.15</strong>
+    · return <strong>-181.86%</strong>
+    · max drawdown <strong>4,106.95</strong> (<strong>171.97%</strong> from peak)
+    · closes in path <strong>104</strong>
+  </div>
+  <div id="equityChart" style="width:100%;height:340px;position:relative;"></div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function() {
+  const el = document.getElementById("equityChart");
+  if (!el || typeof LightweightCharts === 'undefined') return;
+  const chart = LightweightCharts.createChart(el, {
+    layout: { background: { color: '#131316' }, textColor: '#c8c8d0' },
+    grid: { vertLines: { color: '#2c2c34' }, horzLines: { color: '#2c2c34' } },
+    rightPriceScale: { borderColor: '#2c2c34' },
+    timeScale: { borderColor: '#2c2c34', timeVisible: true, secondsVisible: false },
+  });
+  const series = chart.addLineSeries({ color: '#5ecf8e', lineWidth: 2 });
+  const raw = [{"time": 1777038300, "value": 2000.0}, {"time": 1777039800, "value": 2203.5}, {"time": 1777053000, "value": 2388.25}, {"time": 1777298100, "value": 2305.35}, {"time": 1777303500, "value": 2206.35}, {"time": 1777388400, "value": 2074.05}, {"time": 1777470000, "value": 1965.95}, {"time": 1777473300, "value": 1831.95}, {"time": 1777558800, "value": 1683.25}, {"time": 1777643700, "value": 1828.0}, {"time": 1777644600, "value": 2019.5}, {"time": 1777908300, "value": 1866.5}, {"time": 1777911300, "value": 1732.6}, {"time": 1777988700, "value": 1843.35}, {"time": 1777995600, "value": 1725.35}, {"time": 1778097600, "value": 1871.1}, {"time": 1778163600, "value": 1987.45}, {"time": 1778167500, "value": 1839.45}, {"time": 1778247900, "value": 1999.8}, {"time": 1778249100, "value": 1853.8}, {"time": 1778508300, "value": 1709.8}, {"time": 1778517600, "value": 1594.9}, {"time": 1778594400, "value": 1450.9}, {"time": 1778595000, "value": 1337.8}, {"time": 1778682300, "value": 1227.8}, {"time": 1778696100, "value": 1401.55}, {"time": 1778766300, "value": 1271.55}, {"time": 1778778900, "value": 1147.45}, {"time": 1778853000, "value": 968.95}, {"time": 1778854200, "value": 801.95}, {"time": 1779112800, "value": 635.95}, {"time": 1779123000, "value": 452.45}, {"time": 1779200400, "value": 715.2}, {"time": 1779285000, "value": 594.7}, {"time": 1779287100, "value": 473.7}, {"time": 1779371100, "value": 333.7}, {"time": 1779389100, "value": 183.2}, {"time": 1779457800, "value": 56.1}, {"time": 1779463500, "value": -66.9}, {"time": 1779805200, "value": 71.05}, {"time": 1779889500, "value": 238.4}, {"time": 1779978000, "value": 114.3}, {"time": 1779978001, "value": -39.7}, {"time": 1780062600, "value": 95.05}, {"time": 1780064400, "value": -25.95}, {"time": 1780327800, "value": -173.95}, {"time": 1780344000, "value": -227.6}, {"time": 1780408800, "value": -329.5}, {"time": 1780494600, "value": -428.6}, {"time": 1780495500, "value": -566.6}, {"time": 1780581000, "value": -693.6}, {"time": 1780582200, "value": -850.5}, {"time": 1780667100, "value": -642.95}, {"time": 1780667700, "value": -396.45}, {"time": 1780938000, "value": -584.55}, {"time": 1781013000, "value": -684.55}, {"time": 1781102700, "value": -936.05}, {"time": 1781117400, "value": -629.55}, {"time": 1781187000, "value": -807.05}, {"time": 1781199300, "value": -570.55}, {"time": 1781278800, "value": -770.05}, {"time": 1781531100, "value": -602.7}, {"time": 1781531700, "value": -715.7}, {"time": 1781620200, "value": -557.55}, {"time": 1781706600, "value": -438.05}, {"time": 1781707800, "value": -569.95}, {"time": 1781792400, "value": -716.95}, {"time": 1781792700, "value": -867.25}, {"time": 1782135900, "value": -1133.25}, {"time": 1782241200, "value": -1325.35}, {"time": 1782309000, "value": -1501.45}, {"time": 1782324300, "value": -1698.45}, {"time": 1782395100, "value": -1478.1}, {"time": 1782417600, "value": -1570.6}, {"time": 1782483300, "value": -1348.1}, {"time": 1782741300, "value": -1518.0}, {"time": 1782742500, "value": -1334.5}, {"time": 1782827700, "value": -1123.75}, {"time": 1782829200, "value": -934.25}, {"time": 1782913200, "value": -1082.35}, {"time": 1782913201, "value": -867.85}, {"time": 1783002000, "value": -1055.85}, {"time": 1783004700, "value": -733.1}, {"time": 1783350000, "value": -843.1}, {"time": 1783350900, "value": -985.4}, {"time": 1783431600, "value": -1134.9}, {"time": 1783432200, "value": -1259.9}, {"time": 1783528800, "value": -1422.9}, {"time": 1783604700, "value": -1227.75}, {"time": 1783606500, "value": -1347.75}, {"time": 1783691700, "value": -1466.85}, {"time": 1783694100, "value": -1582.85}, {"time": 1783950900, "value": -1705.55}, {"time": 1783952100, "value": -1547.05}, {"time": 1784125500, "value": -1367.7}, {"time": 1784141400, "value": -1480.7}, {"time": 1784210700, "value": -1636.2}, {"time": 1784232000, "value": -1718.7}, {"time": 1784295600, "value": -1482.95}, {"time": 1784318400, "value": -1413.45}, {"time": 1784555400, "value": -1554.55}, {"time": 1784646300, "value": -1675.65}, {"time": 1784664000, "value": -1679.15}, {"time": 1784735100, "value": -1504.65}, {"time": 1784742600, "value": -1637.15}];
+  series.setData(raw);
+  chart.timeScale().fitContent();
+  window.addEventListener('resize', () => {
+    chart.applyOptions({ width: el.clientWidth });
+  });
+})();
+</script>
+
+  <h2>Monte Carlo robustness</h2>
+  
+<h3 id="monte-carlo">Monte Carlo — all legs pooled</h3>
+<p class="muted"><strong>2,000</strong> simulations on <strong>104</strong> trades
+  (start $2,000). <strong>Shuffle</strong> = permute trade order (tests path / drawdown luck).
+  <strong>Bootstrap</strong> = resample P&Ls with replacement (tests distribution uncertainty).
+  Sequential actual: total PnL <strong>$-3,637</strong>,
+  max DD <strong>$4,107</strong>.</p>
+<div class="banner">
+  <strong>Endurance grade:</strong> <span class="neg">WEAK</span>
+  — Monte Carlo suggests luck or thin edge; do not size up.
+  (3/6 checks passed)
+</div>
+<table><thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead>
+<tbody><tr><td class='neg'>✗</td><td>shuffle_p_profit_ge_90pct</td><td>shuffle P(profit)=0.0%</td></tr><tr><td class='neg'>✗</td><td>bootstrap_p_profit_ge_85pct</td><td>bootstrap P(profit)=1.4%</td></tr><tr><td class='neg'>✗</td><td>bootstrap_p5_total_pnl_positive</td><td>bootstrap p5 total PnL=$-6,168</td></tr><tr><td class='pos'>✓</td><td>actual_not_order_lucky_shuffle</td><td>order-invariant (all shuffles identical)</td></tr><tr><td class='pos'>✓</td><td>actual_dd_not_worst_case_shuffle</td><td>actual max DD at shuffle 53th pct</td></tr><tr><td class='pos'>✓</td><td>min_sample_size</td><td>n_trades=104 (≥20 recommended for MC stability)</td></tr></tbody></table>
+
+<h4>Trade-order shuffle</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+
+<div class="mc-hist" id="mc-grand-shuffle-pnl">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">Trade-order shuffle — total PnL distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="Trade-order shuffle — total PnL distribution histogram" style="max-width:520px">
+    
+    <rect x="277.0" y="28.0" width="12.2" height="116.0" fill="#f08080" opacity="0.85" rx="1"/>
+    <line x1="276.0" y1="28" x2="276.0" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="276.0" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$-3,674</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$-3,601</text>
+  </svg>
+</div>
+<div class="mc-hist" id="mc-grand-shuffle-dd">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">Trade-order shuffle — max drawdown ($) distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="Trade-order shuffle — max drawdown ($) distribution histogram" style="max-width:520px">
+    
+    <rect x="49.0" y="28.0" width="12.2" height="116.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="63.2" y="87.9" width="12.2" height="56.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="77.5" y="51.4" width="12.2" height="92.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="91.8" y="77.1" width="12.2" height="66.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="106.0" y="62.1" width="12.2" height="81.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="120.2" y="80.9" width="12.2" height="63.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="134.5" y="80.4" width="12.2" height="63.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="148.8" y="85.5" width="12.2" height="58.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="163.0" y="83.2" width="12.2" height="60.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="177.2" y="98.2" width="12.2" height="45.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="191.5" y="89.3" width="12.2" height="54.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="205.8" y="115.5" width="12.2" height="28.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="220.0" y="109.9" width="12.2" height="34.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="234.2" y="121.1" width="12.2" height="22.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="248.5" y="127.2" width="12.2" height="16.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="262.8" y="122.5" width="12.2" height="21.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="277.0" y="130.9" width="12.2" height="13.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="291.2" y="133.7" width="12.2" height="10.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="305.5" y="137.0" width="12.2" height="7.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="319.8" y="137.9" width="12.2" height="6.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="334.0" y="140.3" width="12.2" height="3.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="348.2" y="141.2" width="12.2" height="2.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="362.5" y="140.7" width="12.2" height="3.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="143.1" width="12.2" height="0.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="142.1" width="12.2" height="1.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="143.1" width="12.2" height="0.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="462.2" y="143.5" width="12.2" height="0.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="476.5" y="143.5" width="12.2" height="0.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="143.5" width="12.2" height="0.5" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="138.9" y1="28" x2="138.9" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="138.9" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$3,637</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$5,994</text>
+  </svg>
+</div>
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody><tr><td>Total PnL p5 / p50 / p95</td><td class='num'>$-3,637 / $-3,637 / $-3,637</td></tr><tr><td>P(profit)</td><td class='num'>0.0%</td></tr><tr><td>Actual total PnL (sequential)</td><td class='num'>$-3,637 (100th pct)</td></tr><tr><td>Max DD $ p50 / p95</td><td class='num'>$4,069 / $4,839</td></tr><tr><td>Actual max DD $</td><td class='num'>$4,107 (53th pct)</td></tr><tr><td>Max consec losses p90</td><td class='num'>14 (actual 8)</td></tr></tbody></table>
+
+<h4>P&amp;L bootstrap (iid resample)</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+
+<div class="mc-hist" id="mc-grand-bootstrap-pnl">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">P&amp;L bootstrap (iid resample) — total PnL distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="P&amp;L bootstrap (iid resample) — total PnL distribution histogram" style="max-width:520px">
+    <line x1="437.7" y1="28" x2="437.7" y2="144" stroke="#666" stroke-width="1" opacity="0.5"/>
+    <rect x="49.0" y="143.3" width="12.2" height="0.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="63.2" y="143.3" width="12.2" height="0.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="77.5" y="142.7" width="12.2" height="1.3" fill="#f08080" opacity="0.85" rx="1"/><rect x="91.8" y="143.3" width="12.2" height="0.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="106.0" y="139.3" width="12.2" height="4.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="120.2" y="135.3" width="12.2" height="8.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="134.5" y="127.9" width="12.2" height="16.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="148.8" y="127.9" width="12.2" height="16.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="163.0" y="115.8" width="12.2" height="28.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="177.2" y="92.4" width="12.2" height="51.6" fill="#f08080" opacity="0.85" rx="1"/><rect x="191.5" y="87.7" width="12.2" height="56.3" fill="#f08080" opacity="0.85" rx="1"/><rect x="205.8" y="82.3" width="12.2" height="61.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="220.0" y="60.2" width="12.2" height="83.8" fill="#f08080" opacity="0.85" rx="1"/><rect x="234.2" y="48.8" width="12.2" height="95.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="248.5" y="42.8" width="12.2" height="101.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="262.8" y="28.0" width="12.2" height="116.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="277.0" y="32.0" width="12.2" height="112.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="291.2" y="45.4" width="12.2" height="98.6" fill="#f08080" opacity="0.85" rx="1"/><rect x="305.5" y="48.1" width="12.2" height="95.9" fill="#f08080" opacity="0.85" rx="1"/><rect x="319.8" y="70.9" width="12.2" height="73.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="334.0" y="58.8" width="12.2" height="85.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="348.2" y="87.7" width="12.2" height="56.3" fill="#f08080" opacity="0.85" rx="1"/><rect x="362.5" y="86.3" width="12.2" height="57.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="376.8" y="108.5" width="12.2" height="35.5" fill="#f08080" opacity="0.85" rx="1"/><rect x="391.0" y="113.2" width="12.2" height="30.8" fill="#f08080" opacity="0.85" rx="1"/><rect x="405.2" y="125.9" width="12.2" height="18.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="419.5" y="131.9" width="12.2" height="12.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="433.8" y="135.3" width="12.2" height="8.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="136.6" width="12.2" height="7.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="462.2" y="140.0" width="12.2" height="4.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="476.5" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="142.0" width="12.2" height="2.0" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="281.0" y1="28" x2="281.0" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="281.0" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$-9,047</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$1,540</text>
+  </svg>
+</div>
+<div class="mc-hist" id="mc-grand-bootstrap-dd">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">P&amp;L bootstrap (iid resample) — max drawdown ($) distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="P&amp;L bootstrap (iid resample) — max drawdown ($) distribution histogram" style="max-width:520px">
+    
+    <rect x="49.0" y="140.1" width="12.2" height="3.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="63.2" y="133.0" width="12.2" height="11.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="77.5" y="127.4" width="12.2" height="16.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="91.8" y="114.0" width="12.2" height="30.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="106.0" y="107.7" width="12.2" height="36.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="120.2" y="82.4" width="12.2" height="61.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="134.5" y="69.8" width="12.2" height="74.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="148.8" y="72.2" width="12.2" height="71.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="163.0" y="61.9" width="12.2" height="82.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="177.2" y="41.4" width="12.2" height="102.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="191.5" y="43.8" width="12.2" height="100.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="205.8" y="45.4" width="12.2" height="98.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="220.0" y="40.6" width="12.2" height="103.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="234.2" y="28.0" width="12.2" height="116.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="248.5" y="35.1" width="12.2" height="108.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="262.8" y="30.4" width="12.2" height="113.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="277.0" y="61.1" width="12.2" height="82.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="291.2" y="76.9" width="12.2" height="67.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="305.5" y="70.6" width="12.2" height="73.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="319.8" y="82.4" width="12.2" height="61.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="334.0" y="88.8" width="12.2" height="55.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="348.2" y="110.1" width="12.2" height="33.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="362.5" y="118.0" width="12.2" height="26.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="127.4" width="12.2" height="16.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="137.7" width="12.2" height="6.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="133.0" width="12.2" height="11.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="137.7" width="12.2" height="6.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="433.8" y="140.8" width="12.2" height="3.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="141.6" width="12.2" height="2.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="476.5" y="143.2" width="12.2" height="0.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="143.2" width="12.2" height="0.8" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="227.2" y1="28" x2="227.2" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="227.2" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$910</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$9,047</text>
+  </svg>
+</div>
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody><tr><td>Total PnL p5 / p50 / p95</td><td class='num'>$-6,168 / $-3,674 / $-887</td></tr><tr><td>P(profit)</td><td class='num'>1.4%</td></tr><tr><td>Actual total PnL (sequential)</td><td class='num'>$-3,637 (51th pct)</td></tr><tr><td>Max DD $ p50 / p95</td><td class='num'>$4,206 / $6,439</td></tr><tr><td>Actual max DD $</td><td class='num'>$4,107 (48th pct)</td></tr><tr><td>Max consec losses p90</td><td class='num'>14 (actual 8)</td></tr></tbody></table>
+
+<h2>Monte Carlo — per strategy × symbol</h2>
+
+<h3>Monte Carlo — overnight_range · MGC</h3>
+<p class="muted"><strong>2,000</strong> simulations on <strong>47</strong> trades
+  (start $2,000). <strong>Shuffle</strong> = permute trade order (tests path / drawdown luck).
+  <strong>Bootstrap</strong> = resample P&Ls with replacement (tests distribution uncertainty).
+  Sequential actual: total PnL <strong>$-1,885</strong>,
+  max DD <strong>$2,540</strong>.</p>
+<div class="banner">
+  <strong>Endurance grade:</strong> <span class="neg">WEAK</span>
+  — Monte Carlo suggests luck or thin edge; do not size up.
+  (2/6 checks passed)
+</div>
+<table><thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead>
+<tbody><tr><td class='neg'>✗</td><td>shuffle_p_profit_ge_90pct</td><td>shuffle P(profit)=0.0%</td></tr><tr><td class='neg'>✗</td><td>bootstrap_p_profit_ge_85pct</td><td>bootstrap P(profit)=4.0%</td></tr><tr><td class='neg'>✗</td><td>bootstrap_p5_total_pnl_positive</td><td>bootstrap p5 total PnL=$-3,618</td></tr><tr><td class='pos'>✓</td><td>actual_not_order_lucky_shuffle</td><td>order-invariant (all shuffles identical)</td></tr><tr><td class='neg'>✗</td><td>actual_dd_not_worst_case_shuffle</td><td>actual max DD at shuffle 86th pct</td></tr><tr><td class='pos'>✓</td><td>min_sample_size</td><td>n_trades=47 (≥20 recommended for MC stability)</td></tr></tbody></table>
+
+<h4>Trade-order shuffle</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+
+<div class="mc-hist" id="mc-overnight_range-MGC-shuffle-pnl">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">Trade-order shuffle — total PnL distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="Trade-order shuffle — total PnL distribution histogram" style="max-width:520px">
+    
+    <rect x="277.0" y="28.0" width="12.2" height="116.0" fill="#f08080" opacity="0.85" rx="1"/>
+    <line x1="276.0" y1="28" x2="276.0" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="276.0" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$-1,904</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$-1,866</text>
+  </svg>
+</div>
+<div class="mc-hist" id="mc-overnight_range-MGC-shuffle-dd">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">Trade-order shuffle — max drawdown ($) distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="Trade-order shuffle — max drawdown ($) distribution histogram" style="max-width:520px">
+    
+    <rect x="49.0" y="28.0" width="12.2" height="116.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="63.2" y="96.8" width="12.2" height="47.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="77.5" y="96.4" width="12.2" height="47.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="91.8" y="98.9" width="12.2" height="45.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="106.0" y="67.2" width="12.2" height="76.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="120.2" y="80.6" width="12.2" height="63.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="134.5" y="87.3" width="12.2" height="56.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="148.8" y="99.8" width="12.2" height="44.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="163.0" y="89.3" width="12.2" height="54.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="177.2" y="104.4" width="12.2" height="39.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="191.5" y="109.8" width="12.2" height="34.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="205.8" y="107.3" width="12.2" height="36.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="220.0" y="113.1" width="12.2" height="30.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="234.2" y="121.1" width="12.2" height="22.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="248.5" y="126.9" width="12.2" height="17.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="262.8" y="127.7" width="12.2" height="16.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="277.0" y="123.6" width="12.2" height="20.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="291.2" y="130.6" width="12.2" height="13.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="305.5" y="131.1" width="12.2" height="12.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="319.8" y="137.3" width="12.2" height="6.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="334.0" y="135.2" width="12.2" height="8.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="348.2" y="138.2" width="12.2" height="5.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="362.5" y="139.4" width="12.2" height="4.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="141.1" width="12.2" height="2.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="141.1" width="12.2" height="2.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="141.9" width="12.2" height="2.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="141.5" width="12.2" height="2.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="142.3" width="12.2" height="1.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="143.6" width="12.2" height="0.4" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="248.7" y1="28" x2="248.7" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="248.7" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$1,885</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$3,372</text>
+  </svg>
+</div>
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody><tr><td>Total PnL p5 / p50 / p95</td><td class='num'>$-1,885 / $-1,885 / $-1,885</td></tr><tr><td>P(profit)</td><td class='num'>0.0%</td></tr><tr><td>Actual total PnL (sequential)</td><td class='num'>$-1,885 (100th pct)</td></tr><tr><td>Max DD $ p50 / p95</td><td class='num'>$2,188 / $2,743</td></tr><tr><td>Actual max DD $</td><td class='num'>$2,540 (86th pct)</td></tr><tr><td>Max consec losses p90</td><td class='num'>12 (actual 18)</td></tr></tbody></table>
+
+<h4>P&amp;L bootstrap (iid resample)</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+
+<div class="mc-hist" id="mc-overnight_range-MGC-bootstrap-pnl">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">P&amp;L bootstrap (iid resample) — total PnL distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="P&amp;L bootstrap (iid resample) — total PnL distribution histogram" style="max-width:520px">
+    <line x1="376.6" y1="28" x2="376.6" y2="144" stroke="#666" stroke-width="1" opacity="0.5"/>
+    <rect x="49.0" y="141.9" width="12.2" height="2.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="63.2" y="140.5" width="12.2" height="3.5" fill="#f08080" opacity="0.85" rx="1"/><rect x="77.5" y="136.4" width="12.2" height="7.6" fill="#f08080" opacity="0.85" rx="1"/><rect x="91.8" y="130.8" width="12.2" height="13.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="106.0" y="128.7" width="12.2" height="15.3" fill="#f08080" opacity="0.85" rx="1"/><rect x="120.2" y="117.6" width="12.2" height="26.4" fill="#f08080" opacity="0.85" rx="1"/><rect x="134.5" y="114.8" width="12.2" height="29.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="148.8" y="96.8" width="12.2" height="47.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="163.0" y="80.8" width="12.2" height="63.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="177.2" y="73.1" width="12.2" height="70.9" fill="#f08080" opacity="0.85" rx="1"/><rect x="191.5" y="46.8" width="12.2" height="97.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="205.8" y="34.9" width="12.2" height="109.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="220.0" y="46.1" width="12.2" height="97.9" fill="#f08080" opacity="0.85" rx="1"/><rect x="234.2" y="28.0" width="12.2" height="116.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="248.5" y="38.4" width="12.2" height="105.6" fill="#f08080" opacity="0.85" rx="1"/><rect x="262.8" y="41.2" width="12.2" height="102.8" fill="#f08080" opacity="0.85" rx="1"/><rect x="277.0" y="48.8" width="12.2" height="95.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="291.2" y="57.9" width="12.2" height="86.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="305.5" y="56.5" width="12.2" height="87.5" fill="#f08080" opacity="0.85" rx="1"/><rect x="319.8" y="94.7" width="12.2" height="49.3" fill="#f08080" opacity="0.85" rx="1"/><rect x="334.0" y="94.0" width="12.2" height="50.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="348.2" y="110.7" width="12.2" height="33.3" fill="#f08080" opacity="0.85" rx="1"/><rect x="362.5" y="123.2" width="12.2" height="20.8" fill="#f08080" opacity="0.85" rx="1"/><rect x="376.8" y="123.2" width="12.2" height="20.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="128.7" width="12.2" height="15.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="137.7" width="12.2" height="6.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="136.4" width="12.2" height="7.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="433.8" y="142.6" width="12.2" height="1.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="141.2" width="12.2" height="2.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="462.2" y="141.2" width="12.2" height="2.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="476.5" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="141.9" width="12.2" height="2.1" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="250.6" y1="28" x2="250.6" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="250.6" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$-4,917</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$1,906</text>
+  </svg>
+</div>
+<div class="mc-hist" id="mc-overnight_range-MGC-bootstrap-dd">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">P&amp;L bootstrap (iid resample) — max drawdown ($) distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="P&amp;L bootstrap (iid resample) — max drawdown ($) distribution histogram" style="max-width:520px">
+    
+    <rect x="49.0" y="140.7" width="12.2" height="3.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="63.2" y="134.2" width="12.2" height="9.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="77.5" y="121.9" width="12.2" height="22.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="91.8" y="113.8" width="12.2" height="30.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="106.0" y="105.6" width="12.2" height="38.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="120.2" y="89.3" width="12.2" height="54.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="134.5" y="79.5" width="12.2" height="64.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="148.8" y="66.4" width="12.2" height="77.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="163.0" y="67.2" width="12.2" height="76.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="177.2" y="60.7" width="12.2" height="83.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="191.5" y="28.8" width="12.2" height="115.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="205.8" y="28.0" width="12.2" height="116.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="220.0" y="45.2" width="12.2" height="98.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="234.2" y="34.5" width="12.2" height="109.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="248.5" y="30.5" width="12.2" height="113.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="262.8" y="46.8" width="12.2" height="97.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="277.0" y="56.6" width="12.2" height="87.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="291.2" y="58.2" width="12.2" height="85.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="305.5" y="64.8" width="12.2" height="79.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="319.8" y="86.8" width="12.2" height="57.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="334.0" y="95.0" width="12.2" height="49.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="348.2" y="108.1" width="12.2" height="35.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="362.5" y="115.4" width="12.2" height="28.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="111.3" width="12.2" height="32.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="127.7" width="12.2" height="16.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="125.2" width="12.2" height="18.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="136.6" width="12.2" height="7.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="433.8" y="135.8" width="12.2" height="8.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="136.6" width="12.2" height="7.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="462.2" y="139.1" width="12.2" height="4.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="476.5" y="141.5" width="12.2" height="2.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="142.4" width="12.2" height="1.6" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="258.6" y1="28" x2="258.6" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="258.6" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$400</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$5,034</text>
+  </svg>
+</div>
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody><tr><td>Total PnL p5 / p50 / p95</td><td class='num'>$-3,618 / $-1,938 / $-137</td></tr><tr><td>P(profit)</td><td class='num'>4.0%</td></tr><tr><td>Actual total PnL (sequential)</td><td class='num'>$-1,885 (52th pct)</td></tr><tr><td>Max DD $ p50 / p95</td><td class='num'>$2,318 / $3,792</td></tr><tr><td>Actual max DD $</td><td class='num'>$2,540 (60th pct)</td></tr><tr><td>Max consec losses p90</td><td class='num'>14 (actual 18)</td></tr></tbody></table>
+
+
+<h3>Monte Carlo — overnight_range · MNQ</h3>
+<p class="muted"><strong>2,000</strong> simulations on <strong>57</strong> trades
+  (start $2,000). <strong>Shuffle</strong> = permute trade order (tests path / drawdown luck).
+  <strong>Bootstrap</strong> = resample P&Ls with replacement (tests distribution uncertainty).
+  Sequential actual: total PnL <strong>$-1,752</strong>,
+  max DD <strong>$2,009</strong>.</p>
+<div class="banner">
+  <strong>Endurance grade:</strong> <span class="neg">WEAK</span>
+  — Monte Carlo suggests luck or thin edge; do not size up.
+  (3/6 checks passed)
+</div>
+<table><thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead>
+<tbody><tr><td class='neg'>✗</td><td>shuffle_p_profit_ge_90pct</td><td>shuffle P(profit)=0.0%</td></tr><tr><td class='neg'>✗</td><td>bootstrap_p_profit_ge_85pct</td><td>bootstrap P(profit)=8.6%</td></tr><tr><td class='neg'>✗</td><td>bootstrap_p5_total_pnl_positive</td><td>bootstrap p5 total PnL=$-3,733</td></tr><tr><td class='pos'>✓</td><td>actual_not_order_lucky_shuffle</td><td>order-invariant (all shuffles identical)</td></tr><tr><td class='pos'>✓</td><td>actual_dd_not_worst_case_shuffle</td><td>actual max DD at shuffle 23th pct</td></tr><tr><td class='pos'>✓</td><td>min_sample_size</td><td>n_trades=57 (≥20 recommended for MC stability)</td></tr></tbody></table>
+
+<h4>Trade-order shuffle</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+
+<div class="mc-hist" id="mc-overnight_range-MNQ-shuffle-pnl">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">Trade-order shuffle — total PnL distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="Trade-order shuffle — total PnL distribution histogram" style="max-width:520px">
+    
+    <rect x="277.0" y="28.0" width="12.2" height="116.0" fill="#f08080" opacity="0.85" rx="1"/>
+    <line x1="276.0" y1="28" x2="276.0" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="276.0" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$-1,770</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$-1,735</text>
+  </svg>
+</div>
+<div class="mc-hist" id="mc-overnight_range-MNQ-shuffle-dd">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">Trade-order shuffle — max drawdown ($) distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="Trade-order shuffle — max drawdown ($) distribution histogram" style="max-width:520px">
+    
+    <rect x="49.0" y="49.3" width="12.2" height="94.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="63.2" y="99.4" width="12.2" height="44.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="77.5" y="39.7" width="12.2" height="104.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="91.8" y="49.3" width="12.2" height="94.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="106.0" y="40.4" width="12.2" height="103.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="120.2" y="28.0" width="12.2" height="116.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="134.5" y="32.8" width="12.2" height="111.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="148.8" y="53.4" width="12.2" height="90.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="163.0" y="38.3" width="12.2" height="105.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="177.2" y="45.2" width="12.2" height="98.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="191.5" y="65.1" width="12.2" height="78.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="205.8" y="87.7" width="12.2" height="56.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="220.0" y="89.1" width="12.2" height="54.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="234.2" y="96.0" width="12.2" height="48.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="248.5" y="103.5" width="12.2" height="40.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="262.8" y="111.1" width="12.2" height="32.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="277.0" y="115.2" width="12.2" height="28.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="291.2" y="126.2" width="12.2" height="17.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="305.5" y="129.6" width="12.2" height="14.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="319.8" y="129.6" width="12.2" height="14.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="334.0" y="133.0" width="12.2" height="11.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="348.2" y="140.6" width="12.2" height="3.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="362.5" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="142.6" width="12.2" height="1.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="141.9" width="12.2" height="2.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="142.6" width="12.2" height="1.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="433.8" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="102.7" y1="28" x2="102.7" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="102.7" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$1,752</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$3,893</text>
+  </svg>
+</div>
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody><tr><td>Total PnL p5 / p50 / p95</td><td class='num'>$-1,752 / $-1,752 / $-1,752</td></tr><tr><td>P(profit)</td><td class='num'>0.0%</td></tr><tr><td>Actual total PnL (sequential)</td><td class='num'>$-1,752 (100th pct)</td></tr><tr><td>Max DD $ p50 / p95</td><td class='num'>$2,233 / $2,889</td></tr><tr><td>Actual max DD $</td><td class='num'>$2,009 (23th pct)</td></tr><tr><td>Max consec losses p90</td><td class='num'>10 (actual 5)</td></tr></tbody></table>
+
+<h4>P&amp;L bootstrap (iid resample)</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+
+<div class="mc-hist" id="mc-overnight_range-MNQ-bootstrap-pnl">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">P&amp;L bootstrap (iid resample) — total PnL distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="P&amp;L bootstrap (iid resample) — total PnL distribution histogram" style="max-width:520px">
+    <line x1="368.6" y1="28" x2="368.6" y2="144" stroke="#666" stroke-width="1" opacity="0.5"/>
+    <rect x="49.0" y="142.0" width="12.2" height="2.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="63.2" y="143.3" width="12.2" height="0.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="77.5" y="142.6" width="12.2" height="1.4" fill="#f08080" opacity="0.85" rx="1"/><rect x="91.8" y="135.8" width="12.2" height="8.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="106.0" y="135.8" width="12.2" height="8.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="120.2" y="127.6" width="12.2" height="16.4" fill="#f08080" opacity="0.85" rx="1"/><rect x="134.5" y="124.9" width="12.2" height="19.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="148.8" y="109.2" width="12.2" height="34.8" fill="#f08080" opacity="0.85" rx="1"/><rect x="163.0" y="107.2" width="12.2" height="36.8" fill="#f08080" opacity="0.85" rx="1"/><rect x="177.2" y="88.0" width="12.2" height="56.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="191.5" y="75.8" width="12.2" height="68.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="205.8" y="66.9" width="12.2" height="77.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="220.0" y="43.0" width="12.2" height="101.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="234.2" y="36.9" width="12.2" height="107.1" fill="#f08080" opacity="0.85" rx="1"/><rect x="248.5" y="42.3" width="12.2" height="101.7" fill="#f08080" opacity="0.85" rx="1"/><rect x="262.8" y="28.0" width="12.2" height="116.0" fill="#f08080" opacity="0.85" rx="1"/><rect x="277.0" y="46.4" width="12.2" height="97.6" fill="#f08080" opacity="0.85" rx="1"/><rect x="291.2" y="45.1" width="12.2" height="98.9" fill="#f08080" opacity="0.85" rx="1"/><rect x="305.5" y="60.8" width="12.2" height="83.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="319.8" y="62.8" width="12.2" height="81.2" fill="#f08080" opacity="0.85" rx="1"/><rect x="334.0" y="80.5" width="12.2" height="63.5" fill="#f08080" opacity="0.85" rx="1"/><rect x="348.2" y="95.6" width="12.2" height="48.4" fill="#f08080" opacity="0.85" rx="1"/><rect x="362.5" y="100.3" width="12.2" height="43.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="109.2" width="12.2" height="34.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="123.5" width="12.2" height="20.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="129.0" width="12.2" height="15.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="135.8" width="12.2" height="8.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="433.8" y="137.2" width="12.2" height="6.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="139.9" width="12.2" height="4.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="462.2" y="141.3" width="12.2" height="2.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="476.5" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="143.3" width="12.2" height="0.7" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="268.4" y1="28" x2="268.4" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="268.4" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$-5,606</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$2,367</text>
+  </svg>
+</div>
+<div class="mc-hist" id="mc-overnight_range-MNQ-bootstrap-dd">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">P&amp;L bootstrap (iid resample) — max drawdown ($) distribution</div>
+  <svg viewBox="0 0 520 180" width="100%" height="180" role="img"
+       aria-label="P&amp;L bootstrap (iid resample) — max drawdown ($) distribution histogram" style="max-width:520px">
+    
+    <rect x="49.0" y="136.3" width="12.2" height="7.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="63.2" y="127.1" width="12.2" height="16.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="77.5" y="107.9" width="12.2" height="36.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="91.8" y="80.2" width="12.2" height="63.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="106.0" y="70.3" width="12.2" height="73.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="120.2" y="78.7" width="12.2" height="65.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="134.5" y="57.2" width="12.2" height="86.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="148.8" y="48.0" width="12.2" height="96.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="163.0" y="38.0" width="12.2" height="106.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="177.2" y="50.3" width="12.2" height="93.7" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="191.5" y="28.0" width="12.2" height="116.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="205.8" y="46.4" width="12.2" height="97.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="220.0" y="38.0" width="12.2" height="106.0" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="234.2" y="64.1" width="12.2" height="79.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="248.5" y="61.8" width="12.2" height="82.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="262.8" y="62.6" width="12.2" height="81.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="277.0" y="76.4" width="12.2" height="67.6" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="291.2" y="85.6" width="12.2" height="58.4" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="305.5" y="97.1" width="12.2" height="46.9" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="319.8" y="110.2" width="12.2" height="33.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="334.0" y="110.2" width="12.2" height="33.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="348.2" y="124.8" width="12.2" height="19.2" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="362.5" y="127.9" width="12.2" height="16.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="376.8" y="131.7" width="12.2" height="12.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="391.0" y="127.9" width="12.2" height="16.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="405.2" y="131.7" width="12.2" height="12.3" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="419.5" y="140.9" width="12.2" height="3.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="433.8" y="140.9" width="12.2" height="3.1" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="448.0" y="143.2" width="12.2" height="0.8" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="462.2" y="142.5" width="12.2" height="1.5" fill="#5ecf8e" opacity="0.85" rx="1"/><rect x="490.8" y="141.7" width="12.2" height="2.3" fill="#5ecf8e" opacity="0.85" rx="1"/>
+    <line x1="179.3" y1="28" x2="179.3" y2="144" stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/><text x="179.3" y="22" text-anchor="middle" fill="#c9b87c" font-size="10">actual</text>
+    <line x1="48" y1="144" x2="504" y2="144" stroke="#444" stroke-width="1"/>
+    <text x="48" y="172" fill="#9b9ba8" font-size="10">$498</text><text x="504" y="172" text-anchor="end" fill="#9b9ba8" font-size="10">$5,747</text>
+  </svg>
+</div>
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody><tr><td>Total PnL p5 / p50 / p95</td><td class='num'>$-3,733 / $-1,757 / $269</td></tr><tr><td>P(profit)</td><td class='num'>8.6%</td></tr><tr><td>Actual total PnL (sequential)</td><td class='num'>$-1,752 (50th pct)</td></tr><tr><td>Max DD $ p50 / p95</td><td class='num'>$2,313 / $4,047</td></tr><tr><td>Actual max DD $</td><td class='num'>$2,009 (38th pct)</td></tr><tr><td>Max consec losses p90</td><td class='num'>11 (actual 5)</td></tr></tbody></table>
+
+  <h2>Analysis — all legs pooled</h2>
+  
+<h3>All legs pooled (exit-time order, all folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>42.5%</td><td>Actual WR 31.7%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.886</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:3.0 / L:3.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples (clipped ±10.0R)</td><td class='num'>win:1.506 loss:-1.017</td><td>Clipped mean is robust to variable-stop outliers</td></tr><tr><td>Median R multiples</td><td class='num'>win:1.551 loss:-1.041</td><td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>94.4%</td><td>losses 67 / events 67</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>5.6%</td><td>losses 4 / events 6</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>BUY</code></td><td class='num'>63.8%</td><td>37 losses / 58 trades</td></tr><tr><td><code>SELL</code></td><td class='num'>73.9%</td><td>34 losses / 46 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>overnight_range</code></td><td class='num'>71</td><td>100.0% of all losses · 104 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>18</td><td>25.4% of all losses; 21 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>11</td><td>15.5% of all losses; 17 entries this weekday</td></tr><tr><td>Wed</td><td class='num'>15</td><td>21.1% of all losses; 23 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>18</td><td>25.4% of all losses; 23 entries this weekday</td></tr><tr><td>Fri</td><td class='num'>9</td><td>12.7% of all losses; 20 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>-0.0507</td><td>Weak linear association between bars_held and losing trades (|r|≈0.05).</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>0.1785</td><td>When initial_risk_dollars is higher, losing trades are slightly more common (Pearson r≈0.18); treat as exploratory—causation not implied.</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0895</td><td>When entry_hour_et is higher, losing trades are slightly more common (Pearson r≈0.09); treat as exploratory—causation not implied.</td></tr></tbody></table>
+
+  <h2>Analysis — per strategy × symbol (merged folds)</h2>
+  
+<h3>overnight_range · MGC (merged folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>40.1%</td><td>Actual WR 27.7%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.742</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:4.0 / L:4.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples (clipped ±10.0R)</td><td class='num'>win:1.479 loss:-0.986</td><td>Clipped mean is robust to variable-stop outliers</td></tr><tr><td>Median R multiples</td><td class='num'>win:1.551 loss:-1.041</td><td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>91.2%</td><td>losses 31 / events 31</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>8.8%</td><td>losses 3 / events 4</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>BUY</code></td><td class='num'>65.4%</td><td>17 losses / 26 trades</td></tr><tr><td><code>SELL</code></td><td class='num'>81.0%</td><td>17 losses / 21 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>overnight_range</code></td><td class='num'>34</td><td>100.0% of all losses · 47 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>7</td><td>20.6% of all losses; 9 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>5</td><td>14.7% of all losses; 6 entries this weekday</td></tr><tr><td>Wed</td><td class='num'>7</td><td>20.6% of all losses; 11 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>10</td><td>29.4% of all losses; 11 entries this weekday</td></tr><tr><td>Fri</td><td class='num'>5</td><td>14.7% of all losses; 10 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>-0.1575</td><td>When bars_held is lower, losing trades are slightly more common (Pearson r≈-0.16); treat as exploratory—causation not implied.</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>0.0197</td><td>Weak linear association between initial_risk_dollars and losing trades (|r|≈0.02).</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0801</td><td>When entry_hour_et is higher, losing trades are slightly more common (Pearson r≈0.08); treat as exploratory—causation not implied.</td></tr></tbody></table>
+
+<h3>overnight_range · MNQ (merged folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>44.5%</td><td>Actual WR 35.1%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.872</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:3.0 / L:2.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples (clipped ±10.0R)</td><td class='num'>win:1.523 loss:-1.046</td><td>Clipped mean is robust to variable-stop outliers</td></tr><tr><td>Median R multiples</td><td class='num'>win:1.549 loss:-1.039</td><td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>97.3%</td><td>losses 36 / events 36</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>2.7%</td><td>losses 1 / events 2</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>BUY</code></td><td class='num'>62.5%</td><td>20 losses / 32 trades</td></tr><tr><td><code>SELL</code></td><td class='num'>68.0%</td><td>17 losses / 25 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>overnight_range</code></td><td class='num'>37</td><td>100.0% of all losses · 57 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>11</td><td>29.7% of all losses; 12 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>6</td><td>16.2% of all losses; 11 entries this weekday</td></tr><tr><td>Wed</td><td class='num'>8</td><td>21.6% of all losses; 12 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>8</td><td>21.6% of all losses; 12 entries this weekday</td></tr><tr><td>Fri</td><td class='num'>4</td><td>10.8% of all losses; 10 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>0.0503</td><td>Weak linear association between bars_held and losing trades (|r|≈0.05).</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>0.2754</td><td>When initial_risk_dollars is higher, losing trades are slightly more common (Pearson r≈0.28); treat as exploratory—causation not implied.</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0926</td><td>When entry_hour_et is higher, losing trades are slightly more common (Pearson r≈0.09); treat as exploratory—causation not implied.</td></tr></tbody></table>
+
+  <h2 id="config-snapshot">Replay configuration (exact TOML)</h2>
+<p class="muted">Each strategy's <code>config/strategies/&lt;name&gt;.toml</code> is copied verbatim into <code>config/&lt;name&gt;.toml</code> next to this report. Reproduce the run by dropping the snapshot back into <code>config/strategies/</code> and re-applying any environment overrides listed below (mirrors <code>StrategyConfig</code> precedence: CLI &gt; env &gt; TOML &gt; default).</p>
+<p class="muted">Machine-readable bundle: <a href="strategy_configs.json"><code>strategy_configs.json</code></a>.</p>
+<h3>overnight_range</h3><p class='muted'>source: <code>/Users/risu/tradeBotServer/config/strategies/overnight_range.toml</code> · snapshot: <a href="config/overnight_range.toml"><code>config/overnight_range.toml</code></a></p><table><thead><tr><th>env override</th><th>value</th></tr></thead><tbody><tr><td colspan='2' class='muted'>— none —</td></tr></tbody></table><details><summary>Show TOML (31 chars)</summary><pre><code>
+
+[filters]
+atr_min_pct = 0.12
+</code></pre></details>
+</body>
+</html>

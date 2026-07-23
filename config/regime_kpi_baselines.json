@@ -1,0 +1,90 @@
+{
+  "meta": {
+    "source": "walkforward_trades",
+    "n_trades": 422
+  },
+  "morning_range_reversion": {
+    "session_pnl": {
+      "p10": -461.0,
+      "p25": -219.5,
+      "p50": 146.0,
+      "n_sessions": 202
+    },
+    "expectancy": {
+      "p10": -427.2,
+      "p25": -262.0,
+      "p50": 143.0,
+      "n_trades": 252
+    }
+  },
+  "morning_range_reversion:MGC": {
+    "session_pnl": {
+      "p10": -572.0,
+      "p25": -146.0,
+      "p50": 161.0,
+      "n_sessions": 145
+    },
+    "expectancy": {
+      "p10": -572.0,
+      "p25": -146.0,
+      "p50": 161.0,
+      "n_trades": 145
+    }
+  },
+  "morning_range_reversion:MNQ": {
+    "session_pnl": {
+      "p10": -262.0,
+      "p25": -262.0,
+      "p50": 129.0,
+      "n_sessions": 107
+    },
+    "expectancy": {
+      "p10": -262.0,
+      "p25": -262.0,
+      "p50": 129.0,
+      "n_trades": 107
+    }
+  },
+  "overnight_range": {
+    "session_pnl": {
+      "p10": -64.0,
+      "p25": -47.38,
+      "p50": -28.9,
+      "n_sessions": 158
+    },
+    "expectancy": {
+      "p10": -63.51,
+      "p25": -47.0,
+      "p50": -30.0,
+      "n_trades": 170
+    }
+  },
+  "overnight_range:MGC": {
+    "session_pnl": {
+      "p10": -61.0,
+      "p25": -44.0,
+      "p50": -25.0,
+      "n_sessions": 88
+    },
+    "expectancy": {
+      "p10": -61.0,
+      "p25": -44.0,
+      "p50": -25.0,
+      "n_trades": 88
+    }
+  },
+  "overnight_range:MNQ": {
+    "session_pnl": {
+      "p10": -66.81,
+      "p25": -51.8,
+      "p50": -35.7,
+      "n_sessions": 82
+    },
+    "expectancy": {
+      "p10": -66.81,
+      "p25": -51.8,
+      "p50": -35.7,
+      "n_trades": 82
+    }
+  }
+}

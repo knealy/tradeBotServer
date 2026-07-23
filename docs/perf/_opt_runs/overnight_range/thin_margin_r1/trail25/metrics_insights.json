@@ -1,0 +1,2034 @@
+{
+  "sim_start_equity": 2000.0,
+  "trades_flat": [
+    {
+      "entry_time": "2025-10-06T14:30:00Z",
+      "exit_time": "2025-10-06T15:10:00Z",
+      "pnl": -33.00000000000637,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 8,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-07T15:00:00Z",
+      "exit_time": "2025-10-07T15:05:00Z",
+      "pnl": -34.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-08T14:05:00Z",
+      "exit_time": "2025-10-08T14:20:00Z",
+      "pnl": -27.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-09T14:20:00Z",
+      "exit_time": "2025-10-09T14:25:00Z",
+      "pnl": -53.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-15T14:05:00Z",
+      "exit_time": "2025-10-15T15:10:00Z",
+      "pnl": 38.25,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 13,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2025-10-16T14:05:00Z",
+      "exit_time": "2025-10-16T14:25:00Z",
+      "pnl": -43.000000000010914,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 4,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-16T14:35:00Z",
+      "exit_time": "2025-10-16T14:50:00Z",
+      "pnl": -37.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-22T14:25:00Z",
+      "exit_time": "2025-10-22T14:45:00Z",
+      "pnl": 210.75,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-10-23T14:05:00Z",
+      "exit_time": "2025-10-23T14:10:00Z",
+      "pnl": -51.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-23T14:35:00Z",
+      "exit_time": "2025-10-23T14:40:00Z",
+      "pnl": -35.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-10-29T18:35:00Z",
+      "exit_time": "2025-10-29T18:40:00Z",
+      "pnl": 18.75,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-10-30T19:15:00Z",
+      "exit_time": "2025-10-30T20:00:00Z",
+      "pnl": 130.75,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 9,
+      "exit_reason": "replay_force_flat_et"
+    },
+    {
+      "entry_time": "2025-10-31T16:10:00Z",
+      "exit_time": "2025-10-31T16:20:00Z",
+      "pnl": 37.74999999999636,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2025-11-05T15:05:00Z",
+      "exit_time": "2025-11-05T15:10:00Z",
+      "pnl": -45.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-11-07T16:30:00Z",
+      "exit_time": "2025-11-07T16:35:00Z",
+      "pnl": 108.49999999999909,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-11-11T15:15:00Z",
+      "exit_time": "2025-11-11T15:25:00Z",
+      "pnl": 106.50000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-11-12T15:35:00Z",
+      "exit_time": "2025-11-12T15:40:00Z",
+      "pnl": -56.0,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-11-13T18:30:00Z",
+      "exit_time": "2025-11-13T18:35:00Z",
+      "pnl": 176.49999999999636,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-11-17T19:30:00Z",
+      "exit_time": "2025-11-17T19:35:00Z",
+      "pnl": 130.49999999999727,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-11-20T15:35:00Z",
+      "exit_time": "2025-11-20T15:40:00Z",
+      "pnl": -51.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-11-21T16:50:00Z",
+      "exit_time": "2025-11-21T16:55:00Z",
+      "pnl": 133.49999999999454,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-11-24T15:05:00Z",
+      "exit_time": "2025-11-24T15:10:00Z",
+      "pnl": 17.5,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-11-25T17:30:00Z",
+      "exit_time": "2025-11-25T17:35:00Z",
+      "pnl": -44.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-11-26T16:00:00Z",
+      "exit_time": "2025-11-26T16:30:00Z",
+      "pnl": 41.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 6,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2025-11-28T17:05:00Z",
+      "exit_time": "2025-11-28T17:10:00Z",
+      "pnl": -41.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-02T15:50:00Z",
+      "exit_time": "2025-12-02T15:55:00Z",
+      "pnl": 112.5,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-12-03T20:10:00Z",
+      "exit_time": "2025-12-03T20:50:00Z",
+      "pnl": -49.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 8,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-04T15:25:00Z",
+      "exit_time": "2025-12-04T15:30:00Z",
+      "pnl": -110.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-04T16:15:00Z",
+      "exit_time": "2025-12-04T16:30:00Z",
+      "pnl": -39.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-05T15:20:00Z",
+      "exit_time": "2025-12-05T15:25:00Z",
+      "pnl": -34.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-10T15:40:00Z",
+      "exit_time": "2025-12-10T15:45:00Z",
+      "pnl": -47.0,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-11T15:40:00Z",
+      "exit_time": "2025-12-11T15:55:00Z",
+      "pnl": 32.74999999998727,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2025-12-15T16:20:00Z",
+      "exit_time": "2025-12-15T16:35:00Z",
+      "pnl": 133.49999999999454,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-12-16T15:05:00Z",
+      "exit_time": "2025-12-16T15:10:00Z",
+      "pnl": -39.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-17T15:35:00Z",
+      "exit_time": "2025-12-17T15:50:00Z",
+      "pnl": 320.75,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-12-18T16:00:00Z",
+      "exit_time": "2025-12-18T16:10:00Z",
+      "pnl": 145.50000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 2,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-12-19T15:05:00Z",
+      "exit_time": "2025-12-19T15:25:00Z",
+      "pnl": -35.0,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 4,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2025-12-26T15:30:00Z",
+      "exit_time": "2025-12-26T16:00:00Z",
+      "pnl": 127.5,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 6,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2025-12-31T15:55:00Z",
+      "exit_time": "2025-12-31T16:00:00Z",
+      "pnl": -28.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-02T15:05:00Z",
+      "exit_time": "2026-01-02T15:10:00Z",
+      "pnl": -78.00000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-06T18:15:00Z",
+      "exit_time": "2026-01-06T18:20:00Z",
+      "pnl": -37.000000000007276,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-07T15:30:00Z",
+      "exit_time": "2026-01-07T15:35:00Z",
+      "pnl": -28.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-13T20:30:00Z",
+      "exit_time": "2026-01-13T20:35:00Z",
+      "pnl": -46.99999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-21T15:15:00Z",
+      "exit_time": "2026-01-21T15:20:00Z",
+      "pnl": -54.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-22T15:25:00Z",
+      "exit_time": "2026-01-22T15:30:00Z",
+      "pnl": 25.50000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-23T16:05:00Z",
+      "exit_time": "2026-01-23T16:25:00Z",
+      "pnl": 147.5,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-26T19:20:00Z",
+      "exit_time": "2026-01-26T19:25:00Z",
+      "pnl": -50.0,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-27T16:15:00Z",
+      "exit_time": "2026-01-27T16:20:00Z",
+      "pnl": -64.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-28T16:40:00Z",
+      "exit_time": "2026-01-28T17:10:00Z",
+      "pnl": -34.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 6,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-04T16:00:00Z",
+      "exit_time": "2026-02-04T16:10:00Z",
+      "pnl": -65.09999999999854,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-09T15:30:00Z",
+      "exit_time": "2026-02-09T16:00:00Z",
+      "pnl": 188.49999999999454,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 6,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-10T15:35:00Z",
+      "exit_time": "2026-02-10T15:40:00Z",
+      "pnl": -64.00000000000546,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-11T15:10:00Z",
+      "exit_time": "2026-02-11T15:15:00Z",
+      "pnl": -91.0,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-12T16:10:00Z",
+      "exit_time": "2026-02-12T16:15:00Z",
+      "pnl": 191.49999999999636,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-19T15:35:00Z",
+      "exit_time": "2026-02-19T15:40:00Z",
+      "pnl": -71.99999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-19T18:20:00Z",
+      "exit_time": "2026-02-19T18:25:00Z",
+      "pnl": -51.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-20T16:30:00Z",
+      "exit_time": "2026-02-20T16:35:00Z",
+      "pnl": -61.99999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-02-25T19:00:00Z",
+      "exit_time": "2026-02-25T21:00:00Z",
+      "pnl": 37.25,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 24,
+      "exit_reason": "replay_force_flat_et"
+    },
+    {
+      "entry_time": "2026-02-26T15:10:00Z",
+      "exit_time": "2026-02-26T15:15:00Z",
+      "pnl": 297.75,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-26T15:25:00Z",
+      "exit_time": "2026-02-26T15:30:00Z",
+      "pnl": -53.00000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-02T16:00:00Z",
+      "exit_time": "2026-03-02T16:25:00Z",
+      "pnl": -96.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 5,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-04T15:05:00Z",
+      "exit_time": "2026-03-04T18:40:00Z",
+      "pnl": 442.34999999999854,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 43,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-05T15:30:00Z",
+      "exit_time": "2026-03-05T15:35:00Z",
+      "pnl": -52.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-09T19:20:00Z",
+      "exit_time": "2026-03-09T19:30:00Z",
+      "pnl": -61.99999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-11T15:45:00Z",
+      "exit_time": "2026-03-11T15:50:00Z",
+      "pnl": -51.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-16T14:05:00Z",
+      "exit_time": "2026-03-16T14:10:00Z",
+      "pnl": -46.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-18T17:10:00Z",
+      "exit_time": "2026-03-18T17:20:00Z",
+      "pnl": -46.099999999998545,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-25T15:15:00Z",
+      "exit_time": "2026-03-25T15:20:00Z",
+      "pnl": -52.30000000000291,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-27T14:45:00Z",
+      "exit_time": "2026-03-27T14:50:00Z",
+      "pnl": 219.49999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-01T14:50:00Z",
+      "exit_time": "2026-04-01T17:55:00Z",
+      "pnl": 60.25,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 37,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2026-04-07T14:05:00Z",
+      "exit_time": "2026-04-07T14:10:00Z",
+      "pnl": -61.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-09T15:30:00Z",
+      "exit_time": "2026-04-09T15:35:00Z",
+      "pnl": -38.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-09T15:15:00Z",
+      "exit_time": "2026-04-09T15:35:00Z",
+      "pnl": 154.49999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-10T14:15:00Z",
+      "exit_time": "2026-04-10T14:40:00Z",
+      "pnl": -45.0,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 5,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-14T14:15:00Z",
+      "exit_time": "2026-04-14T14:20:00Z",
+      "pnl": -46.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-15T14:10:00Z",
+      "exit_time": "2026-04-15T14:15:00Z",
+      "pnl": -35.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-21T14:40:00Z",
+      "exit_time": "2026-04-21T14:45:00Z",
+      "pnl": 158.50000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-22T14:05:00Z",
+      "exit_time": "2026-04-22T14:30:00Z",
+      "pnl": 180.75,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 5,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-23T14:55:00Z",
+      "exit_time": "2026-04-23T15:10:00Z",
+      "pnl": 49.150000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-23T17:40:00Z",
+      "exit_time": "2026-04-23T17:45:00Z",
+      "pnl": 138.49999999999454,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-24T14:05:00Z",
+      "exit_time": "2026-04-24T14:10:00Z",
+      "pnl": 150.49999999999272,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-27T15:00:00Z",
+      "exit_time": "2026-04-27T15:05:00Z",
+      "pnl": -33.00000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-29T19:10:00Z",
+      "exit_time": "2026-04-29T19:20:00Z",
+      "pnl": -36.099999999998545,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-30T14:15:00Z",
+      "exit_time": "2026-04-30T14:20:00Z",
+      "pnl": -67.0,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-05-01T14:10:00Z",
+      "exit_time": "2026-05-01T14:25:00Z",
+      "pnl": 50.24999999999636,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2026-05-06T18:15:00Z",
+      "exit_time": "2026-05-06T19:45:00Z",
+      "pnl": 55.0,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 18,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2026-05-07T14:05:00Z",
+      "exit_time": "2026-05-07T14:55:00Z",
+      "pnl": 214.34999999999854,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 10,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-07T14:50:00Z",
+      "exit_time": "2026-05-07T15:05:00Z",
+      "pnl": -41.99999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-05-13T16:55:00Z",
+      "exit_time": "2026-05-13T18:55:00Z",
+      "pnl": 60.25,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 24,
+      "exit_reason": "breakeven"
+    },
+    {
+      "entry_time": "2026-05-14T14:45:00Z",
+      "exit_time": "2026-05-14T14:55:00Z",
+      "pnl": -51.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-05-14T19:25:00Z",
+      "exit_time": "2026-05-14T20:00:00Z",
+      "pnl": 95.50000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 7,
+      "exit_reason": "replay_force_flat_et"
+    },
+    {
+      "entry_time": "2026-05-20T14:15:00Z",
+      "exit_time": "2026-05-20T14:20:00Z",
+      "pnl": -63.599999999998545,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-05-22T14:10:00Z",
+      "exit_time": "2026-05-22T14:40:00Z",
+      "pnl": -41.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 6,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-05-27T14:25:00Z",
+      "exit_time": "2026-05-27T14:35:00Z",
+      "pnl": -55.900000000001455,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-05-28T14:10:00Z",
+      "exit_time": "2026-05-28T14:15:00Z",
+      "pnl": -46.99999999999818,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-04T14:05:00Z",
+      "exit_time": "2026-06-04T14:10:00Z",
+      "pnl": -63.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-09T14:15:00Z",
+      "exit_time": "2026-06-09T14:20:00Z",
+      "pnl": -48.00000000000182,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-10T14:20:00Z",
+      "exit_time": "2026-06-10T14:30:00Z",
+      "pnl": -110.09999999999854,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 2,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-11T17:30:00Z",
+      "exit_time": "2026-06-11T17:35:00Z",
+      "pnl": 197.5,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-17T14:45:00Z",
+      "exit_time": "2026-06-17T14:50:00Z",
+      "pnl": -134.5,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-18T14:15:00Z",
+      "exit_time": "2026-06-18T14:20:00Z",
+      "pnl": -136.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-24T14:20:00Z",
+      "exit_time": "2026-06-24T14:25:00Z",
+      "pnl": -211.0,
+      "symbol": "MNQ",
+      "strategy": "overnight_range",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-25T15:20:00Z",
+      "exit_time": "2026-06-25T15:25:00Z",
+      "pnl": -61.00000000000364,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-30T14:05:00Z",
+      "exit_time": "2026-06-30T14:20:00Z",
+      "pnl": 163.4999999999991,
+      "symbol": "MGC",
+      "strategy": "overnight_range",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    }
+  ],
+  "grand": {
+    "equity_curve": [
+      {
+        "time": 1759761000,
+        "equity": 2000.0,
+        "trade_pnl": 0.0,
+        "cumulative_pnl": 0.0
+      },
+      {
+        "time": 1759763400,
+        "equity": 1967.0,
+        "trade_pnl": -33.0,
+        "cumulative_pnl": -33.0
+      },
+      {
+        "time": 1759849500,
+        "equity": 1933.0,
+        "trade_pnl": -34.0,
+        "cumulative_pnl": -67.0
+      },
+      {
+        "time": 1759933200,
+        "equity": 1905.5,
+        "trade_pnl": -27.5,
+        "cumulative_pnl": -94.5
+      },
+      {
+        "time": 1760019900,
+        "equity": 1852.0,
+        "trade_pnl": -53.5,
+        "cumulative_pnl": -148.0
+      },
+      {
+        "time": 1760541000,
+        "equity": 1890.25,
+        "trade_pnl": 38.25,
+        "cumulative_pnl": -109.75
+      },
+      {
+        "time": 1760624700,
+        "equity": 1847.25,
+        "trade_pnl": -43.0,
+        "cumulative_pnl": -152.75
+      },
+      {
+        "time": 1760626200,
+        "equity": 1809.75,
+        "trade_pnl": -37.5,
+        "cumulative_pnl": -190.25
+      },
+      {
+        "time": 1761144300,
+        "equity": 2020.5,
+        "trade_pnl": 210.75,
+        "cumulative_pnl": 20.5
+      },
+      {
+        "time": 1761228600,
+        "equity": 1969.5,
+        "trade_pnl": -51.0,
+        "cumulative_pnl": -30.5
+      },
+      {
+        "time": 1761230400,
+        "equity": 1933.6,
+        "trade_pnl": -35.9,
+        "cumulative_pnl": -66.4
+      },
+      {
+        "time": 1761763200,
+        "equity": 1952.35,
+        "trade_pnl": 18.75,
+        "cumulative_pnl": -47.65
+      },
+      {
+        "time": 1761854400,
+        "equity": 2083.1,
+        "trade_pnl": 130.75,
+        "cumulative_pnl": 83.1
+      },
+      {
+        "time": 1761927600,
+        "equity": 2120.85,
+        "trade_pnl": 37.75,
+        "cumulative_pnl": 120.85
+      },
+      {
+        "time": 1762355400,
+        "equity": 2075.35,
+        "trade_pnl": -45.5,
+        "cumulative_pnl": 75.35
+      },
+      {
+        "time": 1762533300,
+        "equity": 2183.85,
+        "trade_pnl": 108.5,
+        "cumulative_pnl": 183.85
+      },
+      {
+        "time": 1762874700,
+        "equity": 2290.35,
+        "trade_pnl": 106.5,
+        "cumulative_pnl": 290.35
+      },
+      {
+        "time": 1762962000,
+        "equity": 2234.35,
+        "trade_pnl": -56.0,
+        "cumulative_pnl": 234.35
+      },
+      {
+        "time": 1763058900,
+        "equity": 2410.85,
+        "trade_pnl": 176.5,
+        "cumulative_pnl": 410.85
+      },
+      {
+        "time": 1763408100,
+        "equity": 2541.35,
+        "trade_pnl": 130.5,
+        "cumulative_pnl": 541.35
+      },
+      {
+        "time": 1763653200,
+        "equity": 2489.85,
+        "trade_pnl": -51.5,
+        "cumulative_pnl": 489.85
+      },
+      {
+        "time": 1763744100,
+        "equity": 2623.35,
+        "trade_pnl": 133.5,
+        "cumulative_pnl": 623.35
+      },
+      {
+        "time": 1763997000,
+        "equity": 2640.85,
+        "trade_pnl": 17.5,
+        "cumulative_pnl": 640.85
+      },
+      {
+        "time": 1764092100,
+        "equity": 2596.85,
+        "trade_pnl": -44.0,
+        "cumulative_pnl": 596.85
+      },
+      {
+        "time": 1764174600,
+        "equity": 2638.35,
+        "trade_pnl": 41.5,
+        "cumulative_pnl": 638.35
+      },
+      {
+        "time": 1764349800,
+        "equity": 2597.35,
+        "trade_pnl": -41.0,
+        "cumulative_pnl": 597.35
+      },
+      {
+        "time": 1764690900,
+        "equity": 2709.85,
+        "trade_pnl": 112.5,
+        "cumulative_pnl": 709.85
+      },
+      {
+        "time": 1764795000,
+        "equity": 2660.35,
+        "trade_pnl": -49.5,
+        "cumulative_pnl": 660.35
+      },
+      {
+        "time": 1764862200,
+        "equity": 2549.85,
+        "trade_pnl": -110.5,
+        "cumulative_pnl": 549.85
+      },
+      {
+        "time": 1764865800,
+        "equity": 2510.85,
+        "trade_pnl": -39.0,
+        "cumulative_pnl": 510.85
+      },
+      {
+        "time": 1764948300,
+        "equity": 2476.85,
+        "trade_pnl": -34.0,
+        "cumulative_pnl": 476.85
+      },
+      {
+        "time": 1765381500,
+        "equity": 2429.85,
+        "trade_pnl": -47.0,
+        "cumulative_pnl": 429.85
+      },
+      {
+        "time": 1765468500,
+        "equity": 2462.6,
+        "trade_pnl": 32.75,
+        "cumulative_pnl": 462.6
+      },
+      {
+        "time": 1765816500,
+        "equity": 2596.1,
+        "trade_pnl": 133.5,
+        "cumulative_pnl": 596.1
+      },
+      {
+        "time": 1765897800,
+        "equity": 2557.1,
+        "trade_pnl": -39.0,
+        "cumulative_pnl": 557.1
+      },
+      {
+        "time": 1765986600,
+        "equity": 2877.85,
+        "trade_pnl": 320.75,
+        "cumulative_pnl": 877.85
+      },
+      {
+        "time": 1766074200,
+        "equity": 3023.35,
+        "trade_pnl": 145.5,
+        "cumulative_pnl": 1023.35
+      },
+      {
+        "time": 1766157900,
+        "equity": 2988.35,
+        "trade_pnl": -35.0,
+        "cumulative_pnl": 988.35
+      },
+      {
+        "time": 1766764800,
+        "equity": 3115.85,
+        "trade_pnl": 127.5,
+        "cumulative_pnl": 1115.85
+      },
+      {
+        "time": 1767196800,
+        "equity": 3086.95,
+        "trade_pnl": -28.9,
+        "cumulative_pnl": 1086.95
+      },
+      {
+        "time": 1767366600,
+        "equity": 3008.95,
+        "trade_pnl": -78.0,
+        "cumulative_pnl": 1008.95
+      },
+      {
+        "time": 1767723600,
+        "equity": 2971.95,
+        "trade_pnl": -37.0,
+        "cumulative_pnl": 971.95
+      },
+      {
+        "time": 1767800100,
+        "equity": 2943.05,
+        "trade_pnl": -28.9,
+        "cumulative_pnl": 943.05
+      },
+      {
+        "time": 1768336500,
+        "equity": 2896.05,
+        "trade_pnl": -47.0,
+        "cumulative_pnl": 896.05
+      },
+      {
+        "time": 1769008800,
+        "equity": 2841.15,
+        "trade_pnl": -54.9,
+        "cumulative_pnl": 841.15
+      },
+      {
+        "time": 1769095800,
+        "equity": 2866.65,
+        "trade_pnl": 25.5,
+        "cumulative_pnl": 866.65
+      },
+      {
+        "time": 1769185500,
+        "equity": 3014.15,
+        "trade_pnl": 147.5,
+        "cumulative_pnl": 1014.15
+      },
+      {
+        "time": 1769455500,
+        "equity": 2964.15,
+        "trade_pnl": -50.0,
+        "cumulative_pnl": 964.15
+      },
+      {
+        "time": 1769530800,
+        "equity": 2900.15,
+        "trade_pnl": -64.0,
+        "cumulative_pnl": 900.15
+      },
+      {
+        "time": 1769620200,
+        "equity": 2865.25,
+        "trade_pnl": -34.9,
+        "cumulative_pnl": 865.25
+      },
+      {
+        "time": 1770221400,
+        "equity": 2800.15,
+        "trade_pnl": -65.1,
+        "cumulative_pnl": 800.15
+      },
+      {
+        "time": 1770652800,
+        "equity": 2988.65,
+        "trade_pnl": 188.5,
+        "cumulative_pnl": 988.65
+      },
+      {
+        "time": 1770738000,
+        "equity": 2924.65,
+        "trade_pnl": -64.0,
+        "cumulative_pnl": 924.65
+      },
+      {
+        "time": 1770822900,
+        "equity": 2833.65,
+        "trade_pnl": -91.0,
+        "cumulative_pnl": 833.65
+      },
+      {
+        "time": 1770912900,
+        "equity": 3025.15,
+        "trade_pnl": 191.5,
+        "cumulative_pnl": 1025.15
+      },
+      {
+        "time": 1771515600,
+        "equity": 2953.15,
+        "trade_pnl": -72.0,
+        "cumulative_pnl": 953.15
+      },
+      {
+        "time": 1771525500,
+        "equity": 2901.25,
+        "trade_pnl": -51.9,
+        "cumulative_pnl": 901.25
+      },
+      {
+        "time": 1771605300,
+        "equity": 2839.25,
+        "trade_pnl": -62.0,
+        "cumulative_pnl": 839.25
+      },
+      {
+        "time": 1772053200,
+        "equity": 2876.5,
+        "trade_pnl": 37.25,
+        "cumulative_pnl": 876.5
+      },
+      {
+        "time": 1772118900,
+        "equity": 3174.25,
+        "trade_pnl": 297.75,
+        "cumulative_pnl": 1174.25
+      },
+      {
+        "time": 1772119800,
+        "equity": 3121.25,
+        "trade_pnl": -53.0,
+        "cumulative_pnl": 1121.25
+      },
+      {
+        "time": 1772468700,
+        "equity": 3025.25,
+        "trade_pnl": -96.0,
+        "cumulative_pnl": 1025.25
+      },
+      {
+        "time": 1772649600,
+        "equity": 3467.6,
+        "trade_pnl": 442.35,
+        "cumulative_pnl": 1467.6
+      },
+      {
+        "time": 1772724900,
+        "equity": 3414.7,
+        "trade_pnl": -52.9,
+        "cumulative_pnl": 1414.7
+      },
+      {
+        "time": 1773084600,
+        "equity": 3352.7,
+        "trade_pnl": -62.0,
+        "cumulative_pnl": 1352.7
+      },
+      {
+        "time": 1773244200,
+        "equity": 3301.2,
+        "trade_pnl": -51.5,
+        "cumulative_pnl": 1301.2
+      },
+      {
+        "time": 1773670200,
+        "equity": 3255.2,
+        "trade_pnl": -46.0,
+        "cumulative_pnl": 1255.2
+      },
+      {
+        "time": 1773854400,
+        "equity": 3209.1,
+        "trade_pnl": -46.1,
+        "cumulative_pnl": 1209.1
+      },
+      {
+        "time": 1774452000,
+        "equity": 3156.8,
+        "trade_pnl": -52.3,
+        "cumulative_pnl": 1156.8
+      },
+      {
+        "time": 1774623000,
+        "equity": 3376.3,
+        "trade_pnl": 219.5,
+        "cumulative_pnl": 1376.3
+      },
+      {
+        "time": 1775066100,
+        "equity": 3436.55,
+        "trade_pnl": 60.25,
+        "cumulative_pnl": 1436.55
+      },
+      {
+        "time": 1775571000,
+        "equity": 3375.55,
+        "trade_pnl": -61.0,
+        "cumulative_pnl": 1375.55
+      },
+      {
+        "time": 1775748900,
+        "equity": 3336.65,
+        "trade_pnl": -38.9,
+        "cumulative_pnl": 1336.65
+      },
+      {
+        "time": 1775748901,
+        "equity": 3491.15,
+        "trade_pnl": 154.5,
+        "cumulative_pnl": 1491.15
+      },
+      {
+        "time": 1775832000,
+        "equity": 3446.15,
+        "trade_pnl": -45.0,
+        "cumulative_pnl": 1446.15
+      },
+      {
+        "time": 1776176400,
+        "equity": 3400.15,
+        "trade_pnl": -46.0,
+        "cumulative_pnl": 1400.15
+      },
+      {
+        "time": 1776262500,
+        "equity": 3364.65,
+        "trade_pnl": -35.5,
+        "cumulative_pnl": 1364.65
+      },
+      {
+        "time": 1776782700,
+        "equity": 3523.15,
+        "trade_pnl": 158.5,
+        "cumulative_pnl": 1523.15
+      },
+      {
+        "time": 1776868200,
+        "equity": 3703.9,
+        "trade_pnl": 180.75,
+        "cumulative_pnl": 1703.9
+      },
+      {
+        "time": 1776957000,
+        "equity": 3753.05,
+        "trade_pnl": 49.15,
+        "cumulative_pnl": 1753.05
+      },
+      {
+        "time": 1776966300,
+        "equity": 3891.55,
+        "trade_pnl": 138.5,
+        "cumulative_pnl": 1891.55
+      },
+      {
+        "time": 1777039800,
+        "equity": 4042.05,
+        "trade_pnl": 150.5,
+        "cumulative_pnl": 2042.05
+      },
+      {
+        "time": 1777302300,
+        "equity": 4009.05,
+        "trade_pnl": -33.0,
+        "cumulative_pnl": 2009.05
+      },
+      {
+        "time": 1777490400,
+        "equity": 3972.95,
+        "trade_pnl": -36.1,
+        "cumulative_pnl": 1972.95
+      },
+      {
+        "time": 1777558800,
+        "equity": 3905.95,
+        "trade_pnl": -67.0,
+        "cumulative_pnl": 1905.95
+      },
+      {
+        "time": 1777645500,
+        "equity": 3956.2,
+        "trade_pnl": 50.25,
+        "cumulative_pnl": 1956.2
+      },
+      {
+        "time": 1778096700,
+        "equity": 4011.2,
+        "trade_pnl": 55.0,
+        "cumulative_pnl": 2011.2
+      },
+      {
+        "time": 1778165700,
+        "equity": 4225.55,
+        "trade_pnl": 214.35,
+        "cumulative_pnl": 2225.55
+      },
+      {
+        "time": 1778166300,
+        "equity": 4183.55,
+        "trade_pnl": -42.0,
+        "cumulative_pnl": 2183.55
+      },
+      {
+        "time": 1778698500,
+        "equity": 4243.8,
+        "trade_pnl": 60.25,
+        "cumulative_pnl": 2243.8
+      },
+      {
+        "time": 1778770500,
+        "equity": 4191.9,
+        "trade_pnl": -51.9,
+        "cumulative_pnl": 2191.9
+      },
+      {
+        "time": 1778788800,
+        "equity": 4287.4,
+        "trade_pnl": 95.5,
+        "cumulative_pnl": 2287.4
+      },
+      {
+        "time": 1779286800,
+        "equity": 4223.8,
+        "trade_pnl": -63.6,
+        "cumulative_pnl": 2223.8
+      },
+      {
+        "time": 1779460800,
+        "equity": 4182.8,
+        "trade_pnl": -41.0,
+        "cumulative_pnl": 2182.8
+      },
+      {
+        "time": 1779892500,
+        "equity": 4126.9,
+        "trade_pnl": -55.9,
+        "cumulative_pnl": 2126.9
+      },
+      {
+        "time": 1779977700,
+        "equity": 4079.9,
+        "trade_pnl": -47.0,
+        "cumulative_pnl": 2079.9
+      },
+      {
+        "time": 1780582200,
+        "equity": 4016.4,
+        "trade_pnl": -63.5,
+        "cumulative_pnl": 2016.4
+      },
+      {
+        "time": 1781014800,
+        "equity": 3968.4,
+        "trade_pnl": -48.0,
+        "cumulative_pnl": 1968.4
+      },
+      {
+        "time": 1781101800,
+        "equity": 3858.3,
+        "trade_pnl": -110.1,
+        "cumulative_pnl": 1858.3
+      },
+      {
+        "time": 1781199300,
+        "equity": 4055.8,
+        "trade_pnl": 197.5,
+        "cumulative_pnl": 2055.8
+      },
+      {
+        "time": 1781707800,
+        "equity": 3921.3,
+        "trade_pnl": -134.5,
+        "cumulative_pnl": 1921.3
+      },
+      {
+        "time": 1781792400,
+        "equity": 3785.3,
+        "trade_pnl": -136.0,
+        "cumulative_pnl": 1785.3
+      },
+      {
+        "time": 1782311100,
+        "equity": 3574.3,
+        "trade_pnl": -211.0,
+        "cumulative_pnl": 1574.3
+      },
+      {
+        "time": 1782401100,
+        "equity": 3513.3,
+        "trade_pnl": -61.0,
+        "cumulative_pnl": 1513.3
+      },
+      {
+        "time": 1782829200,
+        "equity": 3676.8,
+        "trade_pnl": 163.5,
+        "cumulative_pnl": 1676.8
+      }
+    ],
+    "equity_summary": {
+      "start_equity": 2000.0,
+      "final_equity": 3676.8,
+      "total_return_pct": 83.84,
+      "max_drawdown_dollars": 774.1,
+      "max_drawdown_pct": 18.055,
+      "n_trades": 104
+    },
+    "extended": {
+      "n_trades": 104,
+      "recovery_factor_pnl_vs_seq_dd": 2.166,
+      "breakeven_win_rate": 0.2994,
+      "actual_win_rate": 0.3846,
+      "median_bars_held_win": 3.0,
+      "median_bars_held_loss": 1.0,
+      "mean_mae_losers": -102.2375,
+      "mean_mfe_winners": 159.6687,
+      "avg_r_winners": 2.868,
+      "avg_r_losers": -1.321,
+      "median_r_winners": 3.12,
+      "median_r_losers": -1.149,
+      "avg_r_winners_unclipped": 2.868,
+      "avg_r_losers_unclipped": -1.321,
+      "n_clipped_r_winners": 0,
+      "n_clipped_r_losers": 0,
+      "r_cap": 10.0
+    },
+    "loss_patterns": {
+      "n_trades": 104,
+      "n_losses": 64,
+      "n_wins": 40,
+      "by_exit_reason": {
+        "stop_loss": {
+          "wins": 0,
+          "losses": 64,
+          "n": 64
+        },
+        "breakeven": {
+          "wins": 8,
+          "losses": 0,
+          "n": 8
+        },
+        "take_profit": {
+          "wins": 29,
+          "losses": 0,
+          "n": 29
+        },
+        "replay_force_flat_et": {
+          "wins": 3,
+          "losses": 0,
+          "n": 3
+        }
+      },
+      "losses_by_exit_reason_pct": {
+        "stop_loss": 100.0
+      },
+      "by_side_loss_rate": {
+        "BUY": {
+          "n": 60,
+          "losses": 35,
+          "loss_rate_pct": 58.3
+        },
+        "SELL": {
+          "n": 44,
+          "losses": 29,
+          "loss_rate_pct": 65.9
+        }
+      },
+      "by_strategy_loss_mix": {
+        "overnight_range": {
+          "losses": 64,
+          "trades": 104,
+          "pct_of_all_losses": 100.0
+        }
+      },
+      "losses_by_weekday": {
+        "Mon": {
+          "losses": 6,
+          "trades": 10,
+          "loss_share_of_losses_pct": 9.4
+        },
+        "Tue": {
+          "losses": 10,
+          "trades": 14,
+          "loss_share_of_losses_pct": 15.6
+        },
+        "Wed": {
+          "losses": 21,
+          "trades": 32,
+          "loss_share_of_losses_pct": 32.8
+        },
+        "Thu": {
+          "losses": 20,
+          "trades": 33,
+          "loss_share_of_losses_pct": 31.2
+        },
+        "Fri": {
+          "losses": 7,
+          "trades": 15,
+          "loss_share_of_losses_pct": 10.9
+        }
+      },
+      "correlations_with_loss": [
+        {
+          "factor": "bars_held",
+          "pearson_vs_loss_indicator": -0.3481,
+          "n": 104,
+          "hint": "When bars_held is lower, losing trades are slightly more common (Pearson r\u2248-0.35); treat as exploratory\u2014causation not implied."
+        },
+        {
+          "factor": "initial_risk_dollars",
+          "pearson_vs_loss_indicator": -0.1216,
+          "n": 104,
+          "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.12); treat as exploratory\u2014causation not implied."
+        },
+        {
+          "factor": "entry_hour_et",
+          "pearson_vs_loss_indicator": -0.1335,
+          "n": 104,
+          "hint": "When entry_hour_et is lower, losing trades are slightly more common (Pearson r\u2248-0.13); treat as exploratory\u2014causation not implied."
+        }
+      ]
+    }
+  },
+  "per_strategy_symbol": {
+    "overnight_range|MGC": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 3459.75,
+        "total_return_pct": 72.987,
+        "max_drawdown_dollars": 391.0,
+        "max_drawdown_pct": 12.685,
+        "n_trades": 57
+      },
+      "extended": {
+        "n_trades": 57,
+        "recovery_factor_pnl_vs_seq_dd": 3.733,
+        "breakeven_win_rate": 0.295,
+        "actual_win_rate": 0.4386,
+        "median_bars_held_win": 1.0,
+        "median_bars_held_loss": 1.0,
+        "mean_mae_losers": -106.375,
+        "mean_mfe_winners": 147.66,
+        "avg_r_winners": 2.751,
+        "avg_r_losers": -1.248,
+        "median_r_winners": 3.123,
+        "median_r_losers": -1.141,
+        "avg_r_winners_unclipped": 2.751,
+        "avg_r_losers_unclipped": -1.248,
+        "n_clipped_r_winners": 0,
+        "n_clipped_r_losers": 0,
+        "r_cap": 10.0
+      },
+      "loss_patterns": {
+        "n_trades": 57,
+        "n_losses": 32,
+        "n_wins": 25,
+        "by_exit_reason": {
+          "stop_loss": {
+            "wins": 0,
+            "losses": 32,
+            "n": 32
+          },
+          "breakeven": {
+            "wins": 3,
+            "losses": 0,
+            "n": 3
+          },
+          "take_profit": {
+            "wins": 21,
+            "losses": 0,
+            "n": 21
+          },
+          "replay_force_flat_et": {
+            "wins": 1,
+            "losses": 0,
+            "n": 1
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 100.0
+        },
+        "by_side_loss_rate": {
+          "BUY": {
+            "n": 36,
+            "losses": 21,
+            "loss_rate_pct": 58.3
+          },
+          "SELL": {
+            "n": 21,
+            "losses": 11,
+            "loss_rate_pct": 52.4
+          }
+        },
+        "by_strategy_loss_mix": {
+          "overnight_range": {
+            "losses": 32,
+            "trades": 57,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Mon": {
+            "losses": 6,
+            "trades": 10,
+            "loss_share_of_losses_pct": 18.8
+          },
+          "Tue": {
+            "losses": 10,
+            "trades": 14,
+            "loss_share_of_losses_pct": 31.2
+          },
+          "Thu": {
+            "losses": 9,
+            "trades": 18,
+            "loss_share_of_losses_pct": 28.1
+          },
+          "Fri": {
+            "losses": 7,
+            "trades": 15,
+            "loss_share_of_losses_pct": 21.9
+          }
+        },
+        "correlations_with_loss": [
+          {
+            "factor": "bars_held",
+            "pearson_vs_loss_indicator": -0.097,
+            "n": 57,
+            "hint": "When bars_held is lower, losing trades are slightly more common (Pearson r\u2248-0.10); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "initial_risk_dollars",
+            "pearson_vs_loss_indicator": -0.1338,
+            "n": 57,
+            "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.13); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "entry_hour_et",
+            "pearson_vs_loss_indicator": -0.0713,
+            "n": 57,
+            "hint": "Weak linear association between entry_hour_et and losing trades (|r|\u22480.07)."
+          }
+        ]
+      }
+    },
+    "overnight_range|MNQ": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 2217.05,
+        "total_return_pct": 10.852,
+        "max_drawdown_dollars": 690.5,
+        "max_drawdown_pct": 23.749,
+        "n_trades": 47
+      },
+      "extended": {
+        "n_trades": 47,
+        "recovery_factor_pnl_vs_seq_dd": 0.314,
+        "breakeven_win_rate": 0.2966,
+        "actual_win_rate": 0.3191,
+        "median_bars_held_win": 9.0,
+        "median_bars_held_loss": 1.0,
+        "mean_mae_losers": -98.1,
+        "mean_mfe_winners": 179.6833,
+        "avg_r_winners": 3.064,
+        "avg_r_losers": -1.393,
+        "median_r_winners": 1.341,
+        "median_r_losers": -1.166,
+        "avg_r_winners_unclipped": 3.064,
+        "avg_r_losers_unclipped": -1.393,
+        "n_clipped_r_winners": 0,
+        "n_clipped_r_losers": 0,
+        "r_cap": 10.0
+      },
+      "loss_patterns": {
+        "n_trades": 47,
+        "n_losses": 32,
+        "n_wins": 15,
+        "by_exit_reason": {
+          "stop_loss": {
+            "wins": 0,
+            "losses": 32,
+            "n": 32
+          },
+          "breakeven": {
+            "wins": 5,
+            "losses": 0,
+            "n": 5
+          },
+          "take_profit": {
+            "wins": 8,
+            "losses": 0,
+            "n": 8
+          },
+          "replay_force_flat_et": {
+            "wins": 2,
+            "losses": 0,
+            "n": 2
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 100.0
+        },
+        "by_side_loss_rate": {
+          "BUY": {
+            "n": 24,
+            "losses": 14,
+            "loss_rate_pct": 58.3
+          },
+          "SELL": {
+            "n": 23,
+            "losses": 18,
+            "loss_rate_pct": 78.3
+          }
+        },
+        "by_strategy_loss_mix": {
+          "overnight_range": {
+            "losses": 32,
+            "trades": 47,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Wed": {
+            "losses": 21,
+            "trades": 32,
+            "loss_share_of_losses_pct": 65.6
+          },
+          "Thu": {
+            "losses": 11,
+            "trades": 15,
+            "loss_share_of_losses_pct": 34.4
+          }
+        },
+        "correlations_with_loss": [
+          {
+            "factor": "bars_held",
+            "pearson_vs_loss_indicator": -0.5977,
+            "n": 47,
+            "hint": "When bars_held is lower, losing trades are slightly more common (Pearson r\u2248-0.60); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "initial_risk_dollars",
+            "pearson_vs_loss_indicator": -0.121,
+            "n": 47,
+            "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.12); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "entry_hour_et",
+            "pearson_vs_loss_indicator": -0.2016,
+            "n": 47,
+            "hint": "When entry_hour_et is lower, losing trades are slightly more common (Pearson r\u2248-0.20); treat as exploratory\u2014causation not implied."
+          }
+        ]
+      }
+    }
+  }
+}

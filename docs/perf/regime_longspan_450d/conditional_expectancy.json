@@ -1,0 +1,739 @@
+{
+  "n_trades": 422,
+  "overall": {
+    "n": 422,
+    "pnl": 18508.25,
+    "expectancy": 43.86,
+    "win_rate": 0.5403
+  },
+  "by_strategy": {
+    "morning_range_reversion": {
+      "overall": {
+        "n": 252,
+        "pnl": 16587.0,
+        "expectancy": 65.82,
+        "win_rate": 0.6508
+      },
+      "bars_bucket": {
+        "4-8": {
+          "n": 43,
+          "pnl": 8115.0,
+          "expectancy": 188.72,
+          "win_rate": 0.7674,
+          "fold_t": null
+        },
+        "0-3": {
+          "n": 90,
+          "pnl": 5740.0,
+          "expectancy": 63.78,
+          "win_rate": 0.6889,
+          "fold_t": null
+        },
+        "9-15": {
+          "n": 42,
+          "pnl": 4029.0,
+          "expectancy": 95.93,
+          "win_rate": 0.7381,
+          "fold_t": null
+        },
+        "16+": {
+          "n": 77,
+          "pnl": -1297.0,
+          "expectancy": -16.84,
+          "win_rate": 0.4935,
+          "fold_t": null
+        }
+      },
+      "exit_reason": {
+        "take_profit": {
+          "n": 157,
+          "pnl": 44989.0,
+          "expectancy": 286.55,
+          "win_rate": 1.0,
+          "fold_t": null
+        },
+        "timeout": {
+          "n": 30,
+          "pnl": -2966.0,
+          "expectancy": -98.87,
+          "win_rate": 0.2333,
+          "fold_t": null
+        },
+        "stop_loss": {
+          "n": 65,
+          "pnl": -25436.0,
+          "expectancy": -391.32,
+          "win_rate": 0.0,
+          "fold_t": null
+        }
+      },
+      "symbol": {
+        "MGC": {
+          "n": 145,
+          "pnl": 11512.0,
+          "expectancy": 79.39,
+          "win_rate": 0.6828,
+          "fold_t": null
+        },
+        "MNQ": {
+          "n": 107,
+          "pnl": 5075.0,
+          "expectancy": 47.43,
+          "win_rate": 0.6075,
+          "fold_t": null
+        }
+      },
+      "side": {
+        "SELL": {
+          "n": 167,
+          "pnl": 10646.0,
+          "expectancy": 63.75,
+          "win_rate": 0.6527,
+          "fold_t": null
+        },
+        "BUY": {
+          "n": 85,
+          "pnl": 5941.0,
+          "expectancy": 69.89,
+          "win_rate": 0.6471,
+          "fold_t": null
+        }
+      },
+      "entry_hour_et": {
+        "8": {
+          "n": 174,
+          "pnl": 15072.0,
+          "expectancy": 86.62,
+          "win_rate": 0.6954,
+          "fold_t": null
+        },
+        "10": {
+          "n": 14,
+          "pnl": 1233.0,
+          "expectancy": 88.07,
+          "win_rate": 0.7143,
+          "fold_t": null
+        },
+        "9": {
+          "n": 53,
+          "pnl": 953.0,
+          "expectancy": 17.98,
+          "win_rate": 0.5472,
+          "fold_t": null
+        },
+        "14": {
+          "n": 2,
+          "pnl": 301.0,
+          "expectancy": 150.5,
+          "win_rate": 0.5,
+          "fold_t": null
+        },
+        "13": {
+          "n": 1,
+          "pnl": 271.0,
+          "expectancy": 271.0,
+          "win_rate": 1.0,
+          "fold_t": null
+        },
+        "12": {
+          "n": 1,
+          "pnl": -262.0,
+          "expectancy": -262.0,
+          "win_rate": 0.0,
+          "fold_t": null
+        },
+        "11": {
+          "n": 7,
+          "pnl": -981.0,
+          "expectancy": -140.14,
+          "win_rate": 0.2857,
+          "fold_t": null
+        }
+      },
+      "entry_weekday": {
+        "2": {
+          "n": 87,
+          "pnl": 5775.0,
+          "expectancy": 66.38,
+          "win_rate": 0.6667,
+          "fold_t": null
+        },
+        "3": {
+          "n": 41,
+          "pnl": 5391.0,
+          "expectancy": 131.49,
+          "win_rate": 0.7317,
+          "fold_t": null
+        },
+        "1": {
+          "n": 83,
+          "pnl": 3141.0,
+          "expectancy": 37.84,
+          "win_rate": 0.5904,
+          "fold_t": null
+        },
+        "0": {
+          "n": 41,
+          "pnl": 2280.0,
+          "expectancy": 55.61,
+          "win_rate": 0.6585,
+          "fold_t": null
+        }
+      },
+      "entry_month": {
+        "2026-02": {
+          "n": 15,
+          "pnl": 4964.0,
+          "expectancy": 330.93,
+          "win_rate": 0.8667,
+          "fold_t": null
+        },
+        "2026-04": {
+          "n": 25,
+          "pnl": 4624.0,
+          "expectancy": 184.96,
+          "win_rate": 0.76,
+          "fold_t": null
+        },
+        "2026-05": {
+          "n": 21,
+          "pnl": 3826.0,
+          "expectancy": 182.19,
+          "win_rate": 0.8095,
+          "fold_t": null
+        },
+        "2026-03": {
+          "n": 16,
+          "pnl": 2415.0,
+          "expectancy": 150.94,
+          "win_rate": 0.6875,
+          "fold_t": null
+        },
+        "2025-09": {
+          "n": 23,
+          "pnl": 1607.0,
+          "expectancy": 69.87,
+          "win_rate": 0.8261,
+          "fold_t": null
+        },
+        "2025-10": {
+          "n": 14,
+          "pnl": 927.0,
+          "expectancy": 66.21,
+          "win_rate": 0.6429,
+          "fold_t": null
+        },
+        "2026-01": {
+          "n": 17,
+          "pnl": 762.0,
+          "expectancy": 44.82,
+          "win_rate": 0.5882,
+          "fold_t": null
+        },
+        "2026-06": {
+          "n": 18,
+          "pnl": 333.0,
+          "expectancy": 18.5,
+          "win_rate": 0.5556,
+          "fold_t": null
+        },
+        "2025-08": {
+          "n": 10,
+          "pnl": 258.0,
+          "expectancy": 25.8,
+          "win_rate": 0.6,
+          "fold_t": null
+        },
+        "2025-11": {
+          "n": 21,
+          "pnl": 201.0,
+          "expectancy": 9.57,
+          "win_rate": 0.5714,
+          "fold_t": null
+        },
+        "2025-05": {
+          "n": 15,
+          "pnl": 129.0,
+          "expectancy": 8.6,
+          "win_rate": 0.6,
+          "fold_t": null
+        },
+        "2025-06": {
+          "n": 14,
+          "pnl": -781.0,
+          "expectancy": -55.79,
+          "win_rate": 0.3571,
+          "fold_t": null
+        },
+        "2025-07": {
+          "n": 15,
+          "pnl": -821.0,
+          "expectancy": -54.73,
+          "win_rate": 0.6,
+          "fold_t": null
+        },
+        "2025-04": {
+          "n": 7,
+          "pnl": -878.0,
+          "expectancy": -125.43,
+          "win_rate": 0.2857,
+          "fold_t": null
+        },
+        "2025-12": {
+          "n": 21,
+          "pnl": -979.0,
+          "expectancy": -46.62,
+          "win_rate": 0.619,
+          "fold_t": null
+        }
+      }
+    },
+    "overnight_range": {
+      "overall": {
+        "n": 170,
+        "pnl": 1921.25,
+        "expectancy": 11.3,
+        "win_rate": 0.3765
+      },
+      "bars_bucket": {
+        "4-8": {
+          "n": 22,
+          "pnl": 1460.8,
+          "expectancy": 66.4,
+          "win_rate": 0.7273,
+          "fold_t": null
+        },
+        "16+": {
+          "n": 9,
+          "pnl": 1156.85,
+          "expectancy": 128.54,
+          "win_rate": 1.0,
+          "fold_t": null
+        },
+        "9-15": {
+          "n": 3,
+          "pnl": 169.75,
+          "expectancy": 56.58,
+          "win_rate": 0.6667,
+          "fold_t": null
+        },
+        "0-3": {
+          "n": 136,
+          "pnl": -866.15,
+          "expectancy": -6.37,
+          "win_rate": 0.2721,
+          "fold_t": null
+        }
+      },
+      "exit_reason": {
+        "take_profit": {
+          "n": 46,
+          "pnl": 6297.35,
+          "expectancy": 136.9,
+          "win_rate": 1.0,
+          "fold_t": null
+        },
+        "replay_force_flat_et": {
+          "n": 5,
+          "pnl": 525.6,
+          "expectancy": 105.12,
+          "win_rate": 1.0,
+          "fold_t": null
+        },
+        "breakeven": {
+          "n": 13,
+          "pnl": 378.0,
+          "expectancy": 29.08,
+          "win_rate": 1.0,
+          "fold_t": null
+        },
+        "stop_loss": {
+          "n": 106,
+          "pnl": -5279.7,
+          "expectancy": -49.81,
+          "win_rate": 0.0,
+          "fold_t": null
+        }
+      },
+      "symbol": {
+        "MGC": {
+          "n": 88,
+          "pnl": 1544.0,
+          "expectancy": 17.55,
+          "win_rate": 0.4205,
+          "fold_t": null
+        },
+        "MNQ": {
+          "n": 82,
+          "pnl": 377.25,
+          "expectancy": 4.6,
+          "win_rate": 0.3293,
+          "fold_t": null
+        }
+      },
+      "side": {
+        "BUY": {
+          "n": 93,
+          "pnl": 1351.95,
+          "expectancy": 14.54,
+          "win_rate": 0.4086,
+          "fold_t": null
+        },
+        "SELL": {
+          "n": 77,
+          "pnl": 569.3,
+          "expectancy": 7.39,
+          "win_rate": 0.3377,
+          "fold_t": null
+        }
+      },
+      "entry_hour_et": {
+        "10": {
+          "n": 96,
+          "pnl": 805.6,
+          "expectancy": 8.39,
+          "win_rate": 0.3854,
+          "fold_t": null
+        },
+        "13": {
+          "n": 10,
+          "pnl": 493.65,
+          "expectancy": 49.36,
+          "win_rate": 0.4,
+          "fold_t": null
+        },
+        "11": {
+          "n": 38,
+          "pnl": 290.3,
+          "expectancy": 7.64,
+          "win_rate": 0.3158,
+          "fold_t": null
+        },
+        "14": {
+          "n": 9,
+          "pnl": 213.85,
+          "expectancy": 23.76,
+          "win_rate": 0.5556,
+          "fold_t": null
+        },
+        "12": {
+          "n": 11,
+          "pnl": 86.2,
+          "expectancy": 7.84,
+          "win_rate": 0.3636,
+          "fold_t": null
+        },
+        "15": {
+          "n": 6,
+          "pnl": 31.65,
+          "expectancy": 5.28,
+          "win_rate": 0.3333,
+          "fold_t": null
+        }
+      },
+      "entry_weekday": {
+        "4": {
+          "n": 21,
+          "pnl": 980.0,
+          "expectancy": 46.67,
+          "win_rate": 0.5714,
+          "fold_t": null
+        },
+        "2": {
+          "n": 52,
+          "pnl": 719.45,
+          "expectancy": 13.84,
+          "win_rate": 0.3462,
+          "fold_t": null
+        },
+        "3": {
+          "n": 52,
+          "pnl": 388.8,
+          "expectancy": 7.48,
+          "win_rate": 0.4038,
+          "fold_t": null
+        },
+        "0": {
+          "n": 20,
+          "pnl": 217.5,
+          "expectancy": 10.87,
+          "win_rate": 0.35,
+          "fold_t": null
+        },
+        "1": {
+          "n": 25,
+          "pnl": -384.5,
+          "expectancy": -15.38,
+          "win_rate": 0.24,
+          "fold_t": null
+        }
+      },
+      "entry_month": {
+        "2025-10": {
+          "n": 17,
+          "pnl": 1131.9,
+          "expectancy": 66.58,
+          "win_rate": 0.6471,
+          "fold_t": null
+        },
+        "2025-11": {
+          "n": 12,
+          "pnl": 590.15,
+          "expectancy": 49.18,
+          "win_rate": 0.5833,
+          "fold_t": null
+        },
+        "2026-04": {
+          "n": 16,
+          "pnl": 437.5,
+          "expectancy": 27.34,
+          "win_rate": 0.5,
+          "fold_t": null
+        },
+        "2025-12": {
+          "n": 12,
+          "pnl": 343.35,
+          "expectancy": 28.61,
+          "win_rate": 0.3333,
+          "fold_t": null
+        },
+        "2026-03": {
+          "n": 9,
+          "pnl": 268.55,
+          "expectancy": 29.84,
+          "win_rate": 0.2222,
+          "fold_t": null
+        },
+        "2025-04": {
+          "n": 6,
+          "pnl": 266.15,
+          "expectancy": 44.36,
+          "win_rate": 0.5,
+          "fold_t": null
+        },
+        "2026-02": {
+          "n": 11,
+          "pnl": 256.0,
+          "expectancy": 23.27,
+          "win_rate": 0.3636,
+          "fold_t": null
+        },
+        "2026-05": {
+          "n": 11,
+          "pnl": 85.9,
+          "expectancy": 7.81,
+          "win_rate": 0.4545,
+          "fold_t": null
+        },
+        "2025-06": {
+          "n": 11,
+          "pnl": -49.25,
+          "expectancy": -4.48,
+          "win_rate": 0.2727,
+          "fold_t": null
+        },
+        "2025-07": {
+          "n": 12,
+          "pnl": -66.05,
+          "expectancy": -5.5,
+          "win_rate": 0.3333,
+          "fold_t": null
+        },
+        "2025-08": {
+          "n": 10,
+          "pnl": -139.5,
+          "expectancy": -13.95,
+          "win_rate": 0.2,
+          "fold_t": null
+        },
+        "2025-05": {
+          "n": 13,
+          "pnl": -158.75,
+          "expectancy": -12.21,
+          "win_rate": 0.3846,
+          "fold_t": null
+        },
+        "2026-01": {
+          "n": 10,
+          "pnl": -221.7,
+          "expectancy": -22.17,
+          "win_rate": 0.2,
+          "fold_t": null
+        },
+        "2025-09": {
+          "n": 12,
+          "pnl": -222.4,
+          "expectancy": -18.53,
+          "win_rate": 0.25,
+          "fold_t": null
+        },
+        "2026-06": {
+          "n": 8,
+          "pnl": -600.6,
+          "expectancy": -75.08,
+          "win_rate": 0.125,
+          "fold_t": null
+        }
+      }
+    }
+  },
+  "features": {
+    "bars_bucket": {
+      "4-8": {
+        "n": 65,
+        "pnl": 9575.8,
+        "expectancy": 147.32,
+        "win_rate": 0.7538,
+        "fold_t": null
+      },
+      "0-3": {
+        "n": 226,
+        "pnl": 4873.85,
+        "expectancy": 21.57,
+        "win_rate": 0.4381,
+        "fold_t": null
+      },
+      "9-15": {
+        "n": 45,
+        "pnl": 4198.75,
+        "expectancy": 93.31,
+        "win_rate": 0.7333,
+        "fold_t": null
+      },
+      "16+": {
+        "n": 86,
+        "pnl": -140.15,
+        "expectancy": -1.63,
+        "win_rate": 0.5465,
+        "fold_t": null
+      }
+    },
+    "exit_reason": {
+      "take_profit": {
+        "n": 203,
+        "pnl": 51286.35,
+        "expectancy": 252.64,
+        "win_rate": 1.0,
+        "fold_t": null
+      },
+      "replay_force_flat_et": {
+        "n": 5,
+        "pnl": 525.6,
+        "expectancy": 105.12,
+        "win_rate": 1.0,
+        "fold_t": null
+      },
+      "breakeven": {
+        "n": 13,
+        "pnl": 378.0,
+        "expectancy": 29.08,
+        "win_rate": 1.0,
+        "fold_t": null
+      },
+      "timeout": {
+        "n": 30,
+        "pnl": -2966.0,
+        "expectancy": -98.87,
+        "win_rate": 0.2333,
+        "fold_t": null
+      },
+      "stop_loss": {
+        "n": 171,
+        "pnl": -30715.7,
+        "expectancy": -179.62,
+        "win_rate": 0.0,
+        "fold_t": null
+      }
+    },
+    "symbol": {
+      "MGC": {
+        "n": 233,
+        "pnl": 13056.0,
+        "expectancy": 56.03,
+        "win_rate": 0.5837,
+        "fold_t": null
+      },
+      "MNQ": {
+        "n": 189,
+        "pnl": 5452.25,
+        "expectancy": 28.85,
+        "win_rate": 0.4868,
+        "fold_t": null
+      }
+    },
+    "strategy": {
+      "morning_range_reversion": {
+        "n": 252,
+        "pnl": 16587.0,
+        "expectancy": 65.82,
+        "win_rate": 0.6508,
+        "fold_t": null
+      },
+      "overnight_range": {
+        "n": 170,
+        "pnl": 1921.25,
+        "expectancy": 11.3,
+        "win_rate": 0.3765,
+        "fold_t": null
+      }
+    },
+    "entry_hour_et": {
+      "8": {
+        "n": 174,
+        "pnl": 15072.0,
+        "expectancy": 86.62,
+        "win_rate": 0.6954,
+        "fold_t": null
+      },
+      "10": {
+        "n": 110,
+        "pnl": 2038.6,
+        "expectancy": 18.53,
+        "win_rate": 0.4273,
+        "fold_t": null
+      },
+      "9": {
+        "n": 53,
+        "pnl": 953.0,
+        "expectancy": 17.98,
+        "win_rate": 0.5472,
+        "fold_t": null
+      },
+      "13": {
+        "n": 11,
+        "pnl": 764.65,
+        "expectancy": 69.51,
+        "win_rate": 0.4545,
+        "fold_t": null
+      },
+      "14": {
+        "n": 11,
+        "pnl": 514.85,
+        "expectancy": 46.8,
+        "win_rate": 0.5455,
+        "fold_t": null
+      },
+      "15": {
+        "n": 6,
+        "pnl": 31.65,
+        "expectancy": 5.28,
+        "win_rate": 0.3333,
+        "fold_t": null
+      },
+      "12": {
+        "n": 12,
+        "pnl": -175.8,
+        "expectancy": -14.65,
+        "win_rate": 0.3333,
+        "fold_t": null
+      },
+      "11": {
+        "n": 45,
+        "pnl": -690.7,
+        "expectancy": -15.35,
+        "win_rate": 0.3111,
+        "fold_t": null
+      }
+    }
+  }
+}

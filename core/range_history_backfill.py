@@ -263,6 +263,55 @@ def load_merged_1m_df(
     return merged if merged is not None and not merged.empty else None
 
 
+def range_anchor_for_trade_session(
+    entry_dt: datetime,
+    symbol: str,
+    strategy_name: str,
+    *,
+    df: Optional[pd.DataFrame] = None,
+) -> Optional[Dict[str, Any]]:
+    """Session H/L range for one trade from canonical OHLCV (walkforward / recap parity).
+
+    Uses the same TOML windows and ``_hl_from_df_window`` as bar backfill — not
+    live ``strategy_states`` current-range blobs (which are often the wrong session).
+    """
+    from zoneinfo import ZoneInfo
+
+    strat = str(strategy_name or "").strip()
+    if strat not in _STRATEGY_SETTINGS_KEY:
+        return None
+    if entry_dt.tzinfo is None:
+        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+    rs, re, tz, ost, oen = _load_timing(strat)
+    session_date = entry_dt.astimezone(ZoneInfo(tz)).date()
+    win = _session_window_utc(strat, session_date, rs, re, tz, ost, oen)
+    if not win:
+        return None
+    t0, t1, sd = win
+    if df is None:
+        sym = str(symbol or "").upper()
+        if strat == "overnight_range":
+            df = load_merged_1m_df(sym, lookback_calendar_days=14)
+        else:
+            root = sym.split(".")[-1]
+            p5 = ROOT / "historical_data" / "price" / f"{root.lower()}_5m_databento.csv"
+            p1 = _csv_path(sym)
+            if p5.is_file():
+                df = load_ohlcv_cached(p5)
+            elif p1 and p1.is_file():
+                df = load_ohlcv_cached(p1)
+            else:
+                df = None
+    blob = _hl_from_df_window(df, t0, t1) if df is not None else None
+    if not blob:
+        return None
+    blob = dict(blob)
+    blob["session_date"] = sd
+    blob["strategy_name"] = strat
+    blob["derived"] = "databento_ohlcv_anchor"
+    return attach_range_window_et(blob, strat, session_date=sd)
+
+
 async def fetch_api_1m_bars_for_backfill(
     trading_bot: Any,
     symbol: str,

@@ -576,3 +576,181 @@ def equity_chart_embed_js(equity_points: List[Dict[str, Any]], *, chart_id: str 
         "</script>\n"
     )
     return div + "\n" + cdn + script
+
+
+def monte_carlo_histogram_svg(
+    bins: Dict[str, Any],
+    *,
+    chart_id: str,
+    title: str,
+    actual: Optional[float] = None,
+    unit_prefix: str = "$",
+    width: int = 520,
+    height: int = 180,
+) -> str:
+    """Inline SVG histogram for Monte Carlo distributions (works on file://)."""
+    edges = bins.get("edges") or []
+    counts = bins.get("counts") or []
+    if not edges or not counts or len(edges) != len(counts) + 1:
+        return f"<p class='muted'>No histogram data for {_html_escape(title)}.</p>"
+
+    max_c = max(counts) or 1
+    pad_l, pad_r, pad_t, pad_b = 48, 16, 28, 36
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    n = len(counts)
+    bar_w = plot_w / max(n, 1)
+
+    bars: List[str] = []
+    lo, hi = float(edges[0]), float(edges[-1])
+    zero_x: Optional[float] = None
+    if lo < 0 < hi:
+        zero_x = pad_l + (0 - lo) / (hi - lo) * plot_w
+
+    for i, c in enumerate(counts):
+        if c <= 0:
+            continue
+        x = pad_l + i * bar_w + 1
+        bh = (c / max_c) * plot_h
+        y = pad_t + plot_h - bh
+        cx = (float(edges[i]) + float(edges[i + 1])) / 2
+        color = "#5ecf8e" if cx >= 0 else "#f08080"
+        bars.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(bar_w - 2, 1):.1f}" '
+            f'height="{bh:.1f}" fill="{color}" opacity="0.85" rx="1"/>'
+        )
+
+    actual_line = ""
+    if actual is not None and hi > lo:
+        ax = pad_l + (float(actual) - lo) / (hi - lo) * plot_w
+        if pad_l <= ax <= pad_l + plot_w:
+            actual_line = (
+                f'<line x1="{ax:.1f}" y1="{pad_t}" x2="{ax:.1f}" y2="{pad_t + plot_h}" '
+                f'stroke="#c9b87c" stroke-width="2" stroke-dasharray="4,3"/>'
+                f'<text x="{ax:.1f}" y="{pad_t - 6}" text-anchor="middle" '
+                f'fill="#c9b87c" font-size="10">actual</text>'
+            )
+
+    zero_line = ""
+    if zero_x is not None:
+        zero_line = (
+            f'<line x1="{zero_x:.1f}" y1="{pad_t}" x2="{zero_x:.1f}" y2="{pad_t + plot_h}" '
+            f'stroke="#666" stroke-width="1" opacity="0.5"/>'
+        )
+
+    def _fmt(v: float) -> str:
+        if abs(v) >= 1000:
+            return f"{unit_prefix}{v:,.0f}"
+        return f"{unit_prefix}{v:.0f}"
+
+    x_labels = (
+        f'<text x="{pad_l}" y="{height - 8}" fill="#9b9ba8" font-size="10">{_fmt(lo)}</text>'
+        f'<text x="{pad_l + plot_w}" y="{height - 8}" text-anchor="end" fill="#9b9ba8" font-size="10">{_fmt(hi)}</text>'
+    )
+
+    return f"""
+<div class="mc-hist" id="{_html_escape(chart_id)}">
+  <div class="muted" style="font-size:0.82rem;margin-bottom:0.25rem">{_html_escape(title)}</div>
+  <svg viewBox="0 0 {width} {height}" width="100%" height="{height}" role="img"
+       aria-label="{_html_escape(title)} histogram" style="max-width:{width}px">
+    {zero_line}
+    {''.join(bars)}
+    {actual_line}
+    <line x1="{pad_l}" y1="{pad_t + plot_h}" x2="{pad_l + plot_w}" y2="{pad_t + plot_h}" stroke="#444" stroke-width="1"/>
+    {x_labels}
+  </svg>
+</div>"""
+
+
+def format_monte_carlo_html(
+    mc: Dict[str, Any],
+    *,
+    title: str = "Monte Carlo robustness",
+    chart_id_prefix: str = "mc",
+) -> str:
+    """HTML section for walk-forward metrics.html."""
+    if not mc or int(mc.get("n_trades") or 0) == 0:
+        return "<p class='muted'>No trades for Monte Carlo.</p>"
+
+    verdict = mc.get("endurance_verdict") or {}
+    grade = str(verdict.get("grade") or "—")
+    grade_class = {"strong": "pos", "adequate": "pos", "caution": "", "weak": "neg"}.get(grade, "")
+    checks = verdict.get("checks") or []
+    check_rows = []
+    for c in checks:
+        ok = c.get("pass")
+        mark = "✓" if ok else "✗"
+        cls = "pos" if ok else "neg"
+        check_rows.append(
+            f"<tr><td class='{cls}'>{mark}</td><td>{_html_escape(str(c.get('check', '')))}</td>"
+            f"<td>{_html_escape(str(c.get('detail', '')))}</td></tr>"
+        )
+
+    def _mode_table(mode_key: str, label: str) -> str:
+        m = (mc.get("modes") or {}).get(mode_key) or {}
+        if not m:
+            return ""
+        tp = m.get("total_pnl") or {}
+        dd = m.get("max_drawdown_dollars") or {}
+        mcl = m.get("max_consecutive_losses") or {}
+        hists = m.get("histograms") or {}
+        cid = f"{chart_id_prefix}-{mode_key}".replace("|", "-").replace(" ", "-")
+        hist_html = ""
+        if hists.get("total_pnl"):
+            hist_html += monte_carlo_histogram_svg(
+                hists["total_pnl"],
+                chart_id=f"{cid}-pnl",
+                title=f"{label} — total PnL distribution",
+                actual=float(tp.get("actual") or 0),
+            )
+        if hists.get("max_drawdown_dollars"):
+            hist_html += monte_carlo_histogram_svg(
+                hists["max_drawdown_dollars"],
+                chart_id=f"{cid}-dd",
+                title=f"{label} — max drawdown ($) distribution",
+                actual=float(dd.get("actual") or 0),
+                unit_prefix="$",
+            )
+        rows = [
+            ("Total PnL p5 / p50 / p95", f"${tp.get('p5', 0):,.0f} / ${tp.get('p50', 0):,.0f} / ${tp.get('p95', 0):,.0f}"),
+            ("P(profit)", f"{100 * float(tp.get('p_profit') or 0):.1f}%"),
+            ("Actual total PnL (sequential)", f"${tp.get('actual', 0):,.0f} ({tp.get('actual_percentile', 0):.0f}th pct)"),
+            ("Max DD $ p50 / p95", f"${dd.get('p50', 0):,.0f} / ${dd.get('p95', 0):,.0f}"),
+            ("Actual max DD $", f"${dd.get('actual', 0):,.0f} ({dd.get('actual_percentile', 0):.0f}th pct)"),
+            ("Max consec losses p90", f"{mcl.get('p90', 0):.0f} (actual {mcl.get('actual', 0)})"),
+        ]
+        body = "".join(
+            f"<tr><td>{_html_escape(k)}</td><td class='num'>{_html_escape(v)}</td></tr>"
+            for k, v in rows
+        )
+        return f"""
+<h4>{_html_escape(label)}</h4>
+<div class="mc-hist-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:0.75rem 0 1rem">
+{hist_html}
+</div>
+<table><thead><tr><th>Metric</th><th class="num">Distribution</th></tr></thead>
+<tbody>{body}</tbody></table>"""
+
+    actual = mc.get("sequential_actual") or {}
+    n_sims = mc.get("num_simulations", 0)
+    n_tr = mc.get("n_trades", 0)
+    start = mc.get("start_equity", 2000)
+
+    anchor = ' id="monte-carlo"' if chart_id_prefix == "mc-grand" else ""
+    return f"""
+<h3{anchor}>{_html_escape(title)}</h3>
+<p class="muted"><strong>{n_sims:,}</strong> simulations on <strong>{n_tr}</strong> trades
+  (start ${start:,.0f}). <strong>Shuffle</strong> = permute trade order (tests path / drawdown luck).
+  <strong>Bootstrap</strong> = resample P&Ls with replacement (tests distribution uncertainty).
+  Sequential actual: total PnL <strong>${actual.get('total_pnl', 0):,.0f}</strong>,
+  max DD <strong>${actual.get('max_drawdown_dollars', 0):,.0f}</strong>.</p>
+<div class="banner">
+  <strong>Endurance grade:</strong> <span class="{grade_class}">{grade.upper()}</span>
+  — {_html_escape(str(verdict.get('summary', '')))}
+  ({verdict.get('checks_passed', 0)}/{verdict.get('checks_total', 0)} checks passed)
+</div>
+<table><thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead>
+<tbody>{''.join(check_rows)}</tbody></table>
+{_mode_table('shuffle', 'Trade-order shuffle')}
+{_mode_table('bootstrap', 'P&L bootstrap (iid resample)')}
+"""

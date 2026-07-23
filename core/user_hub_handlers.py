@@ -44,6 +44,28 @@ class UserHubHandlers:
         elif asyncio.iscoroutine(coro):
             coro.close()
 
+    def _schedule_urgent_from_sync(self, coro) -> None:
+        """Risk-critical work: bypass ``HubDeferredWorkQueue`` (do not wait behind GUI/EventBus).
+
+        Hybrid software-OCO sibling cancel must hit the broker on the same tick as the
+        fill/flat event — serial queue lag of a few seconds is a naked-position risk.
+        """
+        loop = self._hub_loop()
+        if loop is not None and loop.is_running():
+
+            async def _wrap():
+                try:
+                    await coro
+                except Exception:
+                    logger.exception("urgent hub coro failed")
+
+            try:
+                asyncio.run_coroutine_threadsafe(_wrap(), loop)
+                return
+            except Exception:
+                logger.debug("urgent schedule failed; falling back to deferred queue", exc_info=True)
+        self._defer_coro_from_sync(coro)
+
     async def on_account(self, data: Dict):
         """User Hub account callback — keep thin; heavy work runs on `hub_deferred_queue`."""
         try:
@@ -171,6 +193,26 @@ class UserHubHandlers:
                 logger.debug("Invalidated positions cache for account %s", account_id_str)
 
             self._defer_coro_from_sync(self._on_position_async_tail(dict(data), account_id_str))
+            # Flat position → cancel any remaining hybrid software-OCO legs (urgent).
+            try:
+                size = data.get("size", data.get("quantity"))
+                pos_id = data.get("id") or data.get("positionId")
+                if (
+                    pos_id is not None
+                    and size is not None
+                    and int(size) == 0
+                    and getattr(self._bot, "cancel_hybrid_oco_for_position", None)
+                ):
+                    async def _flat_cleanup(_pid=str(pos_id), _acct=account_id_str):
+                        await self._bot.cancel_hybrid_oco_for_position(
+                            _pid, reason="user_hub_position_flat"
+                        )
+                        if getattr(self._bot, "sweep_hybrid_orphan_orders", None):
+                            await self._bot.sweep_hybrid_orphan_orders(account_id=_acct or None)
+
+                    self._schedule_urgent_from_sync(_flat_cleanup())
+            except Exception as _flat_exc:
+                logger.debug("hybrid OCO position-flat hook skipped: %s", _flat_exc)
         except Exception as e:
             logger.error("Error handling User Hub position update: %s", e)
 
@@ -273,8 +315,18 @@ class UserHubHandlers:
             
             account_id_str = str(data.get("accountId", ""))
             if account_id_str and getattr(self._bot, "state_cache", None):
-                self._bot.state_cache.invalidate_orders(account_id_str)
-                logger.debug("Invalidated orders cache for account %s", account_id_str)
+                patched = self._bot.state_cache.patch_order(account_id_str, data)
+                if not patched:
+                    self._bot.state_cache.invalidate_orders(account_id_str)
+                status = data.get("status")
+                if status in (2, 3, 4, "Filled", "Cancelled", "Canceled", "Rejected"):
+                    self._bot.state_cache.invalidate_positions(account_id_str)
+                logger.debug(
+                    "Orders cache patched=%s for account %s (status=%s)",
+                    patched,
+                    account_id_str,
+                    status,
+                )
 
             # Keep the working-order registry in sync.  When an order
             # reaches Filled/Cancelled/Rejected we drop it from the
@@ -289,7 +341,66 @@ class UserHubHandlers:
             except Exception as _exc:
                 logger.debug("working_order_registry mark_status skipped: %s", _exc)
 
+            # Hybrid software-OCO FIRST (urgent, before deferred GUI/EventBus work).
+            try:
+                _oid = data.get("id") or data.get("orderId")
+                _status = data.get("status")
+                _tag = data.get("customTag") or data.get("tag")
+                _terminal = _status in (
+                    2, 3, 4, "2", "3", "4",
+                    "Filled", "filled", "FILLED",
+                    "Cancelled", "Canceled", "cancelled", "canceled",
+                    "Rejected", "rejected",
+                )
+                if (
+                    _terminal
+                    and getattr(self._bot, "on_hybrid_protective_leg_terminal", None)
+                ):
+                    _legs = getattr(self._bot, "_hybrid_oco_legs", None) or {}
+                    _is_hyb = (
+                        (_oid is not None and str(_oid) in _legs)
+                        or (
+                            _tag
+                            and getattr(self._bot, "is_hybrid_protective_tag", None)
+                            and self._bot.is_hybrid_protective_tag(_tag)
+                        )
+                    )
+                    if _is_hyb:
+                        logger.info(
+                            "Hybrid OCO hub event: order=%s status=%s tag=%s → urgent peer cancel",
+                            _oid, _status, _tag,
+                        )
+                        self._schedule_urgent_from_sync(
+                            self._bot.on_hybrid_protective_leg_terminal(
+                                order_id=str(_oid) if _oid is not None else None,
+                                custom_tag=_tag,
+                                account_id=account_id_str or None,
+                                status=_status,
+                                reason="user_hub_leg_terminal",
+                            )
+                        )
+            except Exception as _hyb_exc:
+                logger.debug("hybrid OCO on_order urgent hook skipped: %s", _hyb_exc)
+
             self._defer_coro_from_sync(self._on_order_async_tail(dict(data), account_id_str))
+            # Hybrid Position-Brackets: attach protective SL/TP when entry fills.
+            try:
+                _oid = data.get("id") or data.get("orderId")
+                _status = data.get("status")
+                if (
+                    _oid is not None
+                    and _status in (2, "2", "Filled", "filled", "FILLED")
+                    and getattr(self._bot, "try_attach_hybrid_brackets_on_fill", None)
+                ):
+                    self._defer_coro_from_sync(
+                        self._bot.try_attach_hybrid_brackets_on_fill(
+                            str(_oid),
+                            reason="user_hub_fill",
+                            order_status=_status,
+                        )
+                    )
+            except Exception as _hyb_exc:
+                logger.debug("hybrid attach on_order hook skipped: %s", _hyb_exc)
         except Exception as e:
             logger.error("Error handling User Hub order update: %s", e)
 
@@ -327,19 +438,33 @@ class UserHubHandlers:
 
             order_data = {
                 "id": data.get("id"),
+                "orderId": data.get("id") or data.get("orderId"),
                 "accountId": data.get("accountId"),
                 "contractId": data.get("contractId"),
                 "symbolId": data.get("symbolId"),
                 "status": data.get("status"),
                 "type": data.get("type"),
-                "side": "BUY" if data.get("side") == 0 else "SELL",
+                "side": data.get("side"),
                 "size": data.get("size", 0),
+                "quantity": data.get("size", 0),
                 "limitPrice": data.get("limitPrice"),
                 "stopPrice": data.get("stopPrice"),
                 "fillVolume": data.get("fillVolume", 0),
                 "filledPrice": data.get("filledPrice"),
                 "customTag": data.get("customTag"),
+                "positionId": data.get("positionId"),
             }
+            try:
+                from gui.chart_html import normalize_chart_order_dict
+
+                normalized = normalize_chart_order_dict({**data, **order_data})
+                if normalized:
+                    order_data = normalized
+            except Exception:
+                if order_data.get("side") == 0 or order_data.get("side") == "0":
+                    order_data["side"] = "BUY"
+                elif order_data.get("side") == 1:
+                    order_data["side"] = "SELL"
             status = data.get("status")
             is_critical = status in (2, 3, 4)
             gui_type = (
@@ -351,7 +476,7 @@ class UserHubHandlers:
                 if status == 4
                 else "order_updated"
             )
-            await broadcast_update({"type": gui_type, "data": {"orders": [order_data]}}, immediate=is_critical)
+            await broadcast_update({"type": gui_type, "data": {"orders": [order_data]}}, immediate=True)
         except Exception as e:
             logger.debug("Could not broadcast order update to GUI: %s", e)
 
@@ -488,31 +613,50 @@ class UserHubHandlers:
                 except Exception as exc:
                     logger.debug("snapshot api load failed for %s: %s", symbol, exc)
 
-            # Strategy range for the trade's session (best-effort): pull whichever
-            # of {or_ranges, mrr_ranges, orb_ranges} matches the symbol from the
-            # currently-running strategy_states row.
+            # Session range from canonical OHLCV + TOML windows (walkforward parity).
+            # Do NOT use live strategy_states current-range blobs — wrong session.
             range_snap = None
             strategy_name = None
             try:
-                states = db.get_strategy_states(str(account_id)) or {}
-                sym_u = symbol.upper()
-                for sname, srow in states.items():
-                    settings = srow.get("settings") or {}
-                    for slot in ("or_ranges", "mrr_ranges", "orb_ranges"):
-                        blob = settings.get(slot) if isinstance(settings, dict) else None
-                        if not isinstance(blob, dict):
-                            continue
-                        if sym_u in blob and isinstance(blob[sym_u], dict):
-                            cand = blob[sym_u]
-                            if cand.get("high") is not None and cand.get("low") is not None:
-                                range_snap = dict(cand)
-                                range_snap["__slot"] = slot
-                                strategy_name = sname
-                                break
-                    if range_snap is not None:
-                        break
+                tag = str(getattr(t, "custom_tag", "") or getattr(t, "order_tag", "") or "")
+                if tag:
+                    from gui.chart_html import _classify_order_tag, _range_snapshot_for_trade_recap
+                    from core.chart_databento_loader import chart_symbol_to_databento_root
+                    from pathlib import Path as _PathSnap
+
+                    meta = _classify_order_tag(tag)
+                    strategy_name = meta.get("strategy") or None
+                    root = chart_symbol_to_databento_root(symbol) or symbol.upper().split(".")[-1]
+                    repo_root = _PathSnap(__file__).resolve().parents[1]
+                    range_snap = _range_snapshot_for_trade_recap(
+                        self._bot,
+                        str(account_id),
+                        symbol,
+                        entry_utc,
+                        repo_root,
+                        root,
+                        strategy_hint=strategy_name,
+                    )
             except Exception as exc:
-                logger.debug("snapshot strategy-range lookup failed: %s", exc)
+                logger.debug("snapshot range anchor failed: %s", exc)
+            if range_snap is None:
+                try:
+                    from gui.chart_html import _range_snapshot_for_trade_recap
+                    from core.chart_databento_loader import chart_symbol_to_databento_root
+                    from pathlib import Path as _PathSnap
+
+                    root = chart_symbol_to_databento_root(symbol) or symbol.upper().split(".")[-1]
+                    repo_root = _PathSnap(__file__).resolve().parents[1]
+                    range_snap = _range_snapshot_for_trade_recap(
+                        self._bot,
+                        str(account_id),
+                        symbol,
+                        entry_utc,
+                        repo_root,
+                        root,
+                    )
+                except Exception as exc:
+                    logger.debug("snapshot strategy-range lookup failed: %s", exc)
 
             metadata = {
                 "snap_source": snap_source,
@@ -649,7 +793,32 @@ class UserHubHandlers:
                     price = float(data.get('price') or data.get('fillPrice', 0))
                     commission = float(data.get('commission', 0))
                     fee = float(data.get('fee', 0))
-                    
+
+                    # Hybrid software-OCO: trade fill is often the earliest signal —
+                    # cancel peer immediately (do not wait for order-status / sweeper).
+                    try:
+                        if order_id and getattr(
+                            self._bot, "on_hybrid_protective_leg_terminal", None
+                        ):
+                            _tag = data.get("customTag") or data.get("tag")
+                            _legs = getattr(self._bot, "_hybrid_oco_legs", None) or {}
+                            _is_hyb = order_id in _legs
+                            if not _is_hyb and _tag and getattr(
+                                self._bot, "is_hybrid_protective_tag", None
+                            ):
+                                _is_hyb = bool(self._bot.is_hybrid_protective_tag(_tag))
+                            if _is_hyb:
+                                self._schedule_urgent_from_sync(
+                                    self._bot.on_hybrid_protective_leg_terminal(
+                                        order_id=order_id,
+                                        custom_tag=_tag,
+                                        account_id=account_id,
+                                        status=2,
+                                        reason="user_hub_trade_fill",
+                                    )
+                                )
+                    except Exception as _hyb_tr:
+                        logger.debug("hybrid OCO on_trade hook skipped: %s", _hyb_tr)
                     # Parse timestamp if available
                     timestamp = None
                     if 'timestamp' in data:

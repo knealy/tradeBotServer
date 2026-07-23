@@ -163,6 +163,12 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
             self._cfg.get_float("signal.stop_entry_buffer_points", 0.0) or 0.0
         )
 
+        # ``stop_bracket`` (default): place both-side stop brackets at box ± buffer when armed.
+        # ``close_breakout``: wait for a 5m bar **close** beyond the box, then market entry.
+        self.entry_mode: str = str(
+            self._cfg.get_str("signal.entry_mode", "stop_bracket") or "stop_bracket"
+        ).strip().lower()
+
         self.allow_long: bool = bool(self._cfg.get_bool("signal.allow_long", True))
         self.allow_short: bool = bool(self._cfg.get_bool("signal.allow_short", True))
 
@@ -471,7 +477,7 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 st.phase = "done"
                 return None
 
-            # ── Need to be ARMED to signal.
+            # ── Need to be ARMED to signal (stop-bracket mode fires once at box close).
             if st.phase != "armed":
                 return None
             if (symbol.upper(), d) in self._signaled:
@@ -496,9 +502,68 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 st.phase = "done"
                 return None
 
-            # ── Bracket geometry.
             g = self._geom(symbol)
             buf = g["stop_entry_buffer_points"]
+            bar_close = float(last.get("close", 0.0) or 0.0)
+
+            # Close-breakout mode: stay armed until a bar closes beyond the box.
+            if self.entry_mode == "close_breakout":
+                if t_close < self.range_end_open:
+                    return None
+                long_order = None
+                short_order = None
+                if self.allow_long and bar_close > st.range_hi + buf:
+                    entry = bar_close
+                    if self.use_atr_geometry:
+                        atr = self._atr(bars, self.atr_period)
+                        if atr is None or atr <= 0:
+                            return None
+                        stop_dist = atr * g["stop_atr_multiplier"]
+                        tp_dist = atr * g["tp_atr_multiplier"]
+                    else:
+                        stop_dist = width * g["stop_range_pct"]
+                        tp_dist = width * g["tp_range_pct"]
+                    long_order = {
+                        "side": "BUY",
+                        "entry_price": entry,
+                        "stop_loss": entry - stop_dist,
+                        "take_profit": entry + tp_dist,
+                        "market_entry": True,
+                    }
+                elif self.allow_short and bar_close < st.range_lo - buf:
+                    entry = bar_close
+                    if self.use_atr_geometry:
+                        atr = self._atr(bars, self.atr_period)
+                        if atr is None or atr <= 0:
+                            return None
+                        stop_dist = atr * g["stop_atr_multiplier"]
+                        tp_dist = atr * g["tp_atr_multiplier"]
+                    else:
+                        stop_dist = width * g["stop_range_pct"]
+                        tp_dist = width * g["tp_range_pct"]
+                    short_order = {
+                        "side": "SELL",
+                        "entry_price": entry,
+                        "stop_loss": entry + stop_dist,
+                        "take_profit": entry - tp_dist,
+                        "market_entry": True,
+                    }
+                if not long_order and not short_order:
+                    return None
+                return {
+                    "symbol": symbol,
+                    "long_order": long_order,
+                    "short_order": short_order,
+                    "range_hi": st.range_hi,
+                    "range_lo": st.range_lo,
+                    "width": width,
+                    "session_date": d,
+                    "entry_mode": "close_breakout",
+                    "confidence": 0.7,
+                    "reason": "Opening range close breakout",
+                }
+
+            # ── Bracket geometry (default stop-bracket entry at box ± buffer).
             long_entry = st.range_hi + buf
             short_entry = st.range_lo - buf
             if self.use_atr_geometry:
@@ -561,6 +626,7 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                     symbol=symbol, side=side, quantity=qty,
                     entry_price=entry, stop_loss_price=sl, take_profit_price=tp,
                     enable_breakeven=False,
+                    market_entry=bool(order.get("market_entry", False)),
                 )
                 if result and result.get("error"):
                     logger.warning(

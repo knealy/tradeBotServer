@@ -102,6 +102,7 @@ def run_backtest_inprocess(
     slippage_ticks: float = 0.5,
     include_trades: bool = True,
     replay_csv_1m: Optional[str] = None,
+    dynamic_sizing_carry: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Drop-in in-process replacement for the subprocess JSON-mode CLI.
 
@@ -145,6 +146,7 @@ def run_backtest_inprocess(
                 csv_file=csv_path,
                 replay_csv_1m=replay_csv_1m,
                 slippage_ticks=slippage_ticks,
+                dynamic_sizing_carry=dynamic_sizing_carry,
             )
         except Exception as exc:  # pragma: no cover — defensive
             return {

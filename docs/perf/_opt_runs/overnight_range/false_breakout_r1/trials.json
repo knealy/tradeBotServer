@@ -1,0 +1,13 @@
+[
+  {"label": "baseline", "root": {}, "symbols": {}, "env": {}},
+  {"label": "scratch3_r0", "root": {"signal.scratch_check_bars": 3, "signal.scratch_min_r": 0.0}, "symbols": {}, "env": {}},
+  {"label": "scratch3_r025", "root": {"signal.scratch_check_bars": 3, "signal.scratch_min_r": 0.25}, "symbols": {}, "env": {}},
+  {"label": "scratch2_r0", "root": {"signal.scratch_check_bars": 2, "signal.scratch_min_r": 0.0}, "symbols": {}, "env": {}},
+  {"label": "atr_min_010", "root": {"filters.atr_min_pct": 0.10}, "symbols": {}, "env": {}},
+  {"label": "atr_min_012", "root": {"filters.atr_min_pct": 0.12}, "symbols": {}, "env": {}},
+  {"label": "scratch3_r0_atr010", "root": {
+      "signal.scratch_check_bars": 3,
+      "signal.scratch_min_r": 0.0,
+      "filters.atr_min_pct": 0.10
+  }, "symbols": {}, "env": {}}
+]

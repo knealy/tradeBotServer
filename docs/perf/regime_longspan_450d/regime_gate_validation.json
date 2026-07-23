@@ -1,0 +1,174 @@
+{
+  "source": "/Users/risu/tradeBotServer/docs/perf/regime_longspan_450d/metrics_insights.json",
+  "n_trades": 422,
+  "calendar_gate_all": {
+    "n_total": 422,
+    "n_blocked": 64,
+    "n_kept": 358,
+    "blocked_pnl": -369.8,
+    "kept_pnl": 18878.05,
+    "baseline_pnl": 18508.25,
+    "blocked_winners": 20,
+    "blocked_losers": 44,
+    "kept_winners": 208,
+    "pnl_delta_vs_baseline": 369.8
+  },
+  "full_gate_all": {
+    "n_total": 422,
+    "n_blocked": 65,
+    "n_kept": 357,
+    "blocked_pnl": -408.8,
+    "kept_pnl": 18917.05,
+    "baseline_pnl": 18508.25,
+    "blocked_winners": 20,
+    "blocked_losers": 45,
+    "kept_winners": 208,
+    "pnl_delta_vs_baseline": 408.8
+  },
+  "calendar_gate_by_strategy": {
+    "morning_range_reversion": {
+      "n_total": 252,
+      "n_blocked": 0,
+      "n_kept": 252,
+      "blocked_pnl": 0,
+      "kept_pnl": 16587.0,
+      "baseline_pnl": 16587.0,
+      "blocked_winners": 0,
+      "blocked_losers": 0,
+      "kept_winners": 164,
+      "pnl_delta_vs_baseline": 0.0
+    },
+    "overnight_range": {
+      "n_total": 170,
+      "n_blocked": 64,
+      "n_kept": 106,
+      "blocked_pnl": -369.8,
+      "kept_pnl": 2291.05,
+      "baseline_pnl": 1921.25,
+      "blocked_winners": 20,
+      "blocked_losers": 44,
+      "kept_winners": 44,
+      "pnl_delta_vs_baseline": 369.8
+    }
+  },
+  "full_gate_by_strategy": {
+    "morning_range_reversion": {
+      "n_total": 252,
+      "n_blocked": 0,
+      "n_kept": 252,
+      "blocked_pnl": 0,
+      "kept_pnl": 16587.0,
+      "baseline_pnl": 16587.0,
+      "blocked_winners": 0,
+      "blocked_losers": 0,
+      "kept_winners": 164,
+      "pnl_delta_vs_baseline": 0.0
+    },
+    "overnight_range": {
+      "n_total": 170,
+      "n_blocked": 65,
+      "n_kept": 105,
+      "blocked_pnl": -408.8,
+      "kept_pnl": 2330.05,
+      "baseline_pnl": 1921.25,
+      "blocked_winners": 20,
+      "blocked_losers": 45,
+      "kept_winners": 44,
+      "pnl_delta_vs_baseline": 408.8
+    }
+  },
+  "regime_label_breakdown": {
+    "morning_range_reversion": {
+      "chop": {
+        "n": 82,
+        "pnl": 8295.0,
+        "win_rate": 0.7317,
+        "avg_pnl": 101.16
+      },
+      "mixed": {
+        "n": 170,
+        "pnl": 8292.0,
+        "win_rate": 0.6118,
+        "avg_pnl": 48.78
+      }
+    },
+    "overnight_range": {
+      "chop": {
+        "n": 46,
+        "pnl": 302.95,
+        "win_rate": 0.413,
+        "avg_pnl": 6.59
+      },
+      "mixed": {
+        "n": 123,
+        "pnl": 1657.3,
+        "win_rate": 0.3659,
+        "avg_pnl": 13.47
+      },
+      "trend": {
+        "n": 1,
+        "pnl": -39.0,
+        "win_rate": 0.0,
+        "avg_pnl": -39.0
+      }
+    }
+  },
+  "label_flip_stats_5m": {
+    "MNQ": {
+      "flips": 6496,
+      "windows": 18631,
+      "flip_rate": 0.3487,
+      "label_share": {
+        "chop": 0.3316,
+        "mixed": 0.6649,
+        "trend": 0.0035
+      },
+      "dominant": "mixed"
+    },
+    "MGC": {
+      "flips": 6130,
+      "windows": 18669,
+      "flip_rate": 0.3284,
+      "label_share": {
+        "mixed": 0.6876,
+        "chop": 0.31,
+        "trend": 0.0024
+      },
+      "dominant": "mixed"
+    }
+  },
+  "boundary_alignment": {
+    "mgc_mrr_jan14_2026": {
+      "boundary": "2026-01-14",
+      "before_n": 457,
+      "after_n": 504,
+      "before_share": {
+        "mixed": 0.6214,
+        "chop": 0.3786
+      },
+      "after_share": {
+        "mixed": 0.6012,
+        "chop": 0.3968,
+        "trend": 0.002
+      }
+    },
+    "or_oct_2025": {
+      "boundary": "2025-10-01",
+      "before_n": 502,
+      "after_n": 506,
+      "before_share": {
+        "mixed": 0.6753,
+        "chop": 0.3207,
+        "trend": 0.004
+      },
+      "after_share": {
+        "mixed": 0.6542,
+        "chop": 0.3458
+      }
+    }
+  },
+  "interpretation": {
+    "calendar_gate_note": "Retrospective era boundaries from 450d study. High blocked_pnl magnitude with negative sign = gate removes historical losses. blocked_winners = opportunity cost.",
+    "regime_label_note": "KER+ADX at entry labels ~250min lookback on 5m. Modal label is mixed; trend bucket is sparse \u2014 not a primary live gate yet."
+  }
+}

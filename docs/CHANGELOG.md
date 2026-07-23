@@ -6,7 +6,168 @@ changes runtime behavior or conventions adds an entry here AND updates
 
 ## [Unreleased]
 
+### Added
+- **Exit-policy R1 + expectancy tooling (2026-07-23).** Evidence from 450d trades:
+  MRR 16+ bar holds are −$17/trade; OR 0–3 bar false breakouts are −$6/trade.
+  - MRR ``signal.scratch_check_bars`` / ``scratch_min_r`` (replay market flatten,
+    ``exit_reason=scratch``) before ``max_hold_bars`` timeout.
+  - OR same scratch knobs + ``manage_positions`` hook from ``analyze``.
+  - ``scripts/conditional_expectancy_report.py`` — bucket expectancy by hold /
+    exit / hour / weekday.
+  - ``scripts/holding_time_monitor.py`` — rolling avg bars on MGC MRR as
+    edge-decay alarm (alert when ≥12).
+  - Walk-forward ``trades_flat`` now keeps risk, MAE/MFE, qty, prices, fold.
+  - Sweeps: ``docs/perf/_opt_runs/morning_range_reversion/exit_policy_r1/``,
+    ``docs/perf/_opt_runs/overnight_range/false_breakout_r1/``.
+  Tests: ``tests/test_exit_policy_scratch_and_expectancy.py``.
+
+### Fixed
+- **Position Brackets → Discord alert + refuse (2026-07-23).** Hybrid software brackets left orphan SL/TP and false cancel claims in live smoke. Default on Auto OCO disabled / Position Brackets reject is now: one-shot Discord embed ``🚨 Auto OCO Brackets not enabled`` + ``BRACKET_MODE_ALERT`` log, and **refuse** the place (``method=refused_position_brackets``). No silent hybrid. Opt-in hybrid only via ``TOPSTEPX_BRACKET_MODE=hybrid|position``. **Files**: `trading_bot.py`, `core/discord_notifier.py`, `TODO.md`; tests: `tests/test_hybrid_bracket_fallback.py`.
+
+- **Hybrid OCO delay destroyed via price-touch cancel (2026-07-23).** Live smoke proved User Hub never emitted sibling-cancel on TP fill; backup waited on ``Order/search`` (timeouts) so the stop sat working for seconds after TP — whip-saw naked risk. Fix: **price-triggered software OCO** — on quote bid/last touching TP (or SL), ``cancel_order(peer_id)`` fires immediately by known id (50ms poll + Market Hub quote hook); no Order/search. Cancel-claim dedupe stops sweeper spam. Hub/tag paths remain backup. **Files**: `trading_bot.py`, `core/user_hub_handlers.py`, `scripts/smoke_bracket_order.py`; tests: `tests/test_hybrid_oco_siblings.py`.
+
+- **Hybrid sibling cancel latency (2026-07-23).** Multi-second delay after TP/SL fill left the peer order working (whip-saw naked-position risk). Root causes: sibling cancel was queued behind serial ``HubDeferredWorkQueue`` GUI/EventBus work, and poll/sweeper defaults were 2–3s. Fix: urgent hub path (`_schedule_urgent_from_sync`) fires sibling+tag-group cancel on order terminal / trade fill / position flat **before** deferred work; ``on_hybrid_protective_leg_terminal`` cancels by id then ``TB-hyb-{gid}-*``; sweeper cancels a lone registered leg when its peer leaves the book (even if position still briefly open); poll defaults ``HYBRID_OCO_POLL_S=0.25`` / ``HYBRID_ORPHAN_SWEEP_S=0.5``. **Files**: `trading_bot.py`, `core/user_hub_handlers.py`, `scripts/smoke_bracket_order.py`; tests: `tests/test_hybrid_oco_siblings.py`.
+
+- **Hybrid orphan SL/TP after TP/SL fill (2026-07-23).** Software OCO alone failed in practice because the smoke/process often exited (killing monitors) and modify-based attaches lacked stable group tags. Fix: always place protective legs with shared ``TB-hyb-{gid}-sl|tp`` customTags; continuous ``sweep_hybrid_orphan_orders`` cancels any tagged hybrid order whose contract/position is flat; sibling cancel + User Hub hooks remain. Smoke ``--verify-attach --keep`` now stays alive running the sweeper until flat+clean. **Files**: `trading_bot.py`, `scripts/smoke_bracket_order.py`, `core/user_hub_handlers.py`; tests: `tests/test_hybrid_oco_siblings.py`.
+
+- **Hybrid protective SL/TP now software-OCO each other (2026-07-23).** On Position Brackets accounts the bot places independent stop+limit after fill (broker will not cancel the sibling). When one leg fills/cancels — or the position goes flat — cancel the other leg via `register_hybrid_oco_pair` + User Hub hooks + poll backup. **Files**: `trading_bot.py`, `core/user_hub_handlers.py`; tests: `tests/test_hybrid_oco_siblings.py`.
+
+- **MRR live orders no longer die on Position Brackets accounts (2026-07-22).** Launchd MRR rejects since ~2026-07-16 were all `Code 2: Brackets cannot be used with Position Brackets. You must enable Auto OCO Brackets.` The bot was placing native OCO payloads (`stopLossBracket`/`takeProfitBracket`) then **explicitly refusing** the existing hybrid fallback. Fix: try **native Auto OCO first**; on that error fall back to `_stop_bracket_hybrid` (bare stop-entry + attach SL/TP after fill), sticky `_prefer_hybrid_brackets` for the process, and a **one-shot Discord + `BRACKET_MODE_ALERT` log**. Optional `TOPSTEPX_BRACKET_MODE=position|hybrid` skips the doomed OCO attempt; unset/`auto_oco` keeps native-first. Hardened hybrid fill detection (status 2 = filled; 3/4 = cancel/reject). Also fixed hybrid bare-stop HTTP 500: `trading_bot._generate_unique_custom_tag` now matches the adapter's 64-char cap (long `TradingBot-v1.0-strategy-…` tags were rejected with empty-body 500). **Post-fill attach (2026-07-23):** hybrid monitor was a bare `asyncio.create_task` (GC could drop it before fill) and smoke exited immediately — positions stayed naked. Now: pending registry, strong-referenced monitor, User Hub fill hook, contract-aware position match, and fallback bare protective stop+limit when `modify_*` finds no linked brackets. **Also fixed `PositionManager` treating `position.side == "LONG"` as short** (`== 0` only), which placed wrong-side “protective” orders. Live prove: `scripts/smoke_bracket_order.py --confirm --verify-attach`. Tests: `tests/test_hybrid_bracket_fallback.py`, `tests/test_hybrid_attach.py`, `tests/test_position_manager_sides.py`. **Files**: `trading_bot.py`, `core/position_management.py`, `core/user_hub_handlers.py`, `core/discord_notifier.py`, `scripts/smoke_bracket_order.py`, `scripts/run_morning_reversion.sh`, `.env.example`.
+
+### Added
+- **Bracket place/reject forensics — `BRACKET_DIAG` log line (2026-07-15).** On every stop-entry and market-entry OCO bracket place/accept/reject, ``TopStepXAdapter`` now INFO-logs last/bid/ask (SignalR cache preferred, else short quote fallback), signed ``vs_last_ticks`` for entry/SL/TP, and the full ``/api/Order/place`` JSON payload (+ error/response on reject). Aimed at opaque TopStepX ``Code 2 Invalid price. Price is outside allowed range`` rejects (e.g. 2026-07-09 MGC) where distance-from-last alone was not explanatory. **Files**: `brokers/topstepx_adapter.py`; tests: `tests/test_bracket_order_diag.py`.
+
+### Fixed
+- **MRR Invalid-price reject no longer permanently kills the fade (2026-07-15).** Live logs for **2026-07-09** (and **2026-07-08**) show MGC did emit `SHORT @ H` (`H=4120.40` / `immediate_stop`) and Discord notified, but TopStepX returned `Code 2 Invalid price. Price is outside allowed range`. `_commit_broker_reject` then set `sweep_fired_high=True`, so the chart showed `↑ swept` with **0 working orders** and no same-session retry. Fix: for Invalid-price / outside-allowed-range rejects only, set `immediate_block_until_inside` (anti-spam while price stays outside the box) **without** marking `sweep_fired_*`; after a close back inside `[L,H]` the fade can re-arm. Non-Invalid-price rejects keep the permanent sweep mark. Also set `[symbols.MGC.signal] reentry_threshold_points = 1.0` (was `0.0`) so entry is H−1 / L+1 instead of exact extreme. Tests updated in `tests/test_mrr_fade_counter.py`. **Files**: `strategies/morning_range_reversion_strategy.py`, `config/strategies/morning_range_reversion.toml`.
+- **`refresh_historical.sh` / stitch scripts no longer stall on Railway Postgres DNS (2026-07-15).** Stitchers constructed full `TopStepXTradingBot`, which always opened `DATABASE_URL` (30s+ timeout on flaky DNS), printed `✅ ok` even when `authenticate()` returned `False`, then looped re-auth on empty contract cache — Ctrl-C hung on unclosed aiohttp sessions. Fix: new `core/broker_history_session.py` (AuthManager + TopStepXAdapter only, same pattern as `backtest_executor`); stitch 1m/5m hard-fail on auth and `await auth.close()` in `finally`; `DISABLE_DATABASE` + `PG_CONNECT_TIMEOUT` in `infrastructure/database.py` / bot init; preserve `connect=` on per-request aiohttp timeouts in `core/auth.py`; `refresh_historical.sh` exports `DISABLE_DATABASE=1`, short API timeouts, and unsets `DATABASE_URL`. **Files**: `core/broker_history_session.py`, `scripts/stitch_broker_history_to_databento_{1m,5m}.py`, `scripts/refresh_historical.sh`, `infrastructure/database.py`, `trading_bot.py`, `core/auth.py`.
+
+### Added
+- **Regime fast gate** — ``core/regime_fast_gate.py`` + ``scripts/sim_regime_fast_gate.py``:
+  prop-DLL-aligned session halt (default 40% of ``REGIME_FAST_DLL_USD`` → −$400 on
+  $1k DLL), 3-session rolling mean < 0 → 0.5× for 5 sessions, weekly MGC loss
+  throttle (−30% DLL). Opt-in ``REGIME_FAST_GATE_ENABLED=1``; wired before calendar
+  sizing in ``place_bracket_order``. Tests: ``tests/test_regime_fast_gate.py``.
+- **Regime fast gate sweep** — ``scripts/sweep_regime_fast_gate.py`` (1351 trials,
+  $1k DLL): retuned defaults to halt −50%, roll mean < −$300, throttle 3 sessions,
+  weekly MGC off → **96.4%** 2026 PnL retained vs **76.8%** prior defaults.
+  Results: ``docs/perf/regime_fast_gate_sweep/sweep_results.json``.
+- **Walk-forward Monte Carlo** — ``core/backtest/walkforward_monte_carlo.py`` +
+  ``scripts/enrich_walkforward_monte_carlo.py``; shuffle + bootstrap endurance tests
+  on pooled recap trades (default 2000 sims) with **SVG histogram charts** (total PnL
+  + max DD per mode). Wired into ``walkforward_trade_recap_report.py`` →
+  ``monte_carlo.json`` + ``metrics.html#monte-carlo``. Tests: ``tests/test_walkforward_monte_carlo.py``.
+- **Regime-gated sizing prototype** — ``core/regime_sizing.py`` applies calendar-era
+  multipliers from the 450d walk-forward study (MRR·MGC pre-2026-01-14 → 0.5×,
+  OR pre-2025-10-01 → block). Opt-in via ``REGIME_SIZING_ENABLED=1``; wired through
+  ``strategy_base.place_bracket_order`` after income-brain clamp. Auto-starts
+  ``RegimePublisher`` when sizing is on so live regime labels feed the overlay.
+  Tests: ``tests/test_regime_sizing.py``.
+- **MRR launchd idle-exit** — ``run_morning_reversion.sh`` exits when the next
+  wake-up is > ``WRAPPER_IDLE_EXIT_MAX_SEC`` (default 2h) instead of countdown-
+  sleeping until morning (fixes 300MB+ ``launchd_mrr_account*.out`` spam and
+  missing Discord heartbeats after manual ``launchctl kickstart``). Troubleshooting
+  section added to ``scripts/launchd/README.md``.
+- **OR thin-margin sweep (R1)** — 5 trials × 270d/9f (``docs/perf/_opt_runs/
+  overnight_range/thin_margin_r1/``): baseline still wins (+91.75% ret);
+  atr_min/tp/trail stacks regressed. Calendar-era gate via regime sizing is the
+  recommended lever vs geometry tweaks.
+- **MRR wrapper Discord lifecycle pings** — ``scripts/discord_wrapper_ping.py``
+  posts sync webhook messages on schedule/idle-exit/executor-start/session-end/
+  failure (``DISCORD_WRAPPER_PING=1`` default). Fixes bash 3.2 ``elif`` parse
+  failure that blocked Jul 7 06:53 launch (exit code 2, no executor log).
+- **Regime white paper + gate validation** — ``docs/regime/REGIME_DETECTION_WHITEPAPER.md``;
+  ``scripts/regime_gate_validation.py`` replays calendar/KER gates on 450d trades;
+  ``docs/DISCORD_CHANNELS_SETUP.md`` channel wiring guide;
+  ``scripts/check_mrr_launchd_health.sh`` missed-session alert helper.
+- **Regime KPI gate** — ``core/regime_kpi_gate.py`` rolling 20-session live PnL vs
+  ``config/regime_kpi_baselines.json`` (``scripts/gen_regime_kpi_baselines.py``);
+  wired through ``strategy_base.place_bracket_order`` + ``record_trade_outcome``;
+  opt-in ``REGIME_KPI_GATE_ENABLED=1``. Tests: ``tests/test_regime_kpi_gate.py``.
+- **Master GUI v2 chart UX (TODO 2026-06-17)** — Background color picker; crosshair snaps
+  to wick H/L with weekday on hover; Alt/Shift click replaces Ptr/Order/Line mode pills
+  (draw line / set order price); extra timeframes (2m/3m/10m/2h) and custom range-session
+  count (1–14); MRR live status strip + sweep indicators when MRR overlay is on; trade-recap
+  range overlay uses session ``range_history`` or 5m Databento anchor (walkforward parity)
+  instead of stale current DB range. Executor heartbeat embeds ``mrr_live_brief`` /
+  ``mrr_symbol_state`` for headless GUI.
+- **Ops & recap tooling batch (TODO 1–7, 2026-06-17)** —
+  Shared metric tooltips via ``core/metrics_glossary.py`` (walk-forward
+  ``metrics.html`` + trade tables + master GUI KPI labels /
+  ``/api/metrics-glossary``). Walk-forward trade tables now include
+  **qty** column.   ``--dynamic-sizing`` / ``BACKTEST_DYNAMIC_SIZING=1`` scales replay size
+  from **drawdown vs peak** (steps as % of ``--sim-start-cash`` / $2k prop equity,
+  not $50k engine capital): −1 per 5% drawdown, +1 per +10% when at peak,
+  hard ceiling ``--dynamic-sizing-max`` / ``BACKTEST_DYNAMIC_SIZING_MAX`` (default 15).
+  Applied on ``place_oco_bracket`` replay path (overnight_range) as well as
+  ``place_bracket_order``. Walk-forward folds **carry** prop equity/peak forward
+  in calendar order so sizing matches the merged $2k equity curve.
+  Index report shows a **dynamic sizing** banner (qty histogram + end carry)
+  and highlights qty &gt; 1 in gold.
+  ``scripts/regime_performance_report.py`` buckets walk-forward PnL by
+  calendar month and ``core.regime`` label (Jan-2026 split). ORB
+  ``signal.entry_mode=close_breakout`` enters on 5m close beyond the
+  box (market bracket in replay). Trade recap charts shade ORB boxes
+  (``opening_range_et_shade``). Discord notifications gated by tier
+  env vars (``DISCORD_NOTIFY_*``; signals on by default when unset).
+
 ### Changed / Fixed
+- **Regime + long-span walk-forward (TODO steps 2–3, 2026-07)** — 450-day / 9-fold
+  committed-config replay for ``morning_range_reversion`` + ``overnight_range`` (MNQ, MGC);
+  output under ``docs/perf/regime_longspan_450d/``; ``metrics_insights.json`` exports
+  ``trades_flat`` for per-trade regime labels; ``regime_performance_report.py`` adds
+  strategy×month, strategy×symbol×month, fold avg-bars vs PnL, Oct-2025 / Jan-2026
+  boundary splits; auto-linked from walk-forward hub.
+- **Trade recap range parity (2026-06-17)** — Recap modal range overlay uses
+  ``core.range_history_backfill.range_anchor_for_trade_session`` (TOML session window +
+  Databento OHLCV H/L, same as walkforward/backfill). Snapshot capture/read no longer
+  uses live ``strategy_states`` blobs; ``GET /api/chart/trade_recap?range_only=1`` for
+  lightweight range refresh; frontend always re-fetches range after loading bars.
+- **Master GUI v2 markers + console (2026-06-17)** — Crosshair wick snap guards LWC
+  null coords; replaced ``??`` with ``coalesce()`` for parser compatibility; MRR recap
+  adds walkforward ``signal_bar`` marker via ``/api/chart/trade_recap``.
+- **Master GUI v2 polish (2026-06-17)** — Compact **Overlays** dropdown replaces range
+  pill row; custom timeframe combobox (``13m``, ``3d``, etc.); crosshair snaps to
+  wick H/L only within ~14px; Shift+click uses tick-rounded prices; chart shortcuts
+  on maximize-button tooltip; background picker beside ⤢.
+- **MRR broker-reject backoff + sweep-guard fix (2026-06-30)** — After TopStepX bracket
+  rejection, mark the sweep side attempted (no ``max_fades`` increment) so the strategy stops
+  retrying every 5m. **Fix:** ``_apply_sweep_guard_from_price`` no longer runs on fresh range
+  finalisation — only after mid-session restart with persisted activity (2026-06-29 MGC missed
+  08:05 SHORT because guard marked ``sweep_fired_high`` without placing the fade). REST pinned
+  rotation stays as silent DEBUG refresh (SignalR is primary; REST is backup). Headless MRR
+  executor sets ``STRATEGY_EXECUTOR_ACTIVE_STRATEGY`` to filter cross-strategy fill spam;
+  Discord fill titles/fields show parsed ``customTag`` strategy slug. Walk-forward recap chart
+  markers use per-symbol ``reentry_threshold_points``.
+- **Chart modify broker rejections (tick / stale order / SL kwargs)** — GUI drag now snaps prices to
+  contract tick size (client + ``/api/chart/modify_*`` handlers); adapter rounds before REST modify and
+  returns early when order is gone; ``PositionManager`` SL/TP modify used wrong ``new_price`` kwargs
+  (price never reached broker). Phantom chart orders drop on "not found"; ``updateOrders(true)`` bypasses
+  orders cache. **Follow-up:** bracket legs were hidden because ``SUSPENDED`` was treated as terminal;
+  symbol extraction from ``CON.F.US.MNQ.*`` no longer picks ``CON``; chart modify uses ``orderId`` alias
+  and modifies SL/TP by linked order id when available. Chart handles moved to left stack (Cancel/Close
+  under label, off price scale); drag shows live price preview; orders poll uses ``include_linked=0`` +
+  8s interval (linked fetch only on boot/force); ``include_linked`` reuses in-memory open orders.
+  **WS-driven orders/positions:** master GUI renders from WebSocket ``orders``/``positions`` payloads
+  (normalized server-side); HTTP poll is 30s safety net when WS connected (8s fallback when disconnected);
+  event handlers invalidate StateCache + push full snapshots; connect sends initial snapshot.
+  **Instant chart overlays:** SignalR order deltas patch StateCache + push normalized ``order_updated``
+  WS messages (immediate); frontend merges into ``__lastOrders`` and redraws chart on rAF; modify/cancel
+  apply optimistic local price updates; slow REST full snapshot deferred 0.5–2s (fills reconcile immediately).
+- **MRR phantom fade cap (2026-06-25 MGC)** — ``fades_this_session`` incremented on **signal
+  emit** even when ``execute`` was broker-rejected (``Invalid price… outside allowed range``),
+  consuming ``max_fades_per_session=1`` with zero broker orders. Fade/sweep counters now commit
+  only after successful placement; startup reconcile clears persisted phantom fade state when
+  no MRR orders/positions exist at the broker.
+- **Discord hourly heartbeat + daily briefing** — default interval **3600s** (was 1800) in
+  run scripts; digest includes ET calendar, per-symbol trading plan (MRR phase/range/breaker/
+  skip weekdays), session PnL/trades, and overnight-range context via
+  ``core/discord_status_digest.py``. Opt out of daily section: ``DISCORD_STATUS_INCLUDE_DAILY=0``.
+- **Discord trade/signal alerts silent while heartbeat still posts** — ``DISCORD_NOTIFY_SIGNALS``
+  and ``DISCORD_NOTIFY_ORDERS`` were ``0`` in ``.env`` (and quoted ``"0"``/``"1"`` values were
+  not parsed). Defaults restored: signals on when unset; ``_env_flag`` strips quotes. Headless
+  ``strategy_executor`` now wires ``ORDER_FILLED`` / ``TRADE_CLOSED`` → Discord fill/close embeds
+  and starts ``check_order_fills`` polling when ``DISCORD_NOTIFY_FILLS`` is on (no manual
+  ``auto_fills`` required).
 - **MRR production reliability: SignalR resubscribe bug + dual-path feed health + 15m thresholds + headless GUI-WS disable (2026-06-17)** —
   Root-cause fix for today's "orders placed then immediately cancelled"
   incident and the underlying morning-long SignalR zombie.

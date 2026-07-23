@@ -386,6 +386,11 @@ class StrategyReplayEngine:
         # entry_bar_index, sl_order_id, triggered, position_filled}.
         self._breakeven_watches: Dict[str, Dict[str, Any]] = {}
 
+        # Dynamic sizing tracks peak equity for drawdown steps (reference = $2k default).
+        self._dynamic_sizing_peak: Optional[float] = None
+        self._dynamic_sizing_start_equity: Optional[float] = None
+        self._dynamic_sizing_end_carry: Optional[Dict[str, float]] = None
+
         # Track current bar data for strategy
         self._current_bars: List[Dict] = []
         self._current_symbol: Optional[str] = None
@@ -883,6 +888,7 @@ class StrategyReplayEngine:
         tick_size: float = 0.25,
         replay_timeframe: Optional[str] = None,
         bars_1m: Optional[List[Dict]] = None,
+        dynamic_sizing_carry: Optional[Dict[str, Any]] = None,
     ) -> BacktestResult:
         """
         Replay strategy on historical bars.
@@ -931,6 +937,7 @@ class StrategyReplayEngine:
             tick_size=tick_size,
             replay_timeframe=replay_timeframe,
             bars_1m=bars_1m,
+            dynamic_sizing_carry=dynamic_sizing_carry,
         )
 
     async def replay_df(
@@ -941,6 +948,7 @@ class StrategyReplayEngine:
         tick_size: float = 0.25,
         replay_timeframe: Optional[str] = None,
         bars_1m: Optional[List[Dict]] = None,
+        dynamic_sizing_carry: Optional[Dict[str, Any]] = None,
     ) -> BacktestResult:
         """
         Replay entry point that accepts a pre-parsed OHLCV DataFrame directly.
@@ -975,6 +983,7 @@ class StrategyReplayEngine:
         self._current_symbol = symbol
         self._current_bars = bars
         self._replay_timeframe = replay_timeframe
+        self._seed_dynamic_sizing_carry(dynamic_sizing_carry)
 
         # Tier 4: invalidate per-replay caches that key off the strategy's
         # TOML config. A new replay() invocation may be for the same engine
@@ -1226,6 +1235,13 @@ class StrategyReplayEngine:
                 start_date=df.index[0],
                 end_date=df.index[-1]
             )
+
+            from core.backtest.dynamic_sizing import dynamic_sizing_enabled, end_carry
+
+            if dynamic_sizing_enabled():
+                eq = self._sim_equity_for_dynamic_sizing()
+                peak = float(self._dynamic_sizing_peak or eq)
+                self._dynamic_sizing_end_carry = end_carry(eq, peak)
             
             logger.info(f"✅ Strategy replay complete:")
             logger.info(f"   Total Trades: {result.total_trades}")
@@ -1487,6 +1503,72 @@ class StrategyReplayEngine:
         if self._original_register_breakeven:
             self.trading_bot.register_generic_breakeven_watch = self._original_register_breakeven
     
+    def _seed_dynamic_sizing_carry(self, carry: Optional[Dict[str, Any]] = None) -> None:
+        from core.backtest.dynamic_sizing import carry_from_mapping, dynamic_sizing_enabled
+
+        self._dynamic_sizing_end_carry = None
+        if not dynamic_sizing_enabled():
+            self._dynamic_sizing_start_equity = None
+            self._dynamic_sizing_peak = None
+            return
+        state = carry_from_mapping(carry)
+        self._dynamic_sizing_start_equity = float(state["equity"])
+        self._dynamic_sizing_peak = float(state["peak"])
+
+    def get_dynamic_sizing_carry(self) -> Optional[Dict[str, float]]:
+        from core.backtest.dynamic_sizing import dynamic_sizing_enabled, end_carry
+
+        if not dynamic_sizing_enabled():
+            return None
+        if self._dynamic_sizing_end_carry is not None:
+            return dict(self._dynamic_sizing_end_carry)
+        if self._dynamic_sizing_start_equity is None:
+            return None
+        eq = self._sim_equity_for_dynamic_sizing()
+        peak = float(self._dynamic_sizing_peak or self._dynamic_sizing_start_equity)
+        return end_carry(eq, peak)
+
+    def _sim_equity_for_dynamic_sizing(self) -> float:
+        """Prop-style equity ($2k chain + fold PnL), not $50k engine capital."""
+        from core.backtest.dynamic_sizing import dynamic_sizing_enabled, reference_equity
+
+        if not dynamic_sizing_enabled():
+            return float(self.backtest_engine._calculate_equity())
+        start = self._dynamic_sizing_start_equity
+        if start is None:
+            start = reference_equity()
+        realized = sum(float(t.pnl) for t in self.backtest_engine.trades)
+        unrealized = 0.0
+        if self.backtest_engine.positions:
+            for pos in self.backtest_engine.positions.values():
+                unrealized += float(getattr(pos, "unrealized_pnl", 0.0) or 0.0)
+        return float(start) + realized + unrealized
+
+    def _adjust_dynamic_sizing(self, quantity: int) -> int:
+        """Scale qty from drawdown vs peak on prop notional ($2k), not replay engine capital."""
+        from core.backtest.dynamic_sizing import (
+            apply_dynamic_sizing,
+            dynamic_sizing_enabled,
+            reference_equity,
+        )
+
+        if not dynamic_sizing_enabled():
+            return int(quantity)
+        try:
+            qty = max(1, int(quantity))
+        except (TypeError, ValueError):
+            qty = 1
+        ref = reference_equity()
+        eq = self._sim_equity_for_dynamic_sizing()
+        if self._dynamic_sizing_peak is None:
+            self._dynamic_sizing_peak = max(
+                float(self._dynamic_sizing_start_equity or ref),
+                eq,
+            )
+        else:
+            self._dynamic_sizing_peak = max(float(self._dynamic_sizing_peak), eq)
+        return apply_dynamic_sizing(qty, eq, float(self._dynamic_sizing_peak), ref)
+
     async def _simulate_place_bracket_order(
         self,
         symbol: str,
@@ -1509,6 +1591,9 @@ class StrategyReplayEngine:
         This intercepts the strategy's place_bracket_order call and
         simulates execution using the BacktestEngine.
         """
+        quantity = self._adjust_dynamic_sizing(quantity)
+
+        market_entry = bool(kwargs.get("market_entry", False))
         strategy_name = kwargs.get("strategy_name")
         if partial_tp_enabled and int(quantity) >= 2:
             return await self._simulate_place_oco_partial_tp(
@@ -1528,6 +1613,80 @@ class StrategyReplayEngine:
         # Convert side to OrderSide
         order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
         
+        if market_entry:
+            if self.backtest_engine.current_timestamp and self._current_bars:
+                idx = min(
+                    max(0, self.backtest_engine.current_bar_index),
+                    len(self._current_bars) - 1,
+                )
+                current_bar = self._current_bars[idx]
+                fill_px = float(current_bar.get("close", current_bar.get("c", entry_price)) or entry_price)
+            else:
+                fill_px = float(entry_price)
+            entry_order_id = self.backtest_engine.place_order(
+                symbol=symbol,
+                side=order_side,
+                quantity=quantity,
+                order_type=OrderType.MARKET,
+                price=fill_px,
+            )
+            filled_order = None
+            for order in self.backtest_engine.pending_orders[:]:
+                if order.order_id == entry_order_id:
+                    order.filled_price = fill_px
+                    order.filled_timestamp = self.backtest_engine.current_timestamp
+                    order.status = OrderStatus.FILLED
+                    order.stop_loss_price = stop_loss_price
+                    order.take_profit_price = take_profit_price
+                    sn = str(strategy_name or "").strip().lower() or "unknown"
+                    order.custom_tag = f"TB-market_bracket-{sn}-replay"
+                    self.backtest_engine._update_position(order, fill_px)
+                    self.backtest_engine.filled_orders.append(order)
+                    self.backtest_engine.pending_orders.remove(order)
+                    filled_order = order
+                    break
+            if filled_order is not None:
+                pos = self.backtest_engine.positions.get(symbol)
+                if pos:
+                    pos.stop_loss = float(stop_loss_price)
+                    pos.take_profit = float(take_profit_price)
+                exit_side = OrderSide.SELL if order_side == OrderSide.BUY else OrderSide.BUY
+                oco_group = f"{entry_order_id}_BRACKET"
+                sl_order_id = self.backtest_engine.place_order(
+                    symbol=symbol,
+                    side=exit_side,
+                    quantity=quantity,
+                    order_type=OrderType.STOP,
+                    stop_price=float(stop_loss_price),
+                    price=float(stop_loss_price),
+                    placement_price=float(stop_loss_price),
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == sl_order_id:
+                        o.oco_group = oco_group
+                        o.exit_reason = "stop_loss"
+                        break
+                tp_order_id = self.backtest_engine.place_order(
+                    symbol=symbol,
+                    side=exit_side,
+                    quantity=quantity,
+                    order_type=OrderType.LIMIT,
+                    limit_price=float(take_profit_price),
+                    price=float(take_profit_price),
+                    placement_price=float(take_profit_price),
+                )
+                for o in self.backtest_engine.pending_orders:
+                    if o.order_id == tp_order_id:
+                        o.oco_group = oco_group
+                        o.exit_reason = "take_profit"
+                        break
+            return {
+                "success": True,
+                "orderId": entry_order_id,
+                "message": "Market bracket entry simulated in backtest",
+                "method": "backtest_simulation",
+            }
+
         # Place stop order for entry
         entry_order_id = self.backtest_engine.place_order(
             symbol=symbol,
@@ -1548,7 +1707,7 @@ class StrategyReplayEngine:
                 # Store bracket prices in order (we'll use these when entry fills)
                 entry_order.stop_loss_price = stop_loss_price
                 entry_order.take_profit_price = take_profit_price
-                sn = str(kwargs.get("strategy_name") or "").strip().lower() or "unknown"
+                sn = str(strategy_name or "").strip().lower() or "unknown"
                 entry_order.custom_tag = f"TB-stop_bracket-{sn}-replay"
                 break
 
@@ -1859,6 +2018,7 @@ class StrategyReplayEngine:
         This intercepts trading_bot.place_oco_bracket_with_stop_entry calls
         and simulates execution using the BacktestEngine.
         """
+        quantity = self._adjust_dynamic_sizing(quantity)
         logger.debug(f"📝 Simulating OCO bracket order: {side} {quantity} {symbol} @ {entry_price:.2f}")
         
         # Convert side to OrderSide
@@ -1911,6 +2071,7 @@ class StrategyReplayEngine:
         """Simulate BONGO §1A partial TP stop-entry (two-stage exits in ``_process_subbar_fills``)."""
         from core.bracket_orders import build_partial_tp_stop_entry_plan
 
+        quantity = self._adjust_dynamic_sizing(quantity)
         _ = (account_id, enable_breakeven, strategy_name)
         if int(quantity) < 2:
             return {"success": False, "error": "partial_tp_requires_quantity_ge_2", "orderId": None}

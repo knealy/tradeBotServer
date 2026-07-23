@@ -373,6 +373,26 @@ def broker_bars_to_chart_rows(bars: List[Any]) -> List[Dict[str, Any]]:
     return chart_data
 
 
+def _trade_time_to_unix(raw: Any) -> Optional[int]:
+    """Normalize broker/API timestamps to Unix seconds (UTC)."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):
+        n = int(raw)
+        return n // 1000 if n > 1_000_000_000_000 else n
+    if isinstance(raw, datetime):
+        dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    try:
+        s = str(raw).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Strategy idle-state helpers — feed the dashboard's "ready / sleeping" panel.
 #
@@ -1117,6 +1137,202 @@ def _range_overlay_bundle_for_strategy(
     }
 
 
+def _morning_range_anchor_from_df(
+    entry_dt: datetime,
+    df_5m: Any,
+    *,
+    range_start_et: Any = None,
+    range_end_et: Any = None,
+    tz_name: str = "America/New_York",
+) -> Optional[Dict[str, Any]]:
+    """Compute 7–8am ET MRR anchor for the trade's session (walkforward parity)."""
+    try:
+        from datetime import time as dtime
+        from zoneinfo import ZoneInfo
+        import pandas as pd
+    except ImportError:
+        return None
+    if df_5m is None or getattr(df_5m, "empty", True):
+        return None
+    rs = range_start_et if range_start_et is not None else dtime(7, 0)
+    re = range_end_et if range_end_et is not None else dtime(8, 0)
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        return None
+    if entry_dt.tzinfo is None:
+        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+    session_date_et = entry_dt.astimezone(tz).date()
+    idx = df_5m.index
+    if getattr(idx, "tz", None) is None:
+        idx_et_dt = pd.DatetimeIndex(idx).tz_localize("UTC").tz_convert(tz)
+    else:
+        idx_et_dt = idx.tz_convert(tz)
+    date_arr = idx_et_dt.date
+    time_arr = idx_et_dt.time
+    range_mask = (date_arr == session_date_et) & (time_arr >= rs) & (time_arr < re)
+    range_slice = df_5m[range_mask]
+    if range_slice.empty:
+        return None
+    try:
+        range_high = float(range_slice["high"].astype(float).max())
+        range_low = float(range_slice["low"].astype(float).min())
+    except (TypeError, ValueError, KeyError):
+        return None
+    if range_high <= range_low:
+        return None
+    from datetime import datetime as dt_combine
+    return {
+        "high": range_high,
+        "low": range_low,
+        "mid": (range_high + range_low) / 2.0,
+        "size": range_high - range_low,
+        "session_date": session_date_et.isoformat(),
+        "session_start_et": dt_combine.combine(session_date_et, rs).isoformat(),
+        "session_end_et": dt_combine.combine(session_date_et, re).isoformat(),
+        "strategy_name": "morning_range_reversion",
+        "derived": "databento_5m_anchor",
+    }
+
+
+def _range_from_history_for_session(
+    trading_bot: Any,
+    account_id: Optional[str],
+    symbol: str,
+    session_date: str,
+    strategy_name: str = "morning_range_reversion",
+) -> Optional[Dict[str, Any]]:
+    """Lookup persisted range_history row for a specific ET session date."""
+    sym_u = str(symbol or "").upper()
+    sd = str(session_date or "").strip()[:10]
+    if not sym_u or len(sd) < 8:
+        return None
+    key = _DB_RANGE_SETTINGS_KEYS.get(strategy_name)
+    if not key:
+        return None
+    db = getattr(trading_bot, "db", None)
+    if not db or not account_id:
+        return None
+    row = db.get_strategy_state(str(account_id), strategy_name)
+    settings = (row or {}).get("settings") or {}
+    for item in _range_history_from_settings(settings, key):
+        if str(item.get("session_date") or "")[:10] != sd:
+            continue
+        info = (item.get("ranges") or {}).get(sym_u)
+        if not isinstance(info, dict):
+            for k, v in (item.get("ranges") or {}).items():
+                if str(k).upper().split(".")[-1] == sym_u.split(".")[-1]:
+                    info = v
+                    break
+        if isinstance(info, dict) and info.get("high") is not None and info.get("low") is not None:
+            out = dict(info)
+            out["strategy_name"] = strategy_name
+            out["derived"] = "range_history"
+            return out
+    return None
+
+
+def _strategy_candidates_for_recap(strategy_hint: Optional[str]) -> List[str]:
+    """Order strategies to try when resolving a trade recap range overlay."""
+    known = ["morning_range_reversion", "opening_range_breakout", "overnight_range"]
+    raw = str(strategy_hint or "").strip().lower().replace("-", "_")
+    if raw in known:
+        return [raw] + [s for s in known if s != raw]
+    if "morning" in raw or raw == "mrr":
+        return ["morning_range_reversion"] + [s for s in known if s != "morning_range_reversion"]
+    if "opening" in raw or raw == "orb":
+        return ["opening_range_breakout"] + [s for s in known if s != "opening_range_breakout"]
+    if "overnight" in raw or raw in ("or", "overnight_range"):
+        return ["overnight_range"] + [s for s in known if s != "overnight_range"]
+    return list(known)
+
+
+def _range_snapshot_for_trade_recap(
+    trading_bot: Any,
+    account_id: Optional[str],
+    symbol: str,
+    entry_dt: datetime,
+    repo_root: Path,
+    root: str,
+    *,
+    strategy_hint: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Session-accurate range for trade recap (Databento anchor → range_history)."""
+    from core.range_history_backfill import attach_range_window_et, range_anchor_for_trade_session
+
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        ZoneInfo = None  # type: ignore[misc, assignment]
+    if entry_dt.tzinfo is None:
+        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+    if ZoneInfo is not None:
+        try:
+            session_date = entry_dt.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+        except Exception:
+            session_date = entry_dt.date().isoformat()
+    else:
+        session_date = entry_dt.date().isoformat()
+
+    for strat in _strategy_candidates_for_recap(strategy_hint):
+        anchor = range_anchor_for_trade_session(entry_dt, symbol, strat)
+        if anchor:
+            return anchor
+
+    for strat in _strategy_candidates_for_recap(strategy_hint):
+        hit = _range_from_history_for_session(
+            trading_bot, account_id, symbol, session_date, strat,
+        )
+        if hit:
+            return attach_range_window_et(hit, strat, session_date=session_date)
+
+    return None
+
+
+def _mrr_live_from_executor_metadata(trading_bot: Any) -> Tuple[List[str], Dict[str, Any]]:
+    """Read MRR live brief + per-symbol state from a fresh strategy_executor heartbeat."""
+    db = getattr(trading_bot, "db", None)
+    if not db:
+        return [], {}
+    try:
+        process_states = db.get_process_states("strategy_executor") or []
+    except Exception:
+        return [], {}
+    for process in process_states:
+        if process.get("status") != "running":
+            continue
+        try:
+            from datetime import datetime as dt_hb, timezone as tz_hb
+            last_heartbeat = process.get("last_heartbeat")
+            last_dt = None
+            if isinstance(last_heartbeat, dt_hb):
+                last_dt = last_heartbeat
+            elif isinstance(last_heartbeat, str) and last_heartbeat:
+                last_dt = dt_hb.fromisoformat(last_heartbeat.replace("Z", "+00:00"))
+            if last_dt:
+                last_dt = last_dt if last_dt.tzinfo else last_dt.replace(tzinfo=tz_hb.utc)
+                if (dt_hb.now(tz_hb.utc) - last_dt).total_seconds() > 120:
+                    continue
+        except Exception:
+            continue
+        metadata = process.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                metadata = {}
+        strategies_in_process = metadata.get("strategies") or []
+        if "morning_range_reversion" not in strategies_in_process:
+            continue
+        brief = metadata.get("mrr_live_brief")
+        sym_state = metadata.get("mrr_symbol_state")
+        lines = list(brief) if isinstance(brief, list) else []
+        state = sym_state if isinstance(sym_state, dict) else {}
+        if lines or state:
+            return lines, state
+    return [], {}
+
+
 def _best_range_for_symbol(
     trading_bot: Any,
     account_id: Optional[str],
@@ -1267,6 +1483,175 @@ def _ws_snapshot_fingerprint_positions(positions: Optional[List[Any]]) -> str:
     if not payload:
         return "p:0"
     return "p:" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def _extract_symbol_from_contract(contract_str: Optional[str]) -> Optional[str]:
+    """Extract symbol from contractId or symbolId (e.g. ``CON.F.US.MNQ.Z25`` → ``MNQ``)."""
+    if not contract_str:
+        return None
+    contract_str = str(contract_str).rstrip(".")
+    parts = contract_str.split(".")
+    if len(parts) >= 2:
+        if len(parts) >= 4:
+            candidate = parts[-2]
+            if candidate and candidate.isalpha() and candidate.isupper():
+                return candidate
+        candidate = parts[-1]
+        if candidate and candidate.isalpha() and candidate.isupper():
+            return candidate
+    return None
+
+
+def _order_terminal_for_chart(od: dict) -> bool:
+    """True if order should not appear as a working order on the chart / activity strip."""
+    st = od.get("status")
+    u = str(st).strip().upper() if st is not None else ""
+    if u in (
+        "FILLED",
+        "CANCELLED",
+        "CANCELED",
+        "REJECTED",
+        "EXPIRED",
+        "DONE",
+        "COMPLETE",
+        "REPLACED",
+    ):
+        return True
+    try:
+        fv = float(od.get("fillVolume") or od.get("fill_volume") or 0)
+        qty = float(od.get("quantity") or od.get("size") or 0)
+        if qty > 0 and fv >= qty and u not in ("OPEN", "PENDING", "SUSPENDED"):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def normalize_chart_order_dict(order: Any) -> Optional[Dict[str, Any]]:
+    """Normalize a single broker order dict for chart GUI + WebSocket."""
+    if not isinstance(order, dict):
+        return None
+    order_dict = order.copy()
+
+    symbol = order_dict.get("symbol")
+    if not symbol:
+        contract_id = order_dict.get("contractId") or order_dict.get("contract_id")
+        symbol_id = order_dict.get("symbolId") or order_dict.get("symbol_id")
+        symbol = _extract_symbol_from_contract(symbol_id) or _extract_symbol_from_contract(contract_id)
+        if symbol:
+            order_dict["symbol"] = symbol
+
+    side = order_dict.get("side")
+    if not isinstance(side, str):
+        order_dict["side"] = "BUY" if (side == 0 or side is None) else "SELL"
+
+    status = order_dict.get("status")
+    if isinstance(status, int):
+        status_map = {0: "PENDING", 1: "OPEN", 2: "FILLED", 3: "CANCELLED", 4: "REJECTED"}
+        order_dict["status"] = status_map.get(status, "UNKNOWN")
+    elif isinstance(status, str):
+        su = status.strip().upper()
+        if su == "PENDING":
+            order_dict["status"] = "OPEN"
+        elif su == "SUSPENDED":
+            order_dict["status"] = "SUSPENDED"
+        elif su in ("FILLED", "CANCELLED", "CANCELED", "REJECTED"):
+            order_dict["status"] = "CANCELLED" if su == "CANCELED" else su
+
+    raw_type = order_dict.get("type", 0)
+    type_num = raw_type if isinstance(raw_type, int) else None
+    if isinstance(raw_type, int):
+        type_map = {1: "LIMIT", 2: "MARKET", 4: "STOP"}
+        order_dict["type"] = type_map.get(raw_type, str(raw_type))
+    elif not isinstance(order_dict.get("type"), str):
+        order_dict["type"] = str(raw_type)
+
+    limit_price = order_dict.get("limitPrice") or order_dict.get("limit_price")
+    stop_price = order_dict.get("stopPrice") or order_dict.get("stop_price")
+    if limit_price is not None:
+        order_dict["price"] = float(limit_price)
+        order_dict.setdefault("limitPrice", float(limit_price))
+    if stop_price is not None:
+        order_dict["stop_price"] = float(stop_price)
+        order_dict.setdefault("stopPrice", float(stop_price))
+    if order_dict.get("type") == "STOP" or type_num == 4:
+        if stop_price is not None:
+            order_dict["price"] = float(stop_price)
+        elif not order_dict.get("price"):
+            trigger_price = order_dict.get("triggerPrice") or order_dict.get("trigger_price")
+            order_dict["price"] = float(trigger_price) if trigger_price is not None else 0.0
+
+    quantity = order_dict.get("quantity") or order_dict.get("size") or 0
+    order_dict["quantity"] = quantity
+    if not order_dict.get("id"):
+        order_dict["id"] = order_dict.get("orderId") or order_dict.get("order_id")
+    if not order_dict.get("orderId") and order_dict.get("id"):
+        order_dict["orderId"] = order_dict["id"]
+    return order_dict
+
+
+def normalize_orders_for_chart(
+    orders: Optional[List[Any]],
+    *,
+    drop_terminal: bool = True,
+) -> List[Dict[str, Any]]:
+    """Normalize broker order rows for chart table, overlays, and WebSocket."""
+    out: List[Dict[str, Any]] = []
+    for order in orders or []:
+        normalized = normalize_chart_order_dict(order)
+        if normalized is not None:
+            out.append(normalized)
+    if drop_terminal:
+        out = [o for o in out if not _order_terminal_for_chart(o)]
+    return out
+
+
+def normalize_positions_for_chart(positions: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    """Lightweight position normalization for chart table + WebSocket (no quote fetch)."""
+    out: List[Dict[str, Any]] = []
+    for pos in positions or []:
+        if not isinstance(pos, dict):
+            continue
+        pos_dict = pos.copy()
+        symbol = pos_dict.get("symbol")
+        if not symbol:
+            contract_id = pos_dict.get("contractId") or pos_dict.get("contract_id")
+            symbol_id = pos_dict.get("symbolId") or pos_dict.get("symbol_id")
+            symbol = _extract_symbol_from_contract(symbol_id) or _extract_symbol_from_contract(contract_id)
+            if symbol:
+                pos_dict["symbol"] = symbol
+        side = pos_dict.get("side")
+        pos_type = pos_dict.get("type")
+        if not isinstance(side, str):
+            if pos_type == 1:
+                pos_dict["side"] = "LONG"
+            elif pos_type == 2:
+                pos_dict["side"] = "SHORT"
+            else:
+                pos_dict["side"] = "LONG" if side in (0, None) else "SHORT"
+        entry_price = pos_dict.get("entry_price") or pos_dict.get("entryPrice") or pos_dict.get("averagePrice")
+        if entry_price is not None:
+            pos_dict["entry_price"] = float(entry_price)
+            pos_dict["entryPrice"] = float(entry_price)
+        quantity_raw = pos_dict.get("quantity") or pos_dict.get("size") or 0
+        quantity = abs(float(quantity_raw)) if quantity_raw else 0
+        pos_dict["quantity"] = quantity
+        pos_dict["size"] = quantity
+        pid = pos_dict.get("id") or pos_dict.get("position_id")
+        if pid is not None:
+            pos_dict["id"] = pid
+            pos_dict["position_id"] = pid
+        for a, b in (
+            ("unrealizedPnL", "unrealized_pnl"),
+            ("stopLoss", "stop_loss"),
+            ("takeProfit", "take_profit"),
+        ):
+            if a not in pos_dict and b in pos_dict:
+                pos_dict[a] = pos_dict[b]
+            if b not in pos_dict and a in pos_dict:
+                pos_dict[b] = pos_dict[a]
+        out.append(pos_dict)
+    return out
 
 
 # Global server instance for real-time charts
@@ -2394,7 +2779,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             cache_key = f"{account_id or 'default'}|include_linked={include_linked}"
             cached = handle_get_orders._cache.get(cache_key)
             now = time.monotonic()
-            cache_ttl = 2.0
+            cache_ttl = 10.0 if include_linked else 8.0
             if not no_cache and cached and (now - cached.get("ts", 0.0)) < cache_ttl:
                 response = web.json_response(cached["payload"])
                 response.headers['Access-Control-Allow-Origin'] = '*'
@@ -2419,20 +2804,34 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     orders = await trading_bot.get_open_orders(account_id=account_id)
                     logger.debug(f"✅ Fetched {len(orders) if orders else 0} standalone orders from API (fallback)")
 
-                # Optional linked order enrichment (slow; opt-in only)
+                # Optional linked order enrichment (slow when re-fetching per position)
                 if include_linked:
                     try:
                         positions = await trading_bot.get_open_positions(account_id=account_id)
+                        all_orders_snapshot = list(orders or [])
                         linked_orders_all = []
+                        adapter = getattr(trading_bot, "broker_adapter", None)
                         for pos in positions or []:
                             pos_id = pos.get('id') or pos.get('position_id')
-                            if pos_id:
-                                try:
-                                    linked_orders = await trading_bot.get_linked_orders(pos_id, account_id=account_id)
-                                    if linked_orders and isinstance(linked_orders, list):
-                                        linked_orders_all.extend(linked_orders)
-                                except Exception as e:
-                                    logger.debug(f"Could not fetch linked orders for position {pos_id}: {e}")
+                            if not pos_id:
+                                continue
+                            pos_data = pos if isinstance(pos, dict) else None
+                            try:
+                                if adapter and hasattr(adapter, "get_linked_orders"):
+                                    linked_orders = await adapter.get_linked_orders(
+                                        str(pos_id),
+                                        account_id=account_id,
+                                        all_orders=all_orders_snapshot,
+                                        position_data=pos_data,
+                                    )
+                                else:
+                                    linked_orders = await trading_bot.get_linked_orders(
+                                        str(pos_id), account_id=account_id
+                                    )
+                                if linked_orders and isinstance(linked_orders, list):
+                                    linked_orders_all.extend(linked_orders)
+                            except Exception as e:
+                                logger.debug(f"Could not fetch linked orders for position {pos_id}: {e}")
 
                         if linked_orders_all:
                             logger.debug(f"✅ Found {len(linked_orders_all)} linked orders (stop/take profit)")
@@ -2449,164 +2848,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                         logger.debug(f"Could not fetch linked orders: {e}")
             
             def extract_symbol_from_contract(contract_str):
-                """Extract symbol from contractId or symbolId (e.g., 'CON.F.US.MNQ.Z25' -> 'MNQ')."""
-                if not contract_str:
-                    return None
-                # Strip any trailing dots first
-                contract_str = str(contract_str).rstrip('.')
-                parts = contract_str.split('.')
-                # ContractManager uses parts[-2] for contractId like "CON.F.US.MNQ.Z25"
-                # For symbolId like "F.US.MNQ", we want parts[-1]
-                if len(parts) >= 2:
-                    # Try parts[-2] first (for contractId format like "CON.F.US.MNQ.Z25")
-                    if len(parts) >= 4:
-                        candidate = parts[-2]
-                        if candidate and candidate.isalpha() and candidate.isupper():
-                            return candidate
-                    # Fallback to parts[-1] (for symbolId format like "F.US.MNQ")
-                    candidate = parts[-1]
-                    if candidate and candidate.isalpha() and candidate.isupper():
-                        return candidate
-                return None
+                return _extract_symbol_from_contract(contract_str)
             
-            orders_list = []
-            for order in orders or []:
-                if isinstance(order, dict):
-                    order_dict = order.copy()
-                    
-                    # Extract symbol from contractId/symbolId if missing
-                    symbol = order_dict.get('symbol')
-                    if not symbol:
-                        contract_id = order_dict.get('contractId') or order_dict.get('contract_id')
-                        symbol_id = order_dict.get('symbolId') or order_dict.get('symbol_id')
-                        symbol = extract_symbol_from_contract(symbol_id) or extract_symbol_from_contract(contract_id)
-                        if symbol:
-                            order_dict['symbol'] = symbol
-                    
-                    # Convert side: 0 = BUY, 1 = SELL (TopStepX numeric)
-                    side = order_dict.get('side')
-                    if not isinstance(side, str):
-                        side = 'BUY' if (side == 0 or side is None) else 'SELL'
-                        order_dict['side'] = side
-                    
-                    # Convert status: TopStepX numeric → readable strings
-                    # Align with core/user_hub_handlers: 2=Filled, 3=Cancelled, 4=Rejected (SignalR).
-                    status = order_dict.get('status')
-                    if isinstance(status, int):
-                        if status == 1:
-                            order_dict['status'] = 'OPEN'
-                        elif status == 0:
-                            order_dict['status'] = 'PENDING'
-                        elif status == 2:
-                            order_dict['status'] = 'FILLED'
-                        elif status == 3:
-                            order_dict['status'] = 'CANCELLED'
-                        elif status == 4:
-                            order_dict['status'] = 'REJECTED'
-                        else:
-                            # Preserve unknown numeric statuses without forcing SUSPENDED.
-                            order_dict['status'] = 'UNKNOWN'
-                    elif isinstance(status, str) and status.upper() == 'PENDING':
-                        order_dict['status'] = 'OPEN'  # Normalize to OPEN for display
-                    elif isinstance(status, str) and status.strip().lower() == 'suspended':
-                        order_dict['status'] = 'SUSPENDED'
-                    elif isinstance(status, str) and status.strip().lower() == 'filled':
-                        order_dict['status'] = 'FILLED'
-                    elif isinstance(status, str) and status.strip().lower() in ('cancelled', 'canceled'):
-                        order_dict['status'] = 'CANCELLED'
-                    elif isinstance(status, str) and status.strip().lower() == 'rejected':
-                        order_dict['status'] = 'REJECTED'
-                    
-                    # Convert order type: 1 = LIMIT, 2 = MARKET, 4 = STOP
-                    order_type_num = order_dict.get('type', 0)
-                    if isinstance(order_type_num, int):
-                        type_map = {1: 'LIMIT', 2: 'MARKET', 4: 'STOP'}
-                        order_dict['type'] = type_map.get(order_type_num, str(order_type_num))
-                    elif not isinstance(order_dict.get('type'), str):
-                        order_dict['type'] = str(order_type_num)
-                    
-                    # Set price and stop_price from limitPrice/stopPrice
-                    # For LIMIT orders: use limitPrice as price
-                    # For STOP orders: use stopPrice as stop_price, and also set price if limitPrice exists
-                    order_type_num = order_dict.get('type', 0)
-                    limit_price = order_dict.get('limitPrice') or order_dict.get('limit_price')
-                    stop_price = order_dict.get('stopPrice') or order_dict.get('stop_price')
-                    
-                    # Set price field (for LIMIT orders or orders with limitPrice)
-                    if limit_price is not None:
-                        order_dict['price'] = float(limit_price)
-                        if 'limitPrice' not in order_dict:
-                            order_dict['limitPrice'] = float(limit_price)
-                    
-                    # Set stop_price field (for STOP orders)
-                    if stop_price is not None:
-                        order_dict['stop_price'] = float(stop_price)
-                        if 'stopPrice' not in order_dict:
-                            order_dict['stopPrice'] = float(stop_price)
-                    
-                    # For STOP orders, set price from stopPrice if no limitPrice
-                    if order_dict.get('type') == 'STOP' or order_type_num == 4:
-                        if stop_price is not None:
-                            # For STOP orders, use stopPrice as the display price
-                            order_dict['price'] = float(stop_price)
-                        elif not order_dict.get('price'):
-                            # If STOP order has no price set, try to get from triggerPrice
-                            trigger_price = order_dict.get('triggerPrice') or order_dict.get('trigger_price')
-                            if trigger_price:
-                                order_dict['price'] = float(trigger_price)
-                            else:
-                                # Last resort: use 0.00 (will be displayed)
-                                order_dict['price'] = 0.0
-                    if order_type_num == 4 and stop_price is not None and order_dict.get('price') is None:
-                        order_dict['price'] = float(stop_price)
-                    
-                    # Ensure quantity
-                    quantity = order_dict.get('quantity') or order_dict.get('size') or 0
-                    order_dict['quantity'] = quantity
-                    
-                    orders_list.append(order_dict)
-                else:
-                    # Fallback: Convert order object to dict
-                    orders_list.append({
-                        'id': getattr(order, 'id', None),
-                        'symbol': getattr(order, 'symbol', None),
-                        'side': getattr(order, 'side', None),
-                        'quantity': getattr(order, 'quantity', None),
-                        'type': getattr(order, 'type', None),
-                        'status': getattr(order, 'status', None),
-                        'price': getattr(order, 'price', None),
-                        'limitPrice': getattr(order, 'limit_price', None),
-                        'limit_price': getattr(order, 'limit_price', None),
-                        'stopPrice': getattr(order, 'stop_price', None),
-                        'stop_price': getattr(order, 'stop_price', None),
-                        'contractId': getattr(order, 'contract_id', None),
-                    })
-
-            def _order_terminal_for_chart(od: dict) -> bool:
-                """True if order should not appear as a working order on the chart / activity strip."""
-                st = od.get("status")
-                u = str(st).strip().upper() if st is not None else ""
-                if u in (
-                    "FILLED",
-                    "CANCELLED",
-                    "CANCELED",
-                    "REJECTED",
-                    "EXPIRED",
-                    "DONE",
-                    "COMPLETE",
-                    "REPLACED",
-                ):
-                    return True
-                try:
-                    fv = float(od.get("fillVolume") or od.get("fill_volume") or 0)
-                    qty = float(od.get("quantity") or od.get("size") or 0)
-                    if qty > 0 and fv >= qty and u not in ("OPEN", "PENDING"):
-                        return True
-                except (TypeError, ValueError):
-                    pass
-                return False
-
-            orders_list = [o for o in orders_list if not _order_terminal_for_chart(o)]
+            orders_list = normalize_orders_for_chart(orders, drop_terminal=True)
             
             # Group orders by parent/child relationships for bracket display
             order_groups = {}
@@ -3085,6 +3329,10 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             tf_req = (request.query.get('timeframe') or '1m').strip().lower()
             if tf_req not in ('1m', '5m'):
                 tf_req = '1m'
+            range_only = str(request.query.get('range_only') or '').strip().lower() in (
+                '1', 'true', 'yes',
+            )
+            strategy_hint = (request.query.get('strategy') or '').strip() or None
 
             from core.chart_databento_loader import chart_symbol_to_databento_root
             from core.backtest.parquet_cache import load_ohlcv_cached
@@ -3104,6 +3352,56 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             price_dir = repo_root / 'historical_data' / 'price'
             p1 = price_dir / f'{root}_1m_databento.csv'
             p5 = price_dir / f'{root}_5m_databento.csv'
+
+            account_id = None
+            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get('id')
+                else:
+                    account_id = str(trading_bot.selected_account)
+
+            range_snap = _range_snapshot_for_trade_recap(
+                trading_bot, account_id, symbol, entry_dt, repo_root, root,
+                strategy_hint=strategy_hint,
+            )
+
+            if range_only:
+                side_q = (request.query.get('side') or '').strip().upper()
+                payload: Dict[str, Any] = {
+                    'symbol': symbol,
+                    'root': root,
+                    'entry_unix': int(entry_dt.timestamp()),
+                    'exit_unix': int(exit_dt.timestamp()),
+                    'range_only': True,
+                }
+                if range_snap:
+                    payload['range_snapshot'] = range_snap
+                if range_snap and range_snap.get('strategy_name') == 'morning_range_reversion' and p5.is_file():
+                    try:
+                        from scripts.walkforward_trade_recap_report import _find_morning_range_signal_bar
+                        from core.backtest.parquet_cache import load_ohlcv_cached
+                        df5 = load_ohlcv_cached(p5)
+                        trade_stub = {
+                            'entry_time': entry_dt.isoformat(),
+                            'side': side_q or 'BUY',
+                        }
+                        sig = _find_morning_range_signal_bar(
+                            trade_stub,
+                            df5,
+                            require_reentry_close=False,
+                            reentry_threshold_points=0.0,
+                        )
+                        if sig:
+                            payload['signal_bar'] = {
+                                'time': sig[0],
+                                'price': sig[1],
+                                'label': sig[2],
+                            }
+                    except Exception:
+                        logger.debug("trade_recap signal_bar failed for %s", symbol, exc_info=True)
+                response = web.json_response(payload)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
 
             csv_path = None
             tf_used = None
@@ -3174,15 +3472,35 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 'exit_snapped': exit_snapped,
                 'pad_minutes': pad_minutes,
             }
-            account_id = None
-            if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
-                if isinstance(trading_bot.selected_account, dict):
-                    account_id = trading_bot.selected_account.get('id')
-                else:
-                    account_id = str(trading_bot.selected_account)
-            range_snap = _best_range_for_symbol(trading_bot, account_id, symbol)
+            range_snap = _range_snapshot_for_trade_recap(
+                trading_bot, account_id, symbol, entry_dt, repo_root, root,
+                strategy_hint=strategy_hint,
+            )
             if range_snap:
                 payload['range_snapshot'] = range_snap
+            side_q = (request.query.get('side') or '').strip().upper()
+            if range_snap and range_snap.get('strategy_name') == 'morning_range_reversion' and p5.is_file():
+                try:
+                    from scripts.walkforward_trade_recap_report import _find_morning_range_signal_bar
+                    df5 = load_ohlcv_cached(p5)
+                    trade_stub = {
+                        'entry_time': entry_dt.isoformat(),
+                        'side': side_q or 'BUY',
+                    }
+                    sig = _find_morning_range_signal_bar(
+                        trade_stub,
+                        df5,
+                        require_reentry_close=False,
+                        reentry_threshold_points=0.0,
+                    )
+                    if sig:
+                        payload['signal_bar'] = {
+                            'time': sig[0],
+                            'price': sig[1],
+                            'label': sig[2],
+                        }
+                except Exception:
+                    logger.debug("trade_recap signal_bar failed for %s", symbol, exc_info=True)
             response = web.json_response(payload)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -3253,6 +3571,41 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     raw_meta = json.loads(raw_meta)
                 except (TypeError, ValueError):
                     raw_meta = None
+
+            # Recompute session range from Databento/TOML (walkforward parity).
+            # Snapshots captured before this fix stored live strategy_states blobs
+            # (often the wrong session); always prefer authoritative anchor on read.
+            range_snap = None
+            entry_raw = snap.get('entry_time')
+            sym_u = str(snap.get('symbol') or '').upper()
+            strat_hint = snap.get('strategy_name')
+            if entry_raw and sym_u:
+                try:
+                    from core.chart_databento_loader import chart_symbol_to_databento_root
+                    if isinstance(entry_raw, datetime):
+                        entry_dt = entry_raw if entry_raw.tzinfo else entry_raw.replace(tzinfo=timezone.utc)
+                    else:
+                        s2 = str(entry_raw).replace('Z', '+00:00')
+                        entry_dt = datetime.fromisoformat(s2)
+                        if entry_dt.tzinfo is None:
+                            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                    root = chart_symbol_to_databento_root(sym_u) or sym_u.split('.')[-1]
+                    repo_root = Path(__file__).resolve().parent.parent
+                    acct = snap.get('account_id')
+                    range_snap = _range_snapshot_for_trade_recap(
+                        trading_bot,
+                        str(acct) if acct is not None else None,
+                        sym_u,
+                        entry_dt,
+                        repo_root,
+                        root,
+                        strategy_hint=strat_hint,
+                    )
+                except Exception:
+                    logger.debug("trade_snapshot range recompute failed", exc_info=True)
+            if range_snap is None:
+                range_snap = raw_range
+
             payload = {
                 'trade_id': snap.get('trade_id'),
                 'account_id': snap.get('account_id'),
@@ -3267,7 +3620,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 'pnl': snap.get('pnl'),
                 'timeframe': snap.get('timeframe'),
                 'bars': raw_bars,
-                'range_snapshot': raw_range,
+                'range_snapshot': range_snap,
                 'metadata': raw_meta,
                 'created_at': snap.get('created_at'),
             }
@@ -4232,6 +4585,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     details = _external_strategy_details_from_db(
                         trading_bot, account_id, strategy_name
                     )
+                    if strategy_name == "morning_range_reversion":
+                        brief_lines, sym_state = _mrr_live_from_executor_metadata(trading_bot)
+                        if brief_lines:
+                            details["live_brief"] = brief_lines
+                        if sym_state:
+                            details["symbol_state"] = sym_state
                     response = web.json_response(details)
                     response.headers['Access-Control-Allow-Origin'] = '*'
                     return response
@@ -4512,6 +4871,40 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     trading_bot, account_id, strategy_name, details,
                 )
 
+            if strategy_name == "morning_range_reversion":
+                brief_lines: List[str] = []
+                sym_state: Dict[str, Any] = {}
+                if hasattr(strategy, "discord_daily_brief"):
+                    try:
+                        brief_lines = list(strategy.discord_daily_brief() or [])
+                    except Exception:
+                        logger.debug("mrr discord_daily_brief failed", exc_info=True)
+                if hasattr(strategy, "_state") and isinstance(strategy._state, dict):
+                    for sym, st in strategy._state.items():
+                        if not isinstance(st, dict):
+                            continue
+                        sym_state[str(sym).upper()] = {
+                            "phase": st.get("phase"),
+                            "H": st.get("H"),
+                            "L": st.get("L"),
+                            "width": st.get("width"),
+                            "range_ready": st.get("range_ready"),
+                            "sweep_fired_high": st.get("sweep_fired_high"),
+                            "sweep_fired_low": st.get("sweep_fired_low"),
+                            "fades_this_session": st.get("fades_this_session"),
+                            "session_date": (
+                                st.get("session_date").isoformat()
+                                if hasattr(st.get("session_date"), "isoformat")
+                                else st.get("session_date")
+                            ),
+                        }
+                if not brief_lines and not sym_state:
+                    brief_lines, sym_state = _mrr_live_from_executor_metadata(trading_bot)
+                if brief_lines:
+                    details["live_brief"] = brief_lines
+                if sym_state:
+                    details["symbol_state"] = sym_state
+
             response = web.json_response(details)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
@@ -4538,7 +4931,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             max_sessions = int(request.query.get('max_sessions', '3'))
         except (TypeError, ValueError):
             max_sessions = 3
-        max_sessions = max(1, min(8, max_sessions))
+        max_sessions = max(1, min(14, max_sessions))
         strategy_names = _parse_range_overlay_strategies(request)
         if not strategy_names:
             response = web.json_response({})
@@ -4636,6 +5029,19 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_post('/api/chart/cancel_order', handle_cancel_order)
     app.router.add_options('/api/chart/cancel_order', handle_options)
 
+    async def _chart_round_price(symbol: Optional[str], price: float) -> float:
+        """Snap chart drag prices to contract tick size before broker modify."""
+        if not hasattr(trading_bot, '_get_tick_size') or not hasattr(trading_bot, '_round_to_tick_size'):
+            return float(price)
+        sym = str(symbol or '').strip().upper()
+        if not sym:
+            return float(price)
+        try:
+            tick = await trading_bot._get_tick_size(sym)
+            return trading_bot._round_to_tick_size(float(price), tick)
+        except Exception:
+            return float(price)
+
     async def handle_modify_order(request):
         """Modify working order price/qty from the chart GUI."""
         try:
@@ -4669,6 +5075,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     order_type = int(order_type)
                 except (TypeError, ValueError):
                     order_type = None
+            symbol = data.get('symbol')
+            if new_price is not None:
+                new_price = await _chart_round_price(symbol, new_price)
             result = await trading_bot.modify_order(
                 order_id=str(order_id),
                 new_price=new_price,
@@ -4715,6 +5124,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 response = web.json_response({'success': False, 'error': 'price required'}, status=400)
                 response.headers['Access-Control-Allow-Origin'] = '*'
                 return response
+            symbol = data.get('symbol')
+            new_price = await _chart_round_price(symbol, new_price)
             account_id = None
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
                 if isinstance(trading_bot.selected_account, dict):
@@ -4763,6 +5174,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 response = web.json_response({'success': False, 'error': 'price required'}, status=400)
                 response.headers['Access-Control-Allow-Origin'] = '*'
                 return response
+            symbol = data.get('symbol')
+            new_price = await _chart_round_price(symbol, new_price)
             account_id = None
             if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
                 if isinstance(trading_bot.selected_account, dict):
@@ -5984,6 +6397,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     'fees': round(float(trade.get('quantity', 0) or 0) * 2.40, 2), # $2.40 per round trip
                     'derived_entry': derived_entry_from_exit,
                     'entry_order_id': entry_oid or (paired_entry or {}).get('entry_order_id'),
+                    'entry_unix': _trade_time_to_unix(entry_time),
+                    'exit_unix': _trade_time_to_unix(exit_time),
                     'custom_tag': src_meta.get('custom_tag') or entry_tag,
                     'source': src_meta.get('source', 'manual'),
                     'source_label': src_meta.get('source_label', 'manual'),
@@ -6084,6 +6499,12 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
     app.router.add_options('/api/chart/risk/metrics', handle_options)
     app.router.add_get('/api/chart/theme/page', handle_page_theme)
     app.router.add_options('/api/chart/theme/page', handle_options)
+
+    async def handle_metrics_glossary(request):
+        from core.metrics_glossary import METRICS
+        return web.json_response(METRICS)
+
+    app.router.add_get('/api/metrics-glossary', handle_metrics_glossary)
     
     # Serve master control HTML (v2 Quiet Trader dashboard)
     async def _serve_master_v2_html():
@@ -6096,6 +6517,14 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         html_content = html_content.replace('{{SYMBOL}}', _chart_server_symbol or symbol)
         timeframe_value = _chart_server_timeframe or '5m'
         html_content = html_content.replace('{{TIMEFRAME}}', timeframe_value)
+        try:
+            from core.metrics_glossary import apply_tooltips_js
+
+            script = f"<script>\n{apply_tooltips_js()}\n</script>"
+            if "</body>" in html_content:
+                html_content = html_content.replace("</body>", script + "\n</body>", 1)
+        except Exception:
+            logger.debug("metrics glossary inject skipped", exc_info=True)
         return html_content
 
     async def handle_master_control(request):
@@ -6170,6 +6599,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         
         _ws_clients.add(ws)
         logger.info(f"📡 WebSocket client connected (total: {len(_ws_clients)})")
+        asyncio.create_task(_push_ws_initial_snapshot(ws))
         
         try:
             async for msg in ws:
@@ -6352,235 +6782,176 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         'pnl_history': None
     }
     _last_ws_orders_positions_fp: Dict[str, str] = {}
+    _ws_deferred_snapshot_tasks: Dict[str, asyncio.Task] = {}
+
+    async def _schedule_deferred_snapshot(account_id_str: str, delay: float = 2.0) -> None:
+        """Coalesce slow REST reconciles — instant WS patches arrive first from SignalR."""
+        existing = _ws_deferred_snapshot_tasks.get(account_id_str)
+        if existing and not existing.done():
+            existing.cancel()
+
+        async def _run() -> None:
+            try:
+                await asyncio.sleep(delay)
+                await _broadcast_chart_snapshot(account_id_str, force_refresh=True)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                _ws_deferred_snapshot_tasks.pop(account_id_str, None)
+
+        _ws_deferred_snapshot_tasks[account_id_str] = asyncio.create_task(_run())
+
+    async def _broadcast_chart_snapshot(account_id_str: str, *, force_refresh: bool = False) -> None:
+        """Push normalized orders + positions to all WS clients (deduped by fingerprint)."""
+        try:
+            if force_refresh and hasattr(trading_bot, "state_cache") and trading_bot.state_cache:
+                trading_bot.state_cache.invalidate_orders(account_id_str)
+                trading_bot.state_cache.invalidate_positions(account_id_str)
+
+            if hasattr(trading_bot, "state_cache") and trading_bot.state_cache:
+                orders = await trading_bot.state_cache.get_orders(account_id_str)
+                positions = await trading_bot.state_cache.get_positions(account_id_str)
+            else:
+                orders = await trading_bot.get_open_orders(account_id=account_id_str)
+                positions = await trading_bot.get_open_positions(account_id=account_id_str)
+
+            olist = normalize_orders_for_chart(orders or [], drop_terminal=True)
+            plist = normalize_positions_for_chart(positions or [])
+
+            ofp = _ws_snapshot_fingerprint_orders(olist)
+            pfp = _ws_snapshot_fingerprint_positions(plist)
+            ko, kp = f"orders:{account_id_str}", f"positions:{account_id_str}"
+
+            if _last_ws_orders_positions_fp.get(ko) != ofp:
+                _last_ws_orders_positions_fp[ko] = ofp
+                await broadcast_update({"type": "orders", "data": {"orders": olist}}, immediate=True)
+            if _last_ws_orders_positions_fp.get(kp) != pfp:
+                _last_ws_orders_positions_fp[kp] = pfp
+                await broadcast_update({"type": "positions", "data": {"positions": plist}}, immediate=True)
+        except Exception as exc:
+            logger.debug("WS chart snapshot broadcast failed: %s", exc)
+
+    async def _push_ws_initial_snapshot(ws) -> None:
+        """Send current orders/positions immediately when a client connects."""
+        try:
+            account_id = None
+            if hasattr(trading_bot, "selected_account") and trading_bot.selected_account:
+                if isinstance(trading_bot.selected_account, dict):
+                    account_id = trading_bot.selected_account.get("id")
+                else:
+                    account_id = str(trading_bot.selected_account)
+            if not account_id:
+                return
+            aid = str(account_id)
+            if hasattr(trading_bot, "state_cache") and trading_bot.state_cache:
+                orders = await trading_bot.state_cache.get_orders(aid) or []
+                positions = await trading_bot.state_cache.get_positions(aid) or []
+            else:
+                orders = await trading_bot.get_open_orders(account_id=aid) or []
+                positions = await trading_bot.get_open_positions(account_id=aid) or []
+            olist = normalize_orders_for_chart(orders, drop_terminal=True)
+            plist = normalize_positions_for_chart(positions)
+            if not (hasattr(ws, "closed") and ws.closed):
+                await ws.send_json({"type": "orders", "data": {"orders": olist}})
+                await ws.send_json({"type": "positions", "data": {"positions": plist}})
+        except Exception as exc:
+            logger.debug("WS initial snapshot failed: %s", exc)
 
     # ============================================================================
     # EVENT-DRIVEN HANDLERS - React to events from the event bus
     # ============================================================================
     
     async def _on_order_event(event):
-        """React to order events - IMMEDIATE updates to ALL widgets simultaneously."""
+        """React to order events — defer slow REST reconcile; SignalR pushes instant patches."""
         try:
-            from core.events import Event
+            from core.events import Event, EventType
             logger.debug(f"📡 Order event received: {event.type.value}")
-            
-            # OPTIMIZED: Use StateCache directly (99% faster than HTTP handlers)
-            # Broadcast ALL updates simultaneously for instant GUI refresh
-            
+
             async def refresh_all_data():
-                """Refresh all data using fast StateCache and broadcast updates."""
                 account_id = None
                 if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
                     if isinstance(trading_bot.selected_account, dict):
                         account_id = trading_bot.selected_account.get('id')
                     else:
                         account_id = str(trading_bot.selected_account)
-                
+
                 if not account_id:
                     return
-                
+
                 account_id_str = str(account_id)
-                
-                # Use lock to prevent concurrent redundant refreshes for this account
+
                 async with _refresh_locks[account_id_str]:
-                    # Check if refreshed recently (within 500ms)
                     now = asyncio.get_event_loop().time()
-                    if now - _last_refresh_time[account_id_str] < 0.5:
+                    if now - _last_refresh_time[account_id_str] < 0.25:
                         return
-                    
                     _last_refresh_time[account_id_str] = now
-                    tasks = []
-                
-                # Order update (immediate from event)
-                tasks.append(broadcast_update({
-                    'type': 'order_update',
-                    'event_type': event.type.value,
-                    'data': event.data
-                }, immediate=True))
-                
-                # FAST: Get orders from StateCache (instant, no API call)
-                async def refresh_orders():
-                    try:
-                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
-                            orders = await trading_bot.state_cache.get_orders(account_id_str)
-                            if orders is None:
-                                orders = []
-                        else:
-                            orders = await trading_bot.get_open_orders(account_id=account_id_str)
-                        
-                        fp = _ws_snapshot_fingerprint_orders(orders)
-                        key_o = f"orders:{account_id_str}"
-                        if _last_ws_orders_positions_fp.get(key_o) == fp:
-                            return
-                        _last_ws_orders_positions_fp[key_o] = fp
 
-                        await broadcast_update({
-                            'type': 'orders',
-                            'data': {'orders': orders}
-                        }, immediate=True)
-                    except Exception as e:
-                        logger.debug(f"Error refreshing orders in event handler: {e}")
-                
-                tasks.append(refresh_orders())
-                
-                # FAST: Get positions from StateCache (instant, no API call)
-                async def refresh_positions():
-                    try:
-                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
-                            positions = await trading_bot.state_cache.get_positions(account_id_str)
-                            if positions is None:
-                                positions = []
-                        else:
-                            positions = await trading_bot.get_open_positions(account_id=account_id_str)
-                        
-                        fp = _ws_snapshot_fingerprint_positions(positions)
-                        key_p = f"positions:{account_id_str}"
-                        if _last_ws_orders_positions_fp.get(key_p) == fp:
-                            return
-                        _last_ws_orders_positions_fp[key_p] = fp
+                # Fills/cancels affect positions — reconcile soon. Placed/updated rely on WS patch.
+                if event.type in (
+                    EventType.ORDER_FILLED,
+                    EventType.ORDER_CANCELLED,
+                    EventType.ORDER_REJECTED,
+                ):
+                    await _broadcast_chart_snapshot(account_id_str, force_refresh=True)
+                elif event.type == EventType.ORDER_PLACED:
+                    await _schedule_deferred_snapshot(account_id_str, delay=0.5)
+                else:
+                    await _schedule_deferred_snapshot(account_id_str, delay=2.0)
 
-                        await broadcast_update({
-                            'type': 'positions',
-                            'data': {'positions': positions}
-                        }, immediate=True)
-                    except Exception as e:
-                        logger.debug(f"Error refreshing positions in event handler: {e}")
-                
-                tasks.append(refresh_positions())
-                
-                # FAST: Get account state (uses cache)
-                async def refresh_account():
-                    try:
-                        if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
-                            account_state = trading_bot.account_tracker.get_state(account_id=account_id_str)
-                            await broadcast_update({
-                                'type': 'account',
-                                'data': account_state
-                            }, immediate=True)
-                    except Exception as e:
-                        logger.debug(f"Error refreshing account in event handler: {e}")
-                
-                tasks.append(refresh_account())
-                
-                # Execute all refreshes in parallel (all using fast cache)
-                await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Fire and forget - don't block event processing
+                try:
+                    if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                        account_state = trading_bot.account_tracker.get_state(account_id=account_id_str)
+                        await broadcast_update({'type': 'account', 'data': account_state}, immediate=True)
+                except Exception as e:
+                    logger.debug(f"Error refreshing account in event handler: {e}")
+
             asyncio.create_task(refresh_all_data())
-            
+
         except Exception as e:
             logger.error(f"Error in order event handler: {e}")
-    
+
     async def _on_position_event(event):
-        """React to position events - IMMEDIATE updates to ALL widgets simultaneously."""
+        """React to position events — defer slow REST reconcile; WS patches first."""
         try:
-            from core.events import Event
+            from core.events import Event, EventType
             logger.debug(f"📡 Position event received: {event.type.value}")
-            
-            # OPTIMIZED: Use StateCache directly (99% faster than HTTP handlers)
+
             async def refresh_all_data():
-                """Refresh all data using fast StateCache and broadcast updates."""
                 account_id = None
                 if hasattr(trading_bot, 'selected_account') and trading_bot.selected_account:
                     if isinstance(trading_bot.selected_account, dict):
                         account_id = trading_bot.selected_account.get('id')
                     else:
                         account_id = str(trading_bot.selected_account)
-                
+
                 if not account_id:
                     return
-                
+
                 account_id_str = str(account_id)
-                
-                # Use lock to prevent concurrent redundant refreshes for this account
+
                 async with _refresh_locks[account_id_str]:
-                    # Check if refreshed recently (within 500ms)
                     now = asyncio.get_event_loop().time()
-                    if now - _last_refresh_time[account_id_str] < 0.5:
+                    if now - _last_refresh_time[account_id_str] < 0.25:
                         return
-                    
                     _last_refresh_time[account_id_str] = now
-                    tasks = []
-                
-                # Position update (immediate from event)
-                tasks.append(broadcast_update({
-                    'type': 'position_update',
-                    'event_type': event.type.value,
-                    'data': event.data
-                }, immediate=True))
-                
-                # FAST: Get positions from StateCache (instant, no API call)
-                async def refresh_positions():
-                    try:
-                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
-                            positions = await trading_bot.state_cache.get_positions(account_id_str)
-                            if positions is None:
-                                positions = []
-                        else:
-                            positions = await trading_bot.get_open_positions(account_id=account_id_str)
-                        
-                        fp = _ws_snapshot_fingerprint_positions(positions)
-                        key_p = f"positions:{account_id_str}"
-                        if _last_ws_orders_positions_fp.get(key_p) == fp:
-                            return
-                        _last_ws_orders_positions_fp[key_p] = fp
 
-                        await broadcast_update({
-                            'type': 'positions',
-                            'data': {'positions': positions}
-                        }, immediate=True)
-                    except Exception as e:
-                        logger.debug(f"Error refreshing positions in event handler: {e}")
-                
-                tasks.append(refresh_positions())
-                
-                # FAST: Get orders from StateCache (instant, no API call)
-                async def refresh_orders():
-                    try:
-                        if hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
-                            orders = await trading_bot.state_cache.get_orders(account_id_str)
-                            if orders is None:
-                                orders = []
-                        else:
-                            orders = await trading_bot.get_open_orders(account_id=account_id_str)
-                        
-                        fp = _ws_snapshot_fingerprint_orders(orders)
-                        key_o = f"orders:{account_id_str}"
-                        if _last_ws_orders_positions_fp.get(key_o) == fp:
-                            return
-                        _last_ws_orders_positions_fp[key_o] = fp
+                if event.type in (EventType.POSITION_OPENED, EventType.POSITION_CLOSED):
+                    await _broadcast_chart_snapshot(account_id_str, force_refresh=True)
+                else:
+                    await _schedule_deferred_snapshot(account_id_str, delay=1.5)
 
-                        await broadcast_update({
-                            'type': 'orders',
-                            'data': {'orders': orders}
-                        }, immediate=True)
-                    except Exception as e:
-                        logger.debug(f"Error refreshing orders in event handler: {e}")
-                
-                tasks.append(refresh_orders())
-                
-                # FAST: Get account state (uses cache)
-                async def refresh_account():
-                    try:
-                        if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
-                            account_state = trading_bot.account_tracker.get_state(account_id=account_id_str)
-                            await broadcast_update({
-                                'type': 'account',
-                                'data': account_state
-                            }, immediate=True)
-                    except Exception as e:
-                        logger.debug(f"Error refreshing account in event handler: {e}")
-                
-                tasks.append(refresh_account())
-                
-                # Execute all refreshes in parallel (all using fast cache)
-                await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Fire and forget - don't block event processing
+                try:
+                    if hasattr(trading_bot, 'account_tracker') and trading_bot.account_tracker:
+                        account_state = trading_bot.account_tracker.get_state(account_id=account_id_str)
+                        await broadcast_update({'type': 'account', 'data': account_state}, immediate=True)
+                except Exception as e:
+                    logger.debug(f"Error refreshing account in event handler: {e}")
+
             asyncio.create_task(refresh_all_data())
-            
+
         except Exception as e:
             logger.error(f"Error in position event handler: {e}")
-    
+
     async def _on_account_event(event):
         """React to account events - can be batched."""
         try:
@@ -6633,21 +7004,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                                     account_id = trading_bot.selected_account.get('id')
                                 else:
                                     account_id = str(trading_bot.selected_account)
-                            if account_id and hasattr(trading_bot, 'state_cache') and trading_bot.state_cache:
-                                aid = str(account_id)
-                                orders = await trading_bot.state_cache.get_orders(aid, force_refresh=True)
-                                positions = await trading_bot.state_cache.get_positions(aid, force_refresh=True)
-                                olist = orders or []
-                                plist = positions or []
-                                ofp = _ws_snapshot_fingerprint_orders(olist)
-                                pfp = _ws_snapshot_fingerprint_positions(plist)
-                                ko, kp = f"orders:{aid}", f"positions:{aid}"
-                                if _last_ws_orders_positions_fp.get(ko) != ofp:
-                                    _last_ws_orders_positions_fp[ko] = ofp
-                                    await broadcast_update({'type': 'orders', 'data': {'orders': olist}}, immediate=True)
-                                if _last_ws_orders_positions_fp.get(kp) != pfp:
-                                    _last_ws_orders_positions_fp[kp] = pfp
-                                    await broadcast_update({'type': 'positions', 'data': {'positions': plist}}, immediate=True)
+                            if account_id:
+                                await _broadcast_chart_snapshot(str(account_id), force_refresh=True)
                         except Exception as e:
                             logger.debug("Periodic reconcile failed: %s", e)
                 
@@ -6817,6 +7175,7 @@ def generate_chart_html(
     axis_time_zone: Optional[str] = None,
     morning_range_et_shade: bool = False,
     overnight_range_et_shade: bool = False,
+    opening_range_et_shade: bool = False,
 ) -> str:
     """
     Generate standalone HTML file with TradingView Lightweight Charts.
@@ -6848,6 +7207,9 @@ def generate_chart_html(
             **overnight range** boxes from shipped ``overnight_range.toml`` timing (evening start
             through next-morning end, ET): session **high/low** over all bars in that window, with
             separate baseline fills for evening vs morning segments when the slice has gaps.
+        opening_range_et_shade: When True, draws the **opening range** box from
+            ``opening_range_breakout.toml`` ``range_start``–``range_end_open`` (ET) using session
+            high/low over bars in that window.
 
     Returns:
         Path to generated HTML file
@@ -6856,10 +7218,13 @@ def generate_chart_html(
     axis_tz_js = "null" if not axis_time_zone else json.dumps(axis_time_zone)
     morning_shade_js = "true" if morning_range_et_shade else "false"
     overnight_shade_js = "true" if overnight_range_et_shade else "false"
+    opening_shade_js = "true" if opening_range_et_shade else "false"
     info_axis = f" | Axis: {axis_time_zone}" if axis_time_zone else ""
     info_shade = ""
     if morning_range_et_shade:
         info_shade += " | 7-8am ET range box"
+    if opening_range_et_shade:
+        info_shade += " | ORB ET range box"
     if overnight_range_et_shade:
         info_shade += " | overnight ET range box"
     from core.backtest.ohlcv import sanitize_ohlcv_ohlc
@@ -6947,6 +7312,44 @@ def generate_chart_html(
             logger.debug("overnight range shade skipped", exc_info=True)
             overnight_segments = []
     overnight_segments_json = json.dumps(overnight_segments)
+
+    opening_segments: List[Dict[str, Any]] = []
+    if opening_range_et_shade and chart_data:
+        try:
+            from core.backtest.session_shade import (
+                load_orb_timing_from_toml,
+                opening_range_baseline_segments,
+                segments_to_jsonable,
+            )
+
+            rs, reo, oz = load_orb_timing_from_toml()
+            ref_orb: Optional[int] = None
+            if trade_overlays:
+                t0 = trade_overlays[0].get("entry_time")
+                if isinstance(t0, (int, float)):
+                    ref_orb = int(t0)
+                elif isinstance(t0, str):
+                    try:
+                        from datetime import datetime as _dt
+
+                        ref_orb = int(
+                            _dt.fromisoformat(str(t0).replace("Z", "+00:00")).timestamp()
+                        )
+                    except (ValueError, TypeError, OSError):
+                        ref_orb = None
+            opening_segments = segments_to_jsonable(
+                opening_range_baseline_segments(
+                    chart_data,
+                    range_start=rs,
+                    range_end_open=reo,
+                    zone=oz,
+                    reference_unix=ref_orb,
+                )
+            )
+        except Exception:
+            logger.debug("opening range shade skipped", exc_info=True)
+            opening_segments = []
+    opening_segments_json = json.dumps(opening_segments)
 
     # Generate HTML with TradingView Lightweight Charts
     html_content = f"""<!DOCTYPE html>
@@ -7191,7 +7594,9 @@ def generate_chart_html(
         const axisTimeZone = {axis_tz_js};
         const morningRangeEtShade = {morning_shade_js};
         const overnightRangeEtShade = {overnight_shade_js};
+        const openingRangeEtShade = {opening_shade_js};
         const overnightRangeSegments = {overnight_segments_json};
+        const openingRangeSegments = {opening_segments_json};
         function _fmtBarTime(d, opts) {{
             const o = Object.assign({{}}, opts || {{}});
             if (axisTimeZone) o.timeZone = axisTimeZone;
@@ -7551,6 +7956,40 @@ def generate_chart_html(
                 }}
 
                 let overnightRangeSeriesList = [];
+                if (openingRangeEtShade && !backtestMode && chartData.length > 0
+                        && openingRangeSegments && openingRangeSegments.length > 0) {{
+                    if (typeof chart.addBaselineSeries === 'function') {{
+                        for (let si = 0; si < openingRangeSegments.length; si++) {{
+                            const seg = openingRangeSegments[si];
+                            const hi = parseFloat(seg.hi);
+                            const lo = parseFloat(seg.lo);
+                            const ts = seg.times || [];
+                            if (!(hi > lo) || !isFinite(hi) || !isFinite(lo) || ts.length === 0) continue;
+                            const sorted = ts.slice().sort((a, b) => a - b);
+                            const dataPts = sorted.map((t) => ({{ time: t, value: hi }}));
+                            try {{
+                                const s = chart.addBaselineSeries({{
+                                    priceScaleId: 'right',
+                                    baseValue: {{ type: 'price', price: lo }},
+                                    topFillColor1: 'rgba(20, 184, 166, 0.28)',
+                                    topFillColor2: 'rgba(45, 212, 191, 0.14)',
+                                    topLineColor: 'rgba(0,0,0,0)',
+                                    bottomFillColor1: 'rgba(0,0,0,0)',
+                                    bottomFillColor2: 'rgba(0,0,0,0)',
+                                    bottomLineColor: 'rgba(0,0,0,0)',
+                                    lineWidth: 0,
+                                    lineVisible: false,
+                                    priceLineVisible: false,
+                                    lastValueVisible: false,
+                                    crosshairMarkerVisible: false,
+                                }});
+                                s.setData(dataPts);
+                            }} catch (e) {{
+                                console.warn('opening range ET box seg ' + si + ':', e);
+                            }}
+                        }}
+                    }}
+                }}
                 if (overnightRangeEtShade && !backtestMode && chartData.length > 0
                         && overnightRangeSegments && overnightRangeSegments.length > 0) {{
                     if (typeof chart.addBaselineSeries === 'function') {{

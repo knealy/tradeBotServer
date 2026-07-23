@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Walk-forward metrics — opening_range_breakout / MGC, MNQ</title>
+  <style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #131316;
+  --panel2: #1a1a1f;
+  --text: #e4e4ea;
+  --muted: #9b9ba8;
+  --border: #2c2c34;
+  --link: #7eb8ff;
+  --pos: #5ecf8e;
+  --neg: #f08080;
+  --accent: #c9b87c;
+}
+body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; padding: 1.5rem 2rem 3rem;
+  max-width: 128rem; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--text); }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; color: var(--accent); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-bottom: 1.75rem; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: var(--panel2); color: #d8d8e0; font-weight: 600; }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; font-size: 0.88em; color: #dbeafe; }
+.muted { color: var(--muted); font-size: 0.9rem; max-width: 72rem; }
+.banner { background: var(--panel2); border: 1px solid var(--border); padding: 0.85rem 1.1rem; border-radius: 8px; margin: 1rem 0 1.25rem; }
+.callout { border-left: 3px solid var(--accent); padding: 0.5rem 0 0.5rem 1rem; margin: 1rem 0; color: var(--muted); font-size: 0.88rem; }
+nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
+nav a { margin-right: 1.25rem; font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+pre { background: var(--panel2); padding: 0.75rem 1rem; border-radius: 6px; overflow: auto; font-size: 0.78rem; line-height: 1.45; color: #d8d8e0; }
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+details > summary { cursor: pointer; padding: 0.3rem 0; color: var(--link); font-weight: 500; user-select: none; }
+details[open] > summary { margin-bottom: 0.5rem; }
+h2#config-snapshot { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
+</style>
+</head>
+<body>
+  <p><a href="index.html">← Back to report hub</a></p>
+  <h1>Walk-forward performance (replay)</h1>
+  <p class="muted">Fold × strategy × symbol from <code>backtest_executor.py --replay --include-trades</code>.
+    <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
+    <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
+    <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
+  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a> · <a href="strategy_configs.json">strategy_configs.json</a> · <a href="#config-snapshot">replay config ↓</a></nav>
+  <div class="banner">
+    <strong>All folds pooled:</strong> 650 trades · PnL <strong>-892.25</strong>
+    · expectancy <strong>-1.373</strong> / trade · σ <strong>146.556</strong>
+    · PF <strong>0.98</strong> · max consecutive losses <strong>10</strong>
+    · max DD (sequential) <strong>5083.00</strong>
+  </div>
+  <div class="callout">
+    <strong>Survivability read:</strong> high <em>max consecutive losses</em> inside a fold with negative expectancy
+    usually means the edge is not stable across that window. Compare the <em>rollup</em> table (all folds merged
+    per strategy×symbol) to per-fold rows — widening σ or falling PF in later folds is a simple walk-forward stress signal.
+  </div>
+  <h2>Per fold</h2>
+  <table>
+    <thead><tr><th>fold</th><th>start</th><th>end</th><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th>
+    <th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>win</th><th>loss</th><th>max win str</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td>0</td><td>2022-11-25</td><td>2023-04-03</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td colspan='12'><code>run_backtest returned no result</code></td></tr><tr><td>0</td><td>2022-11-25</td><td>2023-04-03</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td colspan='12'><code>run_backtest returned no result</code></td></tr><tr><td>1</td><td>2023-04-04</td><td>2023-08-11</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>31</td><td class='num'>-658.50</td><td class='num'>29.0%</td><td class='num'>-21.242</td><td class='num'>64.091</td><td class='num'>0.43</td><td class='num'>896.50</td><td>9</td><td>22</td><td>2</td><td>6</td><td class='num'>23.7</td><td class='num'>-12.65</td></tr><tr><td>1</td><td>2023-04-04</td><td>2023-08-11</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>30</td><td class='num'>484.00</td><td class='num'>43.3%</td><td class='num'>16.133</td><td class='num'>114.166</td><td class='num'>1.41</td><td class='num'>286.75</td><td>13</td><td>17</td><td>4</td><td>5</td><td class='num'>28.6</td><td class='num'>3.05</td></tr><tr><td>2</td><td>2023-08-12</td><td>2023-12-19</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>26</td><td class='num'>-985.00</td><td class='num'>34.6%</td><td class='num'>-37.885</td><td class='num'>92.157</td><td class='num'>0.36</td><td class='num'>1137.50</td><td>9</td><td>17</td><td>2</td><td>5</td><td class='num'>14.7</td><td class='num'>-7.56</td></tr><tr><td>2</td><td>2023-08-12</td><td>2023-12-19</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>35</td><td class='num'>-389.00</td><td class='num'>42.9%</td><td class='num'>-11.114</td><td class='num'>107.581</td><td class='num'>0.78</td><td class='num'>663.75</td><td>15</td><td>20</td><td>2</td><td>3</td><td class='num'>26.1</td><td class='num'>-5.38</td></tr><tr><td>3</td><td>2023-12-20</td><td>2024-04-27</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>35</td><td class='num'>423.00</td><td class='num'>48.6%</td><td class='num'>12.086</td><td class='num'>91.045</td><td class='num'>1.44</td><td class='num'>491.50</td><td>17</td><td>18</td><td>5</td><td>4</td><td class='num'>19.3</td><td class='num'>3.69</td></tr><tr><td>3</td><td>2023-12-20</td><td>2024-04-27</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>40</td><td class='num'>-373.25</td><td class='num'>40.0%</td><td class='num'>-9.331</td><td class='num'>120.000</td><td class='num'>0.83</td><td class='num'>738.00</td><td>16</td><td>24</td><td>4</td><td>6</td><td class='num'>20.7</td><td class='num'>-2.09</td></tr><tr><td>4</td><td>2024-04-28</td><td>2024-09-04</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>43</td><td class='num'>-276.00</td><td class='num'>32.6%</td><td class='num'>-6.419</td><td class='num'>82.736</td><td class='num'>0.83</td><td class='num'>980.00</td><td>14</td><td>29</td><td>4</td><td>9</td><td class='num'>21.6</td><td class='num'>-9.75</td></tr><tr><td>4</td><td>2024-04-28</td><td>2024-09-04</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>37</td><td class='num'>-517.25</td><td class='num'>43.2%</td><td class='num'>-13.980</td><td class='num'>149.775</td><td class='num'>0.80</td><td class='num'>844.25</td><td>16</td><td>21</td><td>3</td><td>5</td><td class='num'>29.1</td><td class='num'>0.98</td></tr><tr><td>5</td><td>2024-09-05</td><td>2025-01-12</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>34</td><td class='num'>-1102.00</td><td class='num'>23.5%</td><td class='num'>-32.412</td><td class='num'>50.241</td><td class='num'>0.22</td><td class='num'>1128.00</td><td>8</td><td>26</td><td>3</td><td>8</td><td class='num'>24.3</td><td class='num'>-18.27</td></tr><tr><td>5</td><td>2024-09-05</td><td>2025-01-12</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>31</td><td class='num'>533.75</td><td class='num'>48.4%</td><td class='num'>17.218</td><td class='num'>147.469</td><td class='num'>1.40</td><td class='num'>371.75</td><td>15</td><td>16</td><td>2</td><td>4</td><td class='num'>34.0</td><td class='num'>0.06</td></tr><tr><td>6</td><td>2025-01-13</td><td>2025-05-22</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>47</td><td class='num'>-692.00</td><td class='num'>40.4%</td><td class='num'>-14.723</td><td class='num'>99.585</td><td class='num'>0.69</td><td class='num'>1388.50</td><td>19</td><td>28</td><td>3</td><td>8</td><td class='num'>33.4</td><td class='num'>-9.08</td></tr><tr><td>6</td><td>2025-01-13</td><td>2025-05-22</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>44</td><td class='num'>-919.25</td><td class='num'>38.6%</td><td class='num'>-20.892</td><td class='num'>197.676</td><td class='num'>0.77</td><td class='num'>1212.25</td><td>17</td><td>27</td><td>4</td><td>6</td><td class='num'>30.7</td><td class='num'>-6.16</td></tr><tr><td>7</td><td>2025-05-23</td><td>2025-09-29</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>34</td><td class='num'>347.50</td><td class='num'>47.1%</td><td class='num'>10.221</td><td class='num'>90.254</td><td class='num'>1.31</td><td class='num'>435.00</td><td>16</td><td>18</td><td>7</td><td>4</td><td class='num'>31.5</td><td class='num'>5.96</td></tr><tr><td>7</td><td>2025-05-23</td><td>2025-09-29</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>37</td><td class='num'>-318.75</td><td class='num'>45.9%</td><td class='num'>-8.615</td><td class='num'>134.892</td><td class='num'>0.86</td><td class='num'>750.50</td><td>17</td><td>20</td><td>3</td><td>3</td><td class='num'>32.7</td><td class='num'>-2.51</td></tr><tr><td>8</td><td>2025-09-30</td><td>2026-02-06</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>33</td><td class='num'>1479.50</td><td class='num'>51.5%</td><td class='num'>44.833</td><td class='num'>212.527</td><td class='num'>1.76</td><td class='num'>611.00</td><td>17</td><td>16</td><td>4</td><td>2</td><td class='num'>35.1</td><td class='num'>9.02</td></tr><tr><td>8</td><td>2025-09-30</td><td>2026-02-06</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>34</td><td class='num'>721.00</td><td class='num'>58.8%</td><td class='num'>21.206</td><td class='num'>133.215</td><td class='num'>1.50</td><td class='num'>299.50</td><td>20</td><td>14</td><td>5</td><td>3</td><td class='num'>39.1</td><td class='num'>3.98</td></tr><tr><td>9</td><td>2026-02-07</td><td>2026-06-17</td><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>37</td><td class='num'>-2070.00</td><td class='num'>29.7%</td><td class='num'>-55.946</td><td class='num'>218.569</td><td class='num'>0.54</td><td class='num'>2282.00</td><td>11</td><td>26</td><td>2</td><td>6</td><td class='num'>26.4</td><td class='num'>-11.19</td></tr><tr><td>9</td><td>2026-02-07</td><td>2026-06-17</td><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>42</td><td class='num'>3420.00</td><td class='num'>57.1%</td><td class='num'>81.429</td><td class='num'>257.142</td><td class='num'>2.18</td><td class='num'>609.00</td><td>24</td><td>18</td><td>4</td><td>3</td><td class='num'>37.7</td><td class='num'>15.45</td></tr></tbody>
+  </table>
+  <h2>Rollup — all folds merged (per strategy × symbol)</h2>
+  <table>
+    <thead><tr><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th><th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <tbody><tr><td><code>opening_range_breakout</code></td><td><code>MGC</code></td><td class='num'>320</td><td class='num'>-3533.50</td><td class='num'>37.5%</td><td class='num'>-11.042</td><td class='num'>126.802</td><td class='num'>0.79</td><td class='num'>3998.00</td><td>9</td><td class='num'>26.0</td><td class='num'>-49.83</td></tr><tr><td><code>opening_range_breakout</code></td><td><code>MNQ</code></td><td class='num'>330</td><td class='num'>2641.25</td><td class='num'>46.4%</td><td class='num'>8.004</td><td class='num'>163.097</td><td class='num'>1.13</td><td class='num'>2452.50</td><td>8</td><td class='num'>30.9</td><td class='num'>7.38</td></tr></tbody>
+  </table>
+  <h2>Simulated account equity</h2>
+  <p class="muted">Starting balance <strong>$2,000.00</strong>. Every completed trade in this run is sorted by <strong>exit time</strong>
+    and applied in sequence to one notional account (all legs, all folds). This shows combined PnL path stress;
+    it does <em>not</em> model margin, cross-margin, or whether every leg would run on the same live account.</p>
+  <div class="banner">
+    <strong>Equity path:</strong> final <strong>1,107.75</strong>
+    · return <strong>-44.61%</strong>
+    · max drawdown <strong>5,083.00</strong> (<strong>244.43%</strong> from peak)
+    · closes in path <strong>650</strong>
+  </div>
+  <div id="equityChart" style="width:100%;height:340px;position:relative;"></div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function() {
+  const el = document.getElementById("equityChart");
+  if (!el || typeof LightweightCharts === 'undefined') return;
+  const chart = LightweightCharts.createChart(el, {
+    layout: { background: { color: '#131316' }, textColor: '#c8c8d0' },
+    grid: { vertLines: { color: '#2c2c34' }, horzLines: { color: '#2c2c34' } },
+    rightPriceScale: { borderColor: '#2c2c34' },
+    timeScale: { borderColor: '#2c2c34', timeVisible: true, secondsVisible: false },
+  });
+  const series = chart.addLineSeries({ color: '#5ecf8e', lineWidth: 2 });
+  const raw = [{"time": 1683125400, "value": 2000.0}, {"time": 1683135000, "value": 2079.5}, {"time": 1683137100, "value": 2019.5}, {"time": 1683215400, "value": 1932.5}, {"time": 1683568800, "value": 1888.5}, {"time": 1683571500, "value": 1981.75}, {"time": 1683653400, "value": 2040.25}, {"time": 1683748800, "value": 1988.0}, {"time": 1683827100, "value": 1921.25}, {"time": 1683833100, "value": 1741.25}, {"time": 1684180800, "value": 1823.0}, {"time": 1684267200, "value": 1749.75}, {"time": 1684336800, "value": 1679.25}, {"time": 1684337400, "value": 1620.25}, {"time": 1684438200, "value": 1561.25}, {"time": 1684779900, "value": 1504.75}, {"time": 1684868700, "value": 1591.25}, {"time": 1684958400, "value": 1542.5}, {"time": 1685044800, "value": 1561.25}, {"time": 1685376000, "value": 1539.25}, {"time": 1685549400, "value": 1462.75}, {"time": 1685635200, "value": 1637.0}, {"time": 1685643300, "value": 1741.5}, {"time": 1685988600, "value": 1652.0}, {"time": 1685995200, "value": 1641.5}, {"time": 1686065100, "value": 1559.0}, {"time": 1686081600, "value": 1537.5}, {"time": 1686241500, "value": 1722.25}, {"time": 1686244200, "value": 1665.75}, {"time": 1686586500, "value": 1611.75}, {"time": 1686855300, "value": 1919.0}, {"time": 1686859200, "value": 1908.5}, {"time": 1687188600, "value": 1889.5}, {"time": 1687377600, "value": 1907.0}, {"time": 1687455900, "value": 1777.0}, {"time": 1687464000, "value": 1899.75}, {"time": 1687797300, "value": 1858.25}, {"time": 1687886400, "value": 2035.5}, {"time": 1687982400, "value": 2006.0}, {"time": 1688068800, "value": 1969.5}, {"time": 1688410500, "value": 1859.5}, {"time": 1688481900, "value": 1840.5}, {"time": 1688570700, "value": 1704.0}, {"time": 1688673600, "value": 1741.75}, {"time": 1689019200, "value": 1744.25}, {"time": 1689099600, "value": 1614.0}, {"time": 1689174600, "value": 1573.0}, {"time": 1689260700, "value": 1540.5}, {"time": 1689274800, "value": 1674.25}, {"time": 1689621300, "value": 1814.5}, {"time": 1689624000, "value": 1827.0}, {"time": 1689697500, "value": 1986.75}, {"time": 1689710400, "value": 1930.25}, {"time": 1689778200, "value": 1857.75}, {"time": 1689796800, "value": 1837.25}, {"time": 1690301700, "value": 1932.75}, {"time": 1690315200, "value": 1914.0}, {"time": 1690385100, "value": 1962.5}, {"time": 1690398300, "value": 1883.75}, {"time": 1690920000, "value": 1882.0}, {"time": 1691092800, "value": 1804.75}, {"time": 1691438400, "value": 1825.5}, {"time": 1692648000, "value": 1929.75}, {"time": 1692820800, "value": 2030.5}, {"time": 1693425600, "value": 2013.75}, {"time": 1693944000, "value": 2029.5}, {"time": 1694026200, "value": 1903.5}, {"time": 1694102100, "value": 1814.75}, {"time": 1694721600, "value": 1876.5}, {"time": 1695063000, "value": 1773.0}, {"time": 1695153600, "value": 1776.25}, {"time": 1695672000, "value": 1851.5}, {"time": 1695843000, "value": 1745.0}, {"time": 1695916200, "value": 1974.25}, {"time": 1696259400, "value": 1778.25}, {"time": 1696261800, "value": 1627.25}, {"time": 1696344600, "value": 1558.25}, {"time": 1696430700, "value": 1452.5}, {"time": 1696438500, "value": 1407.0}, {"time": 1696874100, "value": 1637.25}, {"time": 1696948800, "value": 1413.25}, {"time": 1697040600, "value": 1452.75}, {"time": 1697124600, "value": 1351.75}, {"time": 1697483700, "value": 1418.25}, {"time": 1697557500, "value": 1354.25}, {"time": 1697572800, "value": 1422.0}, {"time": 1697657400, "value": 1294.0}, {"time": 1697731500, "value": 1182.25}, {"time": 1697733300, "value": 1144.25}, {"time": 1698076500, "value": 1094.25}, {"time": 1698091200, "value": 1126.0}, {"time": 1698160800, "value": 1030.0}, {"time": 1698164400, "value": 1094.5}, {"time": 1698350400, "value": 1116.0}, {"time": 1698766800, "value": 992.75}, {"time": 1698852600, "value": 863.5}, {"time": 1698942000, "value": 791.5}, {"time": 1698955200, "value": 880.25}, {"time": 1699292700, "value": 664.25}, {"time": 1699371900, "value": 609.25}, {"time": 1699550700, "value": 523.5}, {"time": 1699563600, "value": 483.0}, {"time": 1699892100, "value": 532.5}, {"time": 1699909200, "value": 544.75}, {"time": 1700064300, "value": 471.0}, {"time": 1700074500, "value": 416.0}, {"time": 1700166900, "value": 554.5}, {"time": 1700168400, "value": 531.75}, {"time": 1700496900, "value": 607.25}, {"time": 1700511000, "value": 818.5}, {"time": 1700762100, "value": 795.0}, {"time": 1701101100, "value": 709.75}, {"time": 1701189000, "value": 802.5}, {"time": 1701285900, "value": 760.5}, {"time": 1701369900, "value": 721.5}, {"time": 1701723600, "value": 706.25}, {"time": 1701793200, "value": 547.25}, {"time": 1701965700, "value": 432.5}, {"time": 1702494300, "value": 491.0}, {"time": 1702922100, "value": 538.5}, {"time": 1702933200, "value": 596.75}, {"time": 1703000400, "value": 538.0}, {"time": 1703009400, "value": 451.5}, {"time": 1703192400, "value": 429.75}, {"time": 1703605800, "value": 372.5}, {"time": 1703624400, "value": 435.0}, {"time": 1703703600, "value": 360.5}, {"time": 1704390300, "value": 265.0}, {"time": 1704819300, "value": 431.75}, {"time": 1704913800, "value": 571.0}, {"time": 1705341300, "value": 605.5}, {"time": 1705359600, "value": 597.25}, {"time": 1705424400, "value": 443.0}, {"time": 1705525200, "value": 489.75}, {"time": 1705597500, "value": 415.5}, {"time": 1705602300, "value": 451.0}, {"time": 1706027100, "value": 417.5}, {"time": 1706043600, "value": 494.25}, {"time": 1706202300, "value": 403.25}, {"time": 1706211900, "value": 317.25}, {"time": 1706558400, "value": 432.0}, {"time": 1706730900, "value": 318.25}, {"time": 1706805000, "value": 420.75}, {"time": 1706821200, "value": 557.0}, {"time": 1707166800, "value": 558.5}, {"time": 1707166801, "value": 472.75}, {"time": 1707240300, "value": 410.25}, {"time": 1707327300, "value": 255.25}, {"time": 1707420900, "value": 191.25}, {"time": 1707426000, "value": 175.75}, {"time": 1707755100, "value": 258.0}, {"time": 1707771600, "value": 266.5}, {"time": 1707944400, "value": 250.0}, {"time": 1707944401, "value": 289.75}, {"time": 1708030800, "value": 306.5}, {"time": 1708367400, "value": 291.0}, {"time": 1708549200, "value": 307.75}, {"time": 1708616700, "value": 196.0}, {"time": 1708963800, "value": 170.5}, {"time": 1708970400, "value": 80.25}, {"time": 1709134800, "value": 55.25}, {"time": 1709141400, "value": -20.5}, {"time": 1709240400, "value": -35.75}, {"time": 1709568600, "value": 53.75}, {"time": 1709584200, "value": -6.75}, {"time": 1709750100, "value": -175.0}, {"time": 1709753400, "value": -267.0}, {"time": 1709837700, "value": -32.75}, {"time": 1709845200, "value": -27.25}, {"time": 1710174600, "value": -82.75}, {"time": 1710256800, "value": -150.25}, {"time": 1710350100, "value": -74.75}, {"time": 1710437700, "value": -116.75}, {"time": 1710776100, "value": -149.25}, {"time": 1710866700, "value": 44.5}, {"time": 1710872700, "value": 116.0}, {"time": 1710959700, "value": 21.5}, {"time": 1711045200, "value": -204.5}, {"time": 1711396800, "value": -274.75}, {"time": 1711553100, "value": -325.25}, {"time": 1711643400, "value": -242.75}, {"time": 1712088000, "value": -245.25}, {"time": 1712088001, "value": -174.0}, {"time": 1712171700, "value": -358.75}, {"time": 1712174400, "value": -243.25}, {"time": 1712606400, "value": -220.75}, {"time": 1712760600, "value": -327.25}, {"time": 1712855100, "value": -122.0}, {"time": 1712858700, "value": 2.5}, {"time": 1713211200, "value": 304.0}, {"time": 1713283200, "value": 189.5}, {"time": 1713285600, "value": 338.0}, {"time": 1713365400, "value": 286.0}, {"time": 1713458700, "value": 152.75}, {"time": 1713798600, "value": 97.75}, {"time": 1713816000, "value": 130.5}, {"time": 1713970800, "value": 227.0}, {"time": 1714072500, "value": 501.25}, {"time": 1714420800, "value": 461.75}, {"time": 1714587000, "value": 364.25}, {"time": 1714588800, "value": 469.75}, {"time": 1714680000, "value": 556.0}, {"time": 1715012400, "value": 476.25}, {"time": 1715103900, "value": 415.75}, {"time": 1715187600, "value": 278.25}, {"time": 1715192100, "value": 218.75}, {"time": 1715284800, "value": 261.25}, {"time": 1715284801, "value": 279.5}, {"time": 1715716800, "value": 262.0}, {"time": 1715716801, "value": 335.75}, {"time": 1715794200, "value": 522.25}, {"time": 1715880000, "value": 465.75}, {"time": 1715889600, "value": 452.25}, {"time": 1716225900, "value": 564.75}, {"time": 1716235200, "value": 577.0}, {"time": 1716304800, "value": 539.0}, {"time": 1716393000, "value": 488.25}, {"time": 1716826500, "value": 553.5}, {"time": 1716832200, "value": 646.0}, {"time": 1716920400, "value": 542.25}, {"time": 1717427100, "value": 468.75}, {"time": 1717531200, "value": 538.5}, {"time": 1717687800, "value": 622.0}, {"time": 1718031000, "value": 584.0}, {"time": 1718033400, "value": 699.25}, {"time": 1718118300, "value": 652.25}, {"time": 1718129700, "value": 840.5}, {"time": 1718215200, "value": 728.5}, {"time": 1718220300, "value": 553.5}, {"time": 1718635800, "value": 505.0}, {"time": 1718740800, "value": 517.5}, {"time": 1718834400, "value": 484.0}, {"time": 1718913600, "value": 473.5}, {"time": 1719259200, "value": 449.0}, {"time": 1719334800, "value": 338.0}, {"time": 1719343800, "value": 246.0}, {"time": 1719420000, "value": 135.0}, {"time": 1719429000, "value": 90.0}, {"time": 1719503100, "value": 25.5}, {"time": 1719858300, "value": -51.5}, {"time": 1719864000, "value": 69.75}, {"time": 1719943200, "value": 304.5}, {"time": 1720022100, "value": 460.25}, {"time": 1720025100, "value": 378.75}, {"time": 1720454700, "value": 315.75}, {"time": 1720633200, "value": 459.0}, {"time": 1720639500, "value": 299.0}, {"time": 1720728000, "value": 316.5}, {"time": 1721055900, "value": 433.0}, {"time": 1721317800, "value": 381.0}, {"time": 1721667000, "value": 307.0}, {"time": 1721678400, "value": 243.75}, {"time": 1721751600, "value": 123.75}, {"time": 1721837100, "value": 50.25}, {"time": 1721936700, "value": -42.75}, {"time": 1721937000, "value": -391.25}, {"time": 1722358800, "value": -291.75}, {"time": 1722448800, "value": -343.75}, {"time": 1722870900, "value": -196.25}, {"time": 1722888000, "value": -386.0}, {"time": 1722974400, "value": -508.75}, {"time": 1723143000, "value": -341.25}, {"time": 1723147200, "value": -89.5}, {"time": 1723476000, "value": -298.75}, {"time": 1723487700, "value": -171.25}, {"time": 1723567200, "value": 36.0}, {"time": 1723652400, "value": -178.75}, {"time": 1723752000, "value": 10.5}, {"time": 1724090100, "value": 197.75}, {"time": 1724251800, "value": 90.5}, {"time": 1724270400, "value": 126.0}, {"time": 1724773200, "value": 56.0}, {"time": 1724953500, "value": -156.75}, {"time": 1724961600, "value": -164.25}, {"time": 1725290100, "value": -192.75}, {"time": 1725314400, "value": -195.0}, {"time": 1725393600, "value": -220.5}, {"time": 1725480000, "value": -292.0}, {"time": 1725903600, "value": -413.0}, {"time": 1725904200, "value": -460.0}, {"time": 1725989100, "value": -534.0}, {"time": 1725998400, "value": -472.75}, {"time": 1726080000, "value": 48.0}, {"time": 1726084800, "value": 61.5}, {"time": 1726170000, "value": -17.5}, {"time": 1726682700, "value": 83.0}, {"time": 1727103600, "value": -11.0}, {"time": 1727191500, "value": 64.5}, {"time": 1727208000, "value": 92.25}, {"time": 1727380800, "value": 128.75}, {"time": 1727719500, "value": 58.25}, {"time": 1727726400, "value": 66.0}, {"time": 1727804100, "value": -38.5}, {"time": 1727899200, "value": -51.25}, {"time": 1727985600, "value": -27.75}, {"time": 1728317100, "value": -74.75}, {"time": 1728491400, "value": -112.25}, {"time": 1728503400, "value": 116.0}, {"time": 1728590400, "value": 104.5}, {"time": 1728590401, "value": 124.75}, {"time": 1729022400, "value": 118.25}, {"time": 1729108800, "value": 90.5}, {"time": 1729182600, "value": 30.5}, {"time": 1729611900, "value": -19.0}, {"time": 1729627200, "value": 16.75}, {"time": 1729792800, "value": -72.25}, {"time": 1730127600, "value": -109.25}, {"time": 1730232000, "value": -108.75}, {"time": 1730232001, "value": 71.0}, {"time": 1730300700, "value": 15.0}, {"time": 1730738400, "value": -181.5}, {"time": 1730840400, "value": -153.25}, {"time": 1730908200, "value": -322.0}, {"time": 1731005400, "value": -391.0}, {"time": 1731013200, "value": -212.25}, {"time": 1731531600, "value": -269.0}, {"time": 1731614700, "value": -351.0}, {"time": 1732039200, "value": -403.0}, {"time": 1732136400, "value": -413.5}, {"time": 1732136401, "value": -427.25}, {"time": 1732222800, "value": -428.75}, {"time": 1732811400, "value": -462.5}, {"time": 1733173200, "value": -427.75}, {"time": 1733259600, "value": -343.5}, {"time": 1733330400, "value": -399.0}, {"time": 1733422500, "value": -458.75}, {"time": 1733847300, "value": -506.75}, {"time": 1733950800, "value": -401.5}, {"time": 1734022500, "value": -501.5}, {"time": 1734469200, "value": -474.0}, {"time": 1734540000, "value": -513.0}, {"time": 1734642000, "value": -548.5}, {"time": 1734987600, "value": -394.75}, {"time": 1735167600, "value": -368.25}, {"time": 1735167601, "value": -155.5}, {"time": 1735233300, "value": -222.0}, {"time": 1735246800, "value": -229.75}, {"time": 1735592400, "value": -245.0}, {"time": 1736184900, "value": -413.5}, {"time": 1736197200, "value": -485.0}, {"time": 1736281200, "value": -630.0}, {"time": 1736355900, "value": -810.25}, {"time": 1736357100, "value": -860.25}, {"time": 1736784300, "value": -1020.0}, {"time": 1736888400, "value": -988.5}, {"time": 1736974800, "value": -937.0}, {"time": 1736974801, "value": -967.75}, {"time": 1737056700, "value": -1015.25}, {"time": 1737493200, "value": -1020.75}, {"time": 1737493201, "value": -1035.0}, {"time": 1737579600, "value": -1062.5}, {"time": 1737579601, "value": -1146.75}, {"time": 1737648600, "value": -1195.75}, {"time": 1738011300, "value": -1359.75}, {"time": 1738098000, "value": -1176.0}, {"time": 1738270800, "value": -1126.5}, {"time": 1738683600, "value": -1223.5}, {"time": 1738702800, "value": -1219.25}, {"time": 1738771500, "value": -1296.25}, {"time": 1738774500, "value": -1085.5}, {"time": 1738875600, "value": -1097.0}, {"time": 1738875601, "value": -1059.75}, {"time": 1739202300, "value": -1111.75}, {"time": 1739221200, "value": -1177.0}, {"time": 1739293200, "value": -1327.5}, {"time": 1739305800, "value": -1404.0}, {"time": 1739388000, "value": -1471.5}, {"time": 1739394000, "value": -1350.75}, {"time": 1739465400, "value": -1416.75}, {"time": 1739470500, "value": -1583.75}, {"time": 1739818200, "value": -1657.75}, {"time": 1739833200, "value": -1688.0}, {"time": 1739907900, "value": -1602.5}, {"time": 1739998800, "value": -1557.25}, {"time": 1740080100, "value": -1621.75}, {"time": 1740430800, "value": -1582.25}, {"time": 1740592200, "value": -1771.25}, {"time": 1740603600, "value": -1735.75}, {"time": 1741032000, "value": -1868.75}, {"time": 1741122000, "value": -1890.25}, {"time": 1741122001, "value": -1962.0}, {"time": 1741197900, "value": -2065.0}, {"time": 1741205100, "value": -1617.25}, {"time": 1741278300, "value": -1878.0}, {"time": 1741619100, "value": -1945.0}, {"time": 1741722600, "value": -2236.0}, {"time": 1741792200, "value": -2149.5}, {"time": 1742241600, "value": -2135.0}, {"time": 1742404500, "value": -2334.0}, {"time": 1742406000, "value": -2388.5}, {"time": 1742487900, "value": -2723.5}, {"time": 1742498400, "value": -2653.0}, {"time": 1742846400, "value": -2621.75}, {"time": 1742923500, "value": -2719.5}, {"time": 1743446400, "value": -2293.75}, {"time": 1743451200, "value": -2258.25}, {"time": 1743537600, "value": -1981.0}, {"time": 1743618300, "value": -2077.0}, {"time": 1743624000, "value": -1830.75}, {"time": 1743710400, "value": -2068.25}, {"time": 1744123800, "value": -2148.25}, {"time": 1744219200, "value": -2281.75}, {"time": 1744315200, "value": -2075.25}, {"time": 1744644900, "value": -2160.25}, {"time": 1744747200, "value": -2130.75}, {"time": 1744818900, "value": -2305.5}, {"time": 1744833600, "value": -2151.0}, {"time": 1744916400, "value": -2350.5}, {"time": 1745339100, "value": -1944.75}, {"time": 1745420400, "value": -2178.25}, {"time": 1745429100, "value": -2414.25}, {"time": 1745524800, "value": -2332.75}, {"time": 1745940900, "value": -2535.25}, {"time": 1745956800, "value": -2556.75}, {"time": 1746116100, "value": -2709.5}, {"time": 1746474600, "value": -2840.75}, {"time": 1746475200, "value": -2849.25}, {"time": 1746551700, "value": -2698.75}, {"time": 1746561600, "value": -2772.0}, {"time": 1746647100, "value": -2896.5}, {"time": 1746720900, "value": -2602.75}, {"time": 1747080000, "value": -2553.0}, {"time": 1747166400, "value": -2520.5}, {"time": 1747166401, "value": -2468.25}, {"time": 1747242600, "value": -2605.75}, {"time": 1747323600, "value": -2413.5}, {"time": 1747328700, "value": -2218.0}, {"time": 1747676100, "value": -2320.0}, {"time": 1747684800, "value": -2205.25}, {"time": 1747753200, "value": -2296.5}, {"time": 1747771200, "value": -2221.0}, {"time": 1747847700, "value": -2390.0}, {"time": 1747855500, "value": -2249.5}, {"time": 1747943700, "value": -2471.5}, {"time": 1748296800, "value": -2474.0}, {"time": 1748376000, "value": -2315.25}, {"time": 1748547300, "value": -2384.75}, {"time": 1748894400, "value": -2360.25}, {"time": 1748894401, "value": -2213.5}, {"time": 1748980800, "value": -2087.25}, {"time": 1749067200, "value": -2164.5}, {"time": 1749141900, "value": -2318.25}, {"time": 1749499200, "value": -2322.75}, {"time": 1749578400, "value": -2403.5}, {"time": 1749656700, "value": -2471.0}, {"time": 1749758400, "value": -2464.75}, {"time": 1750174200, "value": -2577.75}, {"time": 1750354500, "value": -2641.25}, {"time": 1750695600, "value": -2900.0}, {"time": 1750699500, "value": -3003.5}, {"time": 1750782900, "value": -2862.25}, {"time": 1750795200, "value": -2763.75}, {"time": 1750870200, "value": -2652.25}, {"time": 1750968000, "value": -2624.75}, {"time": 1751310300, "value": -2515.25}, {"time": 1751313600, "value": -2500.0}, {"time": 1751485800, "value": -2383.5}, {"time": 1751580000, "value": -2411.75}, {"time": 1751908200, "value": -2282.25}, {"time": 1751992500, "value": -2382.5}, {"time": 1752523200, "value": -2294.75}, {"time": 1752678300, "value": -2164.25}, {"time": 1752696000, "value": -2200.5}, {"time": 1752782400, "value": -2040.75}, {"time": 1753287600, "value": -2168.0}, {"time": 1753376400, "value": -2267.5}, {"time": 1753387200, "value": -2321.75}, {"time": 1753888200, "value": -2403.5}, {"time": 1754337600, "value": -2342.25}, {"time": 1754422200, "value": -2416.75}, {"time": 1754504700, "value": -2149.5}, {"time": 1754510400, "value": -2137.0}, {"time": 1754596800, "value": -2102.5}, {"time": 1754933100, "value": -2194.5}, {"time": 1755028800, "value": -2290.0}, {"time": 1755028801, "value": -2043.75}, {"time": 1755702300, "value": -2093.75}, {"time": 1755789300, "value": -2193.25}, {"time": 1756148400, "value": -2256.25}, {"time": 1756151700, "value": -2377.75}, {"time": 1756223100, "value": -2307.25}, {"time": 1756230600, "value": -2434.0}, {"time": 1756307400, "value": -2355.5}, {"time": 1756311900, "value": -2479.25}, {"time": 1756394400, "value": -2542.75}, {"time": 1756411200, "value": -2501.5}, {"time": 1756764000, "value": -2491.25}, {"time": 1756831800, "value": -2241.75}, {"time": 1756843200, "value": -2253.0}, {"time": 1756927200, "value": -2348.0}, {"time": 1757016000, "value": -2117.75}, {"time": 1757348700, "value": -2228.5}, {"time": 1757361600, "value": -2247.0}, {"time": 1757448000, "value": -2232.75}, {"time": 1757620800, "value": -2246.25}, {"time": 1757620801, "value": -2234.5}, {"time": 1757951400, "value": -2118.0}, {"time": 1758129600, "value": -2167.5}, {"time": 1758137400, "value": -2277.5}, {"time": 1758225600, "value": -2465.75}, {"time": 1758556800, "value": -2352.25}, {"time": 1758562200, "value": -2174.5}, {"time": 1758822900, "value": -2399.75}, {"time": 1758830400, "value": -2365.25}, {"time": 1759158300, "value": -2442.75}, {"time": 1759245000, "value": -2650.75}, {"time": 1759245900, "value": -2764.5}, {"time": 1759780800, "value": -2844.75}, {"time": 1759950300, "value": -2952.25}, {"time": 1759953600, "value": -2760.0}, {"time": 1760371800, "value": -2604.5}, {"time": 1760385600, "value": -2595.75}, {"time": 1760472000, "value": -2544.25}, {"time": 1760472001, "value": -2485.0}, {"time": 1760558400, "value": -2507.5}, {"time": 1760628300, "value": -2625.0}, {"time": 1760990100, "value": -2205.5}, {"time": 1760990400, "value": -2177.25}, {"time": 1761066000, "value": -2282.5}, {"time": 1761163200, "value": -2097.0}, {"time": 1761249600, "value": -1956.75}, {"time": 1761594600, "value": -1801.0}, {"time": 1761673800, "value": -1676.25}, {"time": 1761681600, "value": -1582.75}, {"time": 1761854400, "value": -1520.25}, {"time": 1762281000, "value": -1689.25}, {"time": 1762376400, "value": -1700.75}, {"time": 1762376401, "value": -1659.0}, {"time": 1762799100, "value": -1467.5}, {"time": 1762808400, "value": -1379.25}, {"time": 1762894800, "value": -1382.0}, {"time": 1763498700, "value": -1535.0}, {"time": 1763653800, "value": -1695.75}, {"time": 1764010200, "value": -1435.25}, {"time": 1764018000, "value": -1108.5}, {"time": 1764104400, "value": -1165.0}, {"time": 1764104401, "value": -774.25}, {"time": 1764190800, "value": -749.5}, {"time": 1764622800, "value": -730.25}, {"time": 1764691800, "value": -918.75}, {"time": 1764875100, "value": -1042.25}, {"time": 1765314000, "value": -1038.75}, {"time": 1765314001, "value": -977.5}, {"time": 1765390800, "value": -1053.5}, {"time": 1765391100, "value": -1165.0}, {"time": 1765486800, "value": -1040.25}, {"time": 1765918800, "value": -1117.0}, {"time": 1766074800, "value": -768.5}, {"time": 1766437200, "value": -701.0}, {"time": 1766523600, "value": -422.5}, {"time": 1766523601, "value": -307.25}, {"time": 1766703600, "value": -254.5}, {"time": 1767113400, "value": -361.25}, {"time": 1767634200, "value": -512.25}, {"time": 1767726900, "value": -652.25}, {"time": 1767733200, "value": -589.0}, {"time": 1767819600, "value": -597.5}, {"time": 1767906000, "value": -383.0}, {"time": 1768251600, "value": -350.75}, {"time": 1768424400, "value": -392.25}, {"time": 1768494900, "value": -490.75}, {"time": 1768845000, "value": -426.25}, {"time": 1768863600, "value": -326.5}, {"time": 1768942800, "value": -284.0}, {"time": 1769444700, "value": -409.0}, {"time": 1769461200, "value": -497.75}, {"time": 1769544000, "value": -149.25}, {"time": 1769547600, "value": -158.0}, {"time": 1769632200, "value": 485.5}, {"time": 1770066000, "value": 368.75}, {"time": 1770140400, "value": 87.25}, {"time": 1770319800, "value": -242.25}, {"time": 1770670800, "value": -81.0}, {"time": 1770843600, "value": -24.5}, {"time": 1770912300, "value": -198.0}, {"time": 1771282800, "value": -209.5}, {"time": 1771356600, "value": -510.0}, {"time": 1771362000, "value": -592.75}, {"time": 1771440000, "value": -870.25}, {"time": 1771443300, "value": -1198.5}, {"time": 1771519200, "value": -1392.0}, {"time": 1771862400, "value": -1600.0}, {"time": 1771966800, "value": -1433.5}, {"time": 1771966801, "value": -1407.75}, {"time": 1772051400, "value": -1637.25}, {"time": 1772053200, "value": -1597.0}, {"time": 1772139600, "value": -1390.5}, {"time": 1772485200, "value": -1246.75}, {"time": 1772571600, "value": -1719.25}, {"time": 1772571601, "value": -1533.0}, {"time": 1772658000, "value": -1582.25}, {"time": 1773068400, "value": -1849.75}, {"time": 1773074400, "value": -1429.5}, {"time": 1773166500, "value": -1626.0}, {"time": 1773170700, "value": -1820.0}, {"time": 1773859500, "value": -2055.0}, {"time": 1773934200, "value": -2282.25}, {"time": 1773950400, "value": -2333.75}, {"time": 1774364100, "value": -2521.5}, {"time": 1774451100, "value": -2753.0}, {"time": 1774975200, "value": -2353.75}, {"time": 1774985700, "value": -1785.25}, {"time": 1775058600, "value": -1469.75}, {"time": 1775068500, "value": -1642.0}, {"time": 1775160000, "value": -1690.5}, {"time": 1775592000, "value": -1318.0}, {"time": 1775592001, "value": -1191.25}, {"time": 1775750400, "value": -898.5}, {"time": 1775764800, "value": -1001.0}, {"time": 1776099900, "value": -1189.0}, {"time": 1776109800, "value": -848.25}, {"time": 1776187200, "value": -552.0}, {"time": 1776363900, "value": -735.25}, {"time": 1776888000, "value": -565.0}, {"time": 1776963600, "value": -709.0}, {"time": 1777320000, "value": -683.75}, {"time": 1777406400, "value": -655.25}, {"time": 1777487400, "value": -813.25}, {"time": 1777579200, "value": -643.0}, {"time": 1777906200, "value": -795.5}, {"time": 1777906800, "value": -906.0}, {"time": 1778011200, "value": -910.75}, {"time": 1778094600, "value": -577.0}, {"time": 1778167200, "value": -696.0}, {"time": 1778169300, "value": -891.0}, {"time": 1778529600, "value": -912.25}, {"time": 1778616000, "value": -783.75}, {"time": 1778683500, "value": -899.75}, {"time": 1778695800, "value": -477.0}, {"time": 1778788800, "value": -478.25}, {"time": 1779220800, "value": -772.0}, {"time": 1779307200, "value": -454.25}, {"time": 1779385800, "value": -122.75}, {"time": 1779386100, "value": 295.0}, {"time": 1779731100, "value": 235.5}, {"time": 1779809700, "value": 48.5}, {"time": 1779810300, "value": -214.5}, {"time": 1779912000, "value": -263.0}, {"time": 1779998400, "value": -29.5}, {"time": 1779998401, "value": 206.75}, {"time": 1780335600, "value": 546.0}, {"time": 1780344000, "value": 568.5}, {"time": 1780430400, "value": 682.75}, {"time": 1780500000, "value": 510.75}, {"time": 1780596000, "value": 930.0}, {"time": 1780945800, "value": 671.25}, {"time": 1781197200, "value": 457.25}, {"time": 1781206200, "value": 1247.5}, {"time": 1781553600, "value": 1387.75}, {"time": 1781630400, "value": 1263.25}, {"time": 1781719200, "value": 1107.75}];
+  series.setData(raw);
+  chart.timeScale().fitContent();
+  window.addEventListener('resize', () => {
+    chart.applyOptions({ width: el.clientWidth });
+  });
+})();
+</script>
+
+  <h2>Analysis — all legs pooled</h2>
+  
+<h3>All legs pooled (exit-time order, all folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>42.6%</td><td>Actual WR 42.0%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.176</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:40.0 / L:14.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples (clipped ±10.0R)</td><td class='num'>win:1.125 loss:-0.927</td><td>Clipped mean is robust to variable-stop outliers</td></tr><tr><td>Median R multiples</td><td class='num'>win:1.058 loss:-1.047</td><td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>74.0%</td><td>losses 279 / events 279</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>26.0%</td><td>losses 98 / events 256</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>BUY</code></td><td class='num'>58.0%</td><td>377 losses / 650 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>opening_range_breakout</code></td><td class='num'>377</td><td>100.0% of all losses · 650 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>86</td><td>22.8% of all losses; 165 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>87</td><td>23.1% of all losses; 164 entries this weekday</td></tr><tr><td>Wed</td><td class='num'>109</td><td>28.9% of all losses; 161 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>95</td><td>25.2% of all losses; 160 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>-0.3796</td><td>When bars_held is lower, losing trades are slightly more common (Pearson r≈-0.38); treat as exploratory—causation not implied.</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>-0.0633</td><td>Weak linear association between initial_risk_dollars and losing trades (|r|≈0.06).</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0531</td><td>Weak linear association between entry_hour_et and losing trades (|r|≈0.05).</td></tr></tbody></table>
+
+  <h2>Analysis — per strategy × symbol (merged folds)</h2>
+  
+<h3>opening_range_breakout · MGC (merged folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>43.3%</td><td>Actual WR 37.5%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>-0.884</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:34.5 / L:12.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples (clipped ±10.0R)</td><td class='num'>win:1.244 loss:-0.996</td><td>Clipped mean is robust to variable-stop outliers</td></tr><tr><td>Median R multiples</td><td class='num'>win:1.761 loss:-1.077</td><td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>75.5%</td><td>losses 151 / events 151</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>24.5%</td><td>losses 49 / events 106</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>BUY</code></td><td class='num'>62.5%</td><td>200 losses / 320 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>opening_range_breakout</code></td><td class='num'>200</td><td>100.0% of all losses · 320 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>49</td><td>24.5% of all losses; 81 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>44</td><td>22.0% of all losses; 77 entries this weekday</td></tr><tr><td>Wed</td><td class='num'>57</td><td>28.5% of all losses; 84 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>50</td><td>25.0% of all losses; 78 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>-0.3107</td><td>When bars_held is lower, losing trades are slightly more common (Pearson r≈-0.31); treat as exploratory—causation not implied.</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>0.0015</td><td>Weak linear association between initial_risk_dollars and losing trades (|r|≈0.00).</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.0839</td><td>When entry_hour_et is higher, losing trades are slightly more common (Pearson r≈0.08); treat as exploratory—causation not implied.</td></tr></tbody></table>
+
+<h3>opening_range_breakout · MNQ (merged folds)</h3>
+<h4>Performance insights</h4>
+<table><thead><tr><th>Metric</th><th class="num">Value</th><th>Note</th></tr></thead>
+<tbody><tr><td>Breakeven win rate (from avg win / avg loss)</td><td class='num'>43.3%</td><td>Actual WR 46.4%</td></tr><tr><td>Recovery factor (total PnL / sequential max DD)</td><td class='num'>1.077</td><td>Higher is better; uses fold-style cumulative PnL DD</td></tr><tr><td>Median bars held</td><td class='num'>W:42.0 / L:16.0</td><td>Win vs loss holding time</td></tr><tr><td>Avg R multiples (clipped ±10.0R)</td><td class='num'>win:1.032 loss:-0.85</td><td>Clipped mean is robust to variable-stop outliers</td></tr><tr><td>Median R multiples</td><td class='num'>win:0.821 loss:-1.035</td><td>Non-parametric central tendency; use when n_clipped &gt; 0</td></tr></tbody></table>
+<h4>Losses by exit reason</h4>
+<table><thead><tr><th>exit_reason</th><th class="num">% of losses</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>stop_loss</code></td><td class='num'>72.3%</td><td>losses 128 / events 128</td></tr><tr><td><code>replay_force_flat_et</code></td><td class='num'>27.7%</td><td>losses 49 / events 150</td></tr></tbody></table>
+<h4>Loss rate by side</h4>
+<table><thead><tr><th>side</th><th class="num">Loss rate</th><th>detail</th></tr></thead>
+<tbody><tr><td><code>BUY</code></td><td class='num'>53.6%</td><td>177 losses / 330 trades</td></tr></tbody></table>
+<h4>Loss mix by strategy leg</h4>
+<p class="muted">Populated when trades carry <code>_strategy</code> from the recap report (multi-strategy runs).</p>
+<table><thead><tr><th>strategy</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td><code>opening_range_breakout</code></td><td class='num'>177</td><td>100.0% of all losses · 330 trades in leg</td></tr></tbody></table>
+<h4>Loss count by entry weekday (ET)</h4>
+<table><thead><tr><th>Weekday</th><th class="num">Losses</th><th>Context</th></tr></thead>
+<tbody><tr><td>Mon</td><td class='num'>37</td><td>20.9% of all losses; 84 entries this weekday</td></tr><tr><td>Tue</td><td class='num'>43</td><td>24.3% of all losses; 87 entries this weekday</td></tr><tr><td>Wed</td><td class='num'>52</td><td>29.4% of all losses; 77 entries this weekday</td></tr><tr><td>Thu</td><td class='num'>45</td><td>25.4% of all losses; 82 entries this weekday</td></tr></tbody></table>
+<h4>Linear association with losses (exploratory)</h4>
+<p class="muted">Pearson correlation between a 0/1 <em>loss indicator</em> and each factor. Values near 0 mean
+no obvious linear pattern in this sample; |r|&gt;0.15 is a loose rule-of-thumb for “worth eyeballing” only.</p>
+<table><thead><tr><th>Factor</th><th class="num">r vs loss</th><th>Interpretation</th></tr></thead>
+<tbody><tr><td><code>bars_held</code></td><td class='num'>-0.431</td><td>When bars_held is lower, losing trades are slightly more common (Pearson r≈-0.43); treat as exploratory—causation not implied.</td></tr><tr><td><code>initial_risk_dollars</code></td><td class='num'>-0.075</td><td>Weak linear association between initial_risk_dollars and losing trades (|r|≈0.08).</td></tr><tr><td><code>entry_hour_et</code></td><td class='num'>0.022</td><td>Weak linear association between entry_hour_et and losing trades (|r|≈0.02).</td></tr></tbody></table>
+
+  <h2 id="config-snapshot">Replay configuration (exact TOML)</h2>
+<p class="muted">Each strategy's <code>config/strategies/&lt;name&gt;.toml</code> is copied verbatim into <code>config/&lt;name&gt;.toml</code> next to this report. Reproduce the run by dropping the snapshot back into <code>config/strategies/</code> and re-applying any environment overrides listed below (mirrors <code>StrategyConfig</code> precedence: CLI &gt; env &gt; TOML &gt; default).</p>
+<p class="muted">Machine-readable bundle: <a href="strategy_configs.json"><code>strategy_configs.json</code></a>.</p>
+<h3>opening_range_breakout</h3><p class='muted'>source: <code>/Users/risu/tradeBotServer/config/strategies/opening_range_breakout.toml</code> · snapshot: <a href="config/opening_range_breakout.toml"><code>config/opening_range_breakout.toml</code></a></p><table><thead><tr><th>env override</th><th>value</th></tr></thead><tbody><tr><td colspan='2' class='muted'>— none —</td></tr></tbody></table><details><summary>Show TOML (4601 chars)</summary><pre><code># Opening Range Breakout (ORB) — same-day breakout strategy (R1 committed).
+#
+# Created 2026-06-09 to test ORB-style alpha that ``overnight_range`` could
+# not measure cleanly (its ``track_overnight_range`` hard-codes a 1-minute
+# history fetch with a 10-bar minimum — silently produces zero trades for
+# windows &lt; ~60 min when the backtest CSV is 5m).  See
+# ``strategies/opening_range_breakout_strategy.py`` module docstring.
+#
+# ── R1 sweep results (2026-06-09 evening, MNQ-focused, 09:30 → 10:30
+#    60-min window, long-only, skip Friday):
+#       9m walk-forward:  RF 4.09  ret +151.94 %  DD 31.23 %  WR 56.25 %  n=80
+#       6m walk-forward:  RF 3.66  ret +131.86 %  DD 33.24 %  WR 54.72 %  n=53
+#       3m walk-forward:  RF 4.67  ret +142.24 %  DD 25.16 %  WR 56.67 %  n=30
+#    ON 3m THIS BEATS overnight_range R24 (RF 2.20 / +39.67 % / DD 18 %)
+#    BY 2.1× — the most recent quarter is where ORB has the clean edge.
+#    Sweep artifacts: docs/perf/_opt_runs/orb_strategy_mnq_focused/
+#
+#    Mechanism: post-09:30 open shows a clean range-break trend bias in
+#    current data; the long side of a 60-min ORB rides into the NY
+#    morning trend.  Short side and 15/30-min ORBs lose money (range too
+#    narrow → false breaks).  Friday is the worst-edge day (49 % WR /
+#    average MFE drift) — skipped.  MGC ORB consistently loses (~–$45
+#    avg loss per fold across windows) → MGC excluded from rotation.
+#
+# ── DD note: 25–33 % DD across all 3 windows is HIGH for a prop firm.
+#    Run on a higher-balance account ($25k+) with position_size = 1 so
+#    a single drawdown sequence stays inside the $1 000 daily-loss cap.
+#    Consider lowering to position_size = 0 (disabled) on shared-cap
+#    accounts.
+
+# Executor wall-clock window (US/Eastern).  Wider than the strategy's own
+# build / fade gates so the bar feed is alive throughout the session.
+start_time     = &quot;09:25&quot;
+end_time       = &quot;16:00&quot;
+no_trade_start = &quot;&quot;
+no_trade_end   = &quot;&quot;
+
+[meta]
+enabled = true
+# Live consec-loss breaker bridge — subscribe to TRADE_CLOSED events so the
+# signal.max_consecutive_losses breaker runs in live mode as well as backtest.
+live_breaker_enabled = true
+# MNQ-only at promotion.  MGC ORB is consistently negative on current data
+# (sweep evidence in docs/perf/_opt_runs/orb_strategy/ and orb_strategy_mnq_focused/).
+symbols    = [&quot;MNQ&quot;]
+timeframe  = &quot;5m&quot;
+
+[risk]
+position_size      = 1
+max_positions      = 1
+max_daily_trades   = 1
+risk_per_trade_pct = 0.5
+respect_dll        = true
+respect_mll        = true
+max_dll_usage_pct  = 0.75
+
+[signal]
+timeframe         = &quot;5m&quot;
+lookback_bars     = 400
+session_timezone  = &quot;America/New_York&quot;
+# 60-min ORB — the winning window from the R1 sweep.  See [meta] for the
+# truth metrics.  Shorter windows (15/30/45 min) all fail to beat
+# overnight_range R24 across walk-forwards.
+range_start       = &quot;09:30&quot;
+range_end_open    = &quot;10:30&quot;
+flat_before       = &quot;15:55&quot;
+
+# 0 = off.  Width filters were tested in R1 (with_width_filter trial:
+# 9 trades / 9m / RF 3.96) — clean but n is too small to commit; revisit
+# in R2 with a wider band (10-150) to see if a useful subset emerges.
+min_range_width_points = 0.0
+max_range_width_points = 0.0
+
+# Bracket geometry — range-width fraction (self-scaling).  R1 used the
+# defaults (50 % stop / 100 % TP); these stand as committed.
+use_atr_geometry         = false
+stop_range_pct           = 0.5
+tp_range_pct             = 1.0
+stop_atr_multiplier      = 1.0
+tp_atr_multiplier        = 2.0
+atr_period               = 14
+stop_entry_buffer_points = 0.0
+
+# Long-only — R1 confirmed the short side is broken in current regime
+# (orb_60min_930_1030 both-sides: 9m RF 0.47, vs long_only 0.86).
+allow_long  = true
+allow_short = false
+max_hold_bars = 0
+
+# ── Cross-session consec-loss breaker (R1 left off pending more live data).
+max_consecutive_losses             = 0
+loss_streak_cooldown_sessions      = 0
+rolling_pnl_loss_threshold_dollars = 0
+
+[filters]
+# Skip Friday — R1 found Friday has the worst WR (49 %) and weakest mean R,
+# matching the &quot;Friday afternoon mean-revert&quot; effect documented across the
+# arsenal (see overnight_range MNQ skip_weekdays = [0, 1, 4] for the same
+# pattern on a different mechanic).
+skip_weekdays = [4]
+
+# ─────────────────── per-symbol overrides ────────────────────
+[symbols.MNQ.risk]
+position_size = 1
+[symbols.MNQ.signal]
+
+[symbols.MGC.risk]
+# Disabled — MGC ORB consistently loses (R1: MGC -$14 to -$78 per fold).
+position_size = 0
+[symbols.MGC.signal]
+
+[symbols.MES.risk]
+# Disabled — not in active rotation; revisit if a MES-specific tune surfaces.
+position_size = 0
+[symbols.MES.signal]
+</code></pre></details>
+</body>
+</html>

@@ -216,6 +216,10 @@ class OvernightRangeStrategy(BaseStrategy):
         self.breakout_min_proximity_points = float(self._cfg.get_float("breakout_monitor.min_proximity_points", 5.0))
         self.breakout_monitor_interval = float(self._cfg.get_float("breakout_monitor.interval_seconds", 15.0))
         self.breakout_order_tolerance_points = float(self._cfg.get_float("breakout_monitor.order_tolerance_points", 1.0))
+        # Exit policy (replay): scratch underwater / stagnant breakouts early.
+        # 0 check bars = off. Targets the 0–3 bar false-breakout bucket.
+        self.scratch_check_bars: int = int(self._cfg.get_int("signal.scratch_check_bars", 0) or 0)
+        self.scratch_min_r: float = float(self._cfg.get_float("signal.scratch_min_r", 0.0) or 0.0)
         self.breakout_levels: Dict[str, Dict[str, RangeBreakOrder]] = {}
         self.breakout_active_orders: Dict[str, Dict[str, str]] = {}
         self._breakout_monitor_task: Optional[asyncio.Task] = None
@@ -647,6 +651,49 @@ class OvernightRangeStrategy(BaseStrategy):
         except TypeError:
             return frozenset(int(x) for x in (self.filter_skip_weekdays or []))
         return frozenset(out)
+
+    def discord_daily_brief(self, now_et: Optional[datetime] = None) -> List[str]:
+        """ET session plan for Discord hourly digest."""
+        if now_et is None:
+            now_et = datetime.now(self.timezone)
+        d = now_et.date()
+        t = now_et.time()
+        lines: List[str] = []
+        syms = [str(s).upper() for s in (self.config.symbols or [])]
+        if not syms:
+            lines.append("no symbols configured")
+            return lines
+
+        from core.market_calendar import equity_futures_session_note
+
+        cal = equity_futures_session_note(d)
+        if not cal.get("trade_recommended", True):
+            lines.append(f"calendar skip: {cal.get('reason', 'closed')}")
+            return lines
+
+        mo = self._parse_cfg_time(self.market_open_time)
+        lines.append(
+            f"window: overnight range → breakout at {self.market_open_time} ET "
+            f"(zone anchor {self.zone_anchor_time})"
+        )
+
+        for sym in syms:
+            skip = self._overnight_symbol_skip_weekdays(sym)
+            if d.weekday() in skip:
+                lines.append(f"{sym}: SKIP today ({d.strftime('%a')} in skip_weekdays)")
+                continue
+            if t < mo:
+                lines.append(f"{sym}: TRACK overnight range (market open {self.market_open_time} ET)")
+            else:
+                placed = sym in getattr(self, "breakout_active_orders", {}) or sym in getattr(
+                    self, "breakout_levels", {}
+                )
+                if placed:
+                    lines.append(f"{sym}: brackets placed / monitoring breakout")
+                else:
+                    lines.append(f"{sym}: post-open — scan/monitor active")
+
+        return lines
 
     def _filter_pct_for_symbol(
         self,
@@ -1380,6 +1427,9 @@ class OvernightRangeStrategy(BaseStrategy):
         ``place_range_break_orders``).
         """
         try:
+            # Replay: scratch stagnant / underwater breakouts before new signals.
+            await self.manage_positions()
+
             symbol = symbol.upper()
 
             now_et = self._effective_now_et()
@@ -1502,11 +1552,76 @@ class OvernightRangeStrategy(BaseStrategy):
             return False
     
     async def manage_positions(self):
-        """
-        Manage open positions - handled by monitor_breakeven_stops().
-        """
-        # Breakeven monitoring is handled by the background task
-        pass
+        """Replay scratch exit for false breakouts; live brackets handle the rest."""
+        if self.scratch_check_bars <= 0:
+            return
+        bot = self.trading_bot
+        engine = getattr(bot, "backtest_engine", None) or getattr(self, "_replay_engine", None)
+        if engine is None:
+            return
+        positions = getattr(engine, "positions", None) or {}
+        if not positions:
+            return
+
+        from core.backtest.models import OrderSide, OrderType
+
+        for sym, pos in list(positions.items()):
+            entry_bar_idx = getattr(pos, "entry_bar_index", None)
+            if entry_bar_idx is None or not hasattr(engine, "current_bar_index"):
+                continue
+            held = int(engine.current_bar_index) - int(entry_bar_idx)
+            if held < self.scratch_check_bars:
+                continue
+
+            entry = float(getattr(pos, "entry_price", 0.0) or 0.0)
+            stop = getattr(pos, "stop_loss", None)
+            px = float(getattr(pos, "current_price", entry) or entry)
+            if stop is None or entry <= 0:
+                continue
+            risk_pts = abs(entry - float(stop))
+            if risk_pts <= 1e-12:
+                continue
+            side = getattr(pos, "side", None)
+            if side == OrderSide.BUY:
+                r_mult = (px - entry) / risk_pts
+            else:
+                r_mult = (entry - px) / risk_pts
+            if r_mult >= float(self.scratch_min_r):
+                continue
+
+            pending = getattr(engine, "pending_orders", None) or []
+            for o in list(pending):
+                if getattr(o, "symbol", "") != sym:
+                    continue
+                if not getattr(o, "oco_group", None):
+                    continue
+                try:
+                    pending.remove(o)
+                except ValueError:
+                    pass
+
+            close_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
+            try:
+                close_id = engine.place_order(
+                    symbol=sym,
+                    side=close_side,
+                    quantity=int(getattr(pos, "quantity", 1)),
+                    order_type=OrderType.MARKET,
+                    price=px,
+                )
+                for o in engine.pending_orders:
+                    if o.order_id == close_id:
+                        o.exit_reason = "scratch"
+                        break
+                logger.debug(
+                    "overnight_range scratch-close %s after %d bars (need R>=%.2f, have %.2f)",
+                    sym,
+                    held,
+                    self.scratch_min_r,
+                    r_mult,
+                )
+            except Exception as exc:
+                logger.debug("overnight_range scratch-close failed for %s: %s", sym, exc)
     
     async def cleanup(self):
         """
@@ -4200,9 +4315,9 @@ class OvernightRangeStrategy(BaseStrategy):
         self.breakout_monitor_interval = float(
             self._cfg.get_float("breakout_monitor.interval_seconds", self.breakout_monitor_interval)
         )
-        self.breakout_order_tolerance_points = float(
-            self._cfg.get_float("breakout_monitor.order_tolerance_points", self.breakout_order_tolerance_points)
-        )
+        self.breakout_order_tolerance_points = float(self._cfg.get_float("breakout_monitor.order_tolerance_points", self.breakout_order_tolerance_points))
+        self.scratch_check_bars = int(self._cfg.get_int("signal.scratch_check_bars", self.scratch_check_bars) or 0)
+        self.scratch_min_r = float(self._cfg.get_float("signal.scratch_min_r", self.scratch_min_r) or 0.0)
 
         self.filter_range_size_enabled = self._cfg.get_bool("filters.range_size", self.filter_range_size_enabled)
         root_filters = self._cfg._data.get("filters") or {}

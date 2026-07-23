@@ -162,7 +162,7 @@ All variables are documented in [`.env.example`](../.env.example). Critical ones
 | `JWT_TOKEN` | Pre-set JWT (optional) | `core/auth.py` refreshes it automatically; leave blank to let auth handle it |
 | `DATABASE_URL` | Postgres connection string | `postgresql://user:pass@host:5432/db`; required for persistence |
 | `DISCORD_WEBHOOK_URL` | Discord alert channel | Leave blank to disable Discord alerts |
-| `DISCORD_STATUS_INTERVAL_SECONDS` | Periodic status digest to webhook | `0` = off; e.g. `900` for every 15 minutes (`trading_bot` / `strategy_executor`) |
+| `DISCORD_STATUS_INTERVAL_SECONDS` | Periodic status digest to webhook | `0` = off; `3600` = hourly (`trading_bot` / `strategy_executor`) |
 | `TOPSTEPX_USE_RUST` | Enable Rust hotpath | `false` by default; set `1`/`true` only after building `rust/` |
 | `DAILY_LOSS_LIMIT` | Global drawdown limit | Enforced in `core/risk_management.py`; overrides TOML |
 | `INITIAL_BALANCE` | Account balance for risk sizing | Used in position sizing math |

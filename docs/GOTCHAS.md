@@ -69,7 +69,13 @@ See `core/range_history_backfill._session_window_utc_slice`. Never store naive U
 
 - Citation: [core/backtest/engine.py](../core/backtest/engine.py), [core/backtest/strategy_replay.py](../core/backtest/strategy_replay.py).
 
-- **`morning_range_reversion.signal.reentry_threshold_points`** (> 0): on the **first 5m close outside** the 7–8am anchor, immediately place a resting stop-entry ``threshold`` pts back inside the box (low sweep → BUY STOP at L + threshold; high sweep → SELL STOP at H − threshold), same intent as **overnight_range** advance brackets. The order rests until price trades through the level (e.g. May 19 2026: sweep close 9:20 ET → stop at 28860.75 → fill 9:30 open rip). TOML default **7 pts** (MNQ); MES/MGC overrides use **0** (legacy candle-close) until tuned. With threshold **0**, legacy `require_reentry_close` / immediate-at-extreme paths apply; replay fills are honest thanks to the stop-direction guard above.
+- **`morning_range_reversion.signal.reentry_threshold_points`** (> 0): on the **first 5m close outside** the 7–8am anchor, immediately place a resting stop-entry ``threshold`` pts back inside the box (low sweep → BUY STOP at L + threshold; high sweep → SELL STOP at H − threshold), same intent as **overnight_range** advance brackets. The order rests until price trades through the level (e.g. May 19 2026: sweep close 9:20 ET → stop at 28860.75 → fill 9:30 open rip). TOML root default **1 pt**; MNQ often higher via override; **MGC uses 1.0** (2026-07-15 — was 0.0 exact-H, which TopStepX often rejected as Invalid price). With threshold **0**, legacy `require_reentry_close` / immediate-at-extreme paths apply; replay fills are honest thanks to the stop-direction guard above.
+
+- **Chart `↑ swept` ≠ working broker order.** GUI reads `sweep_fired_high` from strategy state. Before 2026-07-15 an Invalid-price reject also set that flag, so the orange line appeared with 0 fills / 0 orders (2026-07-09 MGC @ 4120.40). Invalid-price rejects now only set `immediate_block_until_inside` and re-arm after a close back inside `[L,H]`.
+
+- **Account on Position Brackets rejects native OCO payloads.** Broker error: `Brackets cannot be used with Position Brackets. You must enable Auto OCO Brackets.` (Code 2). **Default:** one-shot Discord + `BRACKET_MODE_ALERT` (enable Auto OCO in ProjectX) and **refuse** the order — no silent hybrid fallback (hybrid left orphans in live smoke). Opt-in hybrid for debug only: `TOPSTEPX_BRACKET_MODE=position|hybrid`. Prefer enabling Auto OCO Brackets on the account.
+
+- **`./scripts/refresh_historical.sh` must not open Railway Postgres.** It forces `DISABLE_DATABASE=1`, short `API_TIMEOUT`, and unsets `DATABASE_URL`. Stitch scripts use `core/broker_history_session.py` (no full bot). If auth fails they exit 1 — they must not print `✅ ok` and keep going.
 
 - **`morning_range_reversion` — R-ratio structural problem.** With entry at `L + threshold` and the default stop at `L - half × sl_mult` (stop anchored to the **range extreme**, not to entry), the risk is `half + threshold` while the reward is only `half - threshold`. On a 50-pt range (half=25) with threshold=7: risk=32 pts, reward=18 pts → breakeven WR = 32/(32+18) = 64 %; including $5 commission the breakeven rises to ~69 %. The 700-day MNQ replay had a 65.5 % actual WR and only 0.91 PF as a result. **Fix: `signal.sl_fixed_pts`** — when set to e.g. `14` (= 2 × threshold), stop moves to `entry − 14` (LONG) and breakeven WR drops to ~52 %, giving +EV at 65.5 % WR. Walk-forward before deploying live; a tighter stop will increase the stop-loss-hit rate.
 
@@ -108,7 +114,8 @@ The `StrategyManager._run_strategy` loop **does not poll on a fixed 60 s timer a
 ### Ops / deploy hygiene
 
 - **Legacy cron → webhook**: If an old machine still runs `curl` to a retired Railway URL on a schedule, remove the line from `crontab -e` (or launchd plist) so you are not hammering a dead endpoint. Railway: cancel the project in the Railway dashboard when decommissioning; env vars there are not auto-deleted from your shell profile.
-- **Discord heartbeat**: Optional `DISCORD_STATUS_INTERVAL_SECONDS` + `DISCORD_WEBHOOK_URL` sends a short status digest from the interactive bot or `strategy_executor` (see [core/discord_notifier.py](../core/discord_notifier.py)).
+- **Discord heartbeat**: Optional `DISCORD_STATUS_INTERVAL_SECONDS` (default **3600** in run scripts) + `DISCORD_WEBHOOK_URL` sends a status digest with account stats and an ET **daily strategy briefing** (`DISCORD_STATUS_INCLUDE_DAILY=1`, default on). See [core/discord_status_digest.py](../core/discord_status_digest.py).
+- **Discord trade/signal tiers**: `DISCORD_NOTIFY_SIGNALS` (default **on** when unset), `DISCORD_NOTIFY_ORDERS` (default off), `DISCORD_NOTIFY_FILLS`, `DISCORD_NOTIFY_FEED`. Heartbeat ignores these flags. Quoted values like `"1"` are accepted.
 
 ### Environment variables
 

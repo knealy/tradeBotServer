@@ -1,0 +1,11 @@
+[
+  {"label": "baseline", "root": {}},
+  {"label": "atr10", "root": {"filters.atr_min_pct": 0.10}},
+  {"label": "mgc_tp225", "symbols": {"MGC": {"signal.tp_atr_multiplier": 2.25}}},
+  {"label": "trail25", "root": {"position_management.trail_steps_r": [[2.5, 1.25]]}},
+  {
+    "label": "stack_atr10_tp225",
+    "root": {"filters.atr_min_pct": 0.10},
+    "symbols": {"MGC": {"signal.tp_atr_multiplier": 2.25}}
+  }
+]

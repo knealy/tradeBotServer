@@ -12,6 +12,34 @@ from core.interfaces import PositionInterface
 logger = logging.getLogger(__name__)
 
 
+def _order_type_is_stop(order_type) -> bool:
+    if isinstance(order_type, int):
+        return order_type in (3, 4)
+    s = str(order_type or "").strip().upper()
+    return s in ("3", "4", "STOP") or "STOP" in s
+
+
+def _order_type_is_limit(order_type) -> bool:
+    if isinstance(order_type, int):
+        return order_type == 1
+    s = str(order_type or "").strip().upper()
+    return s in ("1", "LIMIT") or "LIMIT" in s
+
+
+def _position_is_long(side) -> bool:
+    """Normalize Position.side which may be 0/1 or LONG/SHORT."""
+    if side in (0, "0"):
+        return True
+    if side in (1, "1"):
+        return False
+    s = str(side or "").strip().upper()
+    if s in ("LONG", "BUY", "B"):
+        return True
+    if s in ("SHORT", "SELL", "S"):
+        return False
+    return True  # default long if unknown
+
+
 class PositionManager:
     """
     Manages position-related operations.
@@ -69,18 +97,25 @@ class PositionManager:
             # Find the stop loss order (type 4 = Stop order)
             stop_order = None
             for order in linked_orders:
-                if order.get('type') == 4:  # Stop order type
+                if _order_type_is_stop(order.get('type')):
                     stop_order = order
                     break
+
+            symbol = (position.symbol or "").upper()
+            if symbol and hasattr(self.broker_adapter, "_get_tick_size") and hasattr(self.broker_adapter, "_round_to_tick_size"):
+                try:
+                    tick = await self.broker_adapter._get_tick_size(symbol)
+                    new_stop_price = self.broker_adapter._round_to_tick_size(float(new_stop_price), tick)
+                except Exception as exc:
+                    logger.debug("Stop-loss tick round skipped for %s: %s", symbol, exc)
 
             if not stop_order:
                 # No stop order exists - create a new one
                 logger.info(f"No stop loss found for position {position_id}, creating new stop order at ${new_stop_price}")
                 
                 # Determine the side for the stop order (opposite of position)
-                # If position is LONG (side=0), stop should be SELL (side=1)
-                # If position is SHORT (side=1), stop should be BUY (side=0)
-                stop_side = "SELL" if position.side == 0 else "BUY"
+                # If position is LONG, stop should be SELL; SHORT → BUY
+                stop_side = "SELL" if _position_is_long(position.side) else "BUY"
                 
                 # Place the stop order
                 result = await self.broker_adapter.place_stop_order(
@@ -100,15 +135,15 @@ class PositionManager:
                 else:
                     return result
             
-            stop_order_id = str(stop_order.get('id', ''))
+            stop_order_id = str(stop_order.get('id') or stop_order.get('orderId') or '')
             
             # Modify the stop loss order (only price, not size)
             result = await self.broker_adapter.modify_order(
                 order_id=stop_order_id,
-                new_quantity=None,  # Don't change size
-                new_price=new_stop_price,
+                quantity=None,
+                price=new_stop_price,
                 account_id=account_id,
-                order_type=4  # Stop order
+                order_type=4,  # Stop order
             )
             
             if hasattr(result, 'success') and not result.success:
@@ -168,18 +203,25 @@ class PositionManager:
             # Find the take profit order (type 1 = Limit order, opposite side of position)
             tp_order = None
             for order in linked_orders:
-                if order.get('type') == 1:  # Limit order type (take profit)
+                if _order_type_is_limit(order.get('type')):
                     tp_order = order
                     break
+
+            symbol = (position.symbol or "").upper()
+            if symbol and hasattr(self.broker_adapter, "_get_tick_size") and hasattr(self.broker_adapter, "_round_to_tick_size"):
+                try:
+                    tick = await self.broker_adapter._get_tick_size(symbol)
+                    new_tp_price = self.broker_adapter._round_to_tick_size(float(new_tp_price), tick)
+                except Exception as exc:
+                    logger.debug("Take-profit tick round skipped for %s: %s", symbol, exc)
 
             if not tp_order:
                 # No TP order exists - create a new one
                 logger.info(f"No take profit found for position {position_id}, creating new limit order at ${new_tp_price}")
                 
                 # Determine the side for the TP order (opposite of position)
-                # If position is LONG (side=0), TP should be SELL (side=1)
-                # If position is SHORT (side=1), TP should be BUY (side=0)
-                tp_side = "SELL" if position.side == 0 else "BUY"
+                # If position is LONG, TP should be SELL; SHORT → BUY
+                tp_side = "SELL" if _position_is_long(position.side) else "BUY"
                 
                 # Place the limit order as take profit
                 result = await self.broker_adapter.place_limit_order(
@@ -199,15 +241,15 @@ class PositionManager:
                 else:
                     return result
             
-            tp_order_id = str(tp_order.get('id', ''))
+            tp_order_id = str(tp_order.get('id') or tp_order.get('orderId') or '')
             
             # Modify the take profit order (only price, not size)
             result = await self.broker_adapter.modify_order(
                 order_id=tp_order_id,
-                new_quantity=None,  # Don't change size
-                new_price=new_tp_price,
+                quantity=None,
+                price=new_tp_price,
                 account_id=account_id,
-                order_type=1  # Limit order
+                order_type=1,  # Limit order
             )
             
             if hasattr(result, 'success') and not result.success:

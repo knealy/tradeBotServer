@@ -399,11 +399,17 @@ class DatabaseManager:
         self._api_metrics_batcher: Optional[_ApiMetricsBatcher] = None
         self._strategy_exec_batcher: Optional[_StrategyExecutionsBatcher] = None
         self._notifications_batcher: Optional[_NotificationsBatcher] = None
+        self.pool = None
+        # Offline stitch / export scripts set DISABLE_DATABASE=1 so they never
+        # block on unreachable Railway DNS (refresh_historical hang, 2026-07-15).
+        if str(os.getenv("DISABLE_DATABASE", "") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            logger.info("Database disabled (DISABLE_DATABASE) — memory-only mode")
+            return
         if not psycopg2:
             logger.warning("⚠️  psycopg2 not available - database features will be disabled")
-            self.pool = None
             return
-        self.pool = None
         self._initialize_pool()
         if self.pool and execute_values and _async_api_metrics_enabled():
             self._api_metrics_batcher = _ApiMetricsBatcher(self)
@@ -520,10 +526,16 @@ class DatabaseManager:
             params = self._get_connection_params()
             
             _mn, _mx = _db_pool_bounds()
+            try:
+                connect_timeout = int(os.getenv("PG_CONNECT_TIMEOUT", "3") or 3)
+            except ValueError:
+                connect_timeout = 3
+            pool_kwargs = dict(params)
+            pool_kwargs.setdefault("connect_timeout", connect_timeout)
             self.pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=_mn,
                 maxconn=_mx,
-                **params
+                **pool_kwargs
             )
             
             # Test the connection (don't close it - just check it's alive)
@@ -570,6 +582,11 @@ class DatabaseManager:
                 local_params['password'] = os.getenv('POSTGRES_PASSWORD')
             
             _mn, _mx = _db_pool_bounds()
+            try:
+                connect_timeout = int(os.getenv("PG_CONNECT_TIMEOUT", "3") or 3)
+            except ValueError:
+                connect_timeout = 3
+            local_params.setdefault("connect_timeout", connect_timeout)
             self.pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=_mn,
                 maxconn=_mx,
@@ -647,6 +664,8 @@ class DatabaseManager:
     
     def _initialize_schema(self):
         """Create database schema if it doesn't exist."""
+        if not self.pool:
+            return
         logger.info("🔨 Initializing database schema...")
         
         schema_sql = """

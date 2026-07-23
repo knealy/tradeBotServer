@@ -1,0 +1,28 @@
+[
+  {
+    "order_id": "3307860883",
+    "timestamp": "2026-07-23T06:02:21.198515+00:00",
+    "strategy_name": "manual",
+    "signal_reason": null,
+    "signal_score": null,
+    "config_snapshot": null,
+    "execution_method": "python",
+    "entry_trigger": "limit",
+    "symbol": "MNQ",
+    "side": "BUY",
+    "quantity": 1
+  },
+  {
+    "order_id": "3307863692",
+    "timestamp": "2026-07-23T06:03:48.287182+00:00",
+    "strategy_name": "manual",
+    "signal_reason": null,
+    "signal_score": null,
+    "config_snapshot": null,
+    "execution_method": "python",
+    "entry_trigger": "limit",
+    "symbol": "MNQ",
+    "side": "SELL",
+    "quantity": 1
+  }
+]

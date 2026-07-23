@@ -236,6 +236,8 @@ class StrategyExecutor:
             try:
                 await self.trading_bot.event_bus.start()
                 logger.info("📡 Event bus started for strategy executor")
+                if hasattr(self.trading_bot, "ensure_discord_event_notifications"):
+                    self.trading_bot.ensure_discord_event_notifications()
             except Exception as e:
                 logger.warning(f"⚠️  Could not start event bus: {e}")
         
@@ -320,10 +322,27 @@ class StrategyExecutor:
         hang = asyncio.get_running_loop().create_future()
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         discord_status_task = None
-        _dst = int(os.getenv("DISCORD_STATUS_INTERVAL_SECONDS", "0") or "0")
+        from core.discord_status_digest import discord_status_interval_seconds
+
+        _dst = discord_status_interval_seconds()
         if _dst > 0:
             discord_status_task = asyncio.create_task(self.trading_bot._discord_status_reporter_loop())
             logger.info("Discord status reporter started (every %ss)", _dst)
+        # Fill Discord embeds: real-time via event bus (wired at startup) plus
+        # polling backup — headless executor never ran ``auto_fills`` before.
+        try:
+            from core.discord_notifier import notify_fills_enabled
+
+            if (
+                notify_fills_enabled()
+                and getattr(self.trading_bot, "discord_notifier", None)
+                and self.trading_bot.discord_notifier.enabled
+                and not getattr(self.trading_bot, "_auto_fills_enabled", False)
+            ):
+                asyncio.create_task(self.trading_bot._auto_fill_checker())
+                logger.info("Discord fill polling backup started (check_order_fills)")
+        except Exception as exc:
+            logger.debug("Could not start Discord fill polling backup: %s", exc)
         try:
             await hang
         except asyncio.CancelledError:
@@ -657,6 +676,35 @@ class StrategyExecutor:
                             continue
                     if snap:
                         meta['or_ranges'] = snap
+            if 'morning_range_reversion' in self.running_strategies and hasattr(
+                self.trading_bot, 'strategy_manager'
+            ):
+                mrr = self.trading_bot.strategy_manager.strategies.get('morning_range_reversion')
+                if mrr is not None:
+                    try:
+                        meta['mrr_live_brief'] = list(mrr.discord_daily_brief() or [])
+                    except Exception:
+                        pass
+                    mrr_state: Dict[str, Dict[str, Any]] = {}
+                    state_dict = getattr(mrr, '_state', None) or {}
+                    if isinstance(state_dict, dict):
+                        for sym, st in state_dict.items():
+                            if not isinstance(st, dict):
+                                continue
+                            sd = st.get('session_date')
+                            mrr_state[str(sym).upper()] = {
+                                'phase': st.get('phase'),
+                                'H': st.get('H'),
+                                'L': st.get('L'),
+                                'width': st.get('width'),
+                                'range_ready': st.get('range_ready'),
+                                'sweep_fired_high': st.get('sweep_fired_high'),
+                                'sweep_fired_low': st.get('sweep_fired_low'),
+                                'fades_this_session': st.get('fades_this_session'),
+                                'session_date': sd.isoformat() if hasattr(sd, 'isoformat') else sd,
+                            }
+                    if mrr_state:
+                        meta['mrr_symbol_state'] = mrr_state
             db.save_process_state(
                 process_id=self.process_id,
                 process_type='strategy_executor',

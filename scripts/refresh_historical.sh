@@ -138,7 +138,15 @@ if [[ -z "${PROJECT_X_API_KEY:-}" && -z "${TOPSTEPX_API_KEY:-}" ]]; then
     exit 2
 fi
 
+# History stitch does not need Railway Postgres / SignalR. Sourcing .env
+# above still leaves DATABASE_URL set for the live bot — unset those so a
+# flaky DNS day cannot stall auth for 30–60s per attempt (2026-07-15).
 export ENABLE_SIGNALR=false
+export DISABLE_DATABASE=1
+export API_TIMEOUT="${API_TIMEOUT:-10}"
+export PG_CONNECT_TIMEOUT="${PG_CONNECT_TIMEOUT:-3}"
+export API_CONNECT_TIMEOUT="${API_CONNECT_TIMEOUT:-3}"
+unset DATABASE_URL PUBLIC_DATABASE_URL || true
 
 if [[ $SKIP_5M -eq 0 ]]; then
     echo ""

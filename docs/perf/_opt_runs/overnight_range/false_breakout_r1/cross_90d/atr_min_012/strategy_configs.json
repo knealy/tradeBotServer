@@ -1,0 +1,41 @@
+{
+  "captured_at_utc": "2026-07-23T18:57:12+00:00",
+  "git_head": "ee85c68bf",
+  "strategies": {
+    "overnight_range": {
+      "source_path": "/Users/risu/tradeBotServer/config/strategies/overnight_range.toml",
+      "snapshot_path": "/Users/risu/tradeBotServer/docs/perf/_opt_runs/overnight_range/false_breakout_r1/cross_90d/atr_min_012/config/overnight_range.toml",
+      "data": {
+        "filters": {
+          "atr_min_pct": 0.12
+        }
+      },
+      "env_overrides": {},
+      "error": null
+    }
+  },
+  "replay_env_base": {
+    "ENABLE_SIGNALR": "false",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "cli_extra_env": {
+    "BACKTEST_FAST_LOOP": "1"
+  },
+  "args": {
+    "days": 90,
+    "folds": 6,
+    "strategies": [
+      "overnight_range"
+    ],
+    "symbols": [
+      "MNQ",
+      "MGC"
+    ],
+    "timeframe": "5m",
+    "csv_template": "{csv_dir}/{sym}_5m_databento.csv",
+    "last_trades": 8,
+    "padding_minutes": 360,
+    "sim_start_cash": 2000.0,
+    "dynamic_sizing_max": 15
+  }
+}

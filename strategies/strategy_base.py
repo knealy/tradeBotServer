@@ -608,6 +608,40 @@ class BaseStrategy(ABC):
             session_id=extras.get("session_id"),
         )
         self._live_trade_history.record(rec)
+        bot = self.trading_bot
+        if bot is not None:
+            try:
+                from core.regime_fast_gate import record_trade_for_bot as record_fast_for_bot
+
+                record_fast_for_bot(
+                    bot,
+                    self.config.name,
+                    str(symbol).upper(),
+                    pnl_f,
+                    exit_time=exit_time,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "%s: regime fast record_trade failed: %s",
+                    self.config.name,
+                    exc,
+                )
+            try:
+                from core.regime_kpi_gate import record_trade_for_bot
+
+                record_trade_for_bot(
+                    bot,
+                    self.config.name,
+                    str(symbol).upper(),
+                    pnl_f,
+                    exit_time=exit_time,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "%s: regime KPI record_trade failed: %s",
+                    self.config.name,
+                    exc,
+                )
 
     async def _on_trade_closed_event(self, event: Any) -> None:
         """``EventType.TRADE_CLOSED`` subscriber — forwards into history.
@@ -695,6 +729,10 @@ class BaseStrategy(ABC):
                 unsub()
         except Exception as exc:
             logger.debug("Could not unsubscribe %s from TRADE_CLOSED: %s", self.config.name, exc)
+
+    def discord_daily_brief(self, now_et: Optional[datetime] = None) -> List[str]:
+        """Optional ET-session context for Discord status digest. Override in strategies."""
+        return []
 
     # Common utility methods all strategies can use
     
@@ -881,7 +919,8 @@ class BaseStrategy(ABC):
                                   breakeven_offset: float = 0.0,
                                   *,
                                   partial_tp_enabled: bool = False,
-                                  partial_tp_scalp_r: float = 1.0) -> Dict:
+                                  partial_tp_scalp_r: float = 1.0,
+                                  market_entry: bool = False) -> Dict:
         """
         Place a bracket order using the verified working method (same as CLI stop_bracket command).
         
@@ -1005,6 +1044,84 @@ class BaseStrategy(ABC):
                     q_adj,
                 )
             quantity = q_adj
+
+        # Fast reactive gate — session halt + short rolling throttle (core/regime_fast_gate).
+        if hasattr(bot, "regime_fast_entry_quantity"):
+            try:
+                q_fast = int(bot.regime_fast_entry_quantity(
+                    self.config.name, symbol, quantity,
+                ))
+            except Exception as exc:
+                logger.warning(
+                    "%s: regime_fast_entry_quantity failed (%s) — using qty",
+                    self.config.name,
+                    exc,
+                )
+                q_fast = int(quantity)
+            if q_fast <= 0:
+                msg = "Regime fast gate blocked entry (session halt or throttle)"
+                logger.warning("⚠️  %s: %s", self.config.name, msg)
+                return {"success": False, "error": msg, "orderId": None}
+            if q_fast != quantity:
+                logger.info(
+                    "⚡ %s: regime fast clamped quantity %s → %s",
+                    self.config.name,
+                    quantity,
+                    q_fast,
+                )
+            quantity = q_fast
+
+        # Opt-in calendar-era / regime-label sizing (see core.regime_sizing).
+        if hasattr(bot, "regime_sizing_entry_quantity"):
+            try:
+                q_reg = int(bot.regime_sizing_entry_quantity(
+                    self.config.name, symbol, quantity,
+                ))
+            except Exception as exc:
+                logger.warning(
+                    "%s: regime_sizing_entry_quantity failed (%s) — using qty",
+                    self.config.name,
+                    exc,
+                )
+                q_reg = int(quantity)
+            if q_reg <= 0:
+                msg = "Regime sizing blocked entry (era/regime multiplier)"
+                logger.warning("⚠️  %s: %s", self.config.name, msg)
+                return {"success": False, "error": msg, "orderId": None}
+            if q_reg != quantity:
+                logger.info(
+                    "📊 %s: regime sizing clamped quantity %s → %s",
+                    self.config.name,
+                    quantity,
+                    q_reg,
+                )
+            quantity = q_reg
+
+        # Rolling session KPI vs replay percentiles (see core.regime_kpi_gate).
+        if hasattr(bot, "regime_kpi_entry_quantity"):
+            try:
+                q_kpi = int(bot.regime_kpi_entry_quantity(
+                    self.config.name, symbol, quantity,
+                ))
+            except Exception as exc:
+                logger.warning(
+                    "%s: regime_kpi_entry_quantity failed (%s) — using qty",
+                    self.config.name,
+                    exc,
+                )
+                q_kpi = int(quantity)
+            if q_kpi <= 0:
+                msg = "Regime KPI gate blocked entry (rolling session underperformance)"
+                logger.warning("⚠️  %s: %s", self.config.name, msg)
+                return {"success": False, "error": msg, "orderId": None}
+            if q_kpi != quantity:
+                logger.info(
+                    "📉 %s: regime KPI clamped quantity %s → %s",
+                    self.config.name,
+                    quantity,
+                    q_kpi,
+                )
+            quantity = q_kpi
         
         # ── Per-trade $ loss cap + adaptive sizing ─────────────────────────
         # Hard ceiling on $-at-risk independent of the strategy's internal

@@ -337,7 +337,17 @@ class AuthManager:
         for attempt in range(max_retries + 1):
             try:
                 session = await self._get_session()
-                req_timeout = aiohttp.ClientTimeout(total=timeout)
+                # Preserve connect/sock_connect so a bad DNS host fails in ~3s
+                # instead of burning the full ``API_TIMEOUT`` on getaddrinfo.
+                try:
+                    connect_s = float(os.getenv("API_CONNECT_TIMEOUT", "3") or 3)
+                except ValueError:
+                    connect_s = 3.0
+                req_timeout = aiohttp.ClientTimeout(
+                    total=timeout,
+                    connect=connect_s,
+                    sock_connect=connect_s,
+                )
 
                 async with session.request(
                     method=method.upper(),

@@ -81,6 +81,11 @@ tp_atr_multiplier        = 2.0
 atr_period               = 14
 stop_entry_buffer_points = 0.0
 
+# Entry timing:
+#   stop_bracket — legacy both-side stop brackets at box ± buffer (R1 default)
+#   close_breakout — wait for 5m bar close beyond box, then market bracket
+entry_mode = "close_breakout"
+
 # Long-only — R1 confirmed the short side is broken in current regime
 # (orb_60min_930_1030 both-sides: 9m RF 0.47, vs long_only 0.86).
 allow_long  = true

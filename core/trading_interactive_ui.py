@@ -38,17 +38,23 @@ def setup_readline_for_bot() -> None:
         # If we're completing the first word (command)
         if len(words) == 1:
             commands = [
-                "trade", "limit", "bracket", "native_bracket", "stop", "stop_buy", "stop_sell", "trail",
-                "positions", "orders", "close", "cancel", "modify", "modify_stop", "modify_tp", 
-                "quote", "depth", "history", "monitor", "bracket_monitor", "account_info", "flatten", 
-                "contracts", "accounts", "help", "quit"
+                "trade", "limit", "bracket", "native_bracket", "stop_bracket",
+                "attach_brackets", "hybrid_pending",
+                "stop", "stop_buy", "stop_sell", "trail",
+                "positions", "orders", "close", "cancel", "modify", "modify_stop", "modify_tp",
+                "quote", "depth", "history", "monitor", "bracket_monitor", "account_info", "flatten",
+                "contracts", "accounts", "help", "quit",
             ]
             matches = [cmd for cmd in commands if cmd.startswith(text.lower())]
             if state < len(matches):
                 return matches[state]
         
         # If we're completing after a command, suggest common symbols
-        elif len(words) >= 2 and words[0] in ["trade", "limit", "bracket", "native_bracket", "stop", "stop_buy", "stop_sell", "trail", "quote", "depth", "history"]:
+        elif len(words) >= 2 and words[0] in [
+            "trade", "limit", "bracket", "native_bracket", "stop_bracket",
+            "attach_brackets", "stop", "stop_buy", "stop_sell", "trail",
+            "quote", "depth", "history",
+        ]:
             symbols = ["MNQ", "MES", "MYM", "MGC", "ES", "NQ", "YM", "GC"]
             matches = [sym for sym in symbols if sym.lower().startswith(text.lower())]
             if state < len(matches):
@@ -95,6 +101,9 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
     print("  limit <symbol> <side> <quantity> <price> - Place limit order")
     print("  bracket <symbol> <side> <quantity> <stop_ticks> <profit_ticks> - Place bracket order")
     print("  native_bracket <symbol> <side> <quantity> <stop_price> <profit_price> - Native bracket order")
+    print("  stop_bracket <symbol> <side> <qty> <entry> <sl> <tp> - Stop-entry native Auto OCO")
+    print("  attach_brackets <position_id|symbol> <sl> <tp> - Attach protective SL/TP to a naked position")
+    print("  hybrid_pending - Show hybrid stop-entries waiting for fill→attach")
     print("  stop <symbol> <side> <quantity> <price> - Place stop order")
     print("  trail <symbol> <side> <quantity> <trail_amount> - Place trailing stop")
     print("  positions - Show open positions")
@@ -438,8 +447,18 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                 print("    Example: native_bracket MNQ BUY 1 19400.00 19600.00")
                 print()
                 print("  stop_bracket <symbol> <side> <quantity> <entry_price> <stop_price> <profit_price>")
-                print("    Place a stop entry order with stop loss and take profit prices defined")
+                print("    Stop-entry + SL/TP via native Auto OCO. If account is on Position Brackets,")
+                print("    Discord alerts + order refused — enable Auto OCO in ProjectX.")
                 print("    Example: stop_bracket MNQ BUY 1 25800.00 25750.00 25900.00")
+                print()
+                print("  attach_brackets <position_id|symbol> <stop_price> <profit_price>")
+                print("    Attach protective stop + limit to an existing naked position")
+                print("    (same post-fill path as hybrid OCO). Example:")
+                print("    attach_brackets MNQ 25750.00 25900.00")
+                print("    attach_brackets 796678603 25750.00 25900.00")
+                print()
+                print("  hybrid_pending")
+                print("    List hybrid stop-entry orders waiting for fill→attach")
                 print()
                 print("  stop_buy <symbol> <quantity> <stop_price>")
                 print("    Place a stop buy order (triggers market buy when price reaches stop_price)")
@@ -772,8 +791,9 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                     continue
                 
                 # Show OCO bracket warning
-                print(f"\n⚠️  IMPORTANT: Bracket orders require 'Auto OCO Brackets' to be enabled in your TopStepX account settings.")
-                print(f"   If this order fails with 'Brackets cannot be used with Position Brackets', please enable Auto OCO Brackets in your account.")
+                print(f"\n⚠️  native_bracket uses market entry + native Auto OCO brackets.")
+                print(f"   If Auto OCO is off (Position Brackets), Discord alerts and order is refused.")
+                print(f"   Prefer stop_bracket for stop-entry (same as MRR live path).")
                 
                 # Confirm the native bracket order
                 print(f"\n⚠️  CONFIRM NATIVE BRACKET ORDER:")
@@ -793,8 +813,20 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                 result = await bot.create_bracket_order(symbol, side, quantity, 
                                                       stop_loss_price=stop_price, 
                                                       take_profit_price=profit_price)
-                if "error" in result:
-                    print(f"❌ Order failed: {result['error']}")
+                err = (result or {}).get("error") if isinstance(result, dict) else None
+                if err and bot._is_position_brackets_mode_error(err):
+                    print("❌ Native brackets rejected — Auto OCO Brackets not enabled")
+                    print("   Enable Auto OCO Brackets in ProjectX (turn off Position Brackets).")
+                    print("   Discord alert sent (one-shot per process).")
+                    await bot._maybe_alert_position_brackets_mode(
+                        source="interactive_native_bracket",
+                        detail=str(err),
+                        symbol=symbol,
+                        side=side,
+                        strategy_name="interactive_native_bracket",
+                    )
+                elif err:
+                    print(f"❌ Native bracket failed: {err}")
                 else:
                     print(f"✅ Native bracket order placed successfully!")
                     print(f"   Order ID: {result.get('orderId', 'Unknown')}")
@@ -874,6 +906,7 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                 
                 # Place the OCO bracket with stop entry
                 print(f"\n🚀 Placing OCO bracket order with stop entry...")
+                print("   (native Auto OCO; if disabled → Discord alert + refuse)")
                 result = await bot.place_oco_bracket_with_stop_entry(
                     symbol=symbol,
                     side=side,
@@ -881,44 +914,127 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                     entry_price=entry_price,
                     stop_loss_price=stop_price,
                     take_profit_price=profit_price,
-                    enable_breakeven=enable_breakeven
+                    enable_breakeven=enable_breakeven,
+                    strategy_name="interactive_stop_bracket",
                 )
                 
-                if "error" in result:
-                    print(f"❌ Stop bracket failed: {result['error']}")
+                if "error" in result or (
+                    isinstance(result, dict)
+                    and result.get("success") is False
+                    and not result.get("orderId")
+                ):
+                    err = result.get("error") or result
+                    print(f"❌ Stop bracket failed: {err}")
+                    if isinstance(result, dict) and result.get("action_required") == "enable_auto_oco_brackets":
+                        print("   → Enable Auto OCO Brackets in ProjectX, then retry.")
                     continue
                 
                 entry_order_id = result.get('orderId')
                 method = result.get('method', 'unknown')
                 
-                if method == "oco_native":
-                    print(f"✅ OCO bracket order placed successfully!")
+                if method == "oco_native" or (
+                    method and "hybrid" not in str(method) and result.get("success")
+                ):
+                    print(f"✅ OCO / stop-entry bracket placed successfully!")
                     print(f"   Order ID: {entry_order_id}")
-                    print(f"   Method: Native OCO (atomic)")
+                    print(f"   Method: {method}")
                     print(f"   Entry: ${entry_price} (stop order)")
                     print(f"   Stop Loss: ${stop_price}")
                     print(f"   Take Profit: ${profit_price}")
-                    print(f"   📝 All orders linked - one fills, others cancel automatically")
+                    if "hybrid" not in str(method):
+                        print(f"   📝 Native path — SL/TP linked in place payload when Auto OCO is on")
                     if enable_breakeven:
                         breakeven_pts = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
                         print(f"   🔄 Breakeven enabled: Stop will move to entry after +{breakeven_pts} pts profit")
-                elif method == "hybrid_auto_bracket":
-                    print(f"✅ Stop entry order placed with auto-bracketing!")
+                elif method == "hybrid_auto_bracket" or str(method).startswith("hybrid"):
+                    print(f"✅ Stop entry placed — hybrid Position Brackets path")
                     print(f"   Order ID: {entry_order_id}")
-                    print(f"   Method: Hybrid (auto-bracket on fill)")
+                    print(f"   Method: {method}")
                     print(f"   Entry: ${entry_price} (stop order)")
-                    print(f"   Stop Loss: ${stop_price}")
-                    print(f"   Take Profit: ${profit_price}")
-                    print(f"   📝 Brackets will be placed automatically when stop order fills")
+                    print(f"   Stop Loss: ${stop_price} (attaches after fill)")
+                    print(f"   Take Profit: ${profit_price} (attaches after fill)")
+                    print(f"   📝 Keep this CLI/process running until fill so the attach monitor stays alive")
+                    print(f"   📝 Or use attach_brackets after fill if the process was restarted")
+                    pending = (getattr(bot, "_hybrid_pending_brackets", None) or {}).get(str(entry_order_id))
+                    if pending:
+                        print(f"   ✅ Hybrid pending registered for order {entry_order_id}")
                     if enable_breakeven:
                         breakeven_pts = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
                         print(f"   🔄 Breakeven enabled: Stop will move to entry after +{breakeven_pts} pts profit")
                 else:
                     print(f"✅ Stop bracket order placed!")
                     print(f"   Order ID: {entry_order_id}")
+                    print(f"   Method: {method}")
                     print(f"   Entry: ${entry_price}")
                     print(f"   Stop Loss: ${stop_price}")
                     print(f"   Take Profit: ${profit_price}")
+
+            elif command_lower.startswith("attach_brackets "):
+                parts = command.split()
+                if len(parts) != 4:
+                    print("❌ Usage: attach_brackets <position_id|symbol> <stop_price> <profit_price>")
+                    print("   Example: attach_brackets MNQ 25750.00 25900.00")
+                    print("   Example: attach_brackets 796678603 25750.00 25900.00")
+                    continue
+                target, stop_s, tp_s = parts[1], parts[2], parts[3]
+                try:
+                    stop_price = float(stop_s)
+                    profit_price = float(tp_s)
+                except ValueError:
+                    print("❌ stop_price and profit_price must be numbers")
+                    continue
+                print(f"\n⚠️  CONFIRM ATTACH BRACKETS:")
+                print(f"   Target: {target}")
+                print(f"   Stop Loss: ${stop_price}")
+                print(f"   Take Profit: ${profit_price}")
+                print(f"   Account: {bot.selected_account['name']}")
+                confirm = input("   Confirm? (y/N): ").strip().lower()
+                if confirm != "y":
+                    print("❌ Cancelled")
+                    continue
+                result = await bot.attach_brackets_to_open_position(
+                    target,
+                    stop_loss_price=stop_price,
+                    take_profit_price=profit_price,
+                )
+                if isinstance(result, dict) and result.get("success"):
+                    print("✅ Protective brackets attached")
+                    print(f"   position_id={result.get('position_id')}")
+                    print(f"   sl_order_id={result.get('sl_order_id')}")
+                    print(f"   tp_order_id={result.get('tp_order_id')}")
+                else:
+                    print(f"❌ Attach failed: {(result or {}).get('error') or result}")
+
+            elif command_lower == "hybrid_pending" or command_lower.startswith("hybrid_pending "):
+                pending = getattr(bot, "_hybrid_pending_brackets", None) or {}
+                if not pending:
+                    print("(no hybrid pending entry→attach in this process)")
+                else:
+                    print(f"Hybrid pending entry→attach ({len(pending)}):")
+                    for oid, row in pending.items():
+                        print(
+                            f"  order={oid} {row.get('side')} {row.get('symbol')} "
+                            f"qty={row.get('quantity')} SL={row.get('stop_loss_price')} "
+                            f"TP={row.get('take_profit_price')} attached={row.get('attached')}"
+                        )
+                    tasks = getattr(bot, "_hybrid_bracket_tasks", None) or {}
+                    alive = [k for k, t in tasks.items() if t is not None and not t.done()]
+                    print(f"  monitors_alive={alive or '(none)'}")
+                oco = getattr(bot, "_hybrid_oco_legs", None) or {}
+                if not oco:
+                    print("(no hybrid software-OCO protective pairs armed)")
+                else:
+                    seen = set()
+                    print(f"Hybrid software-OCO pairs ({len(oco)//2}):")
+                    for oid, meta in oco.items():
+                        pk = meta.get("pair_key")
+                        if pk in seen:
+                            continue
+                        seen.add(pk)
+                        print(
+                            f"  {meta.get('leg')}={oid} ↔ sibling={meta.get('sibling_id')} "
+                            f"pos={meta.get('position_id')} {meta.get('symbol')}"
+                        )
                     if enable_breakeven:
                         breakeven_pts = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
                         print(f"   🔄 Breakeven enabled: Stop will move to entry after +{breakeven_pts} pts profit")
@@ -2741,7 +2857,8 @@ async def run_trading_interface(bot: "TopStepXTradingBot") -> None:
                             print(result)
                     else:
                         print("❌ Unknown command. Available commands:")
-                        print("   trade, limit, bracket, native_bracket, stop_bracket, stop, trail, positions, orders,")
+                        print("   trade, limit, bracket, native_bracket, stop_bracket, attach_brackets,")
+                        print("   hybrid_pending, stop, trail, positions, orders,")
                         print("   close, cancel, modify, quote, depth, history, monitor, flatten, contracts, accounts,")
                         print("   switch_account, account_info, account_state, compliance, risk, drawdown, trades,")
                         print("   strategies, backtest, master, gui, help, quit")

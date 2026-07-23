@@ -211,6 +211,52 @@ class StateCache:
         with self._lock:
             self._orders_invalidated[aid] = True
             logger.debug("🔄 Orders cache invalidated for account %s (SignalR event)", aid)
+
+    @staticmethod
+    def _order_patch_terminal(status: Any) -> bool:
+        if status in (2, 3, 4, 5):
+            return True
+        if isinstance(status, str):
+            u = status.strip().upper()
+            return u in ("FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED", "DONE")
+        return False
+
+    def patch_order(self, account_id: str, order_patch: Dict[str, Any]) -> bool:
+        """Apply a SignalR order delta to the in-memory cache (no REST round-trip)."""
+        if not account_id or not order_patch:
+            return False
+        aid = str(account_id).strip()
+        oid = str(
+            order_patch.get("id")
+            or order_patch.get("orderId")
+            or order_patch.get("order_id")
+            or ""
+        )
+        if not oid:
+            return False
+        terminal = self._order_patch_terminal(order_patch.get("status"))
+        with self._lock:
+            entry = self._orders_cache.get(aid)
+            orders = [dict(o) for o in (entry.data if entry and entry.data else [])]
+            idx = None
+            for i, o in enumerate(orders):
+                if str(o.get("id") or o.get("orderId") or o.get("order_id") or "") == oid:
+                    idx = i
+                    break
+            if idx is not None:
+                if terminal:
+                    orders.pop(idx)
+                else:
+                    orders[idx] = {**orders[idx], **order_patch}
+            elif not terminal:
+                orders.append(dict(order_patch))
+            self._orders_cache[aid] = CacheEntry(
+                data=orders,
+                timestamp=datetime.now(timezone.utc),
+                ttl_seconds=self.orders_ttl,
+            )
+            self._orders_invalidated[aid] = False
+        return True
     
     # ========== Positions Cache ==========
     

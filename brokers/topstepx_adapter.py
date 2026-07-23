@@ -956,15 +956,58 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 raw_response=None
             )
 
+        def _coerce_order_type(val) -> int:
+            if val is None:
+                return 1
+            if isinstance(val, int):
+                return val
+            s = str(val).strip().upper()
+            if s in ("3", "4", "STOP") or "STOP" in s:
+                return 4
+            if s in ("1", "LIMIT"):
+                return 1
+            try:
+                return int(float(s))
+            except (TypeError, ValueError):
+                return 1
+
+        def _order_row_id(order: dict) -> str:
+            return str(order.get("id") or order.get("orderId") or order.get("order_id") or "")
+
+        def _symbol_from_order_row(order: Optional[dict]) -> str:
+            if not order:
+                return ""
+            sym = str(order.get("symbol") or "").strip().upper()
+            if sym and sym != "CON":
+                return sym
+            contract_id = str(order.get("contractId") or order.get("contract_id") or "")
+            if contract_id and hasattr(self, "contract_manager") and self.contract_manager:
+                extracted = self.contract_manager.extract_symbol_from_contract_id(contract_id)
+                if extracted:
+                    return extracted.upper()
+            if contract_id:
+                parts = contract_id.rstrip(".").split(".")
+                if len(parts) >= 4:
+                    return parts[-2].upper()
+            return sym
+
         # Get order info to determine type and check if it's a bracket order
         order_info = None
         if quantity is not None or price is not None:
             # Get open orders to find this order
             open_orders = await self.get_open_orders(account_id=account_id)
             for order in open_orders:
-                if str(order.get("id", "")) == str(order_id):
+                if _order_row_id(order) == str(order_id):
                     order_info = order
                     break
+
+            if order_info is None:
+                return ModifyOrderResponse(
+                    success=False,
+                    error=f"Order {order_id} not found or no longer open",
+                    order_id=order_id,
+                    raw_response=None,
+                )
 
             # Check if order is a bracket order (no customTag) and trying to modify size
             if quantity is not None and order_info and not order_info.get("customTag"):
@@ -999,20 +1042,19 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Determine price field based on order type
             order_type = kwargs.get("order_type")
             if order_info:
-                actual_order_type = order_info.get("type", order_type)
-            elif order_type is not None:
-                actual_order_type = order_type
+                actual_order_type = _coerce_order_type(order_info.get("type", order_type))
             else:
-                # Need to fetch order type
-                if order_info is None:
-                    open_orders = await self.get_open_orders(account_id=account_id)
-                    for order in open_orders:
-                        if str(order.get("id", "")) == str(order_id):
-                            order_info = order
-                            break
-                actual_order_type = order_info.get("type") if order_info else 1  # Default to limit
+                actual_order_type = _coerce_order_type(order_type)
 
-            if actual_order_type == 4:  # Stop order
+            symbol = _symbol_from_order_row(order_info)
+            if symbol:
+                try:
+                    tick_size = await self._get_tick_size(symbol)
+                    price = self._round_to_tick_size(float(price), tick_size)
+                except Exception as exc:
+                    logger.debug("Modify-order tick round skipped for %s: %s", symbol, exc)
+
+            if actual_order_type in (3, 4):  # Stop / stop-limit
                 modify_data["stopPrice"] = price
             else:  # Limit order or other types
                 modify_data["limitPrice"] = price
@@ -4573,7 +4615,154 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
     # ============================================================================
     # ADVANCED ORDER METHODS
     # ============================================================================
-    
+
+    async def _snapshot_quote_for_bracket_diag(self, symbol: str) -> Dict[str, Any]:
+        """Best-effort last/bid/ask snapshot for bracket place/reject forensics.
+
+        Prefer live SignalR cache on the attached bot (bid+ask+last). Fall back to
+        ``get_market_quote`` (often last-only from recent bars). Never raises; never
+        blocks the order path for more than ~2s.
+        """
+        out: Dict[str, Any] = {
+            "symbol": str(symbol).upper(),
+            "last": None,
+            "bid": None,
+            "ask": None,
+            "source": None,
+            "ts": None,
+        }
+        try:
+            bot = getattr(self, "_trading_bot", None)
+            if bot is not None:
+                cache = getattr(bot, "_quote_cache", None)
+                lock = getattr(bot, "_quote_cache_lock", None)
+                if isinstance(cache, dict):
+                    sym = str(symbol).upper()
+                    live = None
+                    if lock is not None:
+                        with lock:
+                            live = cache.get(sym)
+                    else:
+                        live = cache.get(sym)
+                    if live and any(live.get(k) is not None for k in ("bid", "ask", "last")):
+                        out.update(
+                            last=live.get("last"),
+                            bid=live.get("bid"),
+                            ask=live.get("ask"),
+                            source="signalr_cache",
+                            ts=live.get("ts"),
+                        )
+                        return out
+
+            try:
+                quote = await asyncio.wait_for(self.get_market_quote(symbol), timeout=2.0)
+            except asyncio.TimeoutError:
+                out["source"] = "timeout"
+                return out
+
+            if quote is None:
+                out["source"] = "unavailable"
+                return out
+            if isinstance(quote, Quote):
+                out.update(
+                    last=quote.last,
+                    bid=quote.bid,
+                    ask=quote.ask,
+                    source="adapter_quote",
+                )
+                if isinstance(quote.raw_data, dict):
+                    out["quote_raw_source"] = quote.raw_data.get("source")
+            elif isinstance(quote, dict) and "error" not in quote:
+                out.update(
+                    last=quote.get("last"),
+                    bid=quote.get("bid"),
+                    ask=quote.get("ask"),
+                    source=quote.get("source") or "adapter_quote_dict",
+                    ts=quote.get("ts"),
+                )
+            else:
+                out["source"] = "unavailable"
+        except Exception as exc:
+            out["source"] = f"error:{type(exc).__name__}"
+            logger.debug("bracket diag quote snapshot failed: %s", exc, exc_info=True)
+        return out
+
+    @staticmethod
+    def _bracket_price_vs_last_ticks(
+        price: Optional[float],
+        last: Optional[float],
+        tick_size: Optional[float],
+    ) -> Optional[int]:
+        """Signed ticks of ``price - last`` (positive = price above last)."""
+        try:
+            if price is None or last is None:
+                return None
+            ts = float(tick_size or 0.0)
+            if ts <= 0:
+                return None
+            return int(round((float(price) - float(last)) / ts))
+        except (TypeError, ValueError):
+            return None
+
+    async def _log_bracket_order_diag(
+        self,
+        *,
+        event: str,
+        symbol: str,
+        side: str,
+        order_data: Dict[str, Any],
+        quote: Optional[Dict[str, Any]] = None,
+        entry_price: Optional[float] = None,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        tick_size: Optional[float] = None,
+        response: Optional[Any] = None,
+        error: Optional[str] = None,
+        path: str = "python",
+    ) -> Dict[str, Any]:
+        """INFO-log last/bid/ask + full ``/api/Order/place`` payload (place/accept/reject)."""
+        q = quote if quote is not None else await self._snapshot_quote_for_bracket_diag(symbol)
+        last = q.get("last")
+        entry_vs = self._bracket_price_vs_last_ticks(entry_price, last, tick_size)
+        sl_vs = self._bracket_price_vs_last_ticks(stop_loss_price, last, tick_size)
+        tp_vs = self._bracket_price_vs_last_ticks(take_profit_price, last, tick_size)
+        try:
+            payload_json = dumps_str(order_data)
+        except Exception:
+            payload_json = str(order_data)
+        resp_json = None
+        if response is not None:
+            try:
+                resp_json = dumps_str(response) if not isinstance(response, str) else response
+            except Exception:
+                resp_json = str(response)
+
+        logger.info(
+            "BRACKET_DIAG event=%s path=%s %s %s | quote last=%s bid=%s ask=%s source=%s ts=%s | "
+            "vs_last_ticks entry=%s sl=%s tp=%s (tick_size=%s) | entry=%s sl=%s tp=%s | "
+            "payload=%s%s%s",
+            event,
+            path,
+            side,
+            symbol,
+            q.get("last"),
+            q.get("bid"),
+            q.get("ask"),
+            q.get("source"),
+            q.get("ts"),
+            entry_vs,
+            sl_vs,
+            tp_vs,
+            tick_size,
+            entry_price,
+            stop_loss_price,
+            take_profit_price,
+            payload_json,
+            f" | error={error}" if error else "",
+            f" | response={resp_json}" if resp_json is not None else "",
+        )
+        return q
+
     async def place_oco_bracket_with_stop_entry(
         self,
         symbol: str,
@@ -4630,6 +4819,31 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     logger.warning(f"⚠️  Rust OCO bracket execution completed but API rejected order: {rust_error_str}")
                     logger.warning(f"   Order: {side} {quantity} {symbol} @ {entry_price:.2f}")
                     logger.warning(f"   Skipping Python fallback - API errors will fail the same way in Python")
+                    try:
+                        rust_payload = {
+                            "accountId": int(account_id) if account_id else None,
+                            "type": 4,
+                            "side": 0 if side.upper() == "BUY" else 1,
+                            "size": quantity,
+                            "stopPrice": entry_price,
+                            "stopLossPrice": stop_loss_price,
+                            "takeProfitPrice": take_profit_price,
+                            "_note": "rust_path_reconstructed_diag_payload",
+                        }
+                        await self._log_bracket_order_diag(
+                            event="reject",
+                            symbol=symbol,
+                            side=side,
+                            order_data=rust_payload,
+                            entry_price=entry_price,
+                            stop_loss_price=stop_loss_price,
+                            take_profit_price=take_profit_price,
+                            response=getattr(rust_resp, "raw_response", None),
+                            error=rust_error_str,
+                            path="rust_stop_entry",
+                        )
+                    except Exception:
+                        logger.debug("BRACKET_DIAG rust reject log failed", exc_info=True)
                     return OrderResponse(
                         success=False,
                         error=f"Order rejected by API: {rust_error_str}",
@@ -4776,8 +4990,6 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 # reduceOnly removed - brackets auto-attach after entry fills
             }
             
-            # Debug: Log order parameters
-            logger.debug(f"Stop bracket order data: {dumps_str(order_data)}")
             sl_signed, tp_signed = stop_loss_ticks, take_profit_ticks
             logger.info(
                 "Stop bracket order parameters: %s %s qty=%s entry(stop)=%.2f tick_size=%.4f | "
@@ -4794,6 +5006,18 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 tp_signed,
                 abs(tp_signed),
                 take_profit_price,
+            )
+            # Forensic snapshot: last/bid/ask + full place payload (Invalid-price diagnosis).
+            quote_snap = await self._log_bracket_order_diag(
+                event="place",
+                symbol=symbol,
+                side=side,
+                order_data=order_data,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                tick_size=tick_size,
+                path="python_stop_entry",
             )
             
             # Make API call
@@ -4834,6 +5058,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             if "error" in response:
                 error_msg = response.get("error", "")
+                await self._log_bracket_order_diag(
+                    event="reject",
+                    symbol=symbol,
+                    side=side,
+                    order_data=order_data,
+                    quote=quote_snap,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    tick_size=tick_size,
+                    response=response,
+                    error=str(error_msg),
+                    path="python_stop_entry",
+                )
                 logger.error(
                     "Failed to create stop bracket order: %s round_trip_ms=%.1f wall_start_utc=%s",
                     error_msg,
@@ -4846,6 +5084,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if response.get("success") == False:
                 error_code = response.get("errorCode", "Unknown")
                 error_message = response.get("errorMessage", "No error message")
+                await self._log_bracket_order_diag(
+                    event="reject",
+                    symbol=symbol,
+                    side=side,
+                    order_data=order_data,
+                    quote=quote_snap,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    tick_size=tick_size,
+                    response=response,
+                    error=f"Code {error_code}: {error_message}",
+                    path="python_stop_entry",
+                )
                 logger.error(
                     "Bracket order failed: Code %s Message: %s round_trip_ms=%.1f wall_start_utc=%s",
                     error_code,
@@ -4857,6 +5109,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             order_id = response.get("orderId") or response.get("id")
             if not order_id:
+                await self._log_bracket_order_diag(
+                    event="reject",
+                    symbol=symbol,
+                    side=side,
+                    order_data=order_data,
+                    quote=quote_snap,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    tick_size=tick_size,
+                    response=response,
+                    error="No order ID returned",
+                    path="python_stop_entry",
+                )
                 logger.error(
                     "API returned success but NO order ID round_trip_ms=%.1f wall_start_utc=%s",
                     (time.perf_counter() - t_py0) * 1000,
@@ -4895,6 +5161,19 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                 except Exception as notif_err:
                     logger.debug(f"Could not send Discord notification for strategy order: {notif_err}")
             
+            await self._log_bracket_order_diag(
+                event="accept",
+                symbol=symbol,
+                side=side,
+                order_data=order_data,
+                quote=quote_snap,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                tick_size=tick_size,
+                response={"orderId": order_id, "success": True},
+                path="python_stop_entry",
+            )
             logger.info(
                 "OCO bracket order placed successfully (Python path) order_id=%s round_trip_ms=%.1f wall_start_utc=%s",
                 order_id,
@@ -5613,9 +5892,22 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             # Ensure token is valid before making request
             await self.auth.ensure_valid_token()
             
-            # Log order data for debugging (without sensitive info)
-            logger.debug(f"Sending bracket order request: accountId={account_id}, contractId={contract_id}, "
-                        f"side={side}, size={quantity}, stopLossTicks={stop_loss_ticks}, takeProfitTicks={take_profit_ticks}")
+            # Forensic snapshot: last/bid/ask + full place payload.
+            mkt_entry = locals().get("entry_price")
+            mkt_sl = locals().get("stop_loss_price")
+            mkt_tp = locals().get("take_profit_price")
+            mkt_tick = locals().get("tick_size")
+            quote_snap = await self._log_bracket_order_diag(
+                event="place",
+                symbol=symbol,
+                side=side,
+                order_data=order_data,
+                entry_price=mkt_entry if isinstance(mkt_entry, (int, float)) else None,
+                stop_loss_price=mkt_sl if isinstance(mkt_sl, (int, float)) else None,
+                take_profit_price=mkt_tp if isinstance(mkt_tp, (int, float)) else None,
+                tick_size=mkt_tick if isinstance(mkt_tick, (int, float)) else None,
+                path="python_market_entry",
+            )
             
             # Make API call
             headers = {
@@ -5637,6 +5929,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     # Retry once more
                     response = await self._make_request("POST", "/api/Order/place", data=order_data, headers=headers)
                     if "error" in response:
+                        await self._log_bracket_order_diag(
+                            event="reject",
+                            symbol=symbol,
+                            side=side,
+                            order_data=order_data,
+                            quote=quote_snap,
+                            entry_price=mkt_entry if isinstance(mkt_entry, (int, float)) else None,
+                            stop_loss_price=mkt_sl if isinstance(mkt_sl, (int, float)) else None,
+                            take_profit_price=mkt_tp if isinstance(mkt_tp, (int, float)) else None,
+                            tick_size=mkt_tick if isinstance(mkt_tick, (int, float)) else None,
+                            response=response,
+                            error=str(response.get("error")),
+                            path="python_market_entry",
+                        )
                         logger.error(f"Failed to create bracket order after token refresh: {response['error']}")
                         return OrderResponse(success=False, error=response['error'], raw_response=response)
                 else:
@@ -5644,6 +5950,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
                     return OrderResponse(success=False, error="Failed to refresh token after 500 errors", raw_response=response)
             
             if "error" in response:
+                await self._log_bracket_order_diag(
+                    event="reject",
+                    symbol=symbol,
+                    side=side,
+                    order_data=order_data,
+                    quote=quote_snap,
+                    entry_price=mkt_entry if isinstance(mkt_entry, (int, float)) else None,
+                    stop_loss_price=mkt_sl if isinstance(mkt_sl, (int, float)) else None,
+                    take_profit_price=mkt_tp if isinstance(mkt_tp, (int, float)) else None,
+                    tick_size=mkt_tick if isinstance(mkt_tick, (int, float)) else None,
+                    response=response,
+                    error=str(response.get("error")),
+                    path="python_market_entry",
+                )
                 logger.error(f"Failed to create bracket order: {response['error']}")
                 return OrderResponse(success=False, error=response['error'], raw_response=response)
             
@@ -5651,6 +5971,20 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             if response.get("success") == False:
                 error_code = response.get("errorCode", "Unknown")
                 error_message = response.get("errorMessage", "No error message")
+                await self._log_bracket_order_diag(
+                    event="reject",
+                    symbol=symbol,
+                    side=side,
+                    order_data=order_data,
+                    quote=quote_snap,
+                    entry_price=mkt_entry if isinstance(mkt_entry, (int, float)) else None,
+                    stop_loss_price=mkt_sl if isinstance(mkt_sl, (int, float)) else None,
+                    take_profit_price=mkt_tp if isinstance(mkt_tp, (int, float)) else None,
+                    tick_size=mkt_tick if isinstance(mkt_tick, (int, float)) else None,
+                    response=response,
+                    error=f"Code {error_code}: {error_message}",
+                    path="python_market_entry",
+                )
                 logger.error(f"Bracket order failed: Error Code {error_code}, Message: {error_message}")
                 
                 # If bracket order fails due to tick limits, try a regular market order
@@ -5672,10 +6006,37 @@ class TopStepXAdapter(OrderInterface, PositionInterface, MarketDataInterface):
             
             order_id = response.get("orderId") or response.get("id")
             if not order_id:
+                await self._log_bracket_order_diag(
+                    event="reject",
+                    symbol=symbol,
+                    side=side,
+                    order_data=order_data,
+                    quote=quote_snap,
+                    entry_price=mkt_entry if isinstance(mkt_entry, (int, float)) else None,
+                    stop_loss_price=mkt_sl if isinstance(mkt_sl, (int, float)) else None,
+                    take_profit_price=mkt_tp if isinstance(mkt_tp, (int, float)) else None,
+                    tick_size=mkt_tick if isinstance(mkt_tick, (int, float)) else None,
+                    response=response,
+                    error="No order ID returned",
+                    path="python_market_entry",
+                )
                 logger.error("API returned success but NO order ID (see DEBUG for full response).")
                 logger.debug(f"Full response: {dumps_str(response)}")
                 return OrderResponse(success=False, error="Order rejected: No order ID returned", raw_response=response)
             
+            await self._log_bracket_order_diag(
+                event="accept",
+                symbol=symbol,
+                side=side,
+                order_data=order_data,
+                quote=quote_snap,
+                entry_price=mkt_entry if isinstance(mkt_entry, (int, float)) else None,
+                stop_loss_price=mkt_sl if isinstance(mkt_sl, (int, float)) else None,
+                take_profit_price=mkt_tp if isinstance(mkt_tp, (int, float)) else None,
+                tick_size=mkt_tick if isinstance(mkt_tick, (int, float)) else None,
+                response={"orderId": order_id, "success": True},
+                path="python_market_entry",
+            )
             logger.info(f"✅ Bracket order created successfully with ID: {order_id}")
             
             return OrderResponse(

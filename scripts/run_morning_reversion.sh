@@ -25,7 +25,9 @@
 #   WAKE_MINUTES_EARLY=5 bash scripts/run_morning_reversion.sh 1
 #
 # Prerequisites:
-# - Auto OCO Brackets enabled on the account (bracket / stop-entry path).
+# - Bracket placement: native Auto OCO. If the account is on Position Brackets
+#   (Auto OCO off), the bot Discord-alerts + refuses the order — enable Auto OCO
+#   Brackets in ProjectX. Opt-in hybrid smoke only: ``TOPSTEPX_BRACKET_MODE=hybrid``.
 # - ``[meta] enabled = true`` in ``config/strategies/morning_range_reversion.toml``
 #   (or enable per-account via DB / Master GUI).
 # - Python 3.11+ for ``tomllib`` (the repo's .venv/bin/python is preferred).
@@ -82,6 +84,18 @@ PY="${PROJECT_ROOT}/.venv/bin/python"
 if [ ! -x "$PY" ]; then
     PY="python3"
 fi
+
+# Sync Discord ping for wrapper lifecycle (see scripts/discord_wrapper_ping.py).
+discord_wrapper_ping() {
+    local event="${1:-ping}"
+    shift || true
+    local detail="${*:-}"
+    if [ "${DISCORD_WRAPPER_PING:-1}" = "0" ]; then
+        return 0
+    fi
+    "$PY" "${PROJECT_ROOT}/scripts/discord_wrapper_ping.py" "$event" "$detail" \
+        >> "${LOG_DIR}/discord_wrapper_ping.log" 2>&1 || true
+}
 
 if [ ! -f "$TOML_PATH" ]; then
     echo "Error: missing TOML config at ${TOML_PATH}"
@@ -201,6 +215,27 @@ if [ "$NOW_TS" -ge "$START_TS" ] && [ "$NOW_TS" -lt "$FLAT_BEFORE_TS" ]; then
     SKIP_WAIT=1
 fi
 
+# When launchd fires on schedule, wake-up is only a few minutes away.  A manual
+# ``launchctl kickstart`` outside that window used to sleep-countdown until the
+# next morning — printing once per minute to launchd_mrr_account*.out for 15+
+# hours (300 MB+ logs) while the executor (and Discord heartbeat) stayed off.
+# Exit cleanly and let the next StartCalendarInterval fire instead.
+WRAPPER_IDLE_EXIT_MAX_SEC="${WRAPPER_IDLE_EXIT_MAX_SEC:-7200}"
+if [ "$SKIP_WAIT" -eq 0 ] && [ "$WRAPPER_IDLE_EXIT_MAX_SEC" -gt 0 ] 2>/dev/null; then
+    REMAIN_TO_WAKE=$((WAKE_TS - NOW_TS))
+    if [ "$REMAIN_TO_WAKE" -gt "$WRAPPER_IDLE_EXIT_MAX_SEC" ]; then
+        echo
+        echo "  next wake-up is $(fmt_et "$WAKE_TS") ($(fmt_local "$WAKE_TS"))"
+        echo "  T-$(human_hms "$REMAIN_TO_WAKE") away (> ${WRAPPER_IDLE_EXIT_MAX_SEC}s idle cap)"
+        echo "  exiting 0 — launchd will fire at the scheduled calendar time."
+        echo "  (use --now or NO_WAIT=1 to force an immediate launch for testing)"
+        echo
+        discord_wrapper_ping "idle_exit" \
+            "account=${ACCOUNT_NUM} wake=$(fmt_et "$WAKE_TS") T-$(human_hms "$REMAIN_TO_WAKE")"
+        exit 0
+    fi
+fi
+
 # ── Session-end clean-exit clause (2026-06-15 daily-launchd migration) ──────
 # When the wrapper is invoked by launchd (one execution per trading day, see
 # scripts/launchd/) we want it to exit cleanly some grace period after
@@ -256,6 +291,9 @@ if [ "$SESSION_EXIT_GRACE_MIN" -gt 0 ] 2>/dev/null; then
 EOF
 fi
 
+discord_wrapper_ping "scheduled" \
+    "account=${ACCOUNT_NUM} wake=$(fmt_et "$WAKE_TS") window=$(fmt_et "$START_TS")-$(fmt_et "$FLAT_BEFORE_TS") skip_wait=${SKIP_WAIT}"
+
 # ---------- countdown ---------------------------------------------------------
 if [ "$SKIP_WAIT" -eq 1 ]; then
     echo
@@ -270,6 +308,7 @@ else
     SPINNER='|/-\'
     TICK=0
     LAST_MINUTE=-1
+    LAST_LOG_TS=$(date +%s)
 
     while :; do
         NOW_TS=$(date +%s)
@@ -281,15 +320,19 @@ else
         FRAME=${SPINNER:$((TICK % 4)):1}
         TICK=$((TICK + 1))
 
-        # Closest contextual milestone after wake-up.
+        # Closest contextual milestone after wake-up (nested if — bash 3.2 safe).
         if [ "$NOW_TS" -lt "$RANGE_START_TS" ]; then
             CTX="anchor opens in  $(human_hms $((RANGE_START_TS - NOW_TS)))"
-        elif [ "$NOW_TS" -lt "$RANGE_END_TS" ]; then
-            CTX="anchor closes in $(human_hms $((RANGE_END_TS - NOW_TS)))  (fades arm after)"
-        elif [ "$NOW_TS" -lt "$FLAT_BEFORE_TS" ]; then
-            CTX="flat-before in   $(human_hms $((FLAT_BEFORE_TS - NOW_TS)))"
         else
-            CTX="post-session window"
+            if [ "$NOW_TS" -lt "$RANGE_END_TS" ]; then
+                CTX="anchor closes in $(human_hms $((RANGE_END_TS - NOW_TS)))  (fades arm after)"
+            else
+                if [ "$NOW_TS" -lt "$FLAT_BEFORE_TS" ]; then
+                    CTX="flat-before in   $(human_hms $((FLAT_BEFORE_TS - NOW_TS)))"
+                else
+                    CTX="post-session window"
+                fi
+            fi
         fi
 
         if [ -t 1 ]; then
@@ -297,12 +340,15 @@ else
             printf "\r\033[2K  %s  T-%s until wake-up   |   %s" \
                 "$FRAME" "$(human_hms "$REMAIN")" "$CTX"
         else
-            # Non-TTY (nohup / cron / pipe): log a fresh line each minute.
-            MIN=$((REMAIN / 60))
-            if [ "$MIN" -ne "$LAST_MINUTE" ]; then
+            # Non-TTY (launchd / nohup): log sparingly - once per 15 minutes.
+            LOG_INTERVAL_SEC="${WRAPPER_COUNTDOWN_LOG_INTERVAL_SEC:-900}"
+            if [ "$LOG_INTERVAL_SEC" -lt 60 ] 2>/dev/null; then
+                LOG_INTERVAL_SEC=60
+            fi
+            if [ "$((NOW_TS - LAST_LOG_TS))" -ge "$LOG_INTERVAL_SEC" ] || [ "$REMAIN" -le 120 ]; then
                 printf "  T-%s until wake-up  |  %s\n" \
                     "$(human_hms "$REMAIN")" "$CTX"
-                LAST_MINUTE=$MIN
+                LAST_LOG_TS=$NOW_TS
             fi
         fi
         sleep 1
@@ -371,6 +417,8 @@ export CORRELATED_MAX_SAME_DIRECTION_CONTRACTS="${CORRELATED_MAX_SAME_DIRECTION_
 # storm at 07:13 ET on 2026-06-17 starved the asyncio loop and coincided
 # with SignalR going zombie.  Master GUI can still tail log files.
 export STRATEGY_EXECUTOR_GUI_WS="${STRATEGY_EXECUTOR_GUI_WS:-0}"
+# Scope Discord fill polling to this strategy's customTag (skip overnight/other fills).
+export STRATEGY_EXECUTOR_ACTIVE_STRATEGY="${STRATEGY_EXECUTOR_ACTIVE_STRATEGY:-morning_range_reversion}"
 
 # 15-minute dual-path liveness (quote OR bar must be fresh).  Matches
 # ``signal.max_bar_staleness_seconds = 900`` in the MRR TOML.
@@ -385,7 +433,13 @@ export DATA_FEED_CANCEL_ON_STALENESS="${DATA_FEED_CANCEL_ON_STALENESS:-false}"
 
 # Discord: fills/signals/closes via trading_bot.discord_notifier when
 # DISCORD_WEBHOOK_URL is set.  Periodic status + feed-down watchdog alerts:
-export DISCORD_STATUS_INTERVAL_SECONDS="${DISCORD_STATUS_INTERVAL_SECONDS:-1800}"
+export DISCORD_STATUS_INTERVAL_SECONDS="${DISCORD_STATUS_INTERVAL_SECONDS:-3600}"
+export DISCORD_WRAPPER_PING="${DISCORD_WRAPPER_PING:-1}"
+# Opt-in calendar-era sizing (450d study guardrails). Off by default.
+export REGIME_SIZING_ENABLED="${REGIME_SIZING_ENABLED:-0}"
+export REGIME_FAST_GATE_ENABLED="${REGIME_FAST_GATE_ENABLED:-0}"
+export REGIME_FAST_DLL_USD="${REGIME_FAST_DLL_USD:-1000}"
+export REGIME_KPI_GATE_ENABLED="${REGIME_KPI_GATE_ENABLED:-0}"
 export DATA_FEED_DISCORD_ALERTS="${DATA_FEED_DISCORD_ALERTS:-true}"
 export DATA_FEED_DISCORD_ALERT_COOLDOWN_S="${DATA_FEED_DISCORD_ALERT_COOLDOWN_S:-900}"
 
@@ -398,6 +452,9 @@ export LOG_MAX_BYTES="${LOG_MAX_BYTES:-52428800}"
 export DATA_FEED_HEALTH_GATE_MODE="${DATA_FEED_HEALTH_GATE_MODE:-warn}"
 
 cd "$PROJECT_ROOT"
+
+discord_wrapper_ping "executor_start" \
+    "account=${ACCOUNT_NUM} log=${LOG_FILE#${PROJECT_ROOT}/} attempt=1"
 
 # ── Supervise loop (2026-06-15 fix) ──────────────────────────────────────────
 # Originally this script did ``exec caffeinate -dimsu …``, replacing the
@@ -630,6 +687,8 @@ while :; do
     # and the "executor exited naturally after we crossed the cutoff" case.
     if session_ended; then
         echo "  ⏰ session-end cutoff reached (code=${EXIT_CODE}, uptime=${uptime}s) - wrapper exiting cleanly for daily handoff."
+        discord_wrapper_ping "session_end" \
+            "account=${ACCOUNT_NUM} code=${EXIT_CODE} uptime=${uptime}s reason=session_cutoff"
         break
     fi
 
@@ -637,6 +696,8 @@ while :; do
     # treat as intentional shutdown and break the supervise loop.
     if [ "$EXIT_CODE" -eq 0 ] || [ "$EXIT_CODE" -eq 130 ] || [ "$EXIT_CODE" -eq 143 ]; then
         echo "  executor exited cleanly (code=${EXIT_CODE}, uptime=${uptime}s) - supervisor done."
+        discord_wrapper_ping "session_end" \
+            "account=${ACCOUNT_NUM} code=${EXIT_CODE} uptime=${uptime}s reason=clean_exit"
         # Clear EXIT trap (we're exiting voluntarily, caffeinate will be reaped
         # by the EXIT handler regardless).
         break
@@ -656,6 +717,8 @@ while :; do
         echo "  ❌ executor crashed ${restart_count} times in quick succession (last exit=${EXIT_CODE})."
         echo "     Hitting MAX_RESTARTS=${MAX_RESTARTS} - bailing out so an operator can investigate."
         echo "     See logs in: ${LOG_DIR#${PROJECT_ROOT}/}/"
+        discord_wrapper_ping "failed" \
+            "account=${ACCOUNT_NUM} exit=${EXIT_CODE} restarts=${restart_count} max=${MAX_RESTARTS}"
         exit 2
     fi
 

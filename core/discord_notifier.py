@@ -15,6 +15,45 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+
+def strategy_from_custom_tag(tag: str) -> str:
+    """Extract strategy slug from ``TB-{order_type}-{strategy}-...`` custom tags."""
+    parts = str(tag or "").strip().split("-")
+    if len(parts) >= 3 and parts[0] == "TB":
+        return parts[2]
+    return ""
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    v = str(raw).strip().strip('"').strip("'").lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    return v in ("1", "true", "yes", "on")
+
+
+def notify_signals_enabled() -> bool:
+    """Strategy signal / placement hints (default on; set DISCORD_NOTIFY_SIGNALS=0 to mute)."""
+    return _env_flag("DISCORD_NOTIFY_SIGNALS", True)
+
+
+def notify_orders_enabled() -> bool:
+    """Working-order placement acks (default off — noisy with bracket legs)."""
+    return _env_flag("DISCORD_NOTIFY_ORDERS", False)
+
+
+def notify_fills_enabled() -> bool:
+    """Entry/exit fills and position closes (default on)."""
+    return _env_flag("DISCORD_NOTIFY_FILLS", True)
+
+
+def notify_feed_enabled() -> bool:
+    """Market data feed down/recovered alerts (default on)."""
+    return _env_flag("DISCORD_NOTIFY_FEED", True)
+
+
 class DiscordNotifier:
     """Send trading notifications to Discord webhook"""
     
@@ -70,7 +109,7 @@ class DiscordNotifier:
 
     async def send_order_notification(self, order_data: Dict, account_name: str) -> bool:
         """Send order execution notification to Discord"""
-        if not self.enabled:
+        if not self.enabled or not notify_orders_enabled():
             return False
         
         if not self._rate_limit_check():
@@ -162,10 +201,62 @@ class DiscordNotifier:
         except Exception as e:
             logger.error(f"Failed to send Discord error notification: {e}")
             return False
-    
+
+    async def send_bracket_mode_notification(
+        self,
+        *,
+        account_name: str,
+        source: str,
+        detail: str = "",
+        symbol: str = "",
+        strategy_name: str = "",
+    ) -> bool:
+        """Alert: Auto OCO Brackets not enabled — user must fix account settings."""
+        if not self.enabled:
+            return False
+        try:
+            fields = [
+                {"name": "Account", "value": str(account_name)[:256] or "N/A", "inline": True},
+                {"name": "Source", "value": str(source)[:128] or "N/A", "inline": True},
+                {
+                    "name": "Action required",
+                    "value": (
+                        "In ProjectX / TopStepX → enable **Auto OCO Brackets** "
+                        "(turn off Position Brackets). Then restart the strategy."
+                    ),
+                    "inline": False,
+                },
+            ]
+            if strategy_name:
+                fields.append(
+                    {"name": "Strategy", "value": str(strategy_name)[:128], "inline": True}
+                )
+            if symbol:
+                fields.append({"name": "Symbol", "value": str(symbol)[:32], "inline": True})
+            if detail:
+                fields.append(
+                    {"name": "Broker detail", "value": str(detail)[:900], "inline": False}
+                )
+            embed = {
+                "title": "🚨 Auto OCO Brackets not enabled",
+                "description": (
+                    "This account rejected a native OCO bracket order "
+                    "(Position Brackets mode). **No order was placed.** "
+                    "Enable Auto OCO Brackets in ProjectX so SL/TP stay linked at the broker. "
+                    "Hybrid software brackets are opt-in only (`TOPSTEPX_BRACKET_MODE=hybrid`)."
+                ),
+                "color": 15158332,  # Red
+                "fields": fields,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            return await self._post({"embeds": [embed]})
+        except Exception as e:
+            logger.error("Failed to send Discord bracket-mode notification: %s", e)
+            return False
+
     async def send_order_fill_notification(self, order_data: Dict, account_name: str) -> bool:
         """Send order fill notification to Discord"""
-        if not self.enabled:
+        if not self.enabled or not notify_fills_enabled():
             return False
         
         if not self._rate_limit_check():
@@ -181,9 +272,17 @@ class DiscordNotifier:
             order_id = order_data.get('order_id', 'Unknown')
             position_id = order_data.get('position_id', 'Unknown')
             
+            tag = order_data.get("custom_tag") or order_data.get("tag") or ""
+            strategy = (
+                order_data.get("strategy")
+                or order_data.get("strategy_name")
+                or strategy_from_custom_tag(tag)
+            )
+            title_strategy = strategy or "Trading Bot"
+
             # Create embed
             embed = {
-                "title": f"🎯 Trading Bot Order Filled",
+                "title": f"🎯 {title_strategy} — Order Filled",
                 "color": 16776960,  # Yellow for fill
                 "fields": [
                     {"name": "Account", "value": account_name, "inline": True},
@@ -199,6 +298,15 @@ class DiscordNotifier:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
+            if strategy or tag:
+                embed["fields"].append(
+                    {
+                        "name": "Tag",
+                        "value": str(tag or strategy)[:256],
+                        "inline": False,
+                    }
+                )
+
             payload = {"embeds": [embed]}
             ok = await self._post(payload)
             if ok:
@@ -211,7 +319,7 @@ class DiscordNotifier:
     
     async def send_position_close_notification(self, position_data: Dict, account_name: str) -> bool:
         """Send position close notification to Discord"""
-        if not self.enabled:
+        if not self.enabled or not notify_fills_enabled():
             return False
         
         if not self._rate_limit_check():
@@ -225,6 +333,7 @@ class DiscordNotifier:
             entry_price = position_data.get('entry_price', 0)
             exit_price = position_data.get('exit_price', 0)
             close_method = position_data.get('close_method', 'Market Close')
+            exit_reason = position_data.get('exit_reason') or close_method
             position_id = position_data.get('position_id', 'Unknown')
             
             # Calculate P&L if we have both prices
@@ -238,19 +347,18 @@ class DiscordNotifier:
             
             # Create embed
             embed = {
-                "title": f"🔴 Trading Bot Position Closed",
-                "color": 15158332,  # Red for close
+                "title": f"{'🟢' if pnl >= 0 else '🔴'} Position closed — ${pnl:.2f}",
+                "color": 3066993 if pnl >= 0 else 15158332,
                 "fields": [
                     {"name": "Account", "value": account_name, "inline": True},
                     {"name": "Symbol", "value": symbol, "inline": True},
                     {"name": "Side", "value": side, "inline": True},
-                    {"name": "Quantity", "value": str(quantity), "inline": True},
-                    {"name": "Entry Price", "value": f"${entry_price:.2f}" if entry_price else "Unknown", "inline": True},
-                    {"name": "Exit Price", "value": f"${exit_price:.2f}" if exit_price else "Unknown", "inline": True},
+                    {"name": "Qty", "value": str(quantity), "inline": True},
+                    {"name": "Entry", "value": f"${entry_price:.2f}" if entry_price else "—", "inline": True},
+                    {"name": "Exit", "value": f"${exit_price:.2f}" if exit_price else "—", "inline": True},
                     {"name": "P&L", "value": f"${pnl:.2f}", "inline": True},
-                    {"name": "Close Method", "value": str(close_method), "inline": True},
-                    {"name": "Position ID", "value": str(position_id), "inline": True},
-                    {"name": "Timestamp", "value": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"), "inline": True}
+                    {"name": "Exit reason", "value": str(exit_reason), "inline": True},
+                    {"name": "Time (UTC)", "value": datetime.now(timezone.utc).strftime("%H:%M:%S"), "inline": True},
                 ],
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
@@ -266,49 +374,51 @@ class DiscordNotifier:
             return False
     
     async def send_signal_notification(self, signal_type: str, symbol: str, account_name: str, details: Dict = None) -> bool:
-        """Send signal processing notification to Discord"""
-        if not self.enabled:
+        """Send signal processing notification to Discord (opt-in via DISCORD_NOTIFY_SIGNALS)."""
+        if not self.enabled or not notify_signals_enabled():
+            return False
+        
+        if not self._rate_limit_check():
+            return False
+
+        details = details or {}
+        # Skip generic analyze heartbeats — only actionable placement hints.
+        st = str(signal_type or "").lower()
+        if st in ("signal", "analyze", "heartbeat", "status"):
             return False
         
         try:
-            # Map signal types to emojis
-            signal_emojis = {
-                "open_long": "🚀",
-                "open_short": "📉", 
-                "close_long": "🔴",
-                "close_short": "🟢",
-                "trim_long": "✂️",
-                "trim_short": "✂️",
-                "tp1_hit_long": "🎯",
-                "tp1_hit_short": "🎯",
-                "tp2_hit_long": "🎯",
-                "tp2_hit_short": "🎯",
-                "stop_out_long": "🛑",
-                "stop_out_short": "🛑"
-            }
-            
-            emoji = signal_emojis.get(signal_type, "📊")
-            
+            emoji = "📊"
+            if "long" in st or "buy" in st:
+                emoji = "🚀"
+            elif "short" in st or "sell" in st:
+                emoji = "📉"
+            elif "stop" in st:
+                emoji = "🛑"
+
+            reason = details.get("reason") or details.get("message") or ""
+            strategy = details.get("strategy") or details.get("strategy_name") or details.get("name") or ""
+            qty = details.get("quantity") or details.get("qty")
+
             embed = {
-                "title": f"{emoji} Trading Signal: {signal_type.replace('_', ' ').title()}",
-                "color": 3447003,  # Blue
+                "title": f"{emoji} {strategy or 'Signal'} — {symbol}",
+                "description": (str(reason)[:500] if reason else st.replace("_", " ").title()),
+                "color": 3447003,
                 "fields": [
                     {"name": "Account", "value": account_name, "inline": True},
-                    {"name": "Symbol", "value": symbol, "inline": True},
-                    {"name": "Signal", "value": signal_type, "inline": True}
+                    {"name": "Type", "value": st, "inline": True},
                 ],
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            
-            # Add details if provided
-            if details:
-                for key, value in details.items():
-                    if key not in ['account', 'symbol', 'signal']:
-                        embed["fields"].append({
-                            "name": key.replace('_', ' ').title(),
-                            "value": str(value),
-                            "inline": True
-                        })
+            if qty is not None:
+                embed["fields"].append({"name": "Qty", "value": str(qty), "inline": True})
+            for key in ("entry_price", "stop_loss", "take_profit", "confidence"):
+                if key in details and details[key] not in (None, ""):
+                    embed["fields"].append({
+                        "name": key.replace("_", " ").title(),
+                        "value": str(details[key])[:128],
+                        "inline": True,
+                    })
             
             payload = {"embeds": [embed]}
             ok = await self._post(payload)
@@ -333,7 +443,7 @@ class DiscordNotifier:
         detail: str = "",
     ) -> bool:
         """Alert when market data paths go zombie (down) or recover (recovered)."""
-        if not self.enabled:
+        if not self.enabled or not notify_feed_enabled():
             return False
         if not self._rate_limit_check():
             return False

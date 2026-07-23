@@ -380,6 +380,10 @@ class RegimePublisherService:
             if emit_now:
                 await self._publish(snap)
                 self._last_label = snap.label
+                try:
+                    setattr(self.trading_bot, "_last_regime_label", snap.label)
+                except Exception:
+                    pass
                 self._bars_since_last_emit = 0
         except Exception as exc:
             _logger.error("RegimePublisher._on_bar_closed crashed: %s", exc, exc_info=True)
@@ -419,6 +423,8 @@ def maybe_start_regime_publisher(trading_bot: Any) -> Optional[RegimePublisherSe
 
     Env vars:
       - ``REGIME_PUBLISHER_ENABLED`` ∈ {"1","true","yes","on"}: enable
+      - ``REGIME_SIZING_ENABLED`` (same truthy set): also starts publisher
+        so ``core.regime_sizing`` can read ``_last_label`` live
       - ``REGIME_PUBLISHER_SYMBOL`` (default ``MNQ``)
       - ``REGIME_PUBLISHER_TIMEFRAME`` (default ``5m``)
       - ``REGIME_PUBLISHER_ALWAYS_EMIT`` ∈ {"1","true","yes","on"}: emit
@@ -433,7 +439,10 @@ def maybe_start_regime_publisher(trading_bot: Any) -> Optional[RegimePublisherSe
     enabled = os.environ.get("REGIME_PUBLISHER_ENABLED", "0").strip().lower() in (
         "1", "true", "yes", "on",
     )
-    if not enabled:
+    sizing = os.environ.get("REGIME_SIZING_ENABLED", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not (enabled or sizing):
         return None
     symbol = os.environ.get("REGIME_PUBLISHER_SYMBOL", "MNQ").strip() or "MNQ"
     timeframe = os.environ.get("REGIME_PUBLISHER_TIMEFRAME", "5m").strip() or "5m"

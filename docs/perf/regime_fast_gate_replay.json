@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "strategy": "morning_range_reversion",
+    "n_trades": 252,
+    "dll_usd": 1000.0,
+    "session_halt_usd": 500.0,
+    "weekly_mgc_loss_usd": 300.0,
+    "rolling_window": 3,
+    "rolling_mean_max": -300.0,
+    "throttle_duration": 3,
+    "source": "docs/perf/regime_longspan_450d"
+  },
+  "total": {
+    "baseline_pnl": 16587.0,
+    "gated_pnl": 14923.5,
+    "pnl_cost": 1663.5,
+    "pct_retained": 90.0,
+    "blocked_trades": 25,
+    "throttled_trades": 16
+  },
+  "by_year": {
+    "2025": {
+      "trades": 140,
+      "baseline_pnl": -337.0,
+      "gated_pnl": -1384.5,
+      "pnl_cost": 1047.5,
+      "pct_retained": 410.8,
+      "blocked_trades": 15,
+      "throttled_trades": 12,
+      "max_dd_baseline": 2549.0,
+      "max_dd_gated": 2275.0,
+      "dd_reduction": 274.0,
+      "trigger_reasons": {
+        "session halt (day PnL \u2264 \u2212$500)": 15,
+        "roll3<-300 (3 sess left)": 5,
+        "roll3<-300 (2 sess left)": 3,
+        "roll3<-300 (1 sess left)": 4
+      }
+    },
+    "2026": {
+      "trades": 112,
+      "baseline_pnl": 16924.0,
+      "gated_pnl": 16308.0,
+      "pnl_cost": 616.0,
+      "pct_retained": 96.4,
+      "blocked_trades": 10,
+      "throttled_trades": 4,
+      "max_dd_baseline": 1765.0,
+      "max_dd_gated": 1537.0,
+      "dd_reduction": 228.0,
+      "trigger_reasons": {
+        "session halt (day PnL \u2264 \u2212$500)": 10,
+        "roll3<-300 (3 sess left)": 2,
+        "roll3<-300 (2 sess left)": 1,
+        "roll3<-300 (1 sess left)": 1
+      }
+    }
+  },
+  "weekly": {
+    "weeks": 65,
+    "mean_weekly_cost": -25.59,
+    "weeks_helped_on_losses": 7,
+    "weeks_hurt_on_wins": 11,
+    "worst_week_baseline": -1426.0,
+    "worst_week_gated": -1015.0
+  }
+}

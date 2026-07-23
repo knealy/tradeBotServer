@@ -135,7 +135,13 @@ Set before invoking `install_mrr_launchd.sh` to bake into the wrapper environmen
 | `LOG_ROTATE_DAILY` | 1 (in wrapper) | Use `TimedRotatingFileHandler` at midnight |
 | `STRATEGY_EXECUTOR_GUI_WS` | 0 (in wrapper) | Headless executor does not connect to GUI WebSocket |
 | `DATA_FEED_CANCEL_ON_STALENESS` | false (in wrapper) | Do not cancel brackets on SignalR zombie reconnect |
-| `DISCORD_STATUS_INTERVAL_SECONDS` | 1800 (in wrapper) | Periodic Discord status digest (0 = off) |
+| `DISCORD_STATUS_INTERVAL_SECONDS` | 3600 (in wrapper) | Periodic Discord status digest (0 = off) |
+| `WRAPPER_IDLE_EXIT_MAX_SEC` | 7200 (in wrapper) | Outside wake window: exit instead of multi-hour countdown |
+| `WRAPPER_COUNTDOWN_LOG_INTERVAL_SEC` | 900 (in wrapper) | Non-TTY countdown log cadence while waiting for wake |
+| `REGIME_SIZING_ENABLED` | 0 (opt-in) | Calendar-era position-size multipliers (see `core/regime_sizing.py`) |
+| `REGIME_KPI_GATE_ENABLED` | 0 (opt-in) | Rolling 20-session KPI throttle (see `core/regime_kpi_gate.py`) |
+| `REGIME_KPI_HALT_BELOW_P10` | 0 | Block entries when rolling KPI below replay p10 |
+| `DISCORD_WRAPPER_PING` | 1 (in wrapper) | Sync Discord ping on wrapper schedule/start/end/failure |
 | `DATA_FEED_DISCORD_ALERTS` | true (in wrapper) | Discord alert when feed goes zombie / recovers |
 | `DATA_FEED_DISCORD_ALERT_COOLDOWN_S` | 900 (in wrapper) | Min seconds between repeated feed-down alerts |
 | `LOG_SUPPRESS_ASYNCIO_SESSION_ERRORS` | 1 (in wrapper) | Silence asyncio "Unclosed client session" spam |
@@ -180,3 +186,46 @@ If you later add a strategy that:
 
 …the always-on daemon is the right model for THAT strategy. You can still
 keep MRR on daily-launchd and run the always-on strategy separately.
+
+## Troubleshooting (no Discord / no trades after reboot)
+
+**Symptom:** No hourly Discord status digest, no trades, last executor log is days old.
+
+**Common causes:**
+
+1. **Mac was asleep/off at the calendar fire (default ~06:50 local).**
+   `StartCalendarInterval` does **not** backfill missed runs. If the machine
+   was unplugged Tue–Fri morning, those sessions are simply skipped.
+
+2. **Manual `launchctl kickstart` outside the wake window** used to leave the
+   wrapper in a multi-hour countdown (executor + Discord reporter never started).
+   Since 2026-07-07 the wrapper exits when the next wake-up is more than
+   `WRAPPER_IDLE_EXIT_MAX_SEC` (default 2h) away — rely on tomorrow's
+   calendar fire instead.
+
+3. **Discord heartbeat only runs inside `strategy_executor`.** The wrapper
+   countdown does not post status. You need a live executor process.
+
+**Verify / recover:**
+
+```bash
+# Agent loaded?
+launchctl list | grep com.tradebot.mrr.account1
+
+# Last wrapper output (should NOT be an endless countdown if far from wake):
+tail -20 logs/launchd_mrr_account1.out
+
+# Last executor log (one per trading day):
+ls -lt logs/morning_range_reversion_account1_*.log | head -3
+
+# Force a test launch NOW (bypasses schedule — for testing only):
+bash scripts/run_morning_reversion.sh 1 --now
+
+# Or wait for tomorrow's calendar fire (Mac must be awake):
+launchctl print "gui/$(id -u)/com.tradebot.mrr.account1"
+```
+
+**After a long outage:** expect missed sessions until the next weekday
+calendar fire with the Mac awake. No need to reinstall launchd unless the
+schedule changed — `bash scripts/install_mrr_launchd.sh N --reload` only
+when TOML `start_time` / wake lead changes.

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Append the **latest broker 5m bars** onto canonical ``*_5m_databento.csv`` files.
 
-This uses the same **TopStepX market-history** stack as the interactive bot:
+Uses the lightweight history client (``core/broker_history_session``) — AuthManager
++ TopStepXAdapter only, **no** ``TopStepXTradingBot`` / Postgres / SignalR:
 
-- ``TopStepXTradingBot`` + ``authenticate()`` (same entry as ``scripts/export_history.py``)
-- ``broker_adapter.get_historical_data(..., start_time=…, end_time=…, timeframe='5m')``
+- ``open_broker_history_adapter()`` + ``authenticate()``
+- ``adapter.get_historical_data(..., start_time=…, end_time=…, timeframe='5m')``
   — the same adapter path behind ``history <sym> 5m <n> csv`` (see ``core/cli_command_parser.py``).
 
 For each symbol:
@@ -96,7 +97,7 @@ def _write_broker_5m_csv(path: Path, bars: list) -> int:
 
 
 async def _fetch_bars_chunked(
-    bot: Any,
+    adapter: Any,
     *,
     symbol: str,
     timeframe: str,
@@ -114,7 +115,7 @@ async def _fetch_bars_chunked(
         n_chunk += 1
         chunk_end = min(end, cursor + timedelta(days=chunk_days))
         print(f"   {symbol} chunk {n_chunk}: {cursor.isoformat()} → {chunk_end.isoformat()} …")
-        chunk = await bot.broker_adapter.get_historical_data(
+        chunk = await adapter.get_historical_data(
             symbol=symbol,
             timeframe=timeframe,
             start_time=cursor,
@@ -135,7 +136,10 @@ async def _fetch_bars_chunked(
 
 async def _run(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(ROOT))
-    from trading_bot import TopStepXTradingBot
+    from core.broker_history_session import (
+        close_broker_history_session,
+        open_broker_history_adapter,
+    )
 
     api_key = os.getenv("PROJECT_X_API_KEY") or os.getenv("TOPSTEPX_API_KEY") or os.getenv("TOPSETPX_API_KEY")
     username = os.getenv("PROJECT_X_USERNAME") or os.getenv("TOPSTEPX_USERNAME") or os.getenv("TOPSETPX_USERNAME")
@@ -148,55 +152,60 @@ async def _run(args: argparse.Namespace) -> int:
     end = datetime.now(timezone.utc)
     py = sys.executable
 
-    print("Authenticating (TopStepXTradingBot)…")
-    bot = TopStepXTradingBot(api_key=api_key, username=username)
-    await bot.authenticate()
+    print("Authenticating (broker history session)…")
+    auth, adapter = await open_broker_history_adapter(api_key=api_key, username=username)
+    if auth is None or adapter is None:
+        print("error: authentication failed — check network/DNS and PROJECT_X_* credentials", file=sys.stderr)
+        return 1
     print("✅ ok\n")
 
-    for sym in roots:
-        canon = PRICE / f"{sym.lower()}_5m_databento.csv"
-        if not canon.is_file():
-            print(f"skip {sym}: missing canonical {canon.relative_to(ROOT)}", file=sys.stderr)
-            continue
-
-        last = _last_csv_timestamp_utc(canon)
-        start = last + timedelta(minutes=5)
-        if start >= end:
-            print(f"{sym}: already up to date (last bar {last.isoformat()})")
-            continue
-
-        print(f"{sym}: pull {tf} {start.isoformat()} → {end.isoformat()} (after last file bar)")
-
-        bars = await _fetch_bars_chunked(
-            bot,
-            symbol=sym,
-            timeframe=tf,
-            start=start,
-            end=end,
-            chunk_days=args.chunk_days,
-        )
-        if not bars:
-            print(f"   no new bars returned for {sym}")
-            continue
-
-        with tempfile.TemporaryDirectory(prefix=f"stitch5m_{sym}_") as td:
-            tdir = Path(td)
-            fresh = tdir / f"{sym.lower()}_5m_broker_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
-            n = _write_broker_5m_csv(fresh, bars)
-            print(f"   wrote temp {n} rows -> {fresh.name}")
-
-            if args.dry_run:
-                print(f"   dry-run: not merging into {canon.relative_to(ROOT)}")
+    try:
+        for sym in roots:
+            canon = PRICE / f"{sym.lower()}_5m_databento.csv"
+            if not canon.is_file():
+                print(f"skip {sym}: missing canonical {canon.relative_to(ROOT)}", file=sys.stderr)
                 continue
 
-            if not args.no_backup:
-                _backup(canon)
-            out_m = tdir / "merged.csv"
-            cmd = [py, str(MERGER), str(canon), str(fresh), "-o", str(out_m)]
-            print("  ", " ".join(cmd))
-            subprocess.run(cmd, cwd=str(ROOT), check=True)
-            shutil.move(str(out_m), str(canon))
-            print(f"   merged -> {canon.relative_to(ROOT)}")
+            last = _last_csv_timestamp_utc(canon)
+            start = last + timedelta(minutes=5)
+            if start >= end:
+                print(f"{sym}: already up to date (last bar {last.isoformat()})")
+                continue
+
+            print(f"{sym}: pull {tf} {start.isoformat()} → {end.isoformat()} (after last file bar)")
+
+            bars = await _fetch_bars_chunked(
+                adapter,
+                symbol=sym,
+                timeframe=tf,
+                start=start,
+                end=end,
+                chunk_days=args.chunk_days,
+            )
+            if not bars:
+                print(f"   no new bars returned for {sym}")
+                continue
+
+            with tempfile.TemporaryDirectory(prefix=f"stitch5m_{sym}_") as td:
+                tdir = Path(td)
+                fresh = tdir / f"{sym.lower()}_5m_broker_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+                n = _write_broker_5m_csv(fresh, bars)
+                print(f"   wrote temp {n} rows -> {fresh.name}")
+
+                if args.dry_run:
+                    print(f"   dry-run: not merging into {canon.relative_to(ROOT)}")
+                    continue
+
+                if not args.no_backup:
+                    _backup(canon)
+                out_m = tdir / "merged.csv"
+                cmd = [py, str(MERGER), str(canon), str(fresh), "-o", str(out_m)]
+                print("  ", " ".join(cmd))
+                subprocess.run(cmd, cwd=str(ROOT), check=True)
+                shutil.move(str(out_m), str(canon))
+                print(f"   merged -> {canon.relative_to(ROOT)}")
+    finally:
+        await close_broker_history_session(auth)
 
     print("done")
     return 0

@@ -67,14 +67,17 @@ from core.backtest.recap_metrics import (
     equity_curve_from_trades,
     extended_performance_insights,
     format_insights_html,
+    format_monte_carlo_html,
     loss_pattern_analysis,
     sort_trades_by_exit_time,
 )
+from core.backtest.walkforward_monte_carlo import run_walkforward_monte_carlo
 from core.backtest.strategy_config_snapshot import (
     snapshot_strategy_configs,
     snapshots_to_html,
     snapshots_to_json,
 )
+from core.metrics_glossary import th
 
 # Executor loads StrategyConfig from TOML; keep subprocess headless only.
 _REPLAY_BASE_ENV: Dict[str, str] = {
@@ -569,6 +572,19 @@ def main() -> int:
         default=2000.0,
         help="Starting equity for simulated account curve (trades merged in exit-time order across folds)",
     )
+    ap.add_argument(
+        "--monte-carlo",
+        type=int,
+        default=2000,
+        metavar="N",
+        help="Monte Carlo simulations per mode (shuffle + bootstrap) for metrics.html (0=off)",
+    )
+    ap.add_argument(
+        "--monte-carlo-seed",
+        type=int,
+        default=42,
+        help="RNG seed for Monte Carlo (reproducible walk-forward robustness section)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Print fold calendar and exit without running replays")
     ap.add_argument("--env", action="append", default=[], metavar="KEY=VAL", help="Extra env for replay subprocess")
     ap.add_argument(
@@ -630,6 +646,26 @@ def main() -> int:
             "per-task subprocess isolation (e.g. debugging a worker crash)."
         ),
     )
+    ap.add_argument(
+        "--dynamic-sizing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Scale replay position size from drawdown vs running equity peak "
+            "(steps as %% of ``--sim-start-cash``, default $2,000 — not replay "
+            "engine capital): −1 contract per 5%% drawdown, +1 per +10%% when "
+            "at peak above base (floor 1, ceiling ``--dynamic-sizing-max``). "
+            "Sets ``BACKTEST_DYNAMIC_SIZING=1``, ``BACKTEST_DYNAMIC_SIZING_BASE``, "
+            "and ``BACKTEST_DYNAMIC_SIZING_MAX`` for replay workers."
+        ),
+    )
+    ap.add_argument(
+        "--dynamic-sizing-max",
+        type=int,
+        default=15,
+        metavar="N",
+        help="Max contracts when ``--dynamic-sizing`` is on (default 15).",
+    )
     args = ap.parse_args()
 
     extra_env: Dict[str, str] = {}
@@ -640,6 +676,10 @@ def main() -> int:
     # 6-fold, 3-symbol matrix drops from minutes to seconds.
     if not args.no_fast_loop:
         extra_env["BACKTEST_FAST_LOOP"] = "1"
+    if args.dynamic_sizing:
+        extra_env["BACKTEST_DYNAMIC_SIZING"] = "1"
+        extra_env["BACKTEST_DYNAMIC_SIZING_BASE"] = str(float(args.sim_start_cash))
+        extra_env["BACKTEST_DYNAMIC_SIZING_MAX"] = str(max(1, int(args.dynamic_sizing_max)))
     for raw in args.env or []:
         if "=" not in raw:
             print(f"error: --env must be KEY=VAL, got {raw!r}", file=sys.stderr)
@@ -674,6 +714,7 @@ def main() -> int:
                 "last_trades": int(args.last_trades),
                 "padding_minutes": int(args.padding_minutes),
                 "sim_start_cash": float(args.sim_start_cash),
+                "dynamic_sizing_max": int(args.dynamic_sizing_max),
             },
         },
     )
@@ -708,7 +749,7 @@ def main() -> int:
 
     anchor_end = min(anchor_dates.values())
     folds = _fold_ranges(anchor_end, total_days=args.days, folds=args.folds)
-    n_keep = max(1, int(args.last_trades))
+    n_keep = max(0, int(args.last_trades))
 
     print(
         f"anchor_end={anchor_end} folds={len(folds)} strategies={strategies} symbols={symbols} "
@@ -834,6 +875,7 @@ def main() -> int:
 
     def _run_inprocess_task(
         strat: str, sym: str, fs_d: date, fe_d: date,
+        dynamic_sizing_carry: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """In-process backend equivalent of ``_run_backtest_json``.
 
@@ -850,6 +892,7 @@ def main() -> int:
             end=fe_d.isoformat(),
             timeframe=args.timeframe,
             include_trades=True,
+            dynamic_sizing_carry=dynamic_sizing_carry,
         )
 
     def _resolve_payload(
@@ -901,8 +944,59 @@ def main() -> int:
     # multiple tasks each. Parent-side cache lookups always run before any
     # worker is involved so cache hits incur no Python startup at all.
     payloads: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+    final_carry_state: Optional[Dict[Tuple[str, str], Dict[str, float]]] = None
 
-    if use_inprocess:
+    if args.dynamic_sizing:
+        from core.backtest.dynamic_sizing import initial_carry
+
+        # Prop-account sizing must carry peak/equity across folds in calendar
+        # order (matches the merged equity curve in metrics.html). Parallel
+        # per-fold replays each reset to $2k and never accumulate size steps.
+        _inprocess_worker_init(dict(extra_env))
+        carry_state: Dict[Tuple[str, str], Dict[str, float]] = {
+            (st, sy): initial_carry(float(args.sim_start_cash))
+            for st in strategies
+            for sy in symbols
+        }
+        sorted_tasks = sorted(tasks, key=lambda t: (t[3], t[4], t[2]))
+        n_done = 0
+        for fs, fe, fold_ix, strat, sym in sorted_tasks:
+            key = (fold_ix, strat, sym)
+            carry = carry_state[(strat, sym)]
+            ck: Optional[CacheKeyInputs] = None
+            ck_extra = dict(extra_env)
+            ck_extra["BACKTEST_DYNAMIC_SIZING_CARRY_EQUITY"] = f"{carry['equity']:.8f}"
+            ck_extra["BACKTEST_DYNAMIC_SIZING_CARRY_PEAK"] = f"{carry['peak']:.8f}"
+            if cache_on and decision_cache_dir is not None:
+                ck = CacheKeyInputs(
+                    strategy=strat,
+                    symbol=sym,
+                    timeframe=args.timeframe,
+                    start=fs,
+                    end=fe,
+                    csv_path=csv_paths[sym],
+                    extra_env=ck_extra,
+                )
+                cached = _cache_lookup(ck, cache_dir_path=decision_cache_dir)
+                if cached is not None:
+                    payloads[key] = cached
+                    if cached.get("dynamic_sizing_carry"):
+                        carry_state[(strat, sym)] = cached["dynamic_sizing_carry"]
+                    cache_hits += 1
+                    n_done += 1
+                    continue
+            payload = _run_inprocess_task(strat, sym, fs, fe, dynamic_sizing_carry=carry)
+            payloads[key] = payload
+            if payload.get("ok") and payload.get("dynamic_sizing_carry"):
+                carry_state[(strat, sym)] = payload["dynamic_sizing_carry"]
+            cache_misses += 1
+            if ck is not None and decision_cache_dir is not None:
+                _cache_store(ck, payload, cache_dir_path=decision_cache_dir)
+            n_done += 1
+            if n_done % max(1, n_tasks // 10) == 0 or n_done == n_tasks:
+                print(f"  replays {n_done}/{n_tasks} (dynamic-sizing sequential)", file=sys.stderr)
+        final_carry_state = dict(carry_state)
+    elif use_inprocess:
         # In-process path: do parent-side cache lookups first (fast — a JSON
         # read per key), then dispatch only the misses to a ProcessPool.
         # Threads cannot run ``run_backtest_inprocess`` concurrently because
@@ -1004,6 +1098,58 @@ def main() -> int:
     # Pulled payloads from the dict in the same loop shape the script has used
     # since inception so HTML row order, metrics_rows order, and slug naming
     # stay byte-identical.
+    _trade_table_head = (
+        "<tr>"
+        + th("strategy", "strategy")
+        + th("sym", "sym")
+        + th("side", "side")
+        + th("qty", "qty", num=True)
+        + th("entry", "entry")
+        + th("exit", "exit")
+        + th("pnl", "pnl", num=True)
+        + th("exit_reason", "exit_reason")
+        + th("margin", "margin")
+        + th("chart", "chart")
+        + "</tr>"
+    )
+    _metrics_fold_head = (
+        "<tr>"
+        + th("fold", "fold")
+        + th("start", "start")
+        + th("end", "end")
+        + th("strategy", "strategy")
+        + th("sym", "sym")
+        + th("n", "n", num=True)
+        + th("pnl", "PnL", num=True)
+        + th("wr", "WR%", num=True)
+        + th("e_trade", "E/trade", num=True)
+        + th("sigma_pnl", "σ PnL", num=True)
+        + th("pf", "PF", num=True)
+        + th("maxdd", "maxDD", num=True)
+        + th("wins", "win")
+        + th("losses", "loss")
+        + th("max_consec_wins", "max win str")
+        + th("max_consec_losses", "max loss str")
+        + th("avg_bars", "avg bars", num=True)
+        + th("sum_r", "ΣR", num=True)
+        + "</tr>"
+    )
+    _metrics_rollup_head = (
+        "<tr>"
+        + th("strategy", "strategy")
+        + th("sym", "sym")
+        + th("n", "n", num=True)
+        + th("pnl", "PnL", num=True)
+        + th("wr", "WR%", num=True)
+        + th("e_trade", "E/trade", num=True)
+        + th("sigma_pnl", "σ PnL", num=True)
+        + th("pf", "PF", num=True)
+        + th("maxdd", "maxDD", num=True)
+        + th("max_consec_losses", "max loss str")
+        + th("avg_bars", "avg bars", num=True)
+        + th("sum_r", "ΣR", num=True)
+        + "</tr>"
+    )
     for fs, fe, fold_ix in folds:
         fold_rows: List[str] = []
         for strat in strategies:
@@ -1013,7 +1159,7 @@ def main() -> int:
                     err = payload.get("error", "no result")
                     print(f"FAIL {strat} {sym} fold{fold_ix}: {err}", file=sys.stderr)
                     fold_rows.append(
-                        f"<tr><td>{strat}</td><td>{sym}</td><td colspan='6'><code>{_html_escape(str(err)[:800])}</code></td></tr>"
+                        f"<tr><td>{strat}</td><td>{sym}</td><td colspan='8'><code>{_html_escape(str(err)[:800])}</code></td></tr>"
                     )
                     metrics_rows.append(
                         {
@@ -1052,6 +1198,9 @@ def main() -> int:
                 )
                 picked = trades[-n_keep:] if len(trades) > n_keep else trades
 
+                if n_keep <= 0:
+                    continue
+
                 for ti, trade in enumerate(picked):
                     df_idx, tf = ohlcv_cache[sym]
                     et = _parse_iso_utc(str(trade["entry_time"]))
@@ -1065,17 +1214,29 @@ def main() -> int:
                         sub = df_idx.loc[(df_idx.index >= et - pad) & (df_idx.index <= xt + pad)]
                     if sub.empty:
                         fold_rows.append(
-                            f"<tr><td>{strat}</td><td>{sym}</td><td>—</td><td colspan='6'>empty OHLC slice</td></tr>"
+                            f"<tr><td>{strat}</td><td>{sym}</td><td>—</td><td colspan='7'>empty OHLC slice</td></tr>"
                         )
                         continue
                     bars, bar_times = dataframe_to_chart_bars_unix(sub)
                     signal_info = None
                     if strat == "morning_range_reversion":
+                        sym_threshold = float(
+                            _mr_cfg.symbol_override(
+                                sym, "signal.reentry_threshold_points", default=_toml_threshold
+                            ) or 0.0
+                        )
+                        sym_require_reentry = bool(
+                            _mr_cfg.symbol_override(
+                                sym,
+                                "signal.require_reentry_close",
+                                default=_toml_require_reentry,
+                            )
+                        )
                         signal_info = _find_morning_range_signal_bar(
                             trade,
                             morning_5m_cache.get(sym),
-                            require_reentry_close=morning_require_reentry_close,
-                            reentry_threshold_points=morning_reentry_threshold_points,
+                            require_reentry_close=sym_require_reentry,
+                            reentry_threshold_points=sym_threshold,
                             reentry_frac=morning_reentry_frac,
                         )
                     overlay = _overlay_for_trade(trade, bar_times, signal_info=signal_info)
@@ -1094,18 +1255,28 @@ def main() -> int:
                         axis_time_zone="America/New_York",
                         morning_range_et_shade=(strat == "morning_range_reversion"),
                         overnight_range_et_shade=(strat in ("overnight_range", "overnight_reversion")),
+                        opening_range_et_shade=(strat == "opening_range_breakout"),
                     )
                     chart_count += 1
                     pnl = float(trade.get("pnl") or 0)
                     href = f"trades/{chart_name}"
                     margin_html = _format_trade_margin_cell(trade)
+                    qty_raw = trade.get("quantity", trade.get("qty", 1))
+                    try:
+                        qty_i = int(qty_raw)
+                        qty_s = str(qty_i)
+                    except (TypeError, ValueError):
+                        qty_i = 1
+                        qty_s = _html_escape(str(qty_raw))
+                    qty_cls = "num qty-sized" if qty_i > 1 else "num"
                     fold_rows.append(
                         "<tr>"
                         f"<td><code>{_html_escape(strat)}</code></td><td><code>{_html_escape(sym)}</code></td>"
                         f"<td>{_html_escape(str(trade.get('side','')))}</td>"
+                        f"<td class='{qty_cls}'>{qty_s}</td>"
                         f"<td>{_html_escape(str(trade.get('entry_time','')))}</td>"
                         f"<td>{_html_escape(str(trade.get('exit_time','')))}</td>"
-                        f"<td>{pnl:.2f}</td>"
+                        f"<td class='num'>{pnl:.2f}</td>"
                         f"<td>{_html_escape(str(trade.get('exit_reason','')))}</td>"
                         f"<td>{margin_html}</td>"
                         f'<td><a href="{href}">trade_chart</a></td>'
@@ -1114,12 +1285,8 @@ def main() -> int:
 
         fold_sections.append(
             f"<h2 id='fold{fold_ix}'>Fold {fold_ix}: {fs} → {fe}</h2>"
-            "<table><thead><tr><th>strategy</th><th>sym</th><th>side</th><th>entry</th><th>exit</th>"
-            "<th>pnl</th><th>exit_reason</th>"
-            "<th title='For take_profit: how much of the SL distance was consumed by MAE (closer to 100% = nearly stopped out). "
-            "For stop_loss: how far the trade ran in TP-direction relative to the SL distance.'>margin</th>"
-            "<th>chart</th></tr></thead><tbody>"
-            f"{''.join(fold_rows) if fold_rows else '<tr><td colspan=9>No rows</td></tr>'}"
+            f"<table><thead>{_trade_table_head}</thead><tbody>"
+            f"{''.join(fold_rows) if fold_rows else '<tr><td colspan=10>No rows</td></tr>'}"
             "</tbody></table>"
         )
 
@@ -1230,6 +1397,41 @@ def main() -> int:
         else "<p class='muted'>No trades for pooled diagnostics.</p>"
     )
 
+    mc_grand: Dict[str, Any] = {}
+    mc_per: Dict[str, Any] = {}
+    mc_html = ""
+    if int(args.monte_carlo) > 0 and all_trades_flat:
+        mc_grand = run_walkforward_monte_carlo(
+            all_trades_flat,
+            start_equity=sim_cash,
+            num_simulations=int(args.monte_carlo),
+            seed=int(args.monte_carlo_seed),
+        )
+        mc_html = format_monte_carlo_html(mc_grand, title="Monte Carlo — all legs pooled", chart_id_prefix="mc-grand")
+        for st, sy in sorted(rollup_trades.keys(), key=lambda k: (k[0], k[1])):
+            tlist = rollup_trades[(st, sy)]
+            if len(tlist) < 5:
+                continue
+            mc_per[f"{st}|{sy}"] = run_walkforward_monte_carlo(
+                tlist,
+                start_equity=sim_cash,
+                num_simulations=int(args.monte_carlo),
+                seed=int(args.monte_carlo_seed) + hash(f"{st}|{sy}") % 10000,
+            )
+        per_mc_html = [
+            format_monte_carlo_html(
+                mc_per[f"{st}|{sy}"],
+                title=f"Monte Carlo — {st} · {sy}",
+                chart_id_prefix=f"mc-{st}-{sy}",
+            )
+            for st, sy in sorted(rollup_trades.keys(), key=lambda k: (k[0], k[1]))
+            if f"{st}|{sy}" in mc_per
+        ]
+        if per_mc_html:
+            mc_html += "\n<h2>Monte Carlo — per strategy × symbol</h2>\n" + "\n".join(per_mc_html)
+    elif int(args.monte_carlo) > 0:
+        mc_html = "<p class='muted'>Monte Carlo skipped — no trades.</p>"
+
     per_rollup_insight_html: List[str] = []
     insights_per: Dict[str, Any] = {}
     for st, sy in sorted(rollup_trades.keys(), key=lambda k: (k[0], k[1])):
@@ -1254,6 +1456,26 @@ def main() -> int:
 
     insights_doc: Dict[str, Any] = {
         "sim_start_equity": sim_cash,
+        "trades_flat": [
+            {
+                "entry_time": t.get("entry_time"),
+                "exit_time": t.get("exit_time"),
+                "pnl": t.get("pnl"),
+                "symbol": t.get("symbol") or t.get("_symbol"),
+                "strategy": t.get("_strategy") or t.get("strategy"),
+                "side": t.get("side"),
+                "bars_held": t.get("bars_held"),
+                "exit_reason": t.get("exit_reason"),
+                "quantity": t.get("quantity", t.get("qty")),
+                "entry_price": t.get("entry_price"),
+                "exit_price": t.get("exit_price"),
+                "initial_risk_dollars": t.get("initial_risk_dollars"),
+                "max_adverse_excursion": t.get("max_adverse_excursion"),
+                "max_favorable_excursion": t.get("max_favorable_excursion"),
+                "_fold": t.get("_fold"),
+            }
+            for t in all_trades_flat
+        ],
         "grand": {
             "equity_curve": eq_pts_grand,
             "equity_summary": eq_sum_grand,
@@ -1261,6 +1483,12 @@ def main() -> int:
             "loss_patterns": g_loss,
         },
         "per_strategy_symbol": insights_per,
+        "monte_carlo": {
+            "grand": mc_grand,
+            "per_strategy_symbol": mc_per,
+            "num_simulations": int(args.monte_carlo),
+            "seed": int(args.monte_carlo_seed),
+        },
     }
 
     dark_css = """
@@ -1293,6 +1521,7 @@ code { background: var(--panel2); padding: 0.12rem 0.35rem; border-radius: 4px; 
 nav { margin-bottom: 1.25rem; font-size: 1.02rem; }
 nav a { margin-right: 1.25rem; font-weight: 600; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
+.qty-sized { color: var(--accent); font-weight: 650; }
 .pos { color: var(--pos); } .neg { color: var(--neg); }
 pre { background: var(--panel2); padding: 0.75rem 1rem; border-radius: 6px; overflow: auto; font-size: 0.78rem; line-height: 1.45; color: #d8d8e0; }
 pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
@@ -1323,7 +1552,7 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
     <strong>Expectancy</strong> = mean PnL per trade; <strong>PF</strong> = sum(winning $) / |sum(losing $)|;
     <strong>Max DD</strong> = peak-to-trough on cumulative PnL within that fold’s trade sequence;
     <strong>ΣR</strong> = sum of (trade PnL / <code>initial_risk_dollars</code>) where risk was recorded.</p>
-  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a> · <a href="strategy_configs.json">strategy_configs.json</a> · <a href="#config-snapshot">replay config ↓</a></nav>
+  <nav style="margin-bottom:1rem"><a href="metrics.json">metrics.json</a> · <a href="metrics_insights.json">metrics_insights.json</a> · <a href="monte_carlo.json">monte_carlo.json</a> · <a href="#monte-carlo">Monte Carlo ↓</a> · <a href="strategy_configs.json">strategy_configs.json</a> · <a href="#config-snapshot">replay config ↓</a></nav>
   <div class="banner">
     <strong>All folds pooled:</strong> {grand_n} trades · PnL <strong>{grand_pnl:.2f}</strong>
     · expectancy <strong>{g_exp:.3f}</strong> / trade · σ <strong>{g_std:.3f}</strong>
@@ -1337,13 +1566,12 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
   </div>
   <h2>Per fold</h2>
   <table>
-    <thead><tr><th>fold</th><th>start</th><th>end</th><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th>
-    <th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>win</th><th>loss</th><th>max win str</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <thead>{_metrics_fold_head}</thead>
     <tbody>{''.join(metrics_table_rows) if metrics_table_rows else '<tr><td colspan="17">No data</td></tr>'}</tbody>
   </table>
   <h2>Rollup — all folds merged (per strategy × symbol)</h2>
   <table>
-    <thead><tr><th>strategy</th><th>sym</th><th class="num">n</th><th class="num">PnL</th><th class="num">WR%</th><th class="num">E/trade</th><th class="num">σ PnL</th><th class="num">PF</th><th class="num">maxDD</th><th>max loss str</th><th class="num">avg bars</th><th class="num">ΣR</th></tr></thead>
+    <thead>{_metrics_rollup_head}</thead>
     <tbody>{''.join(rollup_rows) if rollup_rows else '<tr><td colspan="12">No trades</td></tr>'}</tbody>
   </table>
   <h2>Simulated account equity</h2>
@@ -1357,6 +1585,8 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
     · closes in path <strong>{eq_sum_grand.get("n_trades", 0)}</strong>
   </div>
   {eq_chart_block}
+  <h2>Monte Carlo robustness</h2>
+  {mc_html if mc_html else "<p class='muted'>Run with <code>--monte-carlo 2000</code> (default) to populate.</p>"}
   <h2>Analysis — all legs pooled</h2>
   {grand_insights_html}
   <h2>Analysis — per strategy × symbol (merged folds)</h2>
@@ -1365,6 +1595,41 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
 </body>
 </html>
 """
+
+    dynamic_sizing_banner = ""
+    if args.dynamic_sizing and all_trades_flat:
+        from collections import Counter
+
+        qty_hist: Counter[int] = Counter()
+        for t in all_trades_flat:
+            try:
+                qty_hist[int(t.get("quantity", t.get("qty", 1)))] += 1
+            except (TypeError, ValueError):
+                qty_hist[1] += 1
+        hist_s = ", ".join(f"×{k}: {v}" for k, v in sorted(qty_hist.items()))
+        n_sized = sum(v for k, v in qty_hist.items() if k > 1)
+        carry_bits: List[str] = []
+        if final_carry_state:
+            for st, sy in sorted(final_carry_state.keys(), key=lambda k: (k[0], k[1])):
+                c = final_carry_state[(st, sy)]
+                carry_bits.append(
+                    f"{st}/{sy} equity ${c['equity']:.0f} peak ${c['peak']:.0f}"
+                )
+        carry_html = (
+            f"<br/>End carry: {_html_escape(' · '.join(carry_bits))}"
+            if carry_bits
+            else ""
+        )
+        dynamic_sizing_banner = (
+            f"<div class='banner'><strong>Dynamic sizing ON</strong> — prop base "
+            f"<strong>${sim_cash:,.0f}</strong>, max qty <strong>{max(1, int(args.dynamic_sizing_max))}</strong>, "
+            f"cross-fold equity carry (+1 qty per +10% above base at peak, −1 per 5% drawdown; "
+            f"TOML base qty often 1). "
+            f"All trades: {hist_s} "
+            f"({n_sized} leg(s) with qty &gt; 1). "
+            f"Size steps appear after cumulative wins — check folds 2–6 (especially MGC)."
+            f"{carry_html}</div>"
+        )
 
     index_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1378,15 +1643,20 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
   <h1>Walk-forward trade recaps</h1>
   <nav>
     <a href="metrics.html">Metrics / survivability</a>
+    <a href="metrics.html#monte-carlo">Monte Carlo robustness</a>
+    <a href="monte_carlo.json">monte_carlo.json</a>
     <a href="metrics.html#config-snapshot">Replay config (exact TOML)</a>
     <a href="metrics.json">metrics.json</a>
     <a href="metrics_insights.json">metrics_insights.json</a>
     <a href="strategy_configs.json">strategy_configs.json</a>
+    <a href="regime_performance.html">Regime / calendar breakdown</a>
   </nav>
+  {dynamic_sizing_banner}
   <p class="muted">Replay <code>{args.timeframe}</code> from <code>{args.csv_template}</code> · anchor end <strong>{anchor_end}</strong> ·
     <strong>{args.days}</strong> calendar days · <strong>{len(folds)}</strong> folds · last <strong>{n_keep}</strong> trades charted per fold.
     Charts: <code>trades/&lt;slug&gt;_trade_chart.html</code> (1m when CSV present).</p>
   <p class="muted">Shading: <strong>morning_range_reversion</strong> → 7–8am ET anchor;
+    <strong>opening_range_breakout</strong> → ORB box from <code>opening_range_breakout.toml</code>;
     <strong>overnight_range</strong> / <strong>overnight_reversion</strong> → overnight box (timing from <code>overnight_range.toml</code>).</p>
   <ul>{''.join(f"<li><a href='#fold{ix}'>Fold {ix}: {fs} → {fe}</a></li>" for fs, fe, ix in folds)}</ul>
   {''.join(fold_sections)}
@@ -1394,13 +1664,23 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
 </html>
 """
 
+    mc_doc = {
+        "sim_start_equity": sim_cash,
+        "num_simulations": int(args.monte_carlo),
+        "seed": int(args.monte_carlo_seed),
+        "grand": mc_grand,
+        "per_strategy_symbol": mc_per,
+    }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "metrics_insights.json").write_text(json.dumps(insights_doc, indent=2), encoding="utf-8")
+    (out_dir / "monte_carlo.json").write_text(json.dumps(mc_doc, indent=2), encoding="utf-8")
     (out_dir / "metrics.html").write_text(metrics_html, encoding="utf-8")
     (out_dir / "index.html").write_text(index_html, encoding="utf-8")
     print(f"wrote {out_dir / 'index.html'}", file=sys.stderr)
     print(f"wrote {out_dir / 'metrics.html'}", file=sys.stderr)
     print(f"wrote {out_dir / 'metrics_insights.json'}", file=sys.stderr)
+    if int(args.monte_carlo) > 0:
+        print(f"wrote {out_dir / 'monte_carlo.json'}", file=sys.stderr)
     print(f"wrote {out_dir / 'strategy_configs.json'}", file=sys.stderr)
     snapshot_count = sum(1 for s in config_snapshots if s.snapshot is not None)
     print(
@@ -1408,6 +1688,19 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; color: #d8d8e0; }
         file=sys.stderr,
     )
     print(f"wrote {chart_count} charts under {trades_dir}", file=sys.stderr)
+    try:
+        import subprocess as _sp
+
+        regime_script = ROOT / "scripts" / "regime_performance_report.py"
+        if regime_script.is_file():
+            rc = _sp.run(
+                [sys.executable, str(regime_script), "--walkforward-dir", str(out_dir)],
+                cwd=str(ROOT),
+            ).returncode
+            if rc != 0:
+                print(f"warn: regime_performance_report exited {rc}", file=sys.stderr)
+    except Exception:
+        logger.debug("regime_performance_report skipped", exc_info=True)
     return 0
 
 

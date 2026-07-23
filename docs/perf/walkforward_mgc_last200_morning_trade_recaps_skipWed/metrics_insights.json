@@ -1,0 +1,2233 @@
+{
+  "sim_start_equity": 2000.0,
+  "trades_flat": [
+    {
+      "entry_time": "2026-01-05T13:30:00Z",
+      "exit_time": "2026-01-05T14:00:00Z",
+      "pnl": 134.49999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 6,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-06T13:20:00Z",
+      "exit_time": "2026-01-06T13:25:00Z",
+      "pnl": 56.50000000000546,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-08T13:30:00Z",
+      "exit_time": "2026-01-08T16:00:00Z",
+      "pnl": -296.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 30,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-12T14:25:00Z",
+      "exit_time": "2026-01-12T15:05:00Z",
+      "pnl": -286.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 8,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-01-19T16:00:00Z",
+      "exit_time": "2026-01-19T23:00:00Z",
+      "pnl": -13.500000000003638,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 42,
+      "exit_reason": "replay_force_flat_et"
+    },
+    {
+      "entry_time": "2026-01-20T14:05:00Z",
+      "exit_time": "2026-01-20T15:25:00Z",
+      "pnl": 66.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 16,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-22T13:25:00Z",
+      "exit_time": "2026-01-22T13:30:00Z",
+      "pnl": 114.49999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-26T13:05:00Z",
+      "exit_time": "2026-01-26T14:55:00Z",
+      "pnl": 176.50000000000546,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 22,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-01-27T16:00:00Z",
+      "exit_time": "2026-01-27T19:55:00Z",
+      "pnl": -69.00000000000546,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-01-29T13:15:00Z",
+      "exit_time": "2026-01-29T14:25:00Z",
+      "pnl": 209.49999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 14,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-03T13:30:00Z",
+      "exit_time": "2026-02-03T14:35:00Z",
+      "pnl": 399.4999999999982,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 13,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-09T13:10:00Z",
+      "exit_time": "2026-02-09T13:20:00Z",
+      "pnl": 124.49999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-10T14:40:00Z",
+      "exit_time": "2026-02-10T14:45:00Z",
+      "pnl": 340.4999999999927,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 1,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-12T13:25:00Z",
+      "exit_time": "2026-02-12T14:55:00Z",
+      "pnl": 170.50000000000182,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 18,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-16T14:30:00Z",
+      "exit_time": "2026-02-16T18:25:00Z",
+      "pnl": 10.999999999994543,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-02-19T13:45:00Z",
+      "exit_time": "2026-02-19T14:05:00Z",
+      "pnl": 103.49999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-02-26T15:25:00Z",
+      "exit_time": "2026-02-26T15:45:00Z",
+      "pnl": 271.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-02T13:05:00Z",
+      "exit_time": "2026-03-02T14:00:00Z",
+      "pnl": 171.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 11,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-09T12:10:00Z",
+      "exit_time": "2026-03-09T13:40:00Z",
+      "pnl": 156.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 18,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-10T14:05:00Z",
+      "exit_time": "2026-03-10T15:10:00Z",
+      "pnl": -296.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 13,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-03-12T12:25:00Z",
+      "exit_time": "2026-03-12T12:50:00Z",
+      "pnl": 86.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 5,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-16T12:30:00Z",
+      "exit_time": "2026-03-16T14:45:00Z",
+      "pnl": 272.5,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 27,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-17T12:50:00Z",
+      "exit_time": "2026-03-17T15:25:00Z",
+      "pnl": 125.49999999999272,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 31,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-03-26T13:55:00Z",
+      "exit_time": "2026-03-26T16:15:00Z",
+      "pnl": 334.4999999999982,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 28,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-02T13:15:00Z",
+      "exit_time": "2026-04-02T13:45:00Z",
+      "pnl": 335.5000000000018,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 6,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-06T12:40:00Z",
+      "exit_time": "2026-04-06T14:35:00Z",
+      "pnl": 169.49999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 23,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-07T12:30:00Z",
+      "exit_time": "2026-04-07T14:00:00Z",
+      "pnl": 312.4999999999909,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 18,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-09T12:30:00Z",
+      "exit_time": "2026-04-09T13:10:00Z",
+      "pnl": 167.5,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 8,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-13T13:35:00Z",
+      "exit_time": "2026-04-13T15:05:00Z",
+      "pnl": 227.5,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 18,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-14T13:25:00Z",
+      "exit_time": "2026-04-14T14:25:00Z",
+      "pnl": -292.0000000000073,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 12,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-16T13:50:00Z",
+      "exit_time": "2026-04-16T13:55:00Z",
+      "pnl": -286.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 1,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-04-20T12:25:00Z",
+      "exit_time": "2026-04-20T16:20:00Z",
+      "pnl": 130.99999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-04-23T14:00:00Z",
+      "exit_time": "2026-04-23T17:40:00Z",
+      "pnl": 227.5,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 44,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-27T12:20:00Z",
+      "exit_time": "2026-04-27T12:40:00Z",
+      "pnl": 75.50000000000182,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-04-30T12:45:00Z",
+      "exit_time": "2026-04-30T13:00:00Z",
+      "pnl": 157.4999999999909,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-04T12:25:00Z",
+      "exit_time": "2026-05-04T15:10:00Z",
+      "pnl": 163.49999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 33,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-05T12:45:00Z",
+      "exit_time": "2026-05-05T16:40:00Z",
+      "pnl": 70.99999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-05-07T12:15:00Z",
+      "exit_time": "2026-05-07T15:55:00Z",
+      "pnl": 135.50000000000182,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 44,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-12T12:55:00Z",
+      "exit_time": "2026-05-12T13:10:00Z",
+      "pnl": 191.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-14T12:25:00Z",
+      "exit_time": "2026-05-14T13:20:00Z",
+      "pnl": 130.50000000000182,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 11,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-18T12:50:00Z",
+      "exit_time": "2026-05-18T15:00:00Z",
+      "pnl": 339.4999999999982,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 26,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-21T12:30:00Z",
+      "exit_time": "2026-05-21T13:50:00Z",
+      "pnl": 108.49999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 16,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-05-25T12:35:00Z",
+      "exit_time": "2026-05-25T16:30:00Z",
+      "pnl": -8.999999999996362,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-05-26T15:35:00Z",
+      "exit_time": "2026-05-26T19:30:00Z",
+      "pnl": 2.999999999992724,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-05-28T12:10:00Z",
+      "exit_time": "2026-05-28T12:20:00Z",
+      "pnl": 77.5,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 2,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-04T14:50:00Z",
+      "exit_time": "2026-06-04T18:45:00Z",
+      "pnl": 41.99999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-06-08T12:45:00Z",
+      "exit_time": "2026-06-08T16:40:00Z",
+      "pnl": -88.00000000001091,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-06-09T12:10:00Z",
+      "exit_time": "2026-06-09T12:25:00Z",
+      "pnl": 61.50000000000546,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 3,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-11T12:15:00Z",
+      "exit_time": "2026-06-11T15:50:00Z",
+      "pnl": 138.49999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 43,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-15T12:15:00Z",
+      "exit_time": "2026-06-15T12:35:00Z",
+      "pnl": 133.49999999999454,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-16T12:45:00Z",
+      "exit_time": "2026-06-16T13:20:00Z",
+      "pnl": 125.49999999999272,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 7,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-18T12:25:00Z",
+      "exit_time": "2026-06-18T14:00:00Z",
+      "pnl": 136.49999999999636,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 19,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-22T13:45:00Z",
+      "exit_time": "2026-06-22T15:45:00Z",
+      "pnl": -286.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 24,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-06-23T14:25:00Z",
+      "exit_time": "2026-06-23T18:20:00Z",
+      "pnl": 57.999999999992724,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-06-29T12:20:00Z",
+      "exit_time": "2026-06-29T13:55:00Z",
+      "pnl": 124.49999999999818,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 19,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-06-30T15:00:00Z",
+      "exit_time": "2026-06-30T15:20:00Z",
+      "pnl": 97.5,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 4,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-07-06T16:50:00Z",
+      "exit_time": "2026-07-06T17:45:00Z",
+      "pnl": 65.49999999999272,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 11,
+      "exit_reason": "take_profit"
+    },
+    {
+      "entry_time": "2026-07-07T13:55:00Z",
+      "exit_time": "2026-07-07T17:50:00Z",
+      "pnl": 117.99999999999272,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 47,
+      "exit_reason": "timeout"
+    },
+    {
+      "entry_time": "2026-07-09T12:15:00Z",
+      "exit_time": "2026-07-09T14:05:00Z",
+      "pnl": -286.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "SELL",
+      "bars_held": 22,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-07-13T13:40:00Z",
+      "exit_time": "2026-07-13T14:15:00Z",
+      "pnl": -286.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 7,
+      "exit_reason": "stop_loss"
+    },
+    {
+      "entry_time": "2026-07-23T12:25:00Z",
+      "exit_time": "2026-07-23T13:05:00Z",
+      "pnl": -296.00000000000364,
+      "symbol": "MGC",
+      "strategy": "morning_range_reversion",
+      "side": "BUY",
+      "bars_held": 8,
+      "exit_reason": "stop_loss"
+    }
+  ],
+  "grand": {
+    "equity_curve": [
+      {
+        "time": 1767619800,
+        "equity": 2000.0,
+        "trade_pnl": 0.0,
+        "cumulative_pnl": 0.0
+      },
+      {
+        "time": 1767621600,
+        "equity": 2134.5,
+        "trade_pnl": 134.5,
+        "cumulative_pnl": 134.5
+      },
+      {
+        "time": 1767705900,
+        "equity": 2191.0,
+        "trade_pnl": 56.5,
+        "cumulative_pnl": 191.0
+      },
+      {
+        "time": 1767888000,
+        "equity": 1895.0,
+        "trade_pnl": -296.0,
+        "cumulative_pnl": -105.0
+      },
+      {
+        "time": 1768230300,
+        "equity": 1609.0,
+        "trade_pnl": -286.0,
+        "cumulative_pnl": -391.0
+      },
+      {
+        "time": 1768863600,
+        "equity": 1595.5,
+        "trade_pnl": -13.5,
+        "cumulative_pnl": -404.5
+      },
+      {
+        "time": 1768922700,
+        "equity": 1662.0,
+        "trade_pnl": 66.5,
+        "cumulative_pnl": -338.0
+      },
+      {
+        "time": 1769088600,
+        "equity": 1776.5,
+        "trade_pnl": 114.5,
+        "cumulative_pnl": -223.5
+      },
+      {
+        "time": 1769439300,
+        "equity": 1953.0,
+        "trade_pnl": 176.5,
+        "cumulative_pnl": -47.0
+      },
+      {
+        "time": 1769543700,
+        "equity": 1884.0,
+        "trade_pnl": -69.0,
+        "cumulative_pnl": -116.0
+      },
+      {
+        "time": 1769696700,
+        "equity": 2093.5,
+        "trade_pnl": 209.5,
+        "cumulative_pnl": 93.5
+      },
+      {
+        "time": 1770129300,
+        "equity": 2493.0,
+        "trade_pnl": 399.5,
+        "cumulative_pnl": 493.0
+      },
+      {
+        "time": 1770643200,
+        "equity": 2617.5,
+        "trade_pnl": 124.5,
+        "cumulative_pnl": 617.5
+      },
+      {
+        "time": 1770734700,
+        "equity": 2958.0,
+        "trade_pnl": 340.5,
+        "cumulative_pnl": 958.0
+      },
+      {
+        "time": 1770908100,
+        "equity": 3128.5,
+        "trade_pnl": 170.5,
+        "cumulative_pnl": 1128.5
+      },
+      {
+        "time": 1771266300,
+        "equity": 3139.5,
+        "trade_pnl": 11.0,
+        "cumulative_pnl": 1139.5
+      },
+      {
+        "time": 1771509900,
+        "equity": 3243.0,
+        "trade_pnl": 103.5,
+        "cumulative_pnl": 1243.0
+      },
+      {
+        "time": 1772120700,
+        "equity": 3514.5,
+        "trade_pnl": 271.5,
+        "cumulative_pnl": 1514.5
+      },
+      {
+        "time": 1772460000,
+        "equity": 3686.0,
+        "trade_pnl": 171.5,
+        "cumulative_pnl": 1686.0
+      },
+      {
+        "time": 1773063600,
+        "equity": 3842.5,
+        "trade_pnl": 156.5,
+        "cumulative_pnl": 1842.5
+      },
+      {
+        "time": 1773155400,
+        "equity": 3546.5,
+        "trade_pnl": -296.0,
+        "cumulative_pnl": 1546.5
+      },
+      {
+        "time": 1773319800,
+        "equity": 3633.0,
+        "trade_pnl": 86.5,
+        "cumulative_pnl": 1633.0
+      },
+      {
+        "time": 1773672300,
+        "equity": 3905.5,
+        "trade_pnl": 272.5,
+        "cumulative_pnl": 1905.5
+      },
+      {
+        "time": 1773761100,
+        "equity": 4031.0,
+        "trade_pnl": 125.5,
+        "cumulative_pnl": 2031.0
+      },
+      {
+        "time": 1774541700,
+        "equity": 4365.5,
+        "trade_pnl": 334.5,
+        "cumulative_pnl": 2365.5
+      },
+      {
+        "time": 1775137500,
+        "equity": 4701.0,
+        "trade_pnl": 335.5,
+        "cumulative_pnl": 2701.0
+      },
+      {
+        "time": 1775486100,
+        "equity": 4870.5,
+        "trade_pnl": 169.5,
+        "cumulative_pnl": 2870.5
+      },
+      {
+        "time": 1775570400,
+        "equity": 5183.0,
+        "trade_pnl": 312.5,
+        "cumulative_pnl": 3183.0
+      },
+      {
+        "time": 1775740200,
+        "equity": 5350.5,
+        "trade_pnl": 167.5,
+        "cumulative_pnl": 3350.5
+      },
+      {
+        "time": 1776092700,
+        "equity": 5578.0,
+        "trade_pnl": 227.5,
+        "cumulative_pnl": 3578.0
+      },
+      {
+        "time": 1776176700,
+        "equity": 5286.0,
+        "trade_pnl": -292.0,
+        "cumulative_pnl": 3286.0
+      },
+      {
+        "time": 1776347700,
+        "equity": 5000.0,
+        "trade_pnl": -286.0,
+        "cumulative_pnl": 3000.0
+      },
+      {
+        "time": 1776702000,
+        "equity": 5131.0,
+        "trade_pnl": 131.0,
+        "cumulative_pnl": 3131.0
+      },
+      {
+        "time": 1776966000,
+        "equity": 5358.5,
+        "trade_pnl": 227.5,
+        "cumulative_pnl": 3358.5
+      },
+      {
+        "time": 1777293600,
+        "equity": 5434.0,
+        "trade_pnl": 75.5,
+        "cumulative_pnl": 3434.0
+      },
+      {
+        "time": 1777554000,
+        "equity": 5591.5,
+        "trade_pnl": 157.5,
+        "cumulative_pnl": 3591.5
+      },
+      {
+        "time": 1777907400,
+        "equity": 5755.0,
+        "trade_pnl": 163.5,
+        "cumulative_pnl": 3755.0
+      },
+      {
+        "time": 1777999200,
+        "equity": 5826.0,
+        "trade_pnl": 71.0,
+        "cumulative_pnl": 3826.0
+      },
+      {
+        "time": 1778169300,
+        "equity": 5961.5,
+        "trade_pnl": 135.5,
+        "cumulative_pnl": 3961.5
+      },
+      {
+        "time": 1778591400,
+        "equity": 6153.0,
+        "trade_pnl": 191.5,
+        "cumulative_pnl": 4153.0
+      },
+      {
+        "time": 1778764800,
+        "equity": 6283.5,
+        "trade_pnl": 130.5,
+        "cumulative_pnl": 4283.5
+      },
+      {
+        "time": 1779116400,
+        "equity": 6623.0,
+        "trade_pnl": 339.5,
+        "cumulative_pnl": 4623.0
+      },
+      {
+        "time": 1779371400,
+        "equity": 6731.5,
+        "trade_pnl": 108.5,
+        "cumulative_pnl": 4731.5
+      },
+      {
+        "time": 1779726600,
+        "equity": 6722.5,
+        "trade_pnl": -9.0,
+        "cumulative_pnl": 4722.5
+      },
+      {
+        "time": 1779823800,
+        "equity": 6725.5,
+        "trade_pnl": 3.0,
+        "cumulative_pnl": 4725.5
+      },
+      {
+        "time": 1779970800,
+        "equity": 6803.0,
+        "trade_pnl": 77.5,
+        "cumulative_pnl": 4803.0
+      },
+      {
+        "time": 1780598700,
+        "equity": 6845.0,
+        "trade_pnl": 42.0,
+        "cumulative_pnl": 4845.0
+      },
+      {
+        "time": 1780936800,
+        "equity": 6757.0,
+        "trade_pnl": -88.0,
+        "cumulative_pnl": 4757.0
+      },
+      {
+        "time": 1781007900,
+        "equity": 6818.5,
+        "trade_pnl": 61.5,
+        "cumulative_pnl": 4818.5
+      },
+      {
+        "time": 1781193000,
+        "equity": 6957.0,
+        "trade_pnl": 138.5,
+        "cumulative_pnl": 4957.0
+      },
+      {
+        "time": 1781526900,
+        "equity": 7090.5,
+        "trade_pnl": 133.5,
+        "cumulative_pnl": 5090.5
+      },
+      {
+        "time": 1781616000,
+        "equity": 7216.0,
+        "trade_pnl": 125.5,
+        "cumulative_pnl": 5216.0
+      },
+      {
+        "time": 1781791200,
+        "equity": 7352.5,
+        "trade_pnl": 136.5,
+        "cumulative_pnl": 5352.5
+      },
+      {
+        "time": 1782143100,
+        "equity": 7066.5,
+        "trade_pnl": -286.0,
+        "cumulative_pnl": 5066.5
+      },
+      {
+        "time": 1782238800,
+        "equity": 7124.5,
+        "trade_pnl": 58.0,
+        "cumulative_pnl": 5124.5
+      },
+      {
+        "time": 1782741300,
+        "equity": 7249.0,
+        "trade_pnl": 124.5,
+        "cumulative_pnl": 5249.0
+      },
+      {
+        "time": 1782832800,
+        "equity": 7346.5,
+        "trade_pnl": 97.5,
+        "cumulative_pnl": 5346.5
+      },
+      {
+        "time": 1783359900,
+        "equity": 7412.0,
+        "trade_pnl": 65.5,
+        "cumulative_pnl": 5412.0
+      },
+      {
+        "time": 1783446600,
+        "equity": 7530.0,
+        "trade_pnl": 118.0,
+        "cumulative_pnl": 5530.0
+      },
+      {
+        "time": 1783605900,
+        "equity": 7244.0,
+        "trade_pnl": -286.0,
+        "cumulative_pnl": 5244.0
+      },
+      {
+        "time": 1783952100,
+        "equity": 6958.0,
+        "trade_pnl": -286.0,
+        "cumulative_pnl": 4958.0
+      },
+      {
+        "time": 1784811900,
+        "equity": 6662.0,
+        "trade_pnl": -296.0,
+        "cumulative_pnl": 4662.0
+      }
+    ],
+    "equity_summary": {
+      "start_equity": 2000.0,
+      "final_equity": 6662.0,
+      "total_return_pct": 233.1,
+      "max_drawdown_dollars": 868.0,
+      "max_drawdown_pct": 27.179,
+      "n_trades": 61
+    },
+    "extended": {
+      "n_trades": 61,
+      "recovery_factor_pnl_vs_seq_dd": 5.371,
+      "breakeven_win_rate": 0.5802,
+      "actual_win_rate": 0.7869,
+      "median_bars_held_win": 16.0,
+      "median_bars_held_loss": 22.0,
+      "mean_mae_losers": -209.1154,
+      "mean_mfe_winners": 139.0625,
+      "avg_r_winners": 0.54,
+      "avg_r_losers": -0.753,
+      "median_r_winners": 0.478,
+      "median_r_losers": -1.019,
+      "avg_r_winners_unclipped": 0.54,
+      "avg_r_losers_unclipped": -0.753,
+      "n_clipped_r_winners": 0,
+      "n_clipped_r_losers": 0,
+      "r_cap": 10.0
+    },
+    "loss_patterns": {
+      "n_trades": 61,
+      "n_losses": 13,
+      "n_wins": 48,
+      "by_exit_reason": {
+        "take_profit": {
+          "wins": 41,
+          "losses": 0,
+          "n": 41
+        },
+        "stop_loss": {
+          "wins": 0,
+          "losses": 9,
+          "n": 9
+        },
+        "replay_force_flat_et": {
+          "wins": 0,
+          "losses": 1,
+          "n": 1
+        },
+        "timeout": {
+          "wins": 7,
+          "losses": 3,
+          "n": 10
+        }
+      },
+      "losses_by_exit_reason_pct": {
+        "stop_loss": 69.2,
+        "replay_force_flat_et": 7.7,
+        "timeout": 23.1
+      },
+      "by_side_loss_rate": {
+        "BUY": {
+          "n": 20,
+          "losses": 5,
+          "loss_rate_pct": 25.0
+        },
+        "SELL": {
+          "n": 41,
+          "losses": 8,
+          "loss_rate_pct": 19.5
+        }
+      },
+      "by_strategy_loss_mix": {
+        "morning_range_reversion": {
+          "losses": 13,
+          "trades": 61,
+          "pct_of_all_losses": 100.0
+        }
+      },
+      "losses_by_weekday": {
+        "Mon": {
+          "losses": 6,
+          "trades": 22,
+          "loss_share_of_losses_pct": 46.2
+        },
+        "Tue": {
+          "losses": 3,
+          "trades": 17,
+          "loss_share_of_losses_pct": 23.1
+        },
+        "Thu": {
+          "losses": 4,
+          "trades": 22,
+          "loss_share_of_losses_pct": 30.8
+        }
+      },
+      "correlations_with_loss": [
+        {
+          "factor": "bars_held",
+          "pearson_vs_loss_indicator": 0.1139,
+          "n": 61,
+          "hint": "When bars_held is higher, losing trades are slightly more common (Pearson r\u22480.11); treat as exploratory\u2014causation not implied."
+        },
+        {
+          "factor": "initial_risk_dollars",
+          "pearson_vs_loss_indicator": -0.0874,
+          "n": 61,
+          "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.09); treat as exploratory\u2014causation not implied."
+        },
+        {
+          "factor": "entry_hour_et",
+          "pearson_vs_loss_indicator": 0.1973,
+          "n": 61,
+          "hint": "When entry_hour_et is higher, losing trades are slightly more common (Pearson r\u22480.20); treat as exploratory\u2014causation not implied."
+        }
+      ]
+    }
+  },
+  "per_strategy_symbol": {
+    "morning_range_reversion|MGC": {
+      "equity_summary": {
+        "start_equity": 2000.0,
+        "final_equity": 6662.0,
+        "total_return_pct": 233.1,
+        "max_drawdown_dollars": 868.0,
+        "max_drawdown_pct": 27.179,
+        "n_trades": 61
+      },
+      "extended": {
+        "n_trades": 61,
+        "recovery_factor_pnl_vs_seq_dd": 5.371,
+        "breakeven_win_rate": 0.5802,
+        "actual_win_rate": 0.7869,
+        "median_bars_held_win": 16.0,
+        "median_bars_held_loss": 22.0,
+        "mean_mae_losers": -209.1154,
+        "mean_mfe_winners": 139.0625,
+        "avg_r_winners": 0.54,
+        "avg_r_losers": -0.753,
+        "median_r_winners": 0.478,
+        "median_r_losers": -1.019,
+        "avg_r_winners_unclipped": 0.54,
+        "avg_r_losers_unclipped": -0.753,
+        "n_clipped_r_winners": 0,
+        "n_clipped_r_losers": 0,
+        "r_cap": 10.0
+      },
+      "loss_patterns": {
+        "n_trades": 61,
+        "n_losses": 13,
+        "n_wins": 48,
+        "by_exit_reason": {
+          "take_profit": {
+            "wins": 41,
+            "losses": 0,
+            "n": 41
+          },
+          "stop_loss": {
+            "wins": 0,
+            "losses": 9,
+            "n": 9
+          },
+          "replay_force_flat_et": {
+            "wins": 0,
+            "losses": 1,
+            "n": 1
+          },
+          "timeout": {
+            "wins": 7,
+            "losses": 3,
+            "n": 10
+          }
+        },
+        "losses_by_exit_reason_pct": {
+          "stop_loss": 69.2,
+          "replay_force_flat_et": 7.7,
+          "timeout": 23.1
+        },
+        "by_side_loss_rate": {
+          "BUY": {
+            "n": 20,
+            "losses": 5,
+            "loss_rate_pct": 25.0
+          },
+          "SELL": {
+            "n": 41,
+            "losses": 8,
+            "loss_rate_pct": 19.5
+          }
+        },
+        "by_strategy_loss_mix": {
+          "morning_range_reversion": {
+            "losses": 13,
+            "trades": 61,
+            "pct_of_all_losses": 100.0
+          }
+        },
+        "losses_by_weekday": {
+          "Mon": {
+            "losses": 6,
+            "trades": 22,
+            "loss_share_of_losses_pct": 46.2
+          },
+          "Tue": {
+            "losses": 3,
+            "trades": 17,
+            "loss_share_of_losses_pct": 23.1
+          },
+          "Thu": {
+            "losses": 4,
+            "trades": 22,
+            "loss_share_of_losses_pct": 30.8
+          }
+        },
+        "correlations_with_loss": [
+          {
+            "factor": "bars_held",
+            "pearson_vs_loss_indicator": 0.1139,
+            "n": 61,
+            "hint": "When bars_held is higher, losing trades are slightly more common (Pearson r\u22480.11); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "initial_risk_dollars",
+            "pearson_vs_loss_indicator": -0.0874,
+            "n": 61,
+            "hint": "When initial_risk_dollars is lower, losing trades are slightly more common (Pearson r\u2248-0.09); treat as exploratory\u2014causation not implied."
+          },
+          {
+            "factor": "entry_hour_et",
+            "pearson_vs_loss_indicator": 0.1973,
+            "n": 61,
+            "hint": "When entry_hour_et is higher, losing trades are slightly more common (Pearson r\u22480.20); treat as exploratory\u2014causation not implied."
+          }
+        ]
+      }
+    }
+  },
+  "monte_carlo": {
+    "grand": {
+      "n_trades": 61,
+      "start_equity": 2000.0,
+      "num_simulations": 2000,
+      "seed": 42,
+      "sequential_actual": {
+        "total_pnl": 4661.999999999816,
+        "final_equity": 6661.999999999816,
+        "max_drawdown_dollars": 868.0000000000109,
+        "max_drawdown_pct": 27.17937015061661,
+        "max_consecutive_losses": 3.0
+      },
+      "modes": {
+        "shuffle": {
+          "simulation_mode": "shuffle",
+          "total_pnl": {
+            "p5": 4661.999999999816,
+            "p10": 4661.999999999816,
+            "p25": 4661.999999999816,
+            "p50": 4661.999999999816,
+            "p75": 4661.999999999816,
+            "p90": 4661.999999999816,
+            "p95": 4661.999999999816,
+            "mean": 4661.999999999817,
+            "std": 9.094947017729282e-13,
+            "min": 4661.999999999816,
+            "max": 4661.999999999816,
+            "p_profit": 1.0,
+            "actual": 4662.0,
+            "actual_percentile": 100.0,
+            "pct_sims_gte_actual": 100.0
+          },
+          "final_equity": {
+            "p5": 6661.999999999816,
+            "p10": 6661.999999999816,
+            "p25": 6661.999999999816,
+            "p50": 6661.999999999816,
+            "p75": 6661.999999999816,
+            "p90": 6661.999999999816,
+            "p95": 6661.999999999816,
+            "mean": 6661.999999999814,
+            "std": 2.7284841053187847e-12,
+            "min": 6661.999999999816,
+            "max": 6661.999999999816
+          },
+          "max_drawdown_dollars": {
+            "p5": 416.45000000000573,
+            "p10": 478.4000000000051,
+            "p25": 582.0000000000073,
+            "p50": 651.0000000000127,
+            "p75": 821.5000000000168,
+            "p90": 955.1000000000423,
+            "p95": 1090.5750000000198,
+            "mean": 698.2607500000177,
+            "std": 200.6173163872934,
+            "min": 296.00000000000364,
+            "max": 1752.0000000000255,
+            "actual": 868.0,
+            "actual_percentile": 81.8
+          },
+          "max_drawdown_pct": {
+            "p5": 10.447185962196622,
+            "p10": 11.577357570048122,
+            "p25": 13.654810217235848,
+            "p50": 16.747439931386324,
+            "p75": 22.433992433042103,
+            "p90": 29.079230769231952,
+            "p95": 34.17676775147992,
+            "mean": 18.982659349395806,
+            "std": 7.751035055510377,
+            "min": 6.791487382254037,
+            "max": 61.53270094857872,
+            "actual": 27.18
+          },
+          "max_consecutive_losses": {
+            "p5": 2.0,
+            "p10": 2.0,
+            "p25": 2.0,
+            "p50": 2.0,
+            "p75": 3.0,
+            "p90": 3.0,
+            "p95": 4.0,
+            "mean": 2.402,
+            "std": 0.7234611254241655,
+            "min": 1.0,
+            "max": 7.0,
+            "actual": 3,
+            "p90_or_worse": 35.2
+          },
+          "probability_final_above_start": 1.0,
+          "histograms": {
+            "total_pnl": {
+              "edges": [
+                4615.38,
+                4618.29,
+                4621.21,
+                4624.12,
+                4627.03,
+                4629.95,
+                4632.86,
+                4635.78,
+                4638.69,
+                4641.6,
+                4644.52,
+                4647.43,
+                4650.34,
+                4653.26,
+                4656.17,
+                4659.09,
+                4662.0,
+                4664.91,
+                4667.83,
+                4670.74,
+                4673.65,
+                4676.57,
+                4679.48,
+                4682.4,
+                4685.31,
+                4688.22,
+                4691.14,
+                4694.05,
+                4696.96,
+                4699.88,
+                4702.79,
+                4705.71,
+                4708.62
+              ],
+              "counts": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2000,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "n_bins": 32
+            },
+            "max_drawdown_dollars": {
+              "edges": [
+                296.0,
+                341.5,
+                387.0,
+                432.5,
+                478.0,
+                523.5,
+                569.0,
+                614.5,
+                660.0,
+                705.5,
+                751.0,
+                796.5,
+                842.0,
+                887.5,
+                933.0,
+                978.5,
+                1024.0,
+                1069.5,
+                1115.0,
+                1160.5,
+                1206.0,
+                1251.5,
+                1297.0,
+                1342.5,
+                1388.0,
+                1433.5,
+                1479.0,
+                1524.5,
+                1570.0,
+                1615.5,
+                1661.0,
+                1706.5,
+                1752.0
+              ],
+              "counts": [
+                22,
+                50,
+                46,
+                82,
+                67,
+                53,
+                589,
+                123,
+                174,
+                127,
+                100,
+                90,
+                196,
+                51,
+                52,
+                41,
+                27,
+                31,
+                21,
+                17,
+                13,
+                5,
+                5,
+                7,
+                4,
+                3,
+                1,
+                0,
+                1,
+                1,
+                0,
+                1
+              ],
+              "n_bins": 32
+            }
+          }
+        },
+        "bootstrap": {
+          "simulation_mode": "bootstrap",
+          "total_pnl": {
+            "p5": 2149.974999999789,
+            "p10": 2813.4499999998125,
+            "p25": 3714.499999999823,
+            "p50": 4699.749999999799,
+            "p75": 5622.99999999982,
+            "p90": 6484.449999999824,
+            "p95": 6903.149999999792,
+            "mean": 4638.556499999817,
+            "std": 1424.7594045338897,
+            "min": -512.5000000002092,
+            "max": 9123.999999999814,
+            "p_profit": 0.9975,
+            "actual": 4662.0,
+            "actual_percentile": 49.1,
+            "pct_sims_gte_actual": 50.8
+          },
+          "final_equity": {
+            "p5": 4149.974999999789,
+            "p10": 4813.4499999998125,
+            "p25": 5714.499999999824,
+            "p50": 6699.749999999799,
+            "p75": 7622.99999999982,
+            "p90": 8484.449999999824,
+            "p95": 8903.149999999792,
+            "mean": 6638.556499999818,
+            "std": 1424.7594045338897,
+            "min": 1487.4999999997908,
+            "max": 11123.999999999814
+          },
+          "max_drawdown_dollars": {
+            "p5": 306.90000000001555,
+            "p10": 374.00000000001455,
+            "p25": 572.0000000000073,
+            "p50": 632.0000000000255,
+            "p75": 858.0000000000109,
+            "p90": 1068.0000000000382,
+            "p95": 1227.1500000000349,
+            "mean": 702.5327500000197,
+            "std": 281.6390052930222,
+            "min": 286.00000000000364,
+            "max": 3174.500000000089,
+            "actual": 868.0,
+            "actual_percentile": 77.5
+          },
+          "max_drawdown_pct": {
+            "p5": 8.618389801010602,
+            "p10": 9.932564720194895,
+            "p25": 12.846525367035687,
+            "p50": 17.133313705286827,
+            "p75": 25.078484837848595,
+            "p90": 32.560791839908966,
+            "p95": 39.65527658596933,
+            "mean": 19.8727268244511,
+            "std": 10.297153627718542,
+            "min": 2.990118273514025,
+            "max": 138.32244008714986,
+            "actual": 27.18
+          },
+          "max_consecutive_losses": {
+            "p5": 1.0,
+            "p10": 2.0,
+            "p25": 2.0,
+            "p50": 2.0,
+            "p75": 3.0,
+            "p90": 3.0,
+            "p95": 4.0,
+            "mean": 2.378,
+            "std": 0.8240849470776663,
+            "min": 1.0,
+            "max": 7.0,
+            "actual": 3,
+            "p90_or_worse": 36.7
+          },
+          "probability_final_above_start": 0.9975,
+          "histograms": {
+            "total_pnl": {
+              "edges": [
+                -512.5,
+                -211.36,
+                89.78,
+                390.92,
+                692.06,
+                993.2,
+                1294.34,
+                1595.48,
+                1896.62,
+                2197.77,
+                2498.91,
+                2800.05,
+                3101.19,
+                3402.33,
+                3703.47,
+                4004.61,
+                4305.75,
+                4606.89,
+                4908.03,
+                5209.17,
+                5510.31,
+                5811.45,
+                6112.59,
+                6413.73,
+                6714.87,
+                7016.02,
+                7317.16,
+                7618.3,
+                7919.44,
+                8220.58,
+                8521.72,
+                8822.86,
+                9124.0
+              ],
+              "counts": [
+                3,
+                2,
+                0,
+                4,
+                3,
+                8,
+                23,
+                28,
+                32,
+                38,
+                58,
+                75,
+                109,
+                112,
+                148,
+                162,
+                156,
+                157,
+                186,
+                138,
+                164,
+                101,
+                69,
+                87,
+                59,
+                29,
+                20,
+                17,
+                3,
+                2,
+                6,
+                1
+              ],
+              "n_bins": 32
+            },
+            "max_drawdown_dollars": {
+              "edges": [
+                286.0,
+                376.27,
+                466.53,
+                556.8,
+                647.06,
+                737.33,
+                827.59,
+                917.86,
+                1008.13,
+                1098.39,
+                1188.66,
+                1278.92,
+                1369.19,
+                1459.45,
+                1549.72,
+                1639.98,
+                1730.25,
+                1820.52,
+                1910.78,
+                2001.05,
+                2091.31,
+                2181.58,
+                2271.84,
+                2362.11,
+                2452.38,
+                2542.64,
+                2632.91,
+                2723.17,
+                2813.44,
+                2903.7,
+                2993.97,
+                3084.23,
+                3174.5
+              ],
+              "counts": [
+                206,
+                149,
+                124,
+                563,
+                218,
+                192,
+                194,
+                110,
+                55,
+                73,
+                38,
+                23,
+                17,
+                16,
+                8,
+                4,
+                3,
+                3,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              "n_bins": 32
+            }
+          }
+        }
+      },
+      "endurance_verdict": {
+        "grade": "strong",
+        "summary": "Edge appears robust to trade-order reshuffling and bootstrap resampling.",
+        "checks_passed": 6,
+        "checks_total": 6,
+        "checks": [
+          {
+            "check": "shuffle_p_profit_ge_90pct",
+            "pass": true,
+            "detail": "shuffle P(profit)=100.0%"
+          },
+          {
+            "check": "bootstrap_p_profit_ge_85pct",
+            "pass": true,
+            "detail": "bootstrap P(profit)=99.8%"
+          },
+          {
+            "check": "bootstrap_p5_total_pnl_positive",
+            "pass": true,
+            "detail": "bootstrap p5 total PnL=$2,150"
+          },
+          {
+            "check": "actual_not_order_lucky_shuffle",
+            "pass": true,
+            "detail": "order-invariant (all shuffles identical)"
+          },
+          {
+            "check": "actual_dd_not_worst_case_shuffle",
+            "pass": true,
+            "detail": "actual max DD at shuffle 82th pct"
+          },
+          {
+            "check": "min_sample_size",
+            "pass": true,
+            "detail": "n_trades=61 (\u226520 recommended for MC stability)"
+          }
+        ]
+      }
+    },
+    "per_strategy_symbol": {
+      "morning_range_reversion|MGC": {
+        "n_trades": 61,
+        "start_equity": 2000.0,
+        "num_simulations": 2000,
+        "seed": 7863,
+        "sequential_actual": {
+          "total_pnl": 4661.999999999816,
+          "final_equity": 6661.999999999816,
+          "max_drawdown_dollars": 868.0000000000109,
+          "max_drawdown_pct": 27.17937015061661,
+          "max_consecutive_losses": 3.0
+        },
+        "modes": {
+          "shuffle": {
+            "simulation_mode": "shuffle",
+            "total_pnl": {
+              "p5": 4661.999999999816,
+              "p10": 4661.999999999816,
+              "p25": 4661.999999999816,
+              "p50": 4661.999999999816,
+              "p75": 4661.999999999816,
+              "p90": 4661.999999999816,
+              "p95": 4661.999999999816,
+              "mean": 4661.999999999817,
+              "std": 9.094947017729282e-13,
+              "min": 4661.999999999816,
+              "max": 4661.999999999816,
+              "p_profit": 1.0,
+              "actual": 4662.0,
+              "actual_percentile": 100.0,
+              "pct_sims_gte_actual": 100.0
+            },
+            "final_equity": {
+              "p5": 6661.999999999816,
+              "p10": 6661.999999999816,
+              "p25": 6661.999999999816,
+              "p50": 6661.999999999816,
+              "p75": 6661.999999999816,
+              "p90": 6661.999999999816,
+              "p95": 6661.999999999816,
+              "mean": 6661.999999999814,
+              "std": 2.7284841053187847e-12,
+              "min": 6661.999999999816,
+              "max": 6661.999999999816
+            },
+            "max_drawdown_dollars": {
+              "p5": 415.4750000000108,
+              "p10": 477.2000000000098,
+              "p25": 580.0000000000091,
+              "p50": 640.2500000000282,
+              "p75": 812.0000000000391,
+              "p90": 947.0000000000164,
+              "p95": 1056.7750000000326,
+              "mean": 689.4365000000182,
+              "std": 189.7953660333987,
+              "min": 296.00000000000364,
+              "max": 1464.5000000000528,
+              "actual": 868.0,
+              "actual_percentile": 83.4
+            },
+            "max_drawdown_pct": {
+              "p5": 10.28322581841529,
+              "p10": 11.32181790371046,
+              "p25": 13.536452011858364,
+              "p50": 16.48200523535627,
+              "p75": 22.1493102613751,
+              "p90": 29.100000000000364,
+              "p95": 33.89419904944645,
+              "mean": 18.669177272512915,
+              "std": 7.5375629890900635,
+              "min": 6.866746698679633,
+              "max": 57.23742277140565,
+              "actual": 27.18
+            },
+            "max_consecutive_losses": {
+              "p5": 2.0,
+              "p10": 2.0,
+              "p25": 2.0,
+              "p50": 2.0,
+              "p75": 3.0,
+              "p90": 3.0,
+              "p95": 4.0,
+              "mean": 2.3635,
+              "std": 0.6872901497911925,
+              "min": 1.0,
+              "max": 5.0,
+              "actual": 3,
+              "p90_or_worse": 33.9
+            },
+            "probability_final_above_start": 1.0,
+            "histograms": {
+              "total_pnl": {
+                "edges": [
+                  4615.38,
+                  4618.29,
+                  4621.21,
+                  4624.12,
+                  4627.03,
+                  4629.95,
+                  4632.86,
+                  4635.78,
+                  4638.69,
+                  4641.6,
+                  4644.52,
+                  4647.43,
+                  4650.34,
+                  4653.26,
+                  4656.17,
+                  4659.09,
+                  4662.0,
+                  4664.91,
+                  4667.83,
+                  4670.74,
+                  4673.65,
+                  4676.57,
+                  4679.48,
+                  4682.4,
+                  4685.31,
+                  4688.22,
+                  4691.14,
+                  4694.05,
+                  4696.96,
+                  4699.88,
+                  4702.79,
+                  4705.71,
+                  4708.62
+                ],
+                "counts": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  2000,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "n_bins": 32
+              },
+              "max_drawdown_dollars": {
+                "edges": [
+                  296.0,
+                  332.52,
+                  369.03,
+                  405.55,
+                  442.06,
+                  478.58,
+                  515.09,
+                  551.61,
+                  588.13,
+                  624.64,
+                  661.16,
+                  697.67,
+                  734.19,
+                  770.7,
+                  807.22,
+                  843.73,
+                  880.25,
+                  916.77,
+                  953.28,
+                  989.8,
+                  1026.31,
+                  1062.83,
+                  1099.34,
+                  1135.86,
+                  1172.38,
+                  1208.89,
+                  1245.41,
+                  1281.92,
+                  1318.44,
+                  1354.95,
+                  1391.47,
+                  1427.98,
+                  1464.5
+                ],
+                "counts": [
+                  20,
+                  21,
+                  42,
+                  51,
+                  70,
+                  49,
+                  56,
+                  440,
+                  200,
+                  152,
+                  120,
+                  92,
+                  111,
+                  66,
+                  63,
+                  176,
+                  46,
+                  33,
+                  41,
+                  25,
+                  27,
+                  23,
+                  17,
+                  19,
+                  12,
+                  8,
+                  4,
+                  8,
+                  4,
+                  1,
+                  0,
+                  3
+                ],
+                "n_bins": 32
+              }
+            }
+          },
+          "bootstrap": {
+            "simulation_mode": "bootstrap",
+            "total_pnl": {
+              "p5": 2274.649999999756,
+              "p10": 2800.4499999998197,
+              "p25": 3703.999999999826,
+              "p50": 4693.249999999807,
+              "p75": 5603.499999999799,
+              "p90": 6431.899999999849,
+              "p95": 6873.624999999836,
+              "mean": 4649.3674999998175,
+              "std": 1409.2555369569302,
+              "min": -566.0000000001492,
+              "max": 9114.499999999807,
+              "p_profit": 0.9995,
+              "actual": 4662.0,
+              "actual_percentile": 48.9,
+              "pct_sims_gte_actual": 51.0
+            },
+            "final_equity": {
+              "p5": 4274.649999999756,
+              "p10": 4800.44999999982,
+              "p25": 5703.999999999825,
+              "p50": 6693.249999999807,
+              "p75": 7603.499999999799,
+              "p90": 8431.899999999849,
+              "p95": 8873.624999999836,
+              "mean": 6649.3674999998175,
+              "std": 1409.2555369569302,
+              "min": 1433.9999999998508,
+              "max": 11114.499999999807
+            },
+            "max_drawdown_dollars": {
+              "p5": 305.0,
+              "p10": 380.0000000000182,
+              "p25": 572.0000000000073,
+              "p50": 651.0000000000127,
+              "p75": 865.0000000000182,
+              "p90": 1070.70000000002,
+              "p95": 1225.6750000000372,
+              "mean": 709.5327500000191,
+              "std": 282.05504791164833,
+              "min": 286.00000000000364,
+              "max": 2652.5000000000728,
+              "actual": 868.0,
+              "actual_percentile": 76.6
+            },
+            "max_drawdown_pct": {
+              "p5": 8.361347715304456,
+              "p10": 9.932843159622971,
+              "p25": 12.948135581525507,
+              "p50": 17.120876409719408,
+              "p75": 25.28335605660573,
+              "p90": 33.26757294002626,
+              "p95": 39.379148710073764,
+              "mean": 20.1254724180885,
+              "std": 10.6517030666655,
+              "min": 4.110638890824251,
+              "max": 91.05635409537327,
+              "actual": 27.18
+            },
+            "max_consecutive_losses": {
+              "p5": 1.0,
+              "p10": 2.0,
+              "p25": 2.0,
+              "p50": 2.0,
+              "p75": 3.0,
+              "p90": 3.0,
+              "p95": 4.0,
+              "mean": 2.4165,
+              "std": 0.8927641065813522,
+              "min": 1.0,
+              "max": 8.0,
+              "actual": 3,
+              "p90_or_worse": 37.8
+            },
+            "probability_final_above_start": 0.9995,
+            "histograms": {
+              "total_pnl": {
+                "edges": [
+                  -566.0,
+                  -263.48,
+                  39.03,
+                  341.55,
+                  644.06,
+                  946.58,
+                  1249.09,
+                  1551.61,
+                  1854.12,
+                  2156.64,
+                  2459.16,
+                  2761.67,
+                  3064.19,
+                  3366.7,
+                  3669.22,
+                  3971.73,
+                  4274.25,
+                  4576.77,
+                  4879.28,
+                  5181.8,
+                  5484.31,
+                  5786.83,
+                  6089.34,
+                  6391.86,
+                  6694.37,
+                  6996.89,
+                  7299.41,
+                  7601.92,
+                  7904.44,
+                  8206.95,
+                  8509.47,
+                  8811.98,
+                  9114.5
+                ],
+                "counts": [
+                  1,
+                  0,
+                  1,
+                  2,
+                  4,
+                  8,
+                  11,
+                  26,
+                  32,
+                  49,
+                  58,
+                  78,
+                  93,
+                  118,
+                  143,
+                  154,
+                  159,
+                  175,
+                  156,
+                  174,
+                  139,
+                  109,
+                  97,
+                  75,
+                  55,
+                  33,
+                  16,
+                  10,
+                  11,
+                  9,
+                  2,
+                  2
+                ],
+                "n_bins": 32
+              },
+              "max_drawdown_dollars": {
+                "edges": [
+                  286.0,
+                  359.95,
+                  433.91,
+                  507.86,
+                  581.81,
+                  655.77,
+                  729.72,
+                  803.67,
+                  877.63,
+                  951.58,
+                  1025.53,
+                  1099.48,
+                  1173.44,
+                  1247.39,
+                  1321.34,
+                  1395.3,
+                  1469.25,
+                  1543.2,
+                  1617.16,
+                  1691.11,
+                  1765.06,
+                  1839.02,
+                  1912.97,
+                  1986.92,
+                  2060.88,
+                  2134.83,
+                  2208.78,
+                  2282.73,
+                  2356.69,
+                  2430.64,
+                  2504.59,
+                  2578.55,
+                  2652.5
+                ],
+                "counts": [
+                  155,
+                  126,
+                  110,
+                  232,
+                  393,
+                  204,
+                  156,
+                  192,
+                  116,
+                  92,
+                  42,
+                  57,
+                  31,
+                  25,
+                  17,
+                  17,
+                  7,
+                  6,
+                  7,
+                  2,
+                  5,
+                  2,
+                  0,
+                  2,
+                  0,
+                  0,
+                  1,
+                  2,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "n_bins": 32
+              }
+            }
+          }
+        },
+        "endurance_verdict": {
+          "grade": "strong",
+          "summary": "Edge appears robust to trade-order reshuffling and bootstrap resampling.",
+          "checks_passed": 6,
+          "checks_total": 6,
+          "checks": [
+            {
+              "check": "shuffle_p_profit_ge_90pct",
+              "pass": true,
+              "detail": "shuffle P(profit)=100.0%"
+            },
+            {
+              "check": "bootstrap_p_profit_ge_85pct",
+              "pass": true,
+              "detail": "bootstrap P(profit)=100.0%"
+            },
+            {
+              "check": "bootstrap_p5_total_pnl_positive",
+              "pass": true,
+              "detail": "bootstrap p5 total PnL=$2,275"
+            },
+            {
+              "check": "actual_not_order_lucky_shuffle",
+              "pass": true,
+              "detail": "order-invariant (all shuffles identical)"
+            },
+            {
+              "check": "actual_dd_not_worst_case_shuffle",
+              "pass": true,
+              "detail": "actual max DD at shuffle 83th pct"
+            },
+            {
+              "check": "min_sample_size",
+              "pass": true,
+              "detail": "n_trades=61 (\u226520 recommended for MC stability)"
+            }
+          ]
+        }
+      }
+    },
+    "num_simulations": 2000,
+    "seed": 42
+  }
+}

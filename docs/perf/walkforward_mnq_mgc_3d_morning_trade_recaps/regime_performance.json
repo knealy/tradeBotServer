@@ -1,0 +1,428 @@
+{
+  "month_buckets": {
+    "2026-03": {
+      "n": 5.0,
+      "pnl": 240.99999999999454
+    },
+    "2026-04": {
+      "n": 25.0,
+      "pnl": 14923.499999999634
+    },
+    "2026-05": {
+      "n": 21.0,
+      "pnl": 1817.9999999999654
+    },
+    "2026-06": {
+      "n": 18.0,
+      "pnl": 285.99999999996544
+    }
+  },
+  "regime_buckets": {
+    "mixed": {
+      "n": 48.0,
+      "pnl": 11174.999999999727
+    },
+    "chop": {
+      "n": 21.0,
+      "pnl": 6093.499999999831
+    }
+  },
+  "strat_month": {
+    "morning_range_reversion": [
+      [
+        "2026-03",
+        5.0,
+        240.99999999999454
+      ],
+      [
+        "2026-04",
+        25.0,
+        14923.499999999634
+      ],
+      [
+        "2026-05",
+        21.0,
+        1817.9999999999654
+      ],
+      [
+        "2026-06",
+        18.0,
+        285.99999999996544
+      ]
+    ]
+  },
+  "strat_sym_month": {
+    "morning_range_reversion": {
+      "MNQ": [
+        [
+          "2026-03",
+          3.0,
+          192.5
+        ],
+        [
+          "2026-04",
+          9.0,
+          132.0
+        ],
+        [
+          "2026-05",
+          7.0,
+          95.0
+        ],
+        [
+          "2026-06",
+          6.0,
+          -119.5
+        ]
+      ],
+      "MGC": [
+        [
+          "2026-03",
+          2.0,
+          48.49999999999454
+        ],
+        [
+          "2026-04",
+          16.0,
+          14791.499999999634
+        ],
+        [
+          "2026-05",
+          14.0,
+          1722.9999999999654
+        ],
+        [
+          "2026-06",
+          12.0,
+          405.49999999996544
+        ]
+      ]
+    }
+  },
+  "strat_regime": {
+    "morning_range_reversion": [
+      [
+        "chop",
+        21.0,
+        6093.499999999831
+      ],
+      [
+        "mixed",
+        48.0,
+        11174.999999999727
+      ]
+    ]
+  },
+  "fold_rows": [
+    {
+      "fold": 0,
+      "fold_start": "2026-03-22",
+      "fold_end": "2026-03-31",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 3,
+      "pnl": 192.5,
+      "avg_bars": 1.0,
+      "win_rate": 0.6666666666666666,
+      "max_dd": 65.5
+    },
+    {
+      "fold": 0,
+      "fold_start": "2026-03-22",
+      "fold_end": "2026-03-31",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 2,
+      "pnl": 48.49999999999454,
+      "avg_bars": 27.5,
+      "win_rate": 0.5,
+      "max_dd": 296.00000000000364
+    },
+    {
+      "fold": 1,
+      "fold_start": "2026-04-01",
+      "fold_end": "2026-04-10",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 3,
+      "pnl": 24.0,
+      "avg_bars": 1.6666666666666667,
+      "win_rate": 0.6666666666666666,
+      "max_dd": 131.0
+    },
+    {
+      "fold": 1,
+      "fold_start": "2026-04-01",
+      "fold_end": "2026-04-10",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 6,
+      "pnl": 15164.499999999707,
+      "avg_bars": 13.333333333333334,
+      "win_rate": 1.0,
+      "max_dd": 0.0
+    },
+    {
+      "fold": 2,
+      "fold_start": "2026-04-11",
+      "fold_end": "2026-04-20",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 2,
+      "pnl": 672.5,
+      "avg_bars": 6.0,
+      "win_rate": 1.0,
+      "max_dd": 0.0
+    },
+    {
+      "fold": 2,
+      "fold_start": "2026-04-11",
+      "fold_end": "2026-04-20",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 5,
+      "pnl": -698.0000000000655,
+      "avg_bars": 17.0,
+      "win_rate": 0.6,
+      "max_dd": 4401.50000000006
+    },
+    {
+      "fold": 3,
+      "fold_start": "2026-04-21",
+      "fold_end": "2026-04-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 4,
+      "pnl": -564.5,
+      "avg_bars": 4.75,
+      "win_rate": 0.5,
+      "max_dd": 621.25
+    },
+    {
+      "fold": 3,
+      "fold_start": "2026-04-21",
+      "fold_end": "2026-04-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 5,
+      "pnl": 324.9999999999909,
+      "avg_bars": 14.6,
+      "win_rate": 0.8,
+      "max_dd": 286.00000000000364
+    },
+    {
+      "fold": 4,
+      "fold_start": "2026-05-01",
+      "fold_end": "2026-05-10",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 1,
+      "pnl": -65.5,
+      "avg_bars": 3.0,
+      "win_rate": 0.0,
+      "max_dd": 65.5
+    },
+    {
+      "fold": 4,
+      "fold_start": "2026-05-01",
+      "fold_end": "2026-05-10",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 4,
+      "pnl": 326.99999999998,
+      "avg_bars": 42.75,
+      "win_rate": 0.75,
+      "max_dd": 73.00000000001091
+    },
+    {
+      "fold": 5,
+      "fold_start": "2026-05-11",
+      "fold_end": "2026-05-20",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 4,
+      "pnl": 162.25,
+      "avg_bars": 3.0,
+      "win_rate": 0.75,
+      "max_dd": 65.5
+    },
+    {
+      "fold": 5,
+      "fold_start": "2026-05-11",
+      "fold_end": "2026-05-20",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 5,
+      "pnl": 916.4999999999873,
+      "avg_bars": 17.4,
+      "win_rate": 1.0,
+      "max_dd": 0.0
+    },
+    {
+      "fold": 6,
+      "fold_start": "2026-05-21",
+      "fold_end": "2026-05-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 2,
+      "pnl": -1.75,
+      "avg_bars": 1.0,
+      "win_rate": 0.5,
+      "max_dd": 65.5
+    },
+    {
+      "fold": 6,
+      "fold_start": "2026-05-21",
+      "fold_end": "2026-05-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 5,
+      "pnl": 479.4999999999982,
+      "avg_bars": 24.2,
+      "win_rate": 1.0,
+      "max_dd": 0.0
+    },
+    {
+      "fold": 7,
+      "fold_start": "2026-05-31",
+      "fold_end": "2026-06-09",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 1,
+      "pnl": 82.25,
+      "avg_bars": 3.0,
+      "win_rate": 1.0,
+      "max_dd": 0.0
+    },
+    {
+      "fold": 7,
+      "fold_start": "2026-05-31",
+      "fold_end": "2026-06-09",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 4,
+      "pnl": 128.99999999999636,
+      "avg_bars": 26.25,
+      "win_rate": 0.75,
+      "max_dd": 78.00000000001091
+    },
+    {
+      "fold": 8,
+      "fold_start": "2026-06-10",
+      "fold_end": "2026-06-19",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 2,
+      "pnl": -131.0,
+      "avg_bars": 4.0,
+      "win_rate": 0.0,
+      "max_dd": 131.0
+    },
+    {
+      "fold": 8,
+      "fold_start": "2026-06-10",
+      "fold_end": "2026-06-19",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 6,
+      "pnl": 566.4999999999782,
+      "avg_bars": 15.333333333333334,
+      "win_rate": 0.8333333333333334,
+      "max_dd": 286.00000000000364
+    },
+    {
+      "fold": 9,
+      "fold_start": "2026-06-20",
+      "fold_end": "2026-06-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MNQ",
+      "n": 3,
+      "pnl": -70.75,
+      "avg_bars": 2.0,
+      "win_rate": 0.3333333333333333,
+      "max_dd": 161.0
+    },
+    {
+      "fold": 9,
+      "fold_start": "2026-06-20",
+      "fold_end": "2026-06-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 2,
+      "pnl": -290.0000000000091,
+      "avg_bars": 35.5,
+      "win_rate": 0.0,
+      "max_dd": 290.0000000000091
+    }
+  ],
+  "high_bars_neg_folds": [
+    {
+      "fold": 2,
+      "fold_start": "2026-04-11",
+      "fold_end": "2026-04-20",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 5,
+      "pnl": -698.0000000000655,
+      "avg_bars": 17.0,
+      "win_rate": 0.6,
+      "max_dd": 4401.50000000006
+    },
+    {
+      "fold": 9,
+      "fold_start": "2026-06-20",
+      "fold_end": "2026-06-30",
+      "strategy": "morning_range_reversion",
+      "symbol": "MGC",
+      "n": 2,
+      "pnl": -290.0000000000091,
+      "avg_bars": 35.5,
+      "win_rate": 0.0,
+      "max_dd": 290.0000000000091
+    }
+  ],
+  "boundaries": {
+    "pre_2026": {
+      "pnl": 0.0,
+      "n": 0
+    },
+    "post_2026": {
+      "pnl": 17268.499999999556,
+      "n": 69
+    },
+    "pre_oct2025": {
+      "pnl": 0.0,
+      "n": 0
+    },
+    "post_oct2025": {
+      "pnl": 17268.499999999556,
+      "n": 69
+    },
+    "mrr_pre_jan14": {
+      "pnl": 0.0,
+      "n": 0
+    },
+    "mrr_post_jan14": {
+      "pnl": 17268.499999999556,
+      "n": 69
+    },
+    "mrr_mgc_pre_jan14": {
+      "pnl": 0.0,
+      "n": 0
+    },
+    "mrr_mgc_post_jan14": {
+      "pnl": 16968.499999999556,
+      "n": 44
+    },
+    "or_pre_oct2025": {
+      "pnl": 0.0,
+      "n": 0
+    },
+    "or_post_oct2025": {
+      "pnl": 0.0,
+      "n": 0
+    }
+  },
+  "pre_2026_pnl": 0,
+  "post_2026_pnl": 17268.49999999956
+}

@@ -1774,6 +1774,57 @@ def test_stale_data_still_logs_error_when_no_recent_session_rotation(caplog):
     assert len(errors) == 1, "no recent rotation → keep ERROR severity for the real outage"
 
 
+def test_first_post_range_high_sweep_fires_on_finalize_bar(monkeypatch, caplog):
+    """2026-06-29 MGC: 08:05 close above H must SHORT, not be swallowed by sweep guard."""
+    from datetime import date, datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from strategies.morning_range_reversion_strategy import MorningRangeReversionStrategy
+
+    tz = ZoneInfo("America/New_York")
+    session = date(2099, 1, 7)  # no persisted anchor/session_activity on disk
+    bars = []
+    t0 = datetime(session.year, session.month, session.day, 7, 0, tzinfo=tz)
+    for i in range(12):
+        ts = (t0 + timedelta(minutes=5 * i)).astimezone(timezone.utc)
+        bars.append({
+            "timestamp": ts.isoformat(),
+            "open": 4050.0,
+            "high": 4055.0,
+            "low": 4042.0,
+            "close": 4050.0,
+            "volume": 100,
+        })
+    ts12 = (t0 + timedelta(minutes=60)).astimezone(timezone.utc)
+    bars.append({
+        "timestamp": ts12.isoformat(),
+        "open": 4060.10,
+        "high": 4062.80,
+        "low": 4058.20,
+        "close": 4062.30,
+        "volume": 1166,
+    })
+
+    class _Bot(_LiveMockBot):
+        async def get_open_positions(self, account_id=None, **_):
+            return []
+
+        async def get_open_orders(self, account_id=None, **_):
+            return []
+
+    bot = _Bot(bars)
+    strat = MorningRangeReversionStrategy(bot, _live_cfg())
+    strat._did_startup_reconcile = True
+    monkeypatch.setattr(strat, "_bars_are_stale", lambda sym, b: False)
+    monkeypatch.setattr(strat, "_restore_session_activity", lambda sym, d, st: False)
+    monkeypatch.setattr(strat, "_configured_symbols_for_orphan_sweep", lambda: ["MGC"])
+
+    sig = asyncio.run(strat.analyze("MGC"))
+
+    assert sig is not None, "expected SHORT fade on first post-range bar closing above H"
+    assert sig["action"] == "SHORT"
+    assert abs(float(sig["entry_price"]) - 4055.0) < 0.2
+
+
 def test_anchor_range_built_log_includes_pass_verdict_for_accepted_range(monkeypatch, caplog):
     """The 2026-05-29 lifecycle log must include the explicit ``✓`` verdict and
     show the filter bounds inline so the operator can eyeball ``which symbols

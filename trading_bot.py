@@ -137,6 +137,8 @@ class TopStepXTradingBot:
         self._cached_position_ids = {}
         # Opt-in income brain: one :class:`~core.income_brain.IncomeBrain` per account id
         self._income_brain_cache: Dict[str, Any] = {}
+        self.regime_kpi_gate = None
+        self.regime_fast_gate = None
         # Real-time quote cache: { SYMBOL: { 'bid': float, 'ask': float, 'last': float, 'volume': float, 'ts': iso } }
         self._quote_cache: Dict[str, Dict] = {}
         self._quote_cache_lock: Lock = Lock()
@@ -156,14 +158,40 @@ class TopStepXTradingBot:
         
         # Initialize Discord notifier
         self.discord_notifier = DiscordNotifier()
-        
-        # Initialize PostgreSQL database (for persistent caching and state)
-        try:
-            self.db = get_database()
-            logger.info("✅ PostgreSQL database initialized")
-        except Exception as e:
-            logger.warning(f"⚠️  PostgreSQL unavailable (will use memory cache only): {e}")
+        # Bracket placement: try native Auto OCO first; sticky hybrid after
+        # Position-Brackets reject (see place_oco_bracket_with_stop_entry).
+        self._prefer_hybrid_brackets = False
+        self._position_brackets_alerted = False
+        # Hybrid post-fill SL/TP: pending by entry order id + strong task refs
+        # (asyncio only keeps weak refs — bare create_task can be GC'd before fill).
+        self._hybrid_pending_brackets: Dict[str, Dict[str, Any]] = {}
+        self._hybrid_bracket_tasks: Dict[str, Any] = {}
+        self._hybrid_attach_locks: Dict[str, asyncio.Lock] = {}
+        # Software OCO for hybrid protective legs (broker does not link them).
+        # order_id -> {sibling_id, position_id, account_id, symbol, leg, prices...}
+        self._hybrid_oco_legs: Dict[str, Dict[str, Any]] = {}
+        self._hybrid_oco_tasks: Dict[str, Any] = {}  # keyed by sorted "sl|tp" pair key
+        self._hybrid_oco_locks: Dict[str, asyncio.Lock] = {}
+        self._hybrid_orphan_sweeper_task: Optional[Any] = None
+        self._hybrid_price_oco_tasks: Dict[str, Any] = {}  # pair_key -> price-watch task
+        # order_id -> monotonic ts when cancel was claimed (dedupe cancel spam)
+        self._hybrid_cancel_claimed: Dict[str, float] = {}
+
+        # Initialize PostgreSQL database (for persistent caching and state).
+        # History stitch / offline scripts set DISABLE_DATABASE=1 to skip the
+        # Railway DNS wait entirely (see scripts/refresh_historical.sh).
+        if str(os.getenv("DISABLE_DATABASE", "") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
             self.db = None
+            logger.info("PostgreSQL skipped (DISABLE_DATABASE)")
+        else:
+            try:
+                self.db = get_database()
+                logger.info("✅ PostgreSQL database initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  PostgreSQL unavailable (will use memory cache only): {e}")
+                self.db = None
         
         # Initialize real-time account state tracker (with database support)
         # Use lazy loading - accounts will be initialized when selected
@@ -413,6 +441,12 @@ class TopStepXTradingBot:
         ev = self._quote_ready_events.get(sym)
         if ev and not ev.is_set():
             ev.set()
+        # Near-instant hybrid software OCO: cancel peer on TP/SL price touch
+        # (does not wait for User Hub fill or Order/search).
+        try:
+            self._hybrid_price_oco_on_quote(sym)
+        except Exception:
+            logger.debug("hybrid price OCO quote hook failed", exc_info=True)
 
     def _notify_depth_cache_update(self, symbol: str) -> None:
         sym = symbol.upper()
@@ -771,7 +805,7 @@ class TopStepXTradingBot:
             # comes back stuck doesn't get a "free" 60s of pinned response.
             self._session_reset_cooldown_s: float = 10.0
 
-        async def _trip_reset(reason: str, log_msg: str, *log_args) -> bool:
+        async def _trip_reset(reason: str, log_msg: str, *log_args, quiet: bool = False) -> bool:
             """Local helper: log + force the broker session reset + arm tracker.
 
             Used by both the cold-start fast path and the steady-state slow path so
@@ -825,7 +859,10 @@ class TopStepXTradingBot:
             # still in flight will see the cooldown window already claimed and
             # take the coalesce-fast-path return above.
             self._last_session_reset_at_mono = now
-            logger.warning(log_msg, *log_args)
+            if quiet:
+                logger.debug(log_msg, *log_args)
+            else:
+                logger.warning(log_msg, *log_args)
             try:
                 auth = getattr(getattr(self, "broker_adapter", None), "auth", None)
                 if auth is not None and hasattr(auth, "force_session_reset"):
@@ -915,14 +952,93 @@ class TopStepXTradingBot:
         # stale, the REST route is definitely overdue too.
         if rec["consecutive"] < 3 or stuck_for <= 2.0 * tf_secs:
             return False
-        # Steady-state trip — same shape as cold-start so logs look uniform.
+        # Steady-state trip — rotate quietly; SignalR live cache is the primary bar path.
         return await _trip_reset(
             f"rest-stuck:{symbol}:{tf_key}",
-            "🧊 REST feed pinned for %s %s: last_ts=%s repeated %d× over %.0fs "
+            "REST feed pinned for %s %s: last_ts=%s repeated %d× over %.0fs "
             "(threshold %.0fs = 2× timeframe). Rotating HTTP session so the next "
             "/api/History/retrieveBars call hits a fresh route.",
             symbol, timeframe, rest_last_ts, rec["consecutive"], stuck_for, 2.0 * tf_secs,
+            quiet=True,
         )
+
+    def _rest_freshness_key(self, symbol: str, timeframe: str) -> str:
+        return f"{str(symbol).upper()}|{self._normalize_timeframe_key(timeframe)}"
+
+    def is_rest_bar_feed_pinned(self, symbol: str, timeframe: str) -> bool:
+        """True when REST ``retrieveBars`` has returned the same ``last_ts`` long enough to trip the stuck detector."""
+        if not hasattr(self, "_rest_freshness_track"):
+            return False
+        tf_secs = self._timeframe_seconds(self._normalize_timeframe_key(timeframe))
+        if tf_secs is None or tf_secs <= 0:
+            return False
+        rec = self._rest_freshness_track.get(self._rest_freshness_key(symbol, timeframe))
+        if not rec:
+            return False
+        now = time.monotonic()
+        stuck_for = now - float(rec.get("first_seen_at_mono", now))
+        consecutive = int(rec.get("consecutive", 0) or 0)
+        return consecutive >= 3 and stuck_for > (2.0 * tf_secs)
+
+    def rest_bar_tail_age_seconds(self, symbol: str, timeframe: str) -> Optional[float]:
+        """Wall-clock age of the last REST tail timestamp observed for (symbol, timeframe)."""
+        if not hasattr(self, "_rest_freshness_track"):
+            return None
+        rec = self._rest_freshness_track.get(self._rest_freshness_key(symbol, timeframe))
+        if not rec:
+            return None
+        rest_last_ts = rec.get("last_ts")
+        bar_dt = self._parse_bar_ts(rest_last_ts)
+        if bar_dt is None:
+            return None
+        try:
+            return (datetime.now(timezone.utc) - bar_dt).total_seconds()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_order_event_timestamp(order: Dict) -> Optional[datetime]:
+        """Best-effort parse of when an order was filled/updated (UTC)."""
+        for key in (
+            "updateTimestamp",
+            "updatedTimestamp",
+            "executionTimestamp",
+            "fillTime",
+            "filledTime",
+            "creationTimestamp",
+            "timestamp",
+        ):
+            raw = order.get(key)
+            if not raw:
+                continue
+            try:
+                if isinstance(raw, datetime):
+                    dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+                else:
+                    dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                continue
+        return None
+
+    def _strategy_from_custom_tag(self, tag: str) -> str:
+        from core.discord_notifier import strategy_from_custom_tag
+        return strategy_from_custom_tag(tag)
+
+    def _order_fill_notification_allowed(self, order: Dict) -> bool:
+        """Gate poll-based fill notifications so headless executors skip stale cross-strategy fills."""
+        tag = str(order.get("customTag") or "")
+        active = os.getenv("STRATEGY_EXECUTOR_ACTIVE_STRATEGY", "").strip()
+        if active and active not in tag:
+            return False
+        startup = getattr(self, "_startup_time", None)
+        if startup is not None:
+            ts = self._parse_order_event_timestamp(order)
+            if ts is not None and ts < (startup - timedelta(seconds=30)):
+                return False
+        return True
 
     def _on_websocket_depth(self, symbol: str, data: Dict):
         """
@@ -1620,6 +1736,51 @@ class TopStepXTradingBot:
                 return 0
         return income_brain_entry_quantity_for_bot(self, strategy_name, requested)
 
+    def regime_sizing_entry_quantity(
+        self, strategy_name: str, symbol: str, requested: int,
+    ) -> int:
+        """Clamp entry size when ``REGIME_SIZING_ENABLED`` (calendar-era prototype)."""
+        try:
+            from core.regime_sizing import regime_sizing_entry_quantity_for_bot
+        except ImportError:
+            try:
+                return max(0, int(requested))
+            except (TypeError, ValueError):
+                return 0
+        return regime_sizing_entry_quantity_for_bot(
+            self, strategy_name, symbol, requested,
+        )
+
+    def regime_kpi_entry_quantity(
+        self, strategy_name: str, symbol: str, requested: int,
+    ) -> int:
+        """Clamp entry size when ``REGIME_KPI_GATE_ENABLED`` (rolling session KPI)."""
+        try:
+            from core.regime_kpi_gate import regime_kpi_entry_quantity_for_bot
+        except ImportError:
+            try:
+                return max(0, int(requested))
+            except (TypeError, ValueError):
+                return 0
+        return regime_kpi_entry_quantity_for_bot(
+            self, strategy_name, symbol, requested,
+        )
+
+    def regime_fast_entry_quantity(
+        self, strategy_name: str, symbol: str, requested: int,
+    ) -> int:
+        """Clamp entry size when ``REGIME_FAST_GATE_ENABLED`` (session halt / fast roll)."""
+        try:
+            from core.regime_fast_gate import regime_fast_entry_quantity_for_bot
+        except ImportError:
+            try:
+                return max(0, int(requested))
+            except (TypeError, ValueError):
+                return 0
+        return regime_fast_entry_quantity_for_bot(
+            self, strategy_name, symbol, requested,
+        )
+
     def select_account(self, accounts: List[Dict]) -> Optional[Dict]:
         """
         Allow user to select an account for trading (interactive mode).
@@ -1921,11 +2082,10 @@ class TopStepXTradingBot:
             if not target_account:
                 return {"error": "No account selected"}
 
-            # Get order history to check for fills - limit to recent orders only
-            orders = await self.get_order_history(target_account, limit=10)  # Reduced from 50 to 10
-            filled_orders = []
-
             account_key = str(target_account)
+            warmup_limit = 50 if not self._notification_warmup_done.get(account_key) else 10
+            orders = await self.get_order_history(target_account, limit=warmup_limit)
+            filled_orders = []
 
             # Warm-up notifications after restart so we don't re-announce historical fills
             if not self._notification_warmup_done.get(account_key):
@@ -1972,6 +2132,9 @@ class TopStepXTradingBot:
                         # Skip orders not placed by our bot, but still mark as notified to avoid re-checking
                         self._notified_orders.add(unique_id)
                         continue
+                    if not self._order_fill_notification_allowed(order):
+                        self._notified_orders.add(unique_id)
+                        continue
                     
                     # Additional validation: ensure order has a fill price (actually filled, not just status change)
                     fill_price = order.get('fillPrice') or order.get('executionPrice') or order.get('filledPrice')
@@ -1996,6 +2159,7 @@ class TopStepXTradingBot:
                     # Send Discord notification
                     try:
                         account_name = self.selected_account.get('name', 'Unknown') if self.selected_account else 'Unknown'
+                        strat_slug = self._strategy_from_custom_tag(custom_tag)
                             
                         notification_data = {
                             'symbol': symbol,
@@ -2004,7 +2168,9 @@ class TopStepXTradingBot:
                             'fill_price': f"${float(fill_price):.2f}" if fill_price else "Unknown",
                             'order_type': order_type_str,
                             'order_id': order_id,
-                            'position_id': position_id
+                            'position_id': position_id,
+                            'custom_tag': custom_tag,
+                            'strategy': strat_slug,
                         }
 
                         logger.info(f"📢 Sending Discord notification for filled order: {order_id} ({symbol} {side} x{quantity} @ ${fill_price})")
@@ -2254,28 +2420,34 @@ class TopStepXTradingBot:
     def _generate_unique_custom_tag(self, order_type: str = "order", strategy_name: str = None) -> str:
         """
         Generate a unique custom tag for orders.
-        
-        Args:
-            order_type: Type of order (e.g., "market", "stop_bracket", "bracket")
-            strategy_name: Optional strategy name to include in tag for tracking
-        
-        Returns:
-            Custom tag string like "TradingBot-v1.0-strategy-overnight_range-order-123-1234567890"
+
+        TopStepX rejects / HTTP-500s on ``customTag`` longer than 64 chars
+        (empty body). Keep tags short like ``TopStepXAdapter._generate_unique_custom_tag``.
         """
-        self._order_counter += 1
-        timestamp = int(datetime.now().timestamp())
-        
-        # Include strategy name in tag if provided
+        import uuid
+
+        base_tag = f"TB-{order_type}"
         if strategy_name:
-            # Sanitize strategy name (remove spaces, special chars)
-            clean_strategy = strategy_name.lower().replace(' ', '_').replace('-', '_')
-            return f"{BOT_ORDER_TAG_PREFIX}-strategy-{clean_strategy}-{order_type}-{self._order_counter}-{timestamp}"
-        else:
-            return f"{BOT_ORDER_TAG_PREFIX}-{order_type}-{self._order_counter}-{timestamp}"
+            safe = "".join(
+                ch if ch.isalnum() or ch in ("_", "-") else "_"
+                for ch in str(strategy_name).lower()
+            )
+            if len(safe) > 16:
+                safe = safe[:16]
+            base_tag += f"-{safe}"
+
+        timestamp = datetime.now().strftime("%y%m%d%H%M%S")
+        unique_id = str(uuid.uuid4())[:6]
+        self._order_counter += 1
+        tag = f"{base_tag}-{timestamp}-{unique_id}"
+        if len(tag) > 64:
+            tag = tag[:64]
+        return tag
 
     async def place_market_order(self, symbol: str, side: str, quantity: int, account_id: str = None, 
                                 stop_loss_ticks: int = None, take_profit_ticks: int = None, order_type: str = "market", 
-                                limit_price: float = None, strategy_name: str = None, reduce_only: bool = False) -> Dict:
+                                limit_price: float = None, strategy_name: str = None, reduce_only: bool = False,
+                                custom_tag: Optional[str] = None) -> Dict:
         """
         Place a market or limit order on the selected account.
         
@@ -2343,7 +2515,11 @@ class TopStepXTradingBot:
                 "size": quantity,
                 "limitPrice": limit_price if order_type.lower() == "limit" else None,
                 "stopPrice": None,
-                "customTag": self._generate_unique_custom_tag("market", strategy_name)
+                "customTag": (
+                    str(custom_tag).strip()[:64]
+                    if custom_tag
+                    else self._generate_unique_custom_tag("market", strategy_name)
+                ),
             }
             
             # Add bracket orders if specified
@@ -4063,7 +4239,8 @@ class TopStepXTradingBot:
     # ============================================================================
     
     async def place_stop_order(self, symbol: str, side: str, quantity: int, stop_price: float,
-                              account_id: str = None, strategy_name: Optional[str] = None) -> Dict:
+                              account_id: str = None, strategy_name: Optional[str] = None,
+                              custom_tag: Optional[str] = None) -> Dict:
         """
         Place a stop order (entry stop - triggers market order when price is hit).
         Use stop_buy for BUY stop orders or stop_sell for SELL stop orders.
@@ -4075,6 +4252,7 @@ class TopStepXTradingBot:
             stop_price: Stop price (triggers when price reaches this level)
             account_id: Account ID (uses selected account if not provided)
             strategy_name: Optional strategy name for custom tagging
+            custom_tag: Optional explicit customTag (overrides generated tag; max 64 chars)
             
         Returns:
             Dict: Stop order response or error
@@ -4108,6 +4286,9 @@ class TopStepXTradingBot:
             # Convert side to numeric value
             side_value = 0 if side.upper() == "BUY" else 1
             
+            tag = str(custom_tag).strip()[:64] if custom_tag else self._generate_unique_custom_tag(
+                "stop_entry", strategy_name
+            )
             # Prepare stop order data (type 4 = Stop order)
             stop_data = {
                 "accountId": int(target_account),
@@ -4116,7 +4297,7 @@ class TopStepXTradingBot:
                 "side": side_value,
                 "size": quantity,
                 "stopPrice": rounded_stop_price,
-                "customTag": self._generate_unique_custom_tag("stop_entry", strategy_name)
+                "customTag": tag,
             }
             
             headers = {
@@ -4147,35 +4328,55 @@ class TopStepXTradingBot:
                                                 enable_breakeven: bool = False, strategy_name: str = None) -> Dict:
         """
         Place OCO bracket order with stop order as entry.
-        
-        Now uses TopStepXAdapter for bracket order placement, maintaining backward compatibility.
-        
-        Args:
-            symbol: Trading symbol (e.g., "MNQ", "ES")
-            side: "BUY" or "SELL"
-            quantity: Number of contracts
-            entry_price: Stop price for entry
-            stop_loss_price: Stop loss price
-            take_profit_price: Take profit price
-            account_id: Account ID (uses selected account if not provided)
-            enable_breakeven: Enable breakeven stop monitoring (default: False)
-            strategy_name: Optional strategy name for tracking
-            
-        Returns:
-            Dict: OCO bracket response or error
+
+        Uses TopStepXAdapter for native OCO brackets when the account has Auto OCO
+        enabled. Accounts on **Position Brackets** reject those payloads (Code 2).
+
+        Default on that reject: one-shot Discord + log alert telling you to enable
+        **Auto OCO Brackets** in ProjectX, and refuse the place (no silent hybrid).
+        Opt-in hybrid only via ``TOPSTEPX_BRACKET_MODE=position|hybrid`` (smoke/debug).
         """
         try:
             target_account = account_id or (self.selected_account['id'] if self.selected_account else None)
-            
+
             if not target_account:
                 return {"error": "No account selected"}
-            
+
             if side.upper() not in ["BUY", "SELL"]:
                 return {"error": "Side must be 'BUY' or 'SELL'"}
 
+            # Opt-in hybrid only (env). Default is native Auto OCO.
+            if self._should_prefer_hybrid_brackets():
+                logger.info(
+                    "TOPSTEPX_BRACKET_MODE hybrid/position — placing stop-entry without "
+                    "native OCO brackets (%s %s %s @ %.2f)",
+                    side, quantity, symbol, entry_price,
+                )
+                await self._maybe_alert_position_brackets_mode(
+                    source="prefer_hybrid_env",
+                    detail=(
+                        f"TOPSTEPX_BRACKET_MODE forces hybrid "
+                        f"({side} {quantity} {symbol} @ {entry_price:.2f}). "
+                        f"Enable Auto OCO Brackets in ProjectX for native linked brackets."
+                    ),
+                    symbol=symbol,
+                    side=side,
+                    strategy_name=strategy_name,
+                )
+                return await self._run_hybrid_bracket_fallback(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    account_id=target_account,
+                    enable_breakeven=enable_breakeven,
+                    strategy_name=strategy_name,
+                    prior_error=None,
+                )
+
             # ── Data-feed health gate (bot-level chokepoint) ──────────────────
-            # Default mode is WARN with tiered severe cutoff — mild degradation
-            # logs loudly and proceeds; silence >300s refuses (2026-06-17 fix).
             try:
                 from core.data_feed_health import (
                     resolve_health_gate_decision,
@@ -4185,14 +4386,11 @@ class TopStepXTradingBot:
                 if gate_mode != "off":
                     monitor = getattr(self, "data_feed_monitor", None)
                     if monitor is not None:
-                        verdict = monitor.is_safe_to_trade(symbol)
-                        decision, reason = resolve_health_gate_decision(
-                            verdict, monitor, symbol, gate_mode=gate_mode,
-                        )
+                        decision, reason = resolve_health_gate_decision(monitor, gate_mode)
                         if decision == "refuse":
                             logger.error(
-                                "🛑 place_oco_bracket_with_stop_entry: REFUSING %s %s order — "
-                                "data feed unhealthy: %s",
+                                "place_oco_bracket_with_stop_entry refused by data-feed "
+                                "health gate (%s %s): %s",
                                 side, symbol, reason,
                             )
                             return {
@@ -4212,10 +4410,6 @@ class TopStepXTradingBot:
                     type(_hg_exc).__name__,
                 )
 
-            # Use TopStepXAdapter for bracket order placement (OCO brackets).
-            # NOTE: Some accounts are configured for "Position Brackets" (not Auto OCO).
-            # In that mode TopStepX can return HTTP 500 for OCO bracket placement.
-            # When that happens, fall back to the hybrid stop-entry + post-fill bracket logic.
             result = await self.broker_adapter.place_oco_bracket_with_stop_entry(
                 symbol=symbol,
                 side=side,
@@ -4227,14 +4421,12 @@ class TopStepXTradingBot:
                 enable_breakeven=enable_breakeven,
                 strategy_name=strategy_name
             )
-            
-            # Convert OrderResponse to dict for backward compatibility
+
             if result.success:
                 method = "unknown"
                 if isinstance(result.raw_response, dict) and result.raw_response.get("_execution_path"):
                     method = str(result.raw_response.get("_execution_path"))
                 elif isinstance(result.message, str):
-                    # Best-effort: derive from message if present
                     msg_lower = result.message.lower()
                     if "rust" in msg_lower:
                         method = "rust"
@@ -4248,71 +4440,180 @@ class TopStepXTradingBot:
                     "method": method,
                     **({"raw_response": result.raw_response} if result.raw_response else {})
                 }
-            else:
-                error_msg = result.error or "Unknown error"
 
-                # Persist last bracket-related error for GUI feedback
-                try:
-                    self._last_bracket_error = error_msg
-                except Exception:
-                    logger.debug("Could not set _last_bracket_error", exc_info=True)
+            error_msg = result.error or "Unknown error"
+            try:
+                self._last_bracket_error = error_msg
+            except Exception:
+                logger.debug("Could not set _last_bracket_error", exc_info=True)
 
-                logger.error(f"Stop bracket order failed: {error_msg}")
+            logger.error(f"Stop bracket order failed: {error_msg}")
+            err_lower = str(error_msg).lower()
 
-                # Check if error is specifically about Auto OCO Brackets not being enabled
-                # In this case, we should NOT attempt fallback - just return the error gracefully
-                err_lower = str(error_msg).lower()
-                is_auto_oco_error = (
-                    "brackets cannot be used with position brackets" in err_lower
-                    or ("you must enable auto oco brackets" in err_lower and "code: 2" in err_lower)
-                    or ("error code 2" in err_lower and "auto oco brackets" in err_lower)
+            if self._is_position_brackets_mode_error(error_msg):
+                # Account is on Position Brackets (Auto OCO off). Notify + refuse.
+                # Hybrid is unreliable (orphan legs); do not silently fall back.
+                logger.error(
+                    "❌ Auto OCO Brackets not enabled on this account (Position Brackets). "
+                    "Enable Auto OCO Brackets in ProjectX/TopStepX account settings. "
+                    "Order not placed. (Opt-in hybrid only: TOPSTEPX_BRACKET_MODE=hybrid)"
                 )
-                
-                if is_auto_oco_error:
-                    logger.error("❌ Auto OCO Brackets is not enabled in account settings. Cannot place bracket orders.")
-                    logger.error("   Please enable 'Auto OCO Brackets' in your TopStepX account settings to use bracket orders.")
-                    logger.error("   Skipping order placement - no fallback will be attempted.")
-                    return {
-                        "success": False,
-                        "error": "Auto OCO Brackets is not enabled in account settings. Please enable 'Auto OCO Brackets' in your TopStepX account settings to use bracket orders.",
-                        "error_code": 2,
-                        "requires_account_setting": "Auto OCO Brackets"
-                    }
+                await self._maybe_alert_position_brackets_mode(
+                    source="broker_reject_auto_oco_disabled",
+                    detail=str(error_msg),
+                    symbol=symbol,
+                    side=side,
+                    strategy_name=strategy_name,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        "Auto OCO Brackets not enabled on this account. "
+                        "Enable Auto OCO Brackets in ProjectX (not Position Brackets), "
+                        "then retry. Discord alert sent."
+                    ),
+                    "errorCode": 2,
+                    "method": "refused_position_brackets",
+                    "broker_error": error_msg,
+                    "action_required": "enable_auto_oco_brackets",
+                }
 
-                # Hybrid fallback ONLY for HTTP 500 errors (server issues), NOT for account setting errors
-                if (
-                    "http 500" in err_lower
-                    or "internal server error" in err_lower
-                    or ("500" in err_lower and "error" in err_lower)
-                ):
-                    logger.warning("⚠️ OCO bracket failed with server error; attempting hybrid stop-entry + post-fill bracket fallback")
-                    hybrid = await self._stop_bracket_hybrid(
-                        symbol=symbol,
-                        side=side,
-                        quantity=quantity,
-                        entry_price=entry_price,
-                        stop_loss_price=stop_loss_price,
-                        take_profit_price=take_profit_price,
-                        account_id=target_account,
-                        enable_breakeven=enable_breakeven,
-                        strategy_name=strategy_name,
-                    )
-                    # If hybrid worked, return it
-                    if isinstance(hybrid, dict) and "error" not in hybrid:
-                        if "method" not in hybrid:
-                            hybrid["method"] = "hybrid_auto_bracket"
-                        return {"success": True, **hybrid}
-                    # Otherwise surface hybrid error (more actionable)
-                    if isinstance(hybrid, dict) and hybrid.get("error"):
-                        return {"success": False, "error": f"{error_msg} | Hybrid fallback failed: {hybrid.get('error')}"}
+            if (
+                "http 500" in err_lower
+                or "internal server error" in err_lower
+                or ("500" in err_lower and "error" in err_lower)
+            ):
+                logger.warning(
+                    "⚠️ OCO bracket failed with server error; attempting hybrid "
+                    "stop-entry + post-fill bracket fallback"
+                )
+                return await self._run_hybrid_bracket_fallback(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    account_id=target_account,
+                    enable_breakeven=enable_breakeven,
+                    strategy_name=strategy_name,
+                    prior_error=error_msg,
+                )
 
-                return {"success": False, "error": error_msg}
-            
+            return {"success": False, "error": error_msg}
+
         except Exception as e:
             logger.error(f"Failed to place OCO bracket with stop entry: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _is_position_brackets_mode_error(error_msg: object) -> bool:
+        """True when TopStepX rejects native OCO brackets (Position Brackets account mode)."""
+        err_lower = str(error_msg or "").lower()
+        return (
+            "brackets cannot be used with position brackets" in err_lower
+            or ("you must enable auto oco brackets" in err_lower)
+            or ("auto oco brackets" in err_lower and "not enabled" in err_lower)
+            or ("error code 2" in err_lower and "auto oco brackets" in err_lower)
+            or ("code: 2" in err_lower and "auto oco brackets" in err_lower)
+        )
+
+    def _should_prefer_hybrid_brackets(self) -> bool:
+        """True only when ``TOPSTEPX_BRACKET_MODE=position|hybrid`` (explicit opt-in).
+
+        Default (unset): native Auto OCO only. On Position Brackets reject we Discord
+        alert and refuse — we do not sticky-prefer hybrid after a broker reject.
+        """
+        mode = str(os.getenv("TOPSTEPX_BRACKET_MODE", "") or "").strip().lower()
+        if mode in ("position", "hybrid", "position_brackets", "pos"):
+            return True
+        if mode in ("auto_oco", "oco", "native"):
+            return False
+        return False
+
+    async def _maybe_alert_position_brackets_mode(
+        self,
+        *,
+        source: str,
+        detail: str = "",
+        symbol: str = "",
+        side: str = "",
+        strategy_name=None,
+    ) -> None:
+        """One-shot log + Discord: Auto OCO Brackets not enabled — action required."""
+        if getattr(self, "_position_brackets_alerted", False):
+            return
+        self._position_brackets_alerted = True
+        acct = getattr(self, "selected_account", None) or {}
+        acct_name = acct.get("name") or acct.get("id") or "unknown"
+        strat = strategy_name or "n/a"
+        lines = [
+            f"account={acct_name}",
+            f"source={source}",
+            f"strategy={strat}",
+            f"symbol={symbol or 'n/a'} side={side or 'n/a'}",
+            "action=Enable Auto OCO Brackets in ProjectX (disable Position Brackets)",
+            "orders=refused until Auto OCO is enabled (unless TOPSTEPX_BRACKET_MODE=hybrid)",
+        ]
+        if detail:
+            lines.append(f"detail={detail[:400]}")
+        msg = " | ".join(lines)
+        logger.warning("BRACKET_MODE_ALERT %s", msg)
+        notifier = getattr(self, "discord_notifier", None)
+        if notifier is None or not getattr(notifier, "enabled", False):
+            return
+        try:
+            await notifier.send_bracket_mode_notification(
+                account_name=str(acct_name),
+                source=source,
+                detail=detail or msg,
+                symbol=symbol,
+                strategy_name=str(strat),
+            )
+        except Exception:
+            logger.debug("Discord bracket-mode alert failed", exc_info=True)
+
+    async def _run_hybrid_bracket_fallback(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        account_id: str,
+        enable_breakeven: bool,
+        strategy_name,
+        prior_error,
+    ) -> Dict:
+        hybrid = await self._stop_bracket_hybrid(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            account_id=account_id,
+            enable_breakeven=enable_breakeven,
+            strategy_name=strategy_name,
+        )
+        if isinstance(hybrid, dict) and "error" not in hybrid and (
+            hybrid.get("success") or hybrid.get("orderId")
+        ):
+            if "method" not in hybrid:
+                hybrid["method"] = "hybrid_auto_bracket"
+            hybrid.setdefault("success", True)
+            return hybrid
+        hybrid_err = hybrid.get("error") if isinstance(hybrid, dict) else str(hybrid)
+        if prior_error:
+            return {
+                "success": False,
+                "error": f"{prior_error} | Hybrid fallback failed: {hybrid_err}",
+            }
+        return {"success": False, "error": f"Hybrid bracket failed: {hybrid_err}"}
 
     async def place_oco_bracket_with_stop_entry_partial_tp(
         self,
@@ -4396,132 +4697,55 @@ class TopStepXTradingBot:
                                   take_profit_price: float, account_id: str = None,
                                   enable_breakeven: bool = False, strategy_name: Optional[str] = None) -> Dict:
         """
-        Hybrid stop bracket: place stop order for entry, then auto-bracket on fill.
-        
-        This is a fallback when OCO brackets are not enabled in TopStepX platform.
-        
-        Args:
-            symbol: Trading symbol
-            side: "BUY" or "SELL"
-            quantity: Number of contracts
-            entry_price: Stop price for entry
-            stop_loss_price: Stop loss price
-            take_profit_price: Take profit price
-            account_id: Account ID
-            enable_breakeven: Enable breakeven stop monitoring (default: False)
-            
-        Returns:
-            Dict: Order response
+        Hybrid stop bracket: place stop order for entry, then attach SL/TP on fill.
+
+        Fallback when the account is on Position Brackets (native OCO
+        ``stopLossBracket`` / ``takeProfitBracket`` payloads are rejected).
+
+        Attach is durable: pending registry + strong-referenced monitor task +
+        User Hub fill hook (``try_attach_hybrid_brackets_on_fill``).
         """
         try:
             logger.info("Using hybrid approach: stop order + auto-bracket")
-            
-            # 1. Place stop order for entry
+
             stop_result = await self.place_stop_order(
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
                 stop_price=entry_price,
                 account_id=account_id,
-                strategy_name=strategy_name
+                strategy_name=strategy_name,
             )
-            
+
             if "error" in stop_result:
                 return {"error": f"Stop order failed: {stop_result['error']}"}
-            
-            order_id = stop_result.get('orderId')
-            logger.info(f"Stop order placed: {order_id}")
-            
-            # 2. Start background monitor for fill
-            async def monitor_and_bracket():
-                """Monitor stop order and place brackets when filled."""
-                max_wait_time = 3600  # 1 hour max
-                check_interval = 1  # Check every second
-                elapsed_time = 0
-                
-                while elapsed_time < max_wait_time:
-                    try:
-                        # Check order status
-                        orders = await self.get_open_orders(account_id=account_id)
-                        
-                        # Check if our order is filled
-                        order_found = False
-                        order_filled = False
-                        
-                        for order in orders:
-                            if order.get('id') == order_id or str(order.get('id')) == str(order_id):
-                                order_found = True
-                                status = order.get('status', -1)
-                                
-                                # Status 2, 3, 4 = Filled/Executed/Complete
-                                if status in [2, 3, 4]:
-                                    order_filled = True
-                                    logger.info(f"Stop order {order_id} filled! Placing brackets")
-                                    break
-                                # Status 3, 5, 6 = Cancelled/Rejected
-                                elif status in [5, 6]:
-                                    logger.warning(f"Stop order {order_id} was cancelled/rejected")
-                                    return
-                        
-                        if order_filled:
-                            # Wait a moment for position to register
-                            await asyncio.sleep(0.5)
-                            
-                            # Get position
-                            positions = await self.get_open_positions(account_id=account_id)
-                            position_id = None
-                            
-                            for pos in positions:
-                                pos_symbol = pos.get('symbol', '').upper()
-                                if symbol.upper() in pos_symbol or pos_symbol in symbol.upper():
-                                    position_id = pos.get('id')
-                                    logger.info(f"Found position {position_id} for {symbol}")
-                                    break
-                            
-                            if position_id:
-                                # Place brackets
-                                logger.info(f"Placing brackets on position {position_id}")
-                                
-                                sl_result = await self.modify_stop_loss(position_id, stop_loss_price, account_id)
-                                if "error" not in sl_result:
-                                    logger.info(f"Stop loss set at ${stop_loss_price:.2f}")
-                                else:
-                                    logger.error(f"Stop loss failed: {sl_result['error']}")
-                                
-                                tp_result = await self.modify_take_profit(position_id, take_profit_price, account_id)
-                                if "error" not in tp_result:
-                                    logger.info(f"Take profit set at ${take_profit_price:.2f}")
-                                else:
-                                    logger.error(f"Take profit failed: {tp_result['error']}")
-                                
-                                print(f"\n✅ Brackets placed on position {position_id}")
-                                print(f"   Stop Loss: ${stop_loss_price:.2f}")
-                                print(f"   Take Profit: ${take_profit_price:.2f}")
-                            else:
-                                logger.error(f"Position not found for {symbol} after fill")
-                            
-                            return
-                        
-                        if not order_found:
-                            # Order might have been filled and closed already
-                            logger.info(f"Order {order_id} not found in open orders, may have filled and closed")
-                            return
-                        
-                    except Exception as e:
-                        logger.error(f"Error in bracket monitor: {e}")
-                    
-                    await asyncio.sleep(check_interval)
-                    elapsed_time += check_interval
-                
-                logger.warning(f"Bracket monitor timed out after {max_wait_time}s")
-            
-            # Start monitoring in background
-            asyncio.create_task(monitor_and_bracket())
-            
-            # Setup breakeven monitoring if enabled
-            if enable_breakeven and order_id and hasattr(self, 'overnight_strategy'):
-                logger.info(f"Setting up breakeven monitoring for hybrid order {order_id}")
-                breakeven_points = float(os.getenv('MANUAL_BREAKEVEN_PROFIT_POINTS', '15.0'))
+
+            order_id = (
+                stop_result.get("orderId")
+                or stop_result.get("order_id")
+                or stop_result.get("id")
+            )
+            if not order_id:
+                return {"error": f"Stop order placed but no orderId in response: {stop_result}"}
+            order_id = str(order_id)
+            logger.info("Hybrid stop entry placed: %s", order_id)
+
+            self.register_hybrid_pending_bracket(
+                order_id=order_id,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                account_id=account_id,
+                strategy_name=strategy_name,
+                entry_price=entry_price,
+            )
+            self._start_hybrid_bracket_monitor(order_id)
+
+            if enable_breakeven and order_id and hasattr(self, "overnight_strategy"):
+                logger.info("Setting up breakeven monitoring for hybrid order %s", order_id)
+                breakeven_points = float(os.getenv("MANUAL_BREAKEVEN_PROFIT_POINTS", "15.0"))
                 self.overnight_strategy.breakeven_monitoring[order_id] = {
                     "symbol": symbol,
                     "side": "LONG" if side.upper() == "BUY" else "SHORT",
@@ -4529,10 +4753,9 @@ class TopStepXTradingBot:
                     "original_stop": stop_loss_price,
                     "breakeven_threshold": breakeven_points,
                     "breakeven_triggered": False,
-                    "is_filled": False  # Will be set to True when entry order fills
+                    "is_filled": False,
                 }
-                logger.info(f"Breakeven monitoring active: {breakeven_points} pts profit threshold")
-            
+
             return {
                 "success": True,
                 "orderId": order_id,
@@ -4544,13 +4767,1333 @@ class TopStepXTradingBot:
                 "stop_loss": stop_loss_price,
                 "take_profit": take_profit_price,
                 "breakeven_enabled": enable_breakeven,
-                "message": "Stop order placed, will auto-bracket on fill"
+                "message": "Stop order placed, will auto-bracket on fill",
             }
-            
+
         except Exception as e:
-            logger.error(f"Hybrid bracket failed: {str(e)}")
+            logger.error("Hybrid bracket failed: %s", e, exc_info=True)
             return {"error": str(e)}
-    
+
+    def register_hybrid_pending_bracket(
+        self,
+        *,
+        order_id: str,
+        symbol: str,
+        side: str,
+        quantity: int,
+        stop_loss_price: float,
+        take_profit_price: float,
+        account_id: str = None,
+        strategy_name: Optional[str] = None,
+        entry_price: float = None,
+    ) -> None:
+        """Remember SL/TP to attach after ``order_id`` fills (Position Brackets path)."""
+        oid = str(order_id)
+        pending = {
+            "order_id": oid,
+            "symbol": str(symbol).upper(),
+            "side": str(side).upper(),
+            "quantity": int(quantity),
+            "stop_loss_price": float(stop_loss_price),
+            "take_profit_price": float(take_profit_price),
+            "account_id": str(account_id) if account_id is not None else None,
+            "strategy_name": strategy_name,
+            "entry_price": float(entry_price) if entry_price is not None else None,
+            "attached": False,
+            "attach_error": None,
+        }
+        if not hasattr(self, "_hybrid_pending_brackets") or self._hybrid_pending_brackets is None:
+            self._hybrid_pending_brackets = {}
+        self._hybrid_pending_brackets[oid] = pending
+        logger.info(
+            "Hybrid pending registered order=%s %s %s qty=%s SL=%.2f TP=%.2f",
+            oid,
+            pending["side"],
+            pending["symbol"],
+            pending["quantity"],
+            pending["stop_loss_price"],
+            pending["take_profit_price"],
+        )
+
+    def _start_hybrid_bracket_monitor(self, order_id: str) -> None:
+        """Strong-referenced poller until attach succeeds, order dies, or timeout."""
+        oid = str(order_id)
+        if not hasattr(self, "_hybrid_bracket_tasks") or self._hybrid_bracket_tasks is None:
+            self._hybrid_bracket_tasks = {}
+        existing = self._hybrid_bracket_tasks.get(oid)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.error("Hybrid monitor: no running event loop for order %s", oid)
+            return
+
+        async def _monitor():
+            max_wait_time = int(os.getenv("HYBRID_BRACKET_MONITOR_MAX_S", "14400") or 14400)
+            check_interval = float(os.getenv("HYBRID_BRACKET_POLL_S", "1.0") or 1.0)
+            elapsed = 0.0
+            while elapsed < max_wait_time:
+                pending = (getattr(self, "_hybrid_pending_brackets", None) or {}).get(oid)
+                if not pending:
+                    return
+                if pending.get("attached"):
+                    return
+                try:
+                    result = await self.try_attach_hybrid_brackets_on_fill(
+                        oid, reason="poll"
+                    )
+                    if result.get("attached") or result.get("done"):
+                        return
+                    if result.get("abort"):
+                        return
+                except Exception:
+                    logger.error(
+                        "Hybrid monitor tick failed for %s", oid, exc_info=True
+                    )
+                await asyncio.sleep(check_interval)
+                elapsed += check_interval
+            logger.warning(
+                "Hybrid bracket monitor timed out after %ss for order %s — "
+                "position may still be naked",
+                max_wait_time,
+                oid,
+            )
+
+        task = loop.create_task(_monitor(), name=f"hybrid_bracket_{oid}")
+        self._hybrid_bracket_tasks[oid] = task
+
+        def _cleanup(t, _oid=oid):
+            try:
+                tasks = getattr(self, "_hybrid_bracket_tasks", None) or {}
+                if tasks.get(_oid) is t:
+                    tasks.pop(_oid, None)
+            except Exception:
+                pass
+
+        task.add_done_callback(_cleanup)
+
+    async def try_attach_hybrid_brackets_on_fill(
+        self,
+        order_id: str,
+        *,
+        reason: str = "unknown",
+        order_status=None,
+    ) -> Dict[str, Any]:
+        """Attach SL/TP if ``order_id`` is a pending hybrid entry that has filled.
+
+        Safe to call from poller and User Hub. Idempotent.
+        """
+        oid = str(order_id)
+        pending_map = getattr(self, "_hybrid_pending_brackets", None) or {}
+        pending = pending_map.get(oid)
+        if not pending:
+            return {"done": True, "skipped": True}
+        if pending.get("attached"):
+            return {"done": True, "attached": True}
+
+        locks = getattr(self, "_hybrid_attach_locks", None)
+        if locks is None:
+            self._hybrid_attach_locks = {}
+            locks = self._hybrid_attach_locks
+        lock = locks.setdefault(oid, asyncio.Lock())
+
+        async with lock:
+            pending = (getattr(self, "_hybrid_pending_brackets", None) or {}).get(oid)
+            if not pending or pending.get("attached"):
+                return {"done": True, "attached": bool(pending and pending.get("attached"))}
+
+            account_id = pending.get("account_id")
+            status = order_status
+
+            def _is_filled(st) -> bool:
+                return st in (2, "2", "Filled", "filled", "FILLED")
+
+            def _is_dead(st) -> bool:
+                return st in (
+                    3, 4, 5, 6,
+                    "3", "4", "5", "6",
+                    "Cancelled", "Canceled", "Rejected",
+                    "cancelled", "canceled", "rejected",
+                )
+
+            # Still working?
+            still_working = False
+            try:
+                orders = await self.get_open_orders(account_id=account_id)
+                if isinstance(orders, list):
+                    for order in orders:
+                        if str(order.get("id") or order.get("orderId") or "") == oid:
+                            still_working = True
+                            status = order.get("status", status)
+                            break
+            except Exception:
+                logger.debug("Hybrid open-orders check failed for %s", oid, exc_info=True)
+
+            if still_working and not _is_filled(status):
+                if _is_dead(status):
+                    logger.warning(
+                        "Hybrid entry %s terminal while still listed status=%s — abort (%s)",
+                        oid, status, reason,
+                    )
+                    pending_map.pop(oid, None)
+                    return {"done": True, "abort": True, "status": status}
+                return {"done": False, "waiting": True, "status": status}
+
+            # Confirm fill via history if not already known filled
+            if not _is_filled(status):
+                try:
+                    recent = await self.get_order_history(account_id=account_id, limit=40)
+                    if isinstance(recent, list):
+                        for order in recent:
+                            if str(order.get("id") or order.get("orderId") or "") == oid:
+                                status = order.get("status", status)
+                                break
+                except Exception:
+                    logger.debug("Hybrid history check failed for %s", oid, exc_info=True)
+
+            if _is_dead(status) and not _is_filled(status):
+                logger.warning(
+                    "Hybrid entry %s dead status=%s — abort attach (%s)",
+                    oid, status, reason,
+                )
+                pending_map.pop(oid, None)
+                return {"done": True, "abort": True, "status": status}
+
+            # Need a position (brief retry — hub can lag REST)
+            position_id = None
+            for attempt in range(8):
+                position_id = await self._find_hybrid_position_id(pending)
+                if position_id:
+                    break
+                # If order still working, not filled yet
+                if still_working and attempt == 0:
+                    return {"done": False, "waiting": True}
+                await asyncio.sleep(0.4 + 0.2 * attempt)
+
+            if not position_id:
+                # Order gone + no position + not confirmed filled → keep waiting
+                # (cancel race) unless history says filled.
+                if not _is_filled(status) and not still_working:
+                    logger.info(
+                        "Hybrid: order %s not working, no position yet (reason=%s status=%s)",
+                        oid, reason, status,
+                    )
+                    return {"done": False, "waiting": True}
+                if _is_filled(status):
+                    logger.error(
+                        "Hybrid: order %s filled but no open position for %s — cannot attach",
+                        oid, pending.get("symbol"),
+                    )
+                    pending["attach_error"] = "filled_but_no_position"
+                    return {"done": True, "abort": True, "error": "filled_but_no_position"}
+                return {"done": False, "waiting": True}
+
+            logger.info(
+                "Hybrid: attaching protective SL/TP on position %s for entry %s (reason=%s)",
+                position_id, oid, reason,
+            )
+            attach = await self._attach_hybrid_protective_orders(
+                pending, position_id=str(position_id)
+            )
+            pending["attached"] = bool(attach.get("success"))
+            pending["attach_result"] = attach
+            if attach.get("success"):
+                logger.info(
+                    "Hybrid brackets attached for %s: SL=%s TP=%s",
+                    oid,
+                    attach.get("sl_order_id"),
+                    attach.get("tp_order_id"),
+                )
+                pending_map.pop(oid, None)
+                return {"done": True, "attached": True, **attach}
+
+            pending["attach_error"] = attach.get("error") or attach
+            logger.error("Hybrid attach failed for %s: %s", oid, attach)
+            # Keep pending so poller can retry a few times
+            return {"done": False, "attached": False, **attach}
+
+    async def _find_hybrid_position_id(self, pending: Dict[str, Any]):
+        """Resolve open position id for a pending hybrid entry (contract/symbol)."""
+        account_id = pending.get("account_id")
+        symbol = str(pending.get("symbol") or "").upper()
+        want_side = str(pending.get("side") or "").upper()
+        try:
+            contract_id = self._get_contract_id(symbol)
+        except Exception:
+            contract_id = None
+
+        positions = await self.get_open_positions(account_id=account_id)
+        if isinstance(positions, dict) and positions.get("error"):
+            return None
+        for pos in positions or []:
+            pos_sym = str(
+                pos.get("symbol") or pos.get("contractSymbol") or ""
+            ).upper()
+            pos_cid = pos.get("contractId") or pos.get("contract_id")
+            if contract_id and pos_cid and str(pos_cid) == str(contract_id):
+                pass  # match
+            elif self._position_symbol_matches(pos_sym, symbol):
+                pass
+            elif symbol and symbol in str(pos_cid or "").upper():
+                pass
+            else:
+                continue
+            # Prefer matching side when multiple (rare)
+            pos_side = pos.get("side")
+            if want_side in ("BUY", "LONG") and pos_side in (1, "1", "SHORT", "Sell"):
+                continue
+            if want_side in ("SELL", "SHORT") and pos_side in (0, "0", "LONG", "Buy"):
+                continue
+            return pos.get("id") or pos.get("position_id") or pos.get("positionId")
+        return None
+
+    async def _attach_hybrid_protective_orders(
+        self, pending: Dict[str, Any], *, position_id: str
+    ) -> Dict[str, Any]:
+        """Place tagged protective stop + limit and arm software OCO + orphan sweeper.
+
+        Always places our own tagged legs (``TB-hyb-{gid}-sl`` / ``-tp``) so a
+        continuous sweeper can cancel orphans when the position is gone — native
+        Auto OCO is unavailable on Position Brackets accounts.
+        """
+        import uuid
+
+        account_id = pending.get("account_id")
+        symbol = pending["symbol"]
+        quantity = int(pending["quantity"])
+        stop_loss_price = float(pending["stop_loss_price"])
+        take_profit_price = float(pending["take_profit_price"])
+        strategy_name = pending.get("strategy_name") or "hybrid"
+        entry_side = str(pending.get("side") or "").upper()
+        exit_side = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
+        group_id = str(uuid.uuid4()).replace("-", "")[:8]
+        sl_tag = self.hybrid_protective_tag(group_id, "sl")
+        tp_tag = self.hybrid_protective_tag(group_id, "tp")
+
+        logger.info(
+            "Hybrid: placing tagged protective legs group=%s pos=%s SL=%.2f TP=%.2f tags=%s/%s",
+            group_id, position_id, stop_loss_price, take_profit_price, sl_tag, tp_tag,
+        )
+
+        sl_result = await self.place_stop_order(
+            symbol=symbol,
+            side=exit_side,
+            quantity=quantity,
+            stop_price=stop_loss_price,
+            account_id=account_id,
+            strategy_name=f"{str(strategy_name)[:10]}-hyb",
+            custom_tag=sl_tag,
+        )
+        tp_result = await self.place_market_order(
+            symbol=symbol,
+            side=exit_side,
+            quantity=quantity,
+            account_id=account_id,
+            order_type="limit",
+            limit_price=take_profit_price,
+            strategy_name=f"{str(strategy_name)[:10]}-hyb",
+            custom_tag=tp_tag,
+        )
+
+        def _oid(res):
+            if not isinstance(res, dict):
+                return None
+            if res.get("error"):
+                return None
+            return (
+                res.get("order_id")
+                or res.get("orderId")
+                or res.get("stop_order_id")
+                or res.get("tp_order_id")
+                or res.get("id")
+            )
+
+        sl_ok = _oid(sl_result) is not None or (
+            isinstance(sl_result, dict) and sl_result.get("success") and "error" not in sl_result
+        )
+        tp_ok = _oid(tp_result) is not None or (
+            isinstance(tp_result, dict) and tp_result.get("success") and "error" not in tp_result
+        )
+        sl_id = _oid(sl_result)
+        tp_id = _oid(tp_result)
+
+        # Prefer broker book ids by tag (place response may use a different id shape).
+        await asyncio.sleep(0.15)
+        resolved = await self._resolve_hybrid_legs_by_tag(
+            account_id=account_id, group_id=group_id, symbol=symbol
+        )
+        sl_id = resolved.get("sl_order_id") or sl_id
+        tp_id = resolved.get("tp_order_id") or tp_id
+        if not sl_id or not tp_id:
+            await asyncio.sleep(0.45)
+            resolved = await self._resolve_hybrid_legs_by_tag(
+                account_id=account_id, group_id=group_id, symbol=symbol
+            )
+            sl_id = sl_id or resolved.get("sl_order_id")
+            tp_id = tp_id or resolved.get("tp_order_id")
+
+        if sl_id and tp_id:
+            self.register_hybrid_oco_pair(
+                sl_order_id=str(sl_id),
+                tp_order_id=str(tp_id),
+                position_id=str(position_id),
+                account_id=str(account_id) if account_id is not None else None,
+                symbol=symbol,
+                strategy_name=str(strategy_name),
+                group_id=group_id,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                entry_side=entry_side,
+            )
+            self._ensure_hybrid_orphan_sweeper()
+            # Arm live quotes so price-OCO can cancel peer on touch (not Order/search).
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._ensure_hybrid_price_feed(str(symbol).upper()),
+                    name=f"hyb_quote_{symbol}",
+                )
+            except Exception:
+                logger.debug("hybrid price feed schedule failed", exc_info=True)
+            return {
+                "success": True,
+                "position_id": position_id,
+                "sl_order_id": sl_id,
+                "tp_order_id": tp_id,
+                "group_id": group_id,
+                "sl_tag": sl_tag,
+                "tp_tag": tp_tag,
+                "sl_result": sl_result,
+                "tp_result": tp_result,
+            }
+        return {
+            "success": False,
+            "error": f"sl_ok={sl_ok} tp_ok={tp_ok} sl_id={sl_id} tp_id={tp_id}",
+            "sl_result": sl_result,
+            "tp_result": tp_result,
+            "position_id": position_id,
+            "group_id": group_id,
+        }
+
+    @staticmethod
+    def hybrid_protective_tag(group_id: str, leg: str) -> str:
+        """``TB-hyb-{gid}-sl`` / ``TB-hyb-{gid}-tp`` (≤64 chars)."""
+        gid = str(group_id or "").replace("-", "")[:8] or "x"
+        leg_s = "sl" if str(leg).lower().startswith("s") else "tp"
+        return f"TB-hyb-{gid}-{leg_s}"[:64]
+
+    @staticmethod
+    def is_hybrid_protective_tag(tag: object) -> bool:
+        t = str(tag or "")
+        return t.startswith("TB-hyb-") and (t.endswith("-sl") or t.endswith("-tp"))
+
+    @staticmethod
+    def hybrid_group_from_tag(tag: object):
+        t = str(tag or "")
+        if not t.startswith("TB-hyb-"):
+            return None
+        parts = t.split("-")
+        # TB hyb gid sl
+        if len(parts) >= 4 and parts[1] == "hyb":
+            return parts[2]
+        return None
+
+    async def _resolve_hybrid_legs_by_tag(
+        self, *, account_id, group_id: str, symbol: str
+    ) -> Dict[str, Any]:
+        sl_tag = self.hybrid_protective_tag(group_id, "sl")
+        tp_tag = self.hybrid_protective_tag(group_id, "tp")
+        out: Dict[str, Any] = {}
+        try:
+            orders = await self.get_open_orders(account_id=account_id)
+        except Exception:
+            return out
+        for o in orders or []:
+            tag = str(o.get("customTag") or o.get("tag") or "")
+            oid = o.get("id") or o.get("orderId")
+            if not oid:
+                continue
+            if tag == sl_tag:
+                out["sl_order_id"] = str(oid)
+            elif tag == tp_tag:
+                out["tp_order_id"] = str(oid)
+        return out
+
+    def register_hybrid_oco_pair(
+        self,
+        *,
+        sl_order_id: str,
+        tp_order_id: str,
+        position_id: str,
+        account_id: str = None,
+        symbol: str = "",
+        strategy_name: str = "hybrid",
+        group_id: str = None,
+        stop_loss_price: float = None,
+        take_profit_price: float = None,
+        entry_side: str = None,
+    ) -> None:
+        """Arm software OCO between hybrid protective stop and take-profit legs.
+
+        Native Auto OCO links legs at the broker; Position Brackets hybrid places
+        two independent orders — when one fills/cancels we must cancel the other.
+        Tags ``TB-hyb-{group}-sl/tp`` let the orphan sweeper cancel by position.
+        Price levels arm near-instant quote-touch cancel (no Order/search lag).
+        """
+        sl = str(sl_order_id or "").strip()
+        tp = str(tp_order_id or "").strip()
+        if not sl or not tp or sl == tp:
+            logger.warning("register_hybrid_oco_pair skipped — need two distinct ids")
+            return
+        if not hasattr(self, "_hybrid_oco_legs") or self._hybrid_oco_legs is None:
+            self._hybrid_oco_legs = {}
+        meta_common = {
+            "position_id": str(position_id),
+            "account_id": str(account_id) if account_id is not None else None,
+            "symbol": str(symbol or "").upper(),
+            "strategy_name": str(strategy_name or "hybrid"),
+            "pair_key": "|".join(sorted((sl, tp))),
+            "group_id": str(group_id) if group_id else None,
+            "stop_loss_price": float(stop_loss_price) if stop_loss_price is not None else None,
+            "take_profit_price": float(take_profit_price) if take_profit_price is not None else None,
+            "entry_side": str(entry_side or "").upper() or None,
+        }
+        self._hybrid_oco_legs[sl] = {**meta_common, "sibling_id": tp, "leg": "sl"}
+        self._hybrid_oco_legs[tp] = {**meta_common, "sibling_id": sl, "leg": "tp"}
+        logger.info(
+            "Hybrid software OCO armed sl=%s tp=%s position=%s %s group=%s "
+            "SL=%.4f TP=%.4f side=%s",
+            sl, tp, position_id, symbol, group_id,
+            meta_common["stop_loss_price"] or 0.0,
+            meta_common["take_profit_price"] or 0.0,
+            meta_common["entry_side"],
+        )
+        # Also register in working-order registry so feed-watchdog cancel-all
+        # can cancel both legs (mutual siblings).
+        try:
+            from core.working_order_registry import get_registry
+
+            reg = get_registry()
+            acct = str(account_id) if account_id is not None else ""
+            sym = str(symbol or "").upper() or "UNK"
+            reg.register(
+                order_id=sl,
+                account_id=acct,
+                symbol=sym,
+                side="SL",
+                strategy_name=f"{strategy_name}-hybsl",
+                oco_sibling_ids=[tp],
+            )
+            reg.register(
+                order_id=tp,
+                account_id=acct,
+                symbol=sym,
+                side="TP",
+                strategy_name=f"{strategy_name}-hybtp",
+                oco_sibling_ids=[sl],
+            )
+        except Exception:
+            logger.debug("working_order_registry hybrid OCO register failed", exc_info=True)
+        self._start_hybrid_oco_monitor(sl, tp)
+        self._start_hybrid_price_oco_watch(sl, tp)
+        self._ensure_hybrid_orphan_sweeper()
+
+    def _hybrid_oco_pair_key(self, a: str, b: str) -> str:
+        return "|".join(sorted((str(a), str(b))))
+
+    def _start_hybrid_oco_monitor(self, sl_order_id: str, tp_order_id: str) -> None:
+        """Poll backup: if one leg leaves the book, cancel the sibling."""
+        pair_key = self._hybrid_oco_pair_key(sl_order_id, tp_order_id)
+        if not hasattr(self, "_hybrid_oco_tasks") or self._hybrid_oco_tasks is None:
+            self._hybrid_oco_tasks = {}
+        existing = self._hybrid_oco_tasks.get(pair_key)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.error("Hybrid OCO monitor: no running event loop")
+            return
+
+        async def _monitor():
+            # Sub-second backup when User Hub is down/lagging; primary path is
+            # urgent hub cancel via on_hybrid_protective_leg_terminal.
+            max_wait = int(os.getenv("HYBRID_OCO_MONITOR_MAX_S", "28800") or 28800)
+            interval = float(os.getenv("HYBRID_OCO_POLL_S", "0.25") or 0.25)
+            interval = max(0.1, interval)
+            elapsed = 0.0
+            while elapsed < max_wait:
+                legs = getattr(self, "_hybrid_oco_legs", None) or {}
+                if str(sl_order_id) not in legs and str(tp_order_id) not in legs:
+                    return
+                try:
+                    # If either leg is gone from open orders, treat as terminal
+                    # and cancel sibling (covers hub-disabled / missed fill events).
+                    acct = None
+                    for oid in (str(sl_order_id), str(tp_order_id)):
+                        meta = legs.get(oid)
+                        if meta and meta.get("account_id"):
+                            acct = meta.get("account_id")
+                            break
+                    orders = await self.get_open_orders(account_id=acct)
+                    open_ids = set()
+                    if isinstance(orders, list):
+                        for o in orders:
+                            oid = o.get("id") or o.get("orderId")
+                            if oid is not None:
+                                open_ids.add(str(oid))
+                    missing = [
+                        oid for oid in (str(sl_order_id), str(tp_order_id))
+                        if oid in legs and oid not in open_ids
+                    ]
+                    if len(missing) == 2:
+                        # Both gone (filled/cancelled elsewhere) — just clear.
+                        for oid in (str(sl_order_id), str(tp_order_id)):
+                            legs.pop(oid, None)
+                        return
+                    if len(missing) == 1:
+                        await self.cancel_hybrid_oco_sibling(
+                            missing[0], reason="poll_missing_from_open_orders"
+                        )
+                        return
+                except Exception:
+                    logger.debug("Hybrid OCO poll tick failed", exc_info=True)
+                await asyncio.sleep(interval)
+                elapsed += interval
+            logger.warning("Hybrid OCO monitor timed out for pair %s", pair_key)
+
+        task = loop.create_task(_monitor(), name=f"hybrid_oco_{pair_key[:24]}")
+        self._hybrid_oco_tasks[pair_key] = task
+
+        def _cleanup(t, _key=pair_key):
+            try:
+                tasks = getattr(self, "_hybrid_oco_tasks", None) or {}
+                if tasks.get(_key) is t:
+                    tasks.pop(_key, None)
+            except Exception:
+                pass
+
+        task.add_done_callback(_cleanup)
+
+    async def _ensure_hybrid_price_feed(self, symbol: str) -> None:
+        """Best-effort Market Hub quote sub so price-OCO sees ticks immediately."""
+        try:
+            await self._ensure_market_socket_started()
+        except Exception:
+            logger.debug("hybrid price feed: market hub start failed", exc_info=True)
+        try:
+            await self._ensure_quote_subscription(symbol)
+            logger.info("Hybrid price-OCO quote feed armed for %s", symbol)
+        except Exception:
+            logger.warning(
+                "Hybrid price-OCO quote subscribe failed for %s", symbol, exc_info=True
+            )
+
+    def _start_hybrid_price_oco_watch(self, sl_order_id: str, tp_order_id: str) -> None:
+        """Poll quote cache / REST last so TP/SL touch cancels peer without Order/search."""
+        pair_key = self._hybrid_oco_pair_key(sl_order_id, tp_order_id)
+        if not hasattr(self, "_hybrid_price_oco_tasks") or self._hybrid_price_oco_tasks is None:
+            self._hybrid_price_oco_tasks = {}
+        existing = self._hybrid_price_oco_tasks.get(pair_key)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _watch():
+            interval = float(os.getenv("HYBRID_PRICE_OCO_POLL_S", "0.05") or 0.05)
+            interval = max(0.02, interval)
+            max_wait = int(os.getenv("HYBRID_OCO_MONITOR_MAX_S", "28800") or 28800)
+            elapsed = 0.0
+            while elapsed < max_wait:
+                legs = getattr(self, "_hybrid_oco_legs", None) or {}
+                if str(sl_order_id) not in legs and str(tp_order_id) not in legs:
+                    return
+                meta = legs.get(str(tp_order_id)) or legs.get(str(sl_order_id)) or {}
+                sym = str(meta.get("symbol") or "").upper()
+                if sym:
+                    try:
+                        self._hybrid_price_oco_on_quote(sym)
+                    except Exception:
+                        logger.debug("hybrid price OCO poll tick failed", exc_info=True)
+                    try:
+                        with self._quote_cache_lock:
+                            live = dict(self._quote_cache.get(sym) or {})
+                        ts = live.get("ts")
+                        stale = True
+                        if ts:
+                            try:
+                                tdt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                                stale = (
+                                    datetime.now(timezone.utc) - tdt
+                                ).total_seconds() > 1.0
+                            except Exception:
+                                stale = True
+                        if stale or not any(
+                            live.get(k) is not None for k in ("last", "bid", "ask")
+                        ):
+                            q = await self.get_market_quote(sym)
+                            if isinstance(q, dict) and not q.get("error"):
+                                last = q.get("last")
+                                bid = q.get("bid")
+                                ask = q.get("ask")
+                                self._hybrid_price_oco_evaluate(
+                                    sym,
+                                    last=float(last) if last is not None else None,
+                                    bid=float(bid) if bid is not None else None,
+                                    ask=float(ask) if ask is not None else None,
+                                )
+                    except Exception:
+                        logger.debug("hybrid price OCO REST refresh failed", exc_info=True)
+                await asyncio.sleep(interval)
+                elapsed += interval
+
+        task = loop.create_task(_watch(), name=f"hyb_px_{pair_key[:20]}")
+        self._hybrid_price_oco_tasks[pair_key] = task
+
+        def _cleanup(t, _key=pair_key):
+            try:
+                tasks = getattr(self, "_hybrid_price_oco_tasks", None) or {}
+                if tasks.get(_key) is t:
+                    tasks.pop(_key, None)
+            except Exception:
+                pass
+
+        task.add_done_callback(_cleanup)
+
+    def _hybrid_price_oco_on_quote(self, symbol: str) -> None:
+        """Sync entry from quote cache update — schedule peer cancel on TP/SL touch."""
+        sym = str(symbol or "").upper()
+        if not sym:
+            return
+        legs = getattr(self, "_hybrid_oco_legs", None) or {}
+        if not any(str(m.get("symbol") or "").upper() == sym for m in legs.values()):
+            return
+        with self._quote_cache_lock:
+            live = dict(self._quote_cache.get(sym) or {})
+        last = live.get("last")
+        bid = live.get("bid")
+        ask = live.get("ask")
+        try:
+            last_f = float(last) if last is not None else None
+        except (TypeError, ValueError):
+            last_f = None
+        try:
+            bid_f = float(bid) if bid is not None else None
+        except (TypeError, ValueError):
+            bid_f = None
+        try:
+            ask_f = float(ask) if ask is not None else None
+        except (TypeError, ValueError):
+            ask_f = None
+        self._hybrid_price_oco_evaluate(sym, last=last_f, bid=bid_f, ask=ask_f)
+
+    def _hybrid_price_oco_evaluate(
+        self,
+        symbol: str,
+        *,
+        last: float = None,
+        bid: float = None,
+        ask: float = None,
+    ) -> None:
+        """If last/bid/ask touches TP or SL, cancel the *other* leg by known id."""
+        sym = str(symbol or "").upper()
+        legs = getattr(self, "_hybrid_oco_legs", None) or {}
+        seen_pairs = set()
+        for oid, meta in list(legs.items()):
+            if str(meta.get("symbol") or "").upper() != sym:
+                continue
+            if meta.get("leg") != "tp":
+                continue
+            pair_key = meta.get("pair_key") or oid
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+            sl_px = meta.get("stop_loss_price")
+            tp_px = meta.get("take_profit_price")
+            if sl_px is None or tp_px is None:
+                continue
+            entry_side = str(meta.get("entry_side") or "").upper()
+            is_long = entry_side in ("BUY", "LONG", "")
+            tp_hit = False
+            sl_hit = False
+            if is_long:
+                px_tp = bid if bid is not None else last
+                px_sl = last if last is not None else (ask if ask is not None else bid)
+                if px_tp is not None and float(px_tp) >= float(tp_px):
+                    tp_hit = True
+                if px_sl is not None and float(px_sl) <= float(sl_px):
+                    sl_hit = True
+            else:
+                px_tp = ask if ask is not None else last
+                px_sl = last if last is not None else (bid if bid is not None else ask)
+                if px_tp is not None and float(px_tp) <= float(tp_px):
+                    tp_hit = True
+                if px_sl is not None and float(px_sl) >= float(sl_px):
+                    sl_hit = True
+
+            sl_id = str(meta.get("sibling_id") or "")
+            tp_id = str(oid)
+            if tp_hit and not sl_hit:
+                self._hybrid_schedule_peer_cancel(
+                    peer_order_id=sl_id,
+                    triggered_order_id=tp_id,
+                    account_id=meta.get("account_id"),
+                    reason="price_tp_touch",
+                )
+            elif sl_hit and not tp_hit:
+                self._hybrid_schedule_peer_cancel(
+                    peer_order_id=tp_id,
+                    triggered_order_id=sl_id,
+                    account_id=meta.get("account_id"),
+                    reason="price_sl_touch",
+                )
+            elif tp_hit and sl_hit:
+                self._hybrid_schedule_peer_cancel(
+                    peer_order_id=sl_id,
+                    triggered_order_id=tp_id,
+                    account_id=meta.get("account_id"),
+                    reason="price_both_touch",
+                )
+                self._hybrid_schedule_peer_cancel(
+                    peer_order_id=tp_id,
+                    triggered_order_id=sl_id,
+                    account_id=meta.get("account_id"),
+                    reason="price_both_touch",
+                )
+
+    def _hybrid_claim_cancel(self, order_id: str) -> bool:
+        """Return True if this is the first cancel claim for order_id (dedupe spam)."""
+        oid = str(order_id or "").strip()
+        if not oid:
+            return False
+        if not hasattr(self, "_hybrid_cancel_claimed") or self._hybrid_cancel_claimed is None:
+            self._hybrid_cancel_claimed = {}
+        now = time.monotonic()
+        for k, ts in list(self._hybrid_cancel_claimed.items()):
+            if now - ts > 120.0:
+                self._hybrid_cancel_claimed.pop(k, None)
+        if oid in self._hybrid_cancel_claimed:
+            return False
+        self._hybrid_cancel_claimed[oid] = now
+        return True
+
+    def _hybrid_schedule_peer_cancel(
+        self,
+        *,
+        peer_order_id: str,
+        triggered_order_id: str,
+        account_id: str = None,
+        reason: str,
+    ) -> None:
+        """Fire-and-forget cancel of peer by known id (no Order/search)."""
+        peer = str(peer_order_id or "").strip()
+        if not peer or not self._hybrid_claim_cancel(peer):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _do():
+            logger.info(
+                "Hybrid price-OCO: %s → cancelling peer %s (trigger=%s)",
+                reason, peer, triggered_order_id,
+            )
+            try:
+                await self.cancel_order(peer, account_id=account_id)
+            except Exception as exc:
+                logger.warning("Hybrid price-OCO cancel %s failed: %s", peer, exc)
+                (getattr(self, "_hybrid_cancel_claimed", None) or {}).pop(peer, None)
+                return
+            legs = getattr(self, "_hybrid_oco_legs", None) or {}
+            for drop in (peer, str(triggered_order_id or "")):
+                if drop:
+                    legs.pop(drop, None)
+                    try:
+                        from core.working_order_registry import get_registry
+                        get_registry().unregister(drop)
+                    except Exception:
+                        pass
+
+        loop.create_task(_do(), name=f"hyb_px_cancel_{peer[:16]}")
+
+    async def on_hybrid_protective_leg_terminal(
+        self,
+        *,
+        order_id: str = None,
+        custom_tag: str = None,
+        account_id: str = None,
+        status=None,
+        reason: str = "leg_terminal",
+    ) -> Dict[str, Any]:
+        """Urgent software-OCO: cancel peer when a hybrid SL/TP leg goes terminal.
+
+        Tries id-registry sibling cancel first, then cancels any remaining open
+        orders in the same ``TB-hyb-{gid}-*`` group (covers id mismatch).
+        """
+        results: Dict[str, Any] = {"reason": reason, "status": status}
+        oid = str(order_id or "").strip()
+        tag = str(custom_tag or "").strip()
+
+        if oid:
+            sib = await self.cancel_hybrid_oco_sibling(
+                oid, reason=reason, status=status
+            )
+            results["sibling_cancel"] = sib
+            if sib.get("success") and not sib.get("skipped"):
+                # Also clear any residual tagged peers (belt).
+                meta_gid = None
+                # sibling path already cleared legs; use tag if present
+                if self.is_hybrid_protective_tag(tag):
+                    meta_gid = self.hybrid_group_from_tag(tag)
+                if meta_gid:
+                    results["group_cancel"] = await self.cancel_hybrid_group_remaining(
+                        meta_gid, account_id=account_id, reason=f"{reason}_group"
+                    )
+                return results
+
+        if self.is_hybrid_protective_tag(tag):
+            gid = self.hybrid_group_from_tag(tag)
+            if gid:
+                results["group_cancel"] = await self.cancel_hybrid_group_remaining(
+                    gid, account_id=account_id, reason=f"{reason}_by_tag"
+                )
+                return results
+
+        # Tag unknown but order_id might still map after a book lookup
+        if oid and not results.get("sibling_cancel"):
+            results["skipped"] = True
+        return results
+
+    async def cancel_hybrid_group_remaining(
+        self,
+        group_id: str,
+        *,
+        account_id: str = None,
+        reason: str = "group_cancel",
+    ) -> Dict[str, Any]:
+        """Cancel every open ``TB-hyb-{group_id}-*`` order (software OCO by tag)."""
+        gid = str(group_id or "").strip()
+        if not gid:
+            return {"skipped": True, "reason": "no_group"}
+        target_account = account_id or (
+            self.selected_account["id"] if self.selected_account else None
+        )
+        if not target_account:
+            return {"skipped": True, "reason": "no_account"}
+        cancelled: List[str] = []
+        try:
+            orders = await self.get_open_orders(account_id=target_account)
+        except Exception as exc:
+            return {"error": str(exc)}
+        prefix = f"TB-hyb-{gid}-"
+        for order in orders or []:
+            tag = str(order.get("customTag") or order.get("tag") or "")
+            if not tag.startswith(prefix):
+                continue
+            oid = str(order.get("id") or order.get("orderId") or "")
+            if not oid:
+                continue
+            if not self._hybrid_claim_cancel(oid):
+                continue
+            try:
+                await self.cancel_order(oid, account_id=target_account)
+                cancelled.append(oid)
+                logger.info(
+                    "Hybrid group cancel %s tag=%s reason=%s", oid, tag, reason
+                )
+            except Exception as exc:
+                (getattr(self, "_hybrid_cancel_claimed", None) or {}).pop(oid, None)
+                logger.warning("Hybrid group cancel %s failed: %s", oid, exc)
+            legs = getattr(self, "_hybrid_oco_legs", None) or {}
+            meta = legs.pop(oid, None)
+            if meta and meta.get("sibling_id"):
+                legs.pop(str(meta["sibling_id"]), None)
+            try:
+                from core.working_order_registry import get_registry
+                get_registry().unregister(oid)
+            except Exception:
+                pass
+        return {"success": True, "group_id": gid, "cancelled": cancelled, "reason": reason}
+
+    async def cancel_hybrid_oco_sibling(
+        self,
+        order_id: str,
+        *,
+        reason: str = "unknown",
+        status=None,
+    ) -> Dict[str, Any]:
+        """Cancel the other hybrid protective leg when one goes terminal (fill/cancel).
+
+        Cancels *only* the sibling by known id — never the whole tag group (that
+        would kill a still-working TP on price-touch races).
+        """
+        oid = str(order_id or "").strip()
+        legs = getattr(self, "_hybrid_oco_legs", None) or {}
+        meta = legs.get(oid)
+        if not meta:
+            return {"skipped": True}
+
+        locks = getattr(self, "_hybrid_oco_locks", None)
+        if locks is None:
+            self._hybrid_oco_locks = {}
+            locks = self._hybrid_oco_locks
+        lock = locks.setdefault(meta.get("pair_key") or oid, asyncio.Lock())
+
+        async with lock:
+            legs = getattr(self, "_hybrid_oco_legs", None) or {}
+            meta = legs.get(oid)
+            if not meta:
+                return {"skipped": True, "already_cleared": True}
+
+            sibling_id = str(meta.get("sibling_id") or "")
+            account_id = meta.get("account_id")
+            logger.info(
+                "Hybrid software OCO: leg %s terminal (status=%s reason=%s) — cancelling sibling %s",
+                oid, status, reason, sibling_id,
+            )
+            cancel_result = None
+            if sibling_id:
+                if self._hybrid_claim_cancel(sibling_id):
+                    try:
+                        cancel_result = await self.cancel_order(
+                            sibling_id, account_id=account_id
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Hybrid OCO sibling cancel %s failed: %s", sibling_id, exc
+                        )
+                        cancel_result = {"error": str(exc)}
+                        (getattr(self, "_hybrid_cancel_claimed", None) or {}).pop(
+                            sibling_id, None
+                        )
+                else:
+                    cancel_result = {"skipped": True, "already_claimed": True}
+
+            # Drop both legs from software OCO + working-order registry
+            for drop_id in (oid, sibling_id):
+                if drop_id:
+                    legs.pop(str(drop_id), None)
+                    try:
+                        from core.working_order_registry import get_registry
+                        get_registry().unregister(str(drop_id))
+                    except Exception:
+                        pass
+
+            return {
+                "success": True,
+                "filled_or_terminal": oid,
+                "cancelled_sibling": sibling_id,
+                "cancel_result": cancel_result,
+                "reason": reason,
+            }
+
+    async def cancel_hybrid_oco_for_position(
+        self, position_id: str, *, reason: str = "position_flat"
+    ) -> Dict[str, Any]:
+        """Cancel any remaining hybrid protective legs for a flattened position."""
+        pid = str(position_id or "")
+        if not pid:
+            return {"skipped": True}
+        legs = getattr(self, "_hybrid_oco_legs", None) or {}
+        targets = [
+            oid for oid, meta in list(legs.items())
+            if str(meta.get("position_id")) == pid
+        ]
+        if not targets:
+            return {"skipped": True, "position_id": pid}
+        # Cancelling one will clear the pair via cancel_hybrid_oco_sibling
+        results = []
+        for oid in targets:
+            if oid in (getattr(self, "_hybrid_oco_legs", None) or {}):
+                results.append(
+                    await self.cancel_hybrid_oco_sibling(oid, reason=reason)
+                )
+        return {"success": True, "position_id": pid, "results": results}
+
+    def _ensure_hybrid_orphan_sweeper(self) -> None:
+        """Start durable loop that cancels ``TB-hyb-*`` orders when position is gone."""
+        task = getattr(self, "_hybrid_orphan_sweeper_task", None)
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("hybrid orphan sweeper: no running event loop")
+            return
+        self._hybrid_orphan_sweeper_task = loop.create_task(
+            self._hybrid_orphan_sweeper_loop(),
+            name="hybrid_orphan_sweeper",
+        )
+        logger.info("Hybrid orphan sweeper started (tag TB-hyb-* vs open positions)")
+
+    async def _hybrid_orphan_sweeper_loop(self) -> None:
+        # Backup only — primary cancel is urgent User Hub path (~immediate).
+        interval = float(os.getenv("HYBRID_ORPHAN_SWEEP_S", "0.5") or 0.5)
+        interval = max(0.2, interval)
+        while True:
+            try:
+                await self.sweep_hybrid_orphan_orders()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("hybrid orphan sweeper tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def sweep_hybrid_orphan_orders(self, account_id: str = None) -> Dict[str, Any]:
+        """Cancel hybrid protective orders whose position/contract is flat.
+
+        Primary safety net for Position Brackets hybrid path: tags
+        ``TB-hyb-{group}-sl|tp`` group legs; when no open position matches the
+        order's contract (or registered position_id), cancel the order.
+        Also enforces software OCO when one tagged sibling is already gone.
+        """
+        target_account = account_id or (
+            self.selected_account["id"] if self.selected_account else None
+        )
+        if not target_account:
+            return {"skipped": True, "reason": "no_account"}
+
+        positions = await self.get_open_positions(account_id=target_account)
+        if isinstance(positions, dict) and positions.get("error"):
+            return {"error": positions.get("error")}
+
+        open_pos_ids = set()
+        open_contracts = set()
+        open_symbols = set()
+        for pos in positions or []:
+            size = pos.get("size")
+            if size is None:
+                size = pos.get("quantity")
+            try:
+                if size is not None and int(size) == 0:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            pid = pos.get("id") or pos.get("position_id") or pos.get("positionId")
+            if pid is not None:
+                open_pos_ids.add(str(pid))
+            cid = pos.get("contractId") or pos.get("contract_id")
+            if cid:
+                open_contracts.add(str(cid))
+            sym = str(pos.get("symbol") or "").upper()
+            if sym:
+                open_symbols.add(sym)
+
+        orders = await self.get_open_orders(account_id=target_account)
+        if not isinstance(orders, list):
+            return {"cancelled": [], "checked": 0}
+
+        # Group tagged hybrid orders by group_id
+        by_group: Dict[str, List[Dict[str, Any]]] = {}
+        cancelled: List[str] = []
+        for order in orders:
+            tag = order.get("customTag") or order.get("tag") or ""
+            if not self.is_hybrid_protective_tag(tag):
+                continue
+            gid = self.hybrid_group_from_tag(tag) or "unknown"
+            by_group.setdefault(gid, []).append(order)
+
+        for gid, group_orders in by_group.items():
+            # Resolve whether any open position still covers these legs
+            still_needed = False
+            for order in group_orders:
+                oid = str(order.get("id") or order.get("orderId") or "")
+                meta = (getattr(self, "_hybrid_oco_legs", None) or {}).get(oid)
+                if meta and str(meta.get("position_id")) in open_pos_ids:
+                    still_needed = True
+                    break
+                cid = str(order.get("contractId") or order.get("contract_id") or "")
+                if cid and cid in open_contracts:
+                    still_needed = True
+                    break
+                # Symbol from contract id
+                try:
+                    sym = ""
+                    if cid and hasattr(self, "contract_manager"):
+                        sym = (
+                            self.contract_manager.get_symbol_from_contract_id(cid) or ""
+                        ).upper()
+                    if sym and sym in open_symbols:
+                        still_needed = True
+                        break
+                except Exception:
+                    pass
+
+            if still_needed:
+                # Software OCO by tag: peer gone from book but registry armed →
+                # cancel remaining immediately (do not wait for position flat).
+                # Safe only when the pair was registered (avoids canceling mid-attach
+                # when only SL has been placed so far).
+                if len(group_orders) == 1:
+                    order = group_orders[0]
+                    oid = str(order.get("id") or order.get("orderId") or "")
+                    meta = (getattr(self, "_hybrid_oco_legs", None) or {}).get(oid)
+                    sib = str((meta or {}).get("sibling_id") or "")
+                    if oid and meta and sib:
+                        open_ids_now = {
+                            str(o.get("id") or o.get("orderId"))
+                            for o in orders
+                            if o.get("id") or o.get("orderId")
+                        }
+                        if sib not in open_ids_now:
+                            if not self._hybrid_claim_cancel(oid):
+                                continue
+                            try:
+                                await self.cancel_order(oid, account_id=target_account)
+                                cancelled.append(oid)
+                                logger.info(
+                                    "Hybrid orphan sweeper software-OCO cancelled "
+                                    "%s (peer %s gone, position still open) tag=%s",
+                                    oid, sib, order.get("customTag"),
+                                )
+                            except Exception as exc:
+                                (getattr(self, "_hybrid_cancel_claimed", None) or {}).pop(
+                                    oid, None
+                                )
+                                logger.warning(
+                                    "Hybrid orphan sweeper OCO cancel %s failed: %s",
+                                    oid, exc,
+                                )
+                            legs = getattr(self, "_hybrid_oco_legs", None) or {}
+                            legs.pop(oid, None)
+                            legs.pop(sib, None)
+                            try:
+                                from core.working_order_registry import get_registry
+                                get_registry().unregister(oid)
+                                get_registry().unregister(sib)
+                            except Exception:
+                                pass
+                continue
+
+            # No open position for this hybrid group → cancel all remaining legs
+            for order in group_orders:
+                oid = str(order.get("id") or order.get("orderId") or "")
+                if not oid:
+                    continue
+                if not self._hybrid_claim_cancel(oid):
+                    continue
+                try:
+                    res = await self.cancel_order(oid, account_id=target_account)
+                    cancelled.append(oid)
+                    logger.info(
+                        "Hybrid orphan sweeper cancelled %s tag=%s (no open position) res=%s",
+                        oid, order.get("customTag"), res,
+                    )
+                except Exception as exc:
+                    (getattr(self, "_hybrid_cancel_claimed", None) or {}).pop(oid, None)
+                    logger.warning(
+                        "Hybrid orphan sweeper cancel %s failed: %s", oid, exc
+                    )
+                # Clear registry entries
+                legs = getattr(self, "_hybrid_oco_legs", None) or {}
+                sib = None
+                if oid in legs:
+                    sib = legs[oid].get("sibling_id")
+                    legs.pop(oid, None)
+                if sib:
+                    legs.pop(str(sib), None)
+                try:
+                    from core.working_order_registry import get_registry
+                    get_registry().unregister(oid)
+                    if sib:
+                        get_registry().unregister(str(sib))
+                except Exception:
+                    pass
+
+        # Also run id-based sibling cancel for registered pairs where one is missing
+        legs = getattr(self, "_hybrid_oco_legs", None) or {}
+        open_ids = {
+            str(o.get("id") or o.get("orderId"))
+            for o in orders
+            if o.get("id") or o.get("orderId")
+        }
+        for oid, meta in list(legs.items()):
+            if oid in open_ids:
+                continue
+            # Registered leg gone from book → cancel sibling
+            if meta.get("sibling_id") and str(meta["sibling_id"]) in open_ids:
+                await self.cancel_hybrid_oco_sibling(
+                    oid, reason="orphan_sweep_peer_missing"
+                )
+
+        if cancelled:
+            logger.info("Hybrid orphan sweeper cancelled %d order(s)", len(cancelled))
+        return {"cancelled": cancelled, "groups": list(by_group.keys())}
+
+    async def attach_brackets_to_open_position(
+        self,
+        position_id_or_symbol: str,
+        *,
+        stop_loss_price: float,
+        take_profit_price: float,
+        account_id: str = None,
+        strategy_name: str = "attach_brackets",
+    ) -> Dict:
+        """Attach protective SL/TP to an existing open position (interactive / recovery).
+
+        Same mechanics as hybrid post-fill attach. ``position_id_or_symbol`` may be
+        a numeric position id or a root symbol (e.g. ``MNQ``).
+        """
+        target_account = account_id or (
+            self.selected_account["id"] if self.selected_account else None
+        )
+        if not target_account:
+            return {"error": "No account selected"}
+
+        positions = await self.get_open_positions(account_id=target_account)
+        if isinstance(positions, dict) and positions.get("error"):
+            return positions
+        want = str(position_id_or_symbol or "").strip()
+        if not want:
+            return {"error": "position_id or symbol required"}
+
+        matched = None
+        for pos in positions or []:
+            pid = str(pos.get("id") or pos.get("position_id") or "")
+            sym = str(pos.get("symbol") or "").upper()
+            if want == pid or want.upper() == sym or self._position_symbol_matches(sym, want.upper()):
+                matched = pos
+                break
+            cid = str(pos.get("contractId") or "")
+            if want.upper() in cid.upper():
+                matched = pos
+                break
+        if not matched:
+            return {"error": f"No open position matching {want!r}"}
+
+        position_id = str(matched.get("id") or matched.get("position_id"))
+        symbol = str(matched.get("symbol") or want).upper()
+        side_raw = matched.get("side")
+        if side_raw in (0, "0", "LONG", "long", "Buy", "BUY"):
+            side = "BUY"
+        else:
+            side = "SELL"
+        qty = int(matched.get("quantity") or matched.get("size") or 1)
+        pending = {
+            "order_id": f"manual-attach-{position_id}",
+            "symbol": symbol,
+            "side": side,
+            "quantity": qty,
+            "stop_loss_price": float(stop_loss_price),
+            "take_profit_price": float(take_profit_price),
+            "account_id": str(target_account),
+            "strategy_name": strategy_name,
+            "entry_price": matched.get("entryPrice") or matched.get("entry_price"),
+            "attached": False,
+        }
+        logger.info(
+            "attach_brackets_to_open_position pos=%s %s %s qty=%s SL=%s TP=%s",
+            position_id, side, symbol, qty, stop_loss_price, take_profit_price,
+        )
+        return await self._attach_hybrid_protective_orders(
+            pending, position_id=position_id
+        )
+
     async def place_trailing_stop_order(self, symbol: str, side: str, quantity: int, 
                                        trail_amount: float, account_id: str = None) -> Dict:
         """
@@ -5429,6 +6972,134 @@ class TopStepXTradingBot:
         """Update timestamp of last order activity."""
         self._last_order_activity = datetime.now()
     
+    def ensure_discord_event_notifications(self) -> None:
+        """Wire User Hub fill / trade-close events to Discord (idempotent).
+
+        Headless ``strategy_executor`` processes do not run the polling
+        ``check_order_fills`` loop unless ``auto_fills`` is enabled manually.
+        Real-time ``ORDER_FILLED`` / ``TRADE_CLOSED`` bus events cover fills
+        and closed-trade P&L for Discord when ``DISCORD_NOTIFY_FILLS`` is on.
+        """
+        if getattr(self, "_discord_events_wired", False):
+            return
+        bus = getattr(self, "event_bus", None)
+        notifier = getattr(self, "discord_notifier", None)
+        if not bus or not notifier or not notifier.enabled:
+            return
+        from core.discord_notifier import notify_fills_enabled
+        from core.events import EventType
+
+        async def _account_name() -> str:
+            acc = getattr(self, "selected_account", None)
+            if isinstance(acc, dict):
+                return str(acc.get("name") or "Unknown")
+            if acc:
+                return str(acc)
+            return "Unknown"
+
+        async def _on_order_filled(event) -> None:
+            if not notify_fills_enabled():
+                return
+            data = getattr(event, "data", None) or {}
+            order = data.get("order") or {}
+            account_id = str(data.get("account_id") or order.get("accountId") or "")
+            order_id = str(order.get("id") or order.get("orderId") or "")
+            if not order_id:
+                return
+            unique_id = f"{account_id}:{order_id}"
+            if unique_id in self._notified_orders:
+                return
+            disposition = str(order.get("positionDisposition") or "").lower()
+            if disposition == "closing":
+                return
+
+            symbol = order.get("symbol") or self._get_symbol_from_contract_id(
+                order.get("contractId", "")
+            )
+            side = "BUY" if order.get("side", 0) == 0 else "SELL"
+            quantity = order.get("size") or order.get("quantity") or 0
+            fill_price = (
+                order.get("filledPrice")
+                or order.get("fillPrice")
+                or order.get("executionPrice")
+            )
+            order_type = order.get("type", 0)
+            type_map = {1: "Limit", 2: "Market", 4: "Stop", 5: "Stop Limit"}
+            order_type_str = (
+                order.get("orderType")
+                or type_map.get(order_type, "Unknown")
+            )
+            tag = order.get("customTag") or order.get("tag") or ""
+            if not self._order_fill_notification_allowed(order):
+                return
+            strat_slug = self._strategy_from_custom_tag(tag)
+            notification_data = {
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "fill_price": f"${float(fill_price):.2f}" if fill_price else "Unknown",
+                "order_type": order_type_str,
+                "order_id": order_id,
+                "position_id": order.get("positionId", "Unknown"),
+                "custom_tag": tag,
+                "strategy": strat_slug,
+            }
+            try:
+                await notifier.send_order_fill_notification(
+                    notification_data, await _account_name()
+                )
+                self._notified_orders.add(unique_id)
+            except Exception as exc:
+                logger.debug("Discord ORDER_FILLED handler failed: %s", exc)
+
+        async def _on_trade_closed(event) -> None:
+            if not notify_fills_enabled():
+                return
+            data = getattr(event, "data", None) or {}
+            trade_id = str(data.get("trade_id") or "")
+            if not trade_id:
+                return
+            close_key = f"trade:{trade_id}"
+            if not hasattr(self, "_notified_trades"):
+                self._notified_trades = set()
+            if close_key in self._notified_trades:
+                return
+
+            symbol = data.get("symbol", "Unknown")
+            side = str(data.get("side") or "Unknown").upper()
+            quantity = data.get("quantity") or 0
+            entry_price = float(data.get("entry_price") or 0)
+            exit_price = float(data.get("exit_price") or 0)
+            net_pnl = data.get("net_pnl")
+            if net_pnl is None:
+                net_pnl = data.get("gross_pnl", 0)
+            notification_data = {
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": net_pnl,
+                "close_method": "Trade closed",
+                "exit_reason": "Trade closed",
+                "position_id": trade_id,
+            }
+            try:
+                await notifier.send_position_close_notification(
+                    notification_data, await _account_name()
+                )
+                self._notified_trades.add(close_key)
+            except Exception as exc:
+                logger.debug("Discord TRADE_CLOSED handler failed: %s", exc)
+
+        try:
+            bus.subscribe(EventType.ORDER_FILLED, _on_order_filled)
+            bus.subscribe(EventType.TRADE_CLOSED, _on_trade_closed)
+            self._discord_events_wired = True
+            logger.info("Discord fill/trade-close notifications wired to event bus")
+        except Exception as exc:
+            logger.warning("Could not wire Discord event notifications: %s", exc)
+
     async def _auto_fill_checker(self) -> None:
         """
         Adaptive background task to automatically check for fills.
@@ -5468,7 +7139,12 @@ class TopStepXTradingBot:
     
     async def _discord_status_reporter_loop(self) -> None:
         """Optional periodic account snapshot to Discord (set DISCORD_STATUS_INTERVAL_SECONDS > 0)."""
-        interval = int(os.getenv("DISCORD_STATUS_INTERVAL_SECONDS", "0") or "0")
+        from core.discord_status_digest import (
+            build_discord_status_lines,
+            discord_status_interval_seconds,
+        )
+
+        interval = discord_status_interval_seconds()
         if interval <= 0:
             return
         await asyncio.sleep(20)
@@ -5478,36 +7154,8 @@ class TopStepXTradingBot:
                 if not notifier or not notifier.enabled:
                     await asyncio.sleep(interval)
                     continue
-                aid = None
-                acc_name = ""
-                if self.selected_account:
-                    if isinstance(self.selected_account, dict):
-                        aid = self.selected_account.get("id")
-                        acc_name = str(self.selected_account.get("name") or "")
-                    else:
-                        aid = str(self.selected_account)
-                lines = [
-                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                ]
-                if acc_name:
-                    lines.append(f"account={acc_name}")
-                if aid:
-                    aid_s = str(aid)
-                    if hasattr(self, "state_cache") and self.state_cache:
-                        pos = await self.state_cache.get_positions(aid_s)
-                        ord_ = await self.state_cache.get_orders(aid_s)
-                        lines.append(f"positions={len(pos or [])} orders={len(ord_ or [])}")
-                    if hasattr(self, "account_tracker") and self.account_tracker:
-                        st = self.account_tracker.get_state(aid_s)
-                        if isinstance(st, dict) and st:
-                            bal = st.get("balance")
-                            ru = st.get("realized_pnl")
-                            uu = st.get("unrealized_pnl")
-                            if bal is not None:
-                                lines.append(f"balance={bal}")
-                            if ru is not None or uu is not None:
-                                lines.append(f"realized_pnl={ru} unrealized_pnl={uu}")
-                await notifier.send_status_digest("Trade bot status", lines)
+                title, lines = await build_discord_status_lines(self)
+                await notifier.send_status_digest(title, lines)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -5585,6 +7233,7 @@ class TopStepXTradingBot:
                 try:
                     await self.event_bus.start()
                     logger.info("📡 Event bus started")
+                    self.ensure_discord_event_notifications()
                 except Exception as e:
                     logger.warning(f"⚠️  Could not start event bus (not critical if GUI not running): {e}")
             
@@ -5710,7 +7359,9 @@ class TopStepXTradingBot:
             asyncio.create_task(self._eod_scheduler())
             logger.info("EOD scheduler background task started")
 
-            _st_int = int(os.getenv("DISCORD_STATUS_INTERVAL_SECONDS", "0") or "0")
+            from core.discord_status_digest import discord_status_interval_seconds
+
+            _st_int = discord_status_interval_seconds()
             if _st_int > 0:
                 asyncio.create_task(self._discord_status_reporter_loop())
                 logger.info("Discord status reporter started (every %ss)", _st_int)

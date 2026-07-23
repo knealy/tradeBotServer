@@ -223,11 +223,37 @@ async def create_bracket_order_improved(bot, symbol: str, side: str, quantity: i
         
         entry_order_id = entry_result.get('orderId') or entry_result.get('id') or entry_result.get('order_id')
         logger.info(f"Entry stop order placed: {entry_order_id}")
-        
-        # Step 2: Monitor for fill, then attach stop loss and take profit
-        # We'll use a background task to monitor the order fill
+
+        # Durable hybrid attach (same path as place_oco_bracket_with_stop_entry fallback).
+        if hasattr(bot, "register_hybrid_pending_bracket") and hasattr(
+            bot, "_start_hybrid_bracket_monitor"
+        ):
+            bot.register_hybrid_pending_bracket(
+                order_id=str(entry_order_id),
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                account_id=target_account,
+                strategy_name=strategy_name,
+                entry_price=entry_stop_price,
+            )
+            bot._start_hybrid_bracket_monitor(str(entry_order_id))
+            return {
+                "success": True,
+                "orderId": entry_order_id,
+                "entry_order_id": entry_order_id,
+                "method": "hybrid_auto_bracket",
+                "message": "Entry stop order placed. Brackets will be attached after fill.",
+                "entry_stop_price": entry_stop_price,
+                "stop_loss_price": stop_loss_price,
+                "take_profit_price": take_profit_price,
+            }
+
+        # Legacy fallback if bot lacks hybrid registry (should not happen on TopStepXTradingBot).
         import asyncio
-        
+
         async def _attach_brackets_after_fill():
             """Monitor entry order and attach brackets after fill"""
             max_wait = 300  # 5 minutes max wait

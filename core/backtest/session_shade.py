@@ -230,6 +230,83 @@ def _segment_dict(times: List[int], chunk: List[int], hi: float, lo: float) -> D
     return {"hi": hi, "lo": lo, "times": seg_times}
 
 
+def load_orb_timing_from_toml(
+    toml_path: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    """Return ``(range_start, range_end_open, session_timezone)`` from ORB TOML."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    path = Path(toml_path) if toml_path else root / "config" / "strategies" / "opening_range_breakout.toml"
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    sig = data.get("signal") or {}
+    start = str(sig.get("range_start", "09:30"))
+    end_open = str(sig.get("range_end_open", "10:30"))
+    zone = str(sig.get("session_timezone", "America/New_York")).replace("US/Eastern", "America/New_York")
+    return start, end_open, zone
+
+
+def _minutes_in_zone(ts_sec: int, zone: str) -> int:
+    from datetime import datetime as _dt
+
+    d = _dt.fromtimestamp(ts_sec, tz=timezone.utc).astimezone(ZoneInfo(zone))
+    return d.hour * 60 + d.minute
+
+
+def _date_key_in_zone(ts_sec: int, zone: str) -> date:
+    from datetime import datetime as _dt
+
+    d = _dt.fromtimestamp(ts_sec, tz=timezone.utc).astimezone(ZoneInfo(zone))
+    return d.date()
+
+
+def opening_range_baseline_segments(
+    chart_bars: List[Dict[str, Any]],
+    *,
+    range_start: str = "09:30",
+    range_end_open: str = "10:30",
+    zone: str = "America/New_York",
+    reference_unix: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Baseline segments for opening-range box shading (same window as ORB build)."""
+    if not chart_bars:
+        return []
+
+    sh, sm = parse_hh_mm(range_start)
+    eh, em = parse_hh_mm(range_end_open)
+    start_min = sh * 60 + sm
+    end_min = eh * 60 + em
+
+    times = [int(b["time"]) for b in chart_bars]
+    highs = [float(b.get("high", 0)) for b in chart_bars]
+    lows = [float(b.get("low", 0)) for b in chart_bars]
+
+    if reference_unix is not None:
+        dk_ref = _date_key_in_zone(reference_unix, zone)
+        idxs = [
+            i
+            for i, t in enumerate(times)
+            if _date_key_in_zone(t, zone) == dk_ref
+            and start_min <= _minutes_in_zone(t, zone) < end_min
+        ]
+    else:
+        idxs = [
+            i
+            for i, t in enumerate(times)
+            if start_min <= _minutes_in_zone(t, zone) < end_min
+        ]
+
+    if not idxs:
+        return []
+    hi = max(highs[i] for i in idxs)
+    lo = min(lows[i] for i in idxs)
+    if not (hi > lo):
+        return []
+    chunk = sorted(idxs, key=lambda i: times[i])
+    return [_segment_dict(times, chunk, hi, lo)]
+
+
 def segments_to_jsonable(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Stable JSON for embedding in HTML (times sorted)."""
     return [{"hi": s["hi"], "lo": s["lo"], "times": list(s["times"])} for s in segments]
