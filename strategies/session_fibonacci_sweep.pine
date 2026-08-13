@@ -193,6 +193,8 @@ type FibDraw
     label warmLab = na
     FadeDraw fade = na
     bool  setupDone = false
+    int   signalSide = 0
+    string signalMsg = ""
 
 type SessionState
     color  accent
@@ -212,6 +214,8 @@ type SessionState
     FibDraw active = na
     array<FibDraw> history
     label  warmLab = na
+    int    signalSide = 0
+    string signalMsg = ""
 
 // Alert plumbing (set true for one bar when a setup prints)
 var bool alertUpSweep = false
@@ -524,10 +528,10 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     txt
 
 method maybeSignal(FibDraw this, color accent, string sessName) =>
-    // Returns [sideSign, alertMsg]; sideSign 0 = no setup this bar
-    int outSign = 0
-    string outMsg = ""
-    if enableSignals and not na(this) and not (oneSetupPerSess and this.setupDone) and not na(this.upZones)
+    // Writes this.signalSide / this.signalMsg (Pine cannot [a,b] := unpack into existing locals)
+    this.signalSide := 0
+    this.signalMsg := ""
+    if enableSignals and not (oneSetupPerSess and this.setupDone) and not na(this.upZones)
         int n = this.upZones.size()
         float bestDist = na
         int bestSign = 0
@@ -556,14 +560,13 @@ method maybeSignal(FibDraw this, color accent, string sessName) =>
                         bestSign := -1
                         bestName := zName
         if bestSign != 0 and bestName != ""
-            outMsg := this.printFade(accent, sessName, bestSign, bestName)
-            outSign := bestSign
-    [outSign, outMsg]
+            this.signalMsg := this.printFade(accent, sessName, bestSign, bestName)
+            this.signalSide := bestSign
+    true
 
 method update(SessionState this) =>
-    // Returns [sideSign, alertMsg] from any new fade setup this bar
-    int outSign = 0
-    string outMsg = ""
+    this.signalSide := 0
+    this.signalMsg := ""
     bool inNow = not na(time("", this.session, this.timezone))
     if inNow
         if not this.wasIn
@@ -583,14 +586,16 @@ method update(SessionState this) =>
             if not na(this.active)
                 this.active.extendTo(bar_index, high, low)
                 this.active.markTouches(this.accent, downColor)
-                [outSign, outMsg] := this.active.maybeSignal(this.accent, this.name)
+                this.active.maybeSignal(this.accent, this.name)
+                this.signalSide := this.active.signalSide
+                this.signalMsg := this.active.signalMsg
     else if this.wasIn
         this.finalizeRange()
         this.endGrid()
         this.sawStart := false
         this.gridStarted := false
     this.wasIn := inNow
-    [outSign, outMsg]
+    true
 
 method tryPrintGrid(SessionState this) =>
     if this.readyToPrint()
@@ -645,16 +650,16 @@ if displayMode == DISP_ACTIVE and anySessionStart
         st.clearHistory()
 
 for st in sessionStates
-    [int sideSign, string msg] = st.update()
-    if sideSign != 0 and msg != ""
+    st.update()
+    if st.signalSide != 0 and st.signalMsg != ""
         alertSetup := true
-        alertMsg := msg
-        if sideSign > 0
+        alertMsg := st.signalMsg
+        if st.signalSide > 0
             alertUpSweep := true
         else
             alertDnSweep := true
         if alertOnSweep
-            alert(msg, alert.freq_once_per_bar)
+            alert(st.signalMsg, alert.freq_once_per_bar)
 
 alertcondition(alertUpSweep, title = "Up-sweep fade (short)", message = "Session fib up-sweep fade setup")
 alertcondition(alertDnSweep, title = "Down-sweep fade (long)", message = "Session fib down-sweep fade setup")
