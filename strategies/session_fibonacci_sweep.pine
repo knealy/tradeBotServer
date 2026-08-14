@@ -120,9 +120,10 @@ int    lineWidth     = input.int(1, "Line width", minval = 1, maxval = 4, group 
 color  downColor     = input.color(color.new(#f23645, 85), "Down-side color", group = DISPLAY_GROUP)
 
 bool  enableSignals   = input.bool(true, "Show fade setups on sweep", group = SIGNAL_GROUP, tooltip = "When price first sweeps a zone, mark fade entry / stop / TP1–TP3 for that session.")
-bool  oneSetupPerSess = input.bool(true, "One setup per session", group = SIGNAL_GROUP, active = enableSignals)
+bool  oneSetupPerSess = input.bool(true, "One setup per session", group = SIGNAL_GROUP, active = enableSignals, tooltip = "If off, allow one first-touch setup per zone/side (not every bar while price sits in the zone).")
 float stopBufRatio    = input.float(0.05, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
+bool  keepLatestFade  = input.bool(true, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Prevents stacked labels. New setup replaces the previous fade drawing.")
 
 // -----------------------------------------------------------------------------
 // Pure math helpers (bot-port mirror — no drawings)
@@ -158,6 +159,39 @@ isZonesOnly() =>
 drawLevelOn(bool userOn) =>
     userOn and not isZonesOnly()
 
+// Parse input.session "HHMM-HHMM" or "HHMM-HHMM:days" → duration in minutes
+sessionDurationMinutes(string sess) =>
+    int dash = str.pos(sess, "-")
+    int dur = 0
+    if dash > 0
+        int colon = str.pos(sess, ":")
+        string left = str.substring(sess, 0, dash)
+        string right = colon > dash ? str.substring(sess, dash + 1, colon) : str.substring(sess, dash + 1)
+        if str.length(left) >= 4 and str.length(right) >= 4
+            float sh = str.tonumber(str.substring(left, 0, 2))
+            float sm = str.tonumber(str.substring(left, 2, 4))
+            float eh = str.tonumber(str.substring(right, 0, 2))
+            float em = str.tonumber(str.substring(right, 2, 4))
+            if not na(sh) and not na(sm) and not na(eh) and not na(em)
+                int startM = int(sh) * 60 + int(sm)
+                int endM = int(eh) * 60 + int(em)
+                dur := endM - startM
+                if dur <= 0
+                    dur += 24 * 60
+    dur
+
+sessionEndBar(int startBarIdx, string sess) =>
+    int mins = sessionDurationMinutes(sess)
+    int tfSec = timeframe.in_seconds()
+    int tfMins = tfSec > 0 ? math.max(1, int(tfSec / 60)) : 1
+    // Sub-minute charts: approximate with bar count from seconds
+    int bars = 1
+    if tfSec > 0 and tfSec < 60
+        bars := math.max(1, int(mins * 60 / tfSec))
+    else
+        bars := math.max(1, int(mins / tfMins))
+    startBarIdx + bars - 1
+
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
@@ -178,6 +212,7 @@ type FadeDraw
 
 type FibDraw
     int   startBar
+    int   endBar
     float openPx
     float dist
     color upC = na
@@ -189,6 +224,8 @@ type FibDraw
     array<box>  dnZones
     array<bool> upTouched
     array<bool> dnTouched
+    array<bool> upSignaled
+    array<bool> dnSignaled
     array<string> zoneNames
     box   sessBox = na
     label lab = na
@@ -231,26 +268,30 @@ var string alertMsg = ""
 method addBothLevels(FibDraw this, float ratio, bool on, color upC, color dnC, bool dotted) =>
     if on
         float off = ratio * this.dist
+        int x2 = this.endBar
         if dotted
-            this.lines.push(line.new(this.startBar, this.openPx + off, bar_index, this.openPx + off, color = color.new(upC, 0), width = lineWidth, style = line.style_dotted))
-            this.lines.push(line.new(this.startBar, this.openPx - off, bar_index, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_dotted))
+            this.lines.push(line.new(this.startBar, this.openPx + off, x2, this.openPx + off, color = color.new(upC, 0), width = lineWidth, style = line.style_dotted))
+            this.lines.push(line.new(this.startBar, this.openPx - off, x2, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_dotted))
         else
-            this.lines.push(line.new(this.startBar, this.openPx + off, bar_index, this.openPx + off, color = color.new(upC, 0), width = lineWidth, style = line.style_solid))
-            this.lines.push(line.new(this.startBar, this.openPx - off, bar_index, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_solid))
+            this.lines.push(line.new(this.startBar, this.openPx + off, x2, this.openPx + off, color = color.new(upC, 0), width = lineWidth, style = line.style_solid))
+            this.lines.push(line.new(this.startBar, this.openPx - off, x2, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_solid))
     true
 
 method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color upC, color dnC, string zName) =>
     if on
         float lo = loRatio * this.dist
         float hi = hiRatio * this.dist
-        box ub = box.new(this.startBar, this.openPx + hi, bar_index, this.openPx + lo, bgcolor = upC, border_color = color.new(upC, 50), border_width = 1)
-        box db = box.new(this.startBar, this.openPx - lo, bar_index, this.openPx - hi, bgcolor = dnC, border_color = color.new(dnC, 50), border_width = 1)
+        int x2 = this.endBar
+        box ub = box.new(this.startBar, this.openPx + hi, x2, this.openPx + lo, bgcolor = upC, border_color = color.new(upC, 50), border_width = 1)
+        box db = box.new(this.startBar, this.openPx - lo, x2, this.openPx - hi, bgcolor = dnC, border_color = color.new(dnC, 50), border_width = 1)
         this.boxes.push(ub)
         this.boxes.push(db)
         this.upZones.push(ub)
         this.dnZones.push(db)
         this.upTouched.push(false)
         this.dnTouched.push(false)
+        this.upSignaled.push(false)
+        this.dnSignaled.push(false)
         this.zoneNames.push(zName)
     true
 
@@ -335,35 +376,16 @@ method dimDraw(FibDraw this, int extraTransp) =>
             f.lab.set_textcolor(ec)
     true
 
-method extendTo(FibDraw this, int x, float h, float l) =>
-    if not na(this.zeroLine)
-        this.zeroLine.set_x2(x)
-    if not na(this.lines)
-        for ln in this.lines
-            ln.set_x2(x)
-    if not na(this.boxes)
-        for bx in this.boxes
-            bx.set_right(x)
+method bumpSessBox(FibDraw this, float h, float l) =>
+    // Grid width is fixed at print; only the optional H/L box tracks extremes.
     if not na(this.sessBox)
-        this.sessBox.set_right(x)
         this.sessBox.set_top(math.max(this.sessBox.get_top(), h))
         this.sessBox.set_bottom(math.min(this.sessBox.get_bottom(), l))
-    if not na(this.lab)
-        this.lab.set_x(x)
-    if not na(this.fade)
-        FadeDraw f = this.fade
-        if not na(f.entryLn)
-            f.entryLn.set_x2(x)
-        if not na(f.stopLn)
-            f.stopLn.set_x2(x)
-        if not na(f.tp1Ln)
-            f.tp1Ln.set_x2(x)
-        if not na(f.tp2Ln)
-            f.tp2Ln.set_x2(x)
-        if not na(f.tp3Ln)
-            f.tp3Ln.set_x2(x)
-        if not na(f.lab)
-            f.lab.set_x(x)
+    true
+
+method extendTo(FibDraw this, int x, float h, float l) =>
+    // Kept for compatibility; grid is fixed-width — only bump session box.
+    this.bumpSessBox(h, l)
     true
 
 method avgLastRanges(SessionState this) =>
@@ -419,10 +441,13 @@ method beginGrid(SessionState this) =>
         color upC = this.accent
         color dnC = downColor
         color upLine = color.new(upC, 0)
-        // IB mode: grid left edge is the print bar; session box still from session start
+        // IB mode: grid left edge is the print bar; right edge = scheduled session end (drawn once)
         int leftBar = delayUntilIB ? bar_index : this.startBar
-        FibDraw d = FibDraw.new(startBar = leftBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), zoneNames = array.new<string>())
-        d.zeroLine := line.new(leftBar, this.sessOpen, bar_index, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
+        int rightBar = sessionEndBar(this.startBar, this.session)
+        if rightBar < leftBar
+            rightBar := leftBar
+        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>())
+        d.zeroLine := line.new(leftBar, this.sessOpen, rightBar, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
         bool edgeOnly = isZonesOnly()
         // Zone edge lines when zones-only; otherwise respect per-level toggles
@@ -444,8 +469,8 @@ method beginGrid(SessionState this) =>
         d.addBothZones(R_EXT_LO,   R_EXT_HI,   showZoneExt,   upC, dnC, "extension")
 
         if showSessionBox
-            // Box always spans the true session start, even when IB delays the grid
-            d.sessBox := box.new(this.startBar, high, bar_index, low, bgcolor = color.new(upC, 92), border_color = na)
+            // Box always spans the true session start → scheduled end
+            d.sessBox := box.new(this.startBar, high, rightBar, low, bgcolor = color.new(upC, 92), border_color = na)
 
         if labelMode != LABEL_OFF
             string modeTag = rangeMode == RANGE_ATR ? "ATR(" + str.tostring(atrLen) + ")" : "prev"
@@ -454,7 +479,7 @@ method beginGrid(SessionState this) =>
             string txt = this.name + "  " + str.tostring(dist, format.mintick) + "  " + modeTag
             if labelMode == LABEL_ALL
                 txt += "\n0=" + str.tostring(this.sessOpen, format.mintick)
-            d.lab := label.new(bar_index, this.sessOpen, txt, style = label.style_label_left, textalign = text.align_left, textcolor = upLine, color = color(na), size = size.small)
+            d.lab := label.new(leftBar, this.sessOpen, txt, style = label.style_label_right, textalign = text.align_left, textcolor = upLine, color = color(na), size = size.small)
         this.active := d
         true
 
@@ -519,7 +544,9 @@ method markTouches(FibDraw this, color upC, color dnC) =>
 
 method printFade(FibDraw this, color accent, string sessName, int sideSign, string zName) =>
     // sideSign +1 = up-sweep → short fade; -1 = down-sweep → long fade
-    // Returns alert text (caller sets alert flags — Pine UDFs cannot assign globals).
+    if keepLatestFade and not na(this.fade)
+        this.fade.disposeFade()
+        this.fade := na
     array<float> zr = zoneRatios(zName)
     array<float> wr = widerRatios(zName)
     bool upSide = sideSign > 0
@@ -533,12 +560,13 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     color ec = upSide ? color.new(#f23645, 0) : color.new(#089981, 0)
     color sc = color.new(#ff9800, 0)
     color tc = color.new(accent, 0)
+    int x2 = math.max(this.endBar, bar_index + 1)
     FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3)
-    f.entryLn := line.new(bar_index, entry, bar_index + 1, entry, color = ec, width = math.max(lineWidth, 2), style = line.style_solid)
-    f.stopLn := line.new(bar_index, stop, bar_index + 1, stop, color = sc, width = lineWidth, style = line.style_dotted)
-    f.tp1Ln := line.new(bar_index, tp1, bar_index + 1, tp1, color = tc, width = lineWidth, style = line.style_dashed)
-    f.tp2Ln := line.new(bar_index, tp2, bar_index + 1, tp2, color = tc, width = lineWidth, style = line.style_dashed)
-    f.tp3Ln := line.new(bar_index, tp3, bar_index + 1, tp3, color = tc, width = lineWidth, style = line.style_dotted)
+    f.entryLn := line.new(bar_index, entry, x2, entry, color = ec, width = math.max(lineWidth, 2), style = line.style_solid)
+    f.stopLn := line.new(bar_index, stop, x2, stop, color = sc, width = lineWidth, style = line.style_dotted)
+    f.tp1Ln := line.new(bar_index, tp1, x2, tp1, color = tc, width = lineWidth, style = line.style_dashed)
+    f.tp2Ln := line.new(bar_index, tp2, x2, tp2, color = tc, width = lineWidth, style = line.style_dashed)
+    f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
     string sideTxt = upSide ? "SHORT fade (up sweep)" : "LONG fade (down sweep)"
     string txt = sessName + " " + sideTxt + " @ " + zName + "\nE " + str.tostring(entry, format.mintick) + "  SL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "  TP2 " + str.tostring(tp2, format.mintick) + "  TP3 " + str.tostring(tp3, format.mintick)
     f.lab := label.new(bar_index, entry, txt, style = upSide ? label.style_label_down : label.style_label_up, textcolor = ec, color = color(na), size = size.small)
@@ -547,13 +575,14 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     txt
 
 method maybeSignal(FibDraw this, color accent, string sessName) =>
-    // Writes this.signalSide / this.signalMsg (Pine cannot [a,b] := unpack into existing locals)
+    // First-touch only per zone/side — never re-print while price stays inside a band.
     this.signalSide := 0
     this.signalMsg := ""
-    if enableSignals and not (oneSetupPerSess and this.setupDone) and not na(this.upZones)
+    if enableSignals and not (oneSetupPerSess and this.setupDone) and not na(this.upZones) and not na(this.upSignaled)
         int n = this.upZones.size()
         float bestDist = na
         int bestSign = 0
+        int bestIdx = -1
         string bestName = ""
         if n > 0
             for i = 0 to n - 1
@@ -566,19 +595,26 @@ method maybeSignal(FibDraw this, color accent, string sessName) =>
                 float dnHi = math.max(db.get_top(), db.get_bottom())
                 bool upHit = touchesBand(high, low, upLo, upHi)
                 bool dnHit = touchesBand(high, low, dnLo, dnHi)
-                if upHit
+                // Rising edge: touching now and not yet signaled for this side/zone
+                if upHit and not this.upSignaled.get(i)
                     float near = math.abs(upLo - this.openPx)
                     if na(bestDist) or near < bestDist
                         bestDist := near
                         bestSign := 1
+                        bestIdx := i
                         bestName := zName
-                if dnHit
+                if dnHit and not this.dnSignaled.get(i)
                     float near = math.abs(dnHi - this.openPx)
                     if na(bestDist) or near < bestDist
                         bestDist := near
                         bestSign := -1
+                        bestIdx := i
                         bestName := zName
-        if bestSign != 0 and bestName != ""
+        if bestSign != 0 and bestIdx >= 0 and bestName != ""
+            if bestSign > 0
+                this.upSignaled.set(bestIdx, true)
+            else
+                this.dnSignaled.set(bestIdx, true)
             this.signalMsg := this.printFade(accent, sessName, bestSign, bestName)
             this.signalSide := bestSign
     true
@@ -623,7 +659,7 @@ method update(SessionState this) =>
             this.runLow := math.min(this.runLow, low)
             this.tryPrintGrid()
             if not na(this.active)
-                this.active.extendTo(bar_index, high, low)
+                this.active.bumpSessBox(high, low)
                 this.active.markTouches(this.accent, downColor)
                 this.active.maybeSignal(this.accent, this.name)
                 this.signalSide := this.active.signalSide
