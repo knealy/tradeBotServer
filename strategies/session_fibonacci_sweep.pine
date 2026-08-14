@@ -136,6 +136,8 @@ float stopBufRatio    = input.float(0.05, "Stop buffer (× distance)", minval = 
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(true, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Prevents stacked labels. New setup replaces the previous fade drawing.")
 bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Off = compact shape marker + tooltip only (recommended).")
+bool  showStatsTable  = input.bool(true, "Show stats table", group = SIGNAL_GROUP, active = enableSignals)
+string statsPosition  = input.string("Top Right", "Stats table position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = SIGNAL_GROUP, active = enableSignals and showStatsTable)
 
 // -----------------------------------------------------------------------------
 // Pure math helpers (bot-port mirror — no drawings)
@@ -236,6 +238,7 @@ zoneShortName(string z) =>
 type FadeDraw
     int    sideSign = 0
     string zone = ""
+    string sessName = ""
     float  entry = na
     float  stop = na
     float  tp1 = na
@@ -247,6 +250,25 @@ type FadeDraw
     line   tp2Ln = na
     line   tp3Ln = na
     label  lab = na
+    bool   hitTp1 = false
+    bool   hitTp2 = false
+    bool   hitTp3 = false
+    bool   hitStop = false
+    bool   statDone = false
+
+type SweepStats
+    int setups = 0
+    int shorts = 0
+    int longs = 0
+    int stopped = 0
+    int tp1 = 0
+    int tp2 = 0
+    int tp3 = 0
+    int expired = 0
+    int firstInner = 0
+    int firstMid = 0
+    int firstFull = 0
+    int firstExt = 0
 
 type FibDraw
     int   startBar
@@ -302,6 +324,108 @@ var bool alertUpSweep = false
 var bool alertDnSweep = false
 var bool alertSetup = false
 var string alertMsg = ""
+var SweepStats sweepStats = SweepStats.new()
+var table statsTbl = na
+
+statsTablePos() =>
+    statsPosition == "Top Left" ? position.top_left : statsPosition == "Bottom Left" ? position.bottom_left : statsPosition == "Bottom Right" ? position.bottom_right : position.top_right
+
+pctStr(int num, int den) =>
+    den > 0 ? str.tostring(100.0 * num / den, "#.#") + "%" : "—"
+
+bumpFirstZone(SweepStats st, string z) =>
+    if z == "inner"
+        st.firstInner += 1
+    else if z == "mid"
+        st.firstMid += 1
+    else if z == "full"
+        st.firstFull += 1
+    else if z == "extension"
+        st.firstExt += 1
+    true
+
+method registerSetup(SweepStats this, int sideSign, string zName) =>
+    this.setups += 1
+    if sideSign > 0
+        this.shorts += 1
+    else
+        this.longs += 1
+    bumpFirstZone(this, zName)
+    true
+
+method finalizeFade(FadeDraw this) =>
+    if not this.statDone and not na(this.entry)
+        // Still open at dispose / replace → expired (no stop, no TP1)
+        if not this.hitStop and not this.hitTp1
+            sweepStats.expired += 1
+        this.statDone := true
+    true
+
+method trackFade(FadeDraw this) =>
+    if this.statDone or na(this.entry) or na(this.stop)
+        true
+    else
+        bool isShort = this.sideSign > 0
+        bool stopNow = isShort ? high >= this.stop : low <= this.stop
+        if stopNow
+            this.hitStop := true
+            this.statDone := true
+            sweepStats.stopped += 1
+        else
+            if isShort
+                if not this.hitTp1 and low <= this.tp1
+                    this.hitTp1 := true
+                    sweepStats.tp1 += 1
+                if this.hitTp1 and not this.hitTp2 and low <= this.tp2
+                    this.hitTp2 := true
+                    sweepStats.tp2 += 1
+                if this.hitTp2 and not this.hitTp3 and low <= this.tp3
+                    this.hitTp3 := true
+                    sweepStats.tp3 += 1
+            else
+                if not this.hitTp1 and high >= this.tp1
+                    this.hitTp1 := true
+                    sweepStats.tp1 += 1
+                if this.hitTp1 and not this.hitTp2 and high >= this.tp2
+                    this.hitTp2 := true
+                    sweepStats.tp2 += 1
+                if this.hitTp2 and not this.hitTp3 and high >= this.tp3
+                    this.hitTp3 := true
+                    sweepStats.tp3 += 1
+        true
+
+renderStatsTable() =>
+    if not showStatsTable or not enableSignals or not barstate.islast
+        true
+    else
+        if na(statsTbl)
+            statsTbl := table.new(statsTablePos(), 2, 12, bgcolor = color.new(color.black, 75), border_width = 1, border_color = color.new(color.gray, 50))
+        SweepStats s = sweepStats
+        table.cell(statsTbl, 0, 0, "Sweep stats", text_color = color.white, text_size = size.small)
+        table.cell(statsTbl, 1, 0, "", text_color = color.white, text_size = size.small)
+        table.cell(statsTbl, 0, 1, "Setups", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 1, str.tostring(s.setups), text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 2, "Short / Long", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 2, str.tostring(s.shorts) + " / " + str.tostring(s.longs), text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 3, "First zone in/md/fl/ex", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 3, str.tostring(s.firstInner) + "/" + str.tostring(s.firstMid) + "/" + str.tostring(s.firstFull) + "/" + str.tostring(s.firstExt), text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 4, "Stopped", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 4, str.tostring(s.stopped) + "  (" + pctStr(s.stopped, s.setups) + ")", text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 5, "TP1", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 5, str.tostring(s.tp1) + "  (" + pctStr(s.tp1, s.setups) + ")", text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 6, "TP2", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 6, str.tostring(s.tp2) + "  (" + pctStr(s.tp2, s.tp1) + " of TP1)", text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 7, "TP3", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 7, str.tostring(s.tp3) + "  (" + pctStr(s.tp3, s.tp2) + " of TP2)", text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 8, "Expired", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 8, str.tostring(s.expired), text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 9, "TP1→TP2", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 9, pctStr(s.tp2, s.tp1), text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 10, "TP2→TP3", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 10, pctStr(s.tp3, s.tp2), text_color = color.white, text_size = size.tiny)
+        table.cell(statsTbl, 0, 11, "Confirm", text_color = color.silver, text_size = size.tiny)
+        table.cell(statsTbl, 1, 11, requireConfirm ? (requireFullPierce ? "full pierce" : "near pierce") : "first touch", text_color = color.white, text_size = size.tiny)
+        true
 
 // -----------------------------------------------------------------------------
 // Drawing helpers
@@ -369,6 +493,8 @@ method disposeFade(FadeDraw this) =>
     true
 
 method dispose(FibDraw this) =>
+    if not na(this.fade)
+        this.fade.finalizeFade()
     if not na(this.zeroLine)
         line.delete(this.zeroLine)
     if not na(this.lines)
@@ -592,6 +718,8 @@ method clearHistory(SessionState this) =>
 
 method endGrid(SessionState this) =>
     if not na(this.active)
+        if not na(this.active.fade)
+            this.active.fade.finalizeFade()
         if displayMode == DISP_ACTIVE or historyKeep <= 0
             this.active.dispose()
         else
@@ -633,7 +761,8 @@ method markTouches(FibDraw this, color upC, color dnC) =>
 
 method printFade(FibDraw this, color accent, string sessName, int sideSign, string zName) =>
     // Compact shape marker + tooltip; optional E/SL/TP lines
-    if keepLatestFade and not na(this.fade)
+    if not na(this.fade)
+        this.fade.finalizeFade()
         this.fade.disposeFade()
         this.fade := na
     array<float> zr = zoneRatios(zName)
@@ -649,7 +778,7 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     color ec = upSide ? color.new(#f23645, 0) : color.new(#089981, 0)
     color sc = color.new(#ff9800, 0)
     color tc = color.new(accent, 0)
-    FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3)
+    FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, sessName = sessName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3)
     if showFadeLines
         int x2 = math.max(this.endBar, bar_index + 1)
         f.entryLn := line.new(bar_index, entry, x2, entry, color = ec, width = math.max(lineWidth, 2), style = line.style_solid)
@@ -660,10 +789,10 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     string sideLetter = upSide ? "S" : "L"
     string zShort = zoneShortName(zName)
     string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? " [confirmed]" : "") + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick)
-    // Compact triangle at entry; hover tooltip has the full trade plan
     f.lab := label.new(bar_index, entry, sideLetter + zShort, xloc = xloc.bar_index, yloc = yloc.price, style = upSide ? label.style_triangledown : label.style_triangleup, color = ec, textcolor = color.white, size = size.small, tooltip = tip)
     this.fade := f
     this.setupDone := true
+    sweepStats.registerSetup(sideSign, zName)
     tip
 
 method maybeSignal(FibDraw this, color accent, string sessName) =>
@@ -765,6 +894,8 @@ method update(SessionState this) =>
                 this.active.bumpSessBox(high, low)
                 this.active.markTouches(this.accent, downColor)
                 this.active.maybeSignal(this.accent, this.name)
+                if not na(this.active.fade)
+                    this.active.fade.trackFade()
                 this.signalSide := this.active.signalSide
                 this.signalMsg := this.active.signalMsg
     else if this.wasIn
