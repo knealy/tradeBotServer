@@ -583,6 +583,26 @@ method maybeSignal(FibDraw this, color accent, string sessName) =>
             this.signalSide := bestSign
     true
 
+method tryPrintGrid(SessionState this) =>
+    if this.readyToPrint()
+        if delayUntilIB
+            if this.ibJustClosed()
+                this.sessOpen := na(close[1]) ? open : close[1]
+                this.beginGrid()
+                if not na(this.active)
+                    this.gridStarted := true
+            else if this.ibClosed()
+                if na(this.sessOpen)
+                    this.sessOpen := open
+                this.beginGrid()
+                if not na(this.active)
+                    this.gridStarted := true
+        else
+            this.beginGrid()
+            if not na(this.active)
+                this.gridStarted := true
+    true
+
 method update(SessionState this) =>
     this.signalSide := 0
     this.signalMsg := ""
@@ -616,25 +636,6 @@ method update(SessionState this) =>
     this.wasIn := inNow
     true
 
-method tryPrintGrid(SessionState this) =>
-    if this.readyToPrint()
-        if delayUntilIB
-            if this.ibJustClosed()
-                this.sessOpen := na(close[1]) ? open : close[1]
-                this.beginGrid()
-                if not na(this.active)
-                    this.gridStarted := true
-            else if this.ibClosed()
-                if na(this.sessOpen)
-                    this.sessOpen := open
-                this.beginGrid()
-                if not na(this.active)
-                    this.gridStarted := true
-        else
-            this.beginGrid()
-            if not na(this.active)
-                this.gridStarted := true
-    true
 getSessionStates() =>
     array<SessionState> states = array.new<SessionState>()
     if showFirst
