@@ -490,6 +490,7 @@ method endGrid(SessionState this) =>
     if not na(this.warmLab)
         label.delete(this.warmLab)
         this.warmLab := na
+    true
 
 method markTouches(FibDraw this, color upC, color dnC) =>
     if not highlightTouch or na(this.upZones)
