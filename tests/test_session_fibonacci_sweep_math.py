@@ -16,6 +16,8 @@ from strategies.session_fibonacci_sweep_math import (
     price_touches_zone,
     project_levels,
     resolve_distance,
+    sweep_confirmed,
+    sweep_pierced,
     zone_band,
 )
 

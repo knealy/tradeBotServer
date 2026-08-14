@@ -130,6 +130,8 @@ color  downColor     = input.color(color.new(#f23645, 85), "Down-side color", gr
 
 bool  enableSignals   = input.bool(true, "Show fade setups on sweep", group = SIGNAL_GROUP, tooltip = "When price first sweeps a zone, mark fade entry / stop / TP1–TP3 for that session.")
 bool  oneSetupPerSess = input.bool(true, "One setup per session", group = SIGNAL_GROUP, active = enableSignals, tooltip = "If off, allow one first-touch setup per zone/side (not every bar while price sits in the zone).")
+bool  requireConfirm  = input.bool(true, "Require sweep confirmation", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Wick must pierce the zone, then close back toward fib 0 (inside) before a fade prints. Cuts fake sweeps.")
+bool  requireFullPierce = input.bool(true, "Require full pierce (far edge)", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "On: high/low must reach the far edge of the zone. Off: entering the near edge is enough.")
 float stopBufRatio    = input.float(0.05, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(true, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Prevents stacked labels. New setup replaces the previous fade drawing.")
@@ -152,6 +154,22 @@ zoneMid(float anchor, float dist, float loR, float hiR, bool upSide) =>
 
 touchesBand(float h, float l, float bandLo, float bandHi) =>
     l <= bandHi and h >= bandLo
+
+// Up sweep: pierce zone high-side, close back below near edge (toward fib 0)
+// Down sweep: pierce zone low-side, close back above near edge (toward fib 0)
+upSweepConfirmed(float h, float c, float bandLo, float bandHi, bool fullPierce) =>
+    bool pierced = fullPierce ? h >= bandHi : h >= bandLo
+    pierced and c < bandLo
+
+dnSweepConfirmed(float l, float c, float bandLo, float bandHi, bool fullPierce) =>
+    bool pierced = fullPierce ? l <= bandLo : l <= bandHi
+    pierced and c > bandHi
+
+upSweepPierced(float h, float bandLo, float bandHi, bool fullPierce) =>
+    fullPierce ? h >= bandHi : h >= bandLo
+
+dnSweepPierced(float l, float bandLo, float bandHi, bool fullPierce) =>
+    fullPierce ? l <= bandLo : l <= bandHi
 
 nextWiderName(string z) =>
     z == "inner" ? "mid" : z == "mid" ? "full" : "extension"
@@ -239,11 +257,14 @@ type FibDraw
     color dnC = na
     line  zeroLine = na
     array<line> lines
+    array<line> nestLines
     array<box>  boxes
     array<box>  upZones
     array<box>  dnZones
     array<bool> upTouched
     array<bool> dnTouched
+    array<bool> upPierced
+    array<bool> dnPierced
     array<bool> upSignaled
     array<bool> dnSignaled
     array<string> zoneNames
@@ -314,6 +335,8 @@ method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color u
         this.dnZones.push(db)
         this.upTouched.push(false)
         this.dnTouched.push(false)
+        this.upPierced.push(false)
+        this.dnPierced.push(false)
         this.upSignaled.push(false)
         this.dnSignaled.push(false)
         this.zoneNames.push(zName)
@@ -322,13 +345,12 @@ method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color u
             color vc = color.new(upC, 0)
             float yTop = this.openPx + hi
             float yBot = this.openPx - hi
-            this.lines.push(line.new(x1, yTop, x1, yBot, color = vc, width = lineWidth, style = line.style_dotted))
-            this.lines.push(line.new(x2, yTop, x2, yBot, color = vc, width = lineWidth, style = line.style_dotted))
-            // Optional inner-edge rails at lo ratio (lighter nesting cue)
+            this.nestLines.push(line.new(x1, yTop, x1, yBot, color = vc, width = lineWidth, style = line.style_dotted))
+            this.nestLines.push(line.new(x2, yTop, x2, yBot, color = vc, width = lineWidth, style = line.style_dotted))
             float yTopIn = this.openPx + lo
             float yBotIn = this.openPx - lo
-            this.lines.push(line.new(x1, yTopIn, x1, yBotIn, color = color.new(upC, 40), width = lineWidth, style = line.style_dotted))
-            this.lines.push(line.new(x2, yTopIn, x2, yBotIn, color = color.new(upC, 40), width = lineWidth, style = line.style_dotted))
+            this.nestLines.push(line.new(x1, yTopIn, x1, yBotIn, color = color.new(upC, 40), width = lineWidth, style = line.style_dotted))
+            this.nestLines.push(line.new(x2, yTopIn, x2, yBotIn, color = color.new(upC, 40), width = lineWidth, style = line.style_dotted))
     true
 
 method disposeFade(FadeDraw this) =>
@@ -351,6 +373,9 @@ method dispose(FibDraw this) =>
         line.delete(this.zeroLine)
     if not na(this.lines)
         for ln in this.lines
+            line.delete(ln)
+    if not na(this.nestLines)
+        for ln in this.nestLines
             line.delete(ln)
     if not na(this.boxes)
         for bx in this.boxes
@@ -381,6 +406,9 @@ method dimDraw(FibDraw this, int extraTransp) =>
             // addBothLevels pushes up then down
             ln.set_color(i % 2 == 0 ? upDim : dnDim)
             i += 1
+    if not na(this.nestLines)
+        for ln in this.nestLines
+            ln.set_color(upDim)
     if not na(this.upZones)
         for bx in this.upZones
             bx.set_bgcolor(upBox)
@@ -480,7 +508,7 @@ method beginGrid(SessionState this) =>
         // IB mode: grid left = print bar; right = shortened session span (avoids neighbor overlap)
         int leftBar = delayUntilIB ? bar_index : this.startBar
         int rightBar = gridRightBar(leftBar, this.startBar, this.session)
-        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>())
+        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), nestLines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upPierced = array.new<bool>(), dnPierced = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>())
         d.zeroLine := line.new(leftBar, this.sessOpen, rightBar, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
         bool edgeOnly = isZonesOnly()
@@ -631,7 +659,7 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
         f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
     string sideLetter = upSide ? "S" : "L"
     string zShort = zoneShortName(zName)
-    string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick)
+    string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? " [confirmed]" : "") + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick)
     // Compact triangle at entry; hover tooltip has the full trade plan
     f.lab := label.new(bar_index, entry, sideLetter + zShort, xloc = xloc.bar_index, yloc = yloc.price, style = upSide ? label.style_triangledown : label.style_triangleup, color = ec, textcolor = color.white, size = size.small, tooltip = tip)
     this.fade := f
@@ -639,7 +667,8 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     tip
 
 method maybeSignal(FibDraw this, color accent, string sessName) =>
-    // First-touch only per zone/side — never re-print while price stays inside a band.
+    // Confirmed sweep (default): pierce zone, then close back toward fib 0.
+    // Without confirm: first touch only per zone/side.
     this.signalSide := 0
     this.signalMsg := ""
     if enableSignals and not (oneSetupPerSess and this.setupDone) and not na(this.upZones) and not na(this.upSignaled)
@@ -657,17 +686,27 @@ method maybeSignal(FibDraw this, color accent, string sessName) =>
                 float upHi = math.max(ub.get_top(), ub.get_bottom())
                 float dnLo = math.min(db.get_top(), db.get_bottom())
                 float dnHi = math.max(db.get_top(), db.get_bottom())
-                bool upHit = touchesBand(high, low, upLo, upHi)
-                bool dnHit = touchesBand(high, low, dnLo, dnHi)
-                // Rising edge: touching now and not yet signaled for this side/zone
-                if upHit and not this.upSignaled.get(i)
+                bool upHit = false
+                bool dnHit = false
+                if requireConfirm
+                    if not this.upPierced.get(i) and upSweepPierced(high, upLo, upHi, requireFullPierce)
+                        this.upPierced.set(i, true)
+                    if not this.dnPierced.get(i) and dnSweepPierced(low, dnLo, dnHi, requireFullPierce)
+                        this.dnPierced.set(i, true)
+                    // Confirm: already pierced (this bar or earlier) and close back inside
+                    upHit := this.upPierced.get(i) and close < upLo and not this.upSignaled.get(i)
+                    dnHit := this.dnPierced.get(i) and close > dnHi and not this.dnSignaled.get(i)
+                else
+                    upHit := touchesBand(high, low, upLo, upHi) and not this.upSignaled.get(i)
+                    dnHit := touchesBand(high, low, dnLo, dnHi) and not this.dnSignaled.get(i)
+                if upHit
                     float near = math.abs(upLo - this.openPx)
                     if na(bestDist) or near < bestDist
                         bestDist := near
                         bestSign := 1
                         bestIdx := i
                         bestName := zName
-                if dnHit and not this.dnSignaled.get(i)
+                if dnHit
                     float near = math.abs(dnHi - this.openPx)
                     if na(bestDist) or near < bestDist
                         bestDist := near

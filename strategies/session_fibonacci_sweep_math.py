@@ -192,6 +192,40 @@ def price_touches_zone(high: float, low: float, band: ZoneBand) -> bool:
     return low <= band.hi and high >= band.lo
 
 
+def sweep_pierced(
+    high: float,
+    low: float,
+    band: ZoneBand,
+    side: Side,
+    full_pierce: bool = True,
+) -> bool:
+    """True if the wick pierced the zone on ``side``."""
+    if side == "up":
+        return high >= (band.hi if full_pierce else band.lo)
+    return low <= (band.lo if full_pierce else band.hi)
+
+
+def sweep_confirmed(
+    high: float,
+    low: float,
+    close: float,
+    band: ZoneBand,
+    side: Side,
+    full_pierce: bool = True,
+) -> bool:
+    """
+    Wick pierces the zone, then close returns toward the anchor (fib 0).
+
+    Up: pierce high side, close back below near edge (band.lo).
+    Down: pierce low side, close back above near edge (band.hi).
+    """
+    if not sweep_pierced(high, low, band, side, full_pierce=full_pierce):
+        return False
+    if side == "up":
+        return close < band.lo
+    return close > band.hi
+
+
 def first_swept_zone(
     high: float,
     low: float,
