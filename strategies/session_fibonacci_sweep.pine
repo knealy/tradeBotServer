@@ -24,10 +24,13 @@ indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 500, max_
 // ---- Shared ratios (bot-port mirror) ----------------------------------------
 const float R_INNER_LO = 0.236
 const float R_INNER_HI = 0.2795
+const float R_INNER_MID = 0.25775
 const float R_MID_LO   = 0.5
 const float R_MID_HI   = 0.559
+const float R_MID_MID  = 0.5295
 const float R_FULL_LO  = 0.8365
 const float R_FULL_HI  = 1.0
+const float R_FULL_MID = 0.91825
 const float R_EXT_LO   = 1.382
 const float R_EXT_MID  = 1.5
 const float R_EXT_HI   = 1.618
@@ -106,7 +109,8 @@ bool showZoneInner  = input.bool(true, "0.236–0.2795 inner sweep",  group = ZO
 bool showZoneMid    = input.bool(true, "0.5–0.559 mid sweep",       group = ZONES_GROUP)
 bool showZoneFull   = input.bool(true, "0.8365–1.0 full range",     group = ZONES_GROUP)
 bool showZoneExt    = input.bool(true, "1.382–1.618 extension",     group = ZONES_GROUP)
-bool showExtMidline = input.bool(true, "1.5 midline in extension",  group = ZONES_GROUP)
+bool showZoneMidlines = input.bool(true, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (same idea as 1.5 between 1.382–1.618).")
+bool showExtMidline = input.bool(true, "1.5 midline in extension",  group = ZONES_GROUP, tooltip = "Kept for compatibility; also covered when Midlines in each zone is on.")
 
 string displayMode   = input.string(DISP_FULL, "Display mode", options = [DISP_FULL, DISP_ZONES, DISP_ACTIVE], group = DISPLAY_GROUP, tooltip = "Full grid draws all levels. Zones only keeps fib 0 + zone fills (+ zone edges). Active session only hides completed history while a session is live.")
 string labelMode     = input.string(LABEL_ZONE, "Labels", options = [LABEL_OFF, LABEL_ZONE, LABEL_ALL], group = DISPLAY_GROUP)
@@ -469,9 +473,19 @@ method beginGrid(SessionState this) =>
         d.addBothLevels(R_FULL_LO,  edgeOnly ? showZoneFull  : drawLevelOn(showL08365), upC, dnC, false)
         d.addBothLevels(R_FULL_HI,  edgeOnly ? showZoneFull  : drawLevelOn(showL10),    upC, dnC, false)
         d.addBothLevels(R_EXT_LO,   edgeOnly ? showZoneExt   : drawLevelOn(showL1382),  upC, dnC, false)
-        d.addBothLevels(R_EXT_MID,  edgeOnly ? (showZoneExt and showExtMidline) : drawLevelOn(showL15), upC, dnC, edgeOnly)
         d.addBothLevels(R_EXT_HI,   edgeOnly ? showZoneExt   : drawLevelOn(showL1618),  upC, dnC, false)
-        if not edgeOnly and showZoneExt and showExtMidline and not showL15
+        // Solid 1.5 level when Full grid + Levels toggle (not a dotted zone midline)
+        if not edgeOnly and showL15
+            d.addBothLevels(R_EXT_MID, true, upC, dnC, false)
+        // Dotted midlines inside each enabled zone (inner / mid / full / extension)
+        bool wantExtMid = showZoneExt and (showZoneMidlines or showExtMidline)
+        if showZoneMidlines and showZoneInner
+            d.addBothLevels(R_INNER_MID, true, upC, dnC, true)
+        if showZoneMidlines and showZoneMid
+            d.addBothLevels(R_MID_MID, true, upC, dnC, true)
+        if showZoneMidlines and showZoneFull
+            d.addBothLevels(R_FULL_MID, true, upC, dnC, true)
+        if wantExtMid and (edgeOnly or not showL15)
             d.addBothLevels(R_EXT_MID, true, upC, dnC, true)
 
         d.addBothZones(R_INNER_LO, R_INNER_HI, showZoneInner, upC, dnC, "inner")

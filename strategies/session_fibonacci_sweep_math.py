@@ -34,6 +34,13 @@ ZONES: Dict[str, Tuple[float, float]] = {
     "extension": (1.382, 1.618),
 }
 
+# Midline ratio inside each zone (matches Pine dotted midlines)
+ZONE_MIDLINES: Dict[str, float] = {
+    "inner": (0.236 + 0.2795) / 2.0,  # 0.25775
+    "mid": (0.5 + 0.559) / 2.0,  # 0.5295
+    "full": (0.8365 + 1.0) / 2.0,  # 0.91825
+    "extension": 1.5,
+}
 ZONE_ORDER: Tuple[str, ...] = ("inner", "mid", "full", "extension")
 
 # Default session clocks in America/New_York (same as Pine defaults)
