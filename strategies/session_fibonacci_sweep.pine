@@ -180,6 +180,8 @@ type FibDraw
     int   startBar
     float openPx
     float dist
+    color upC = na
+    color dnC = na
     line  zeroLine = na
     array<line> lines
     array<box>  boxes
@@ -287,36 +289,50 @@ method dispose(FibDraw this) =>
     true
 
 method dimDraw(FibDraw this, int extraTransp) =>
+    // No line.get_color / box.get_bgcolor / label.get_textcolor in Pine — use stored colors.
     int t = math.min(95, extraTransp)
+    int boxT = math.min(95, 80 + int(t / 3))
+    color upDim = color.new(this.upC, t)
+    color dnDim = color.new(this.dnC, t)
+    color upBox = color.new(this.upC, boxT)
+    color dnBox = color.new(this.dnC, boxT)
     if not na(this.zeroLine)
-        color c = this.zeroLine.get_color()
-        this.zeroLine.set_color(color.new(c, t))
+        this.zeroLine.set_color(upDim)
     if not na(this.lines)
+        int i = 0
         for ln in this.lines
-            color c = ln.get_color()
-            ln.set_color(color.new(c, t))
-    if not na(this.boxes)
-        for bx in this.boxes
-            color bg = bx.get_bgcolor()
-            bx.set_bgcolor(color.new(bg, math.min(95, 80 + t / 3)))
-            color bd = bx.get_border_color()
-            if not na(bd)
-                bx.set_border_color(color.new(bd, math.min(95, t)))
+            // addBothLevels pushes up then down
+            ln.set_color(i % 2 == 0 ? upDim : dnDim)
+            i += 1
+    if not na(this.upZones)
+        for bx in this.upZones
+            bx.set_bgcolor(upBox)
+            bx.set_border_color(upDim)
+    if not na(this.dnZones)
+        for bx in this.dnZones
+            bx.set_bgcolor(dnBox)
+            bx.set_border_color(dnDim)
+    if not na(this.sessBox)
+        this.sessBox.set_bgcolor(color.new(this.upC, math.min(95, 92 + t / 4)))
     if not na(this.lab)
-        color tc = this.lab.get_textcolor()
-        this.lab.set_textcolor(color.new(tc, t))
+        this.lab.set_textcolor(upDim)
     if not na(this.fade)
         FadeDraw f = this.fade
+        color ec = color.new(f.sideSign > 0 ? #f23645 : #089981, t)
+        color sc = color.new(#ff9800, t)
+        color tc = upDim
         if not na(f.entryLn)
-            f.entryLn.set_color(color.new(f.entryLn.get_color(), t))
+            f.entryLn.set_color(ec)
         if not na(f.stopLn)
-            f.stopLn.set_color(color.new(f.stopLn.get_color(), t))
+            f.stopLn.set_color(sc)
         if not na(f.tp1Ln)
-            f.tp1Ln.set_color(color.new(f.tp1Ln.get_color(), t))
+            f.tp1Ln.set_color(tc)
         if not na(f.tp2Ln)
-            f.tp2Ln.set_color(color.new(f.tp2Ln.get_color(), t))
+            f.tp2Ln.set_color(tc)
         if not na(f.tp3Ln)
-            f.tp3Ln.set_color(color.new(f.tp3Ln.get_color(), t))
+            f.tp3Ln.set_color(tc)
+        if not na(f.lab)
+            f.lab.set_textcolor(ec)
     true
 
 method extendTo(FibDraw this, int x, float h, float l) =>
@@ -395,6 +411,7 @@ method beginGrid(SessionState this) =>
             if not na(this.warmLab)
                 label.delete(this.warmLab)
             this.warmLab := label.new(bar_index, high, this.name + " warmup ATR need " + str.tostring(this.atrWarmupLeft()) + " more", style = label.style_label_down, textcolor = color.new(this.accent, 0), color = color(na), size = size.small)
+        true
     else
         if not na(this.warmLab)
             label.delete(this.warmLab)
@@ -404,7 +421,7 @@ method beginGrid(SessionState this) =>
         color upLine = color.new(upC, 0)
         // IB mode: grid left edge is the print bar; session box still from session start
         int leftBar = delayUntilIB ? bar_index : this.startBar
-        FibDraw d = FibDraw.new(startBar = leftBar, openPx = this.sessOpen, dist = dist, lines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), zoneNames = array.new<string>())
+        FibDraw d = FibDraw.new(startBar = leftBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), zoneNames = array.new<string>())
         d.zeroLine := line.new(leftBar, this.sessOpen, bar_index, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
         bool edgeOnly = isZonesOnly()
@@ -439,6 +456,7 @@ method beginGrid(SessionState this) =>
                 txt += "\n0=" + str.tostring(this.sessOpen, format.mintick)
             d.lab := label.new(bar_index, this.sessOpen, txt, style = label.style_label_left, textalign = text.align_left, textcolor = upLine, color = color(na), size = size.small)
         this.active := d
+        true
 
 method finalizeRange(SessionState this) =>
     // Only commit a range if we actually saw a session start and have a real H–L
