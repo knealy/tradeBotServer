@@ -106,3 +106,20 @@ def test_ib_anchor_ready():
     assert ib_anchor_ready(start, end, end - 60_000, ib_min)
     assert not ib_anchor_ready(start, end + 60_000, end, ib_min)  # already past first bar
     assert ib_anchor_ready(start, end, None, ib_min)
+
+
+def test_sweep_confirmation_up_and_down():
+    up = zone_band(100.0, 10.0, "inner", "up")
+    # Wick through far edge, close back below near edge
+    assert sweep_pierced(102.9, 100.0, up, "up", full_pierce=True)
+    assert sweep_confirmed(102.9, 100.0, 102.0, up, "up", full_pierce=True)
+    # Pierce but close still in/above zone — not confirmed
+    assert not sweep_confirmed(102.9, 100.0, 102.5, up, "up", full_pierce=True)
+    # Touch near edge only — not a full pierce
+    assert not sweep_pierced(102.4, 100.0, up, "up", full_pierce=True)
+    assert sweep_pierced(102.4, 100.0, up, "up", full_pierce=False)
+    assert sweep_confirmed(102.4, 100.0, 102.0, up, "up", full_pierce=False)
+
+    dn = zone_band(100.0, 10.0, "inner", "down")
+    assert sweep_confirmed(100.0, 97.1, 98.0, dn, "down", full_pierce=True)
+    assert not sweep_confirmed(100.0, 97.1, 97.5, dn, "down", full_pierce=True)

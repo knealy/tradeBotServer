@@ -351,6 +351,8 @@ __all__ = [
     "resolve_distance",
     "next_wider_zone",
     "price_touches_zone",
+    "sweep_pierced",
+    "sweep_confirmed",
     "first_swept_zone",
     "build_fade_setup",
     "ib_anchor_ready",
