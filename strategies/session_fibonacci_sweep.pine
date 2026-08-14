@@ -578,6 +578,8 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
         f.tp1Ln := line.new(bar_index, tp1, x2, tp1, color = tc, width = lineWidth, style = line.style_dashed)
         f.tp2Ln := line.new(bar_index, tp2, x2, tp2, color = tc, width = lineWidth, style = line.style_dashed)
         f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
+    string sideLetter = upSide ? "S" : "L"
+    string zShort = zoneShortName(zName)
     string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick)
     // Compact triangle at entry; hover tooltip has the full trade plan
     f.lab := label.new(bar_index, entry, sideLetter + zShort, xloc = xloc.bar_index, yloc = yloc.price, style = upSide ? label.style_triangledown : label.style_triangleup, color = ec, textcolor = color.white, size = size.small, tooltip = tip)
