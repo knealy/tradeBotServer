@@ -112,6 +112,8 @@ string displayMode   = input.string(DISP_FULL, "Display mode", options = [DISP_F
 string labelMode     = input.string(LABEL_ZONE, "Labels", options = [LABEL_OFF, LABEL_ZONE, LABEL_ALL], group = DISPLAY_GROUP)
 int    historyKeep   = input.int(2, "Completed sessions to keep", minval = 0, maxval = 8, group = DISPLAY_GROUP)
 int    historyDim    = input.int(55, "History extra transparency", minval = 0, maxval = 90, group = DISPLAY_GROUP)
+float  gridWidthFrac = input.float(0.85, "Grid width (× session)", minval = 0.50, maxval = 1.00, step = 0.01, group = DISPLAY_GROUP, tooltip = "Fraction of the session span to draw. Lower = shorter boxes, less overlap at session boundaries.")
+int    gridEndTrim   = input.int(3, "Trim bars from right edge", minval = 0, maxval = 50, group = DISPLAY_GROUP, tooltip = "Extra bars clipped from the scheduled session end so neighboring sessions do not butt into each other.")
 bool   delayUntilIB  = input.bool(false, "Draw after initial balance close", group = DISPLAY_GROUP, tooltip = "Wait until the first N minutes of the session have elapsed, then print. Fib 0 is the close of the last bar still inside the IB window. Distance is still the previous like-session range.")
 int    ibMinutes     = input.int(30, "Initial balance minutes", minval = 1, maxval = 240, group = DISPLAY_GROUP, active = delayUntilIB)
 bool   showSessionBox = input.bool(false, "Show session high/low box", group = DISPLAY_GROUP)
@@ -124,6 +126,7 @@ bool  oneSetupPerSess = input.bool(true, "One setup per session", group = SIGNAL
 float stopBufRatio    = input.float(0.05, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(true, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Prevents stacked labels. New setup replaces the previous fade drawing.")
+bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Off = compact shape marker + tooltip only (recommended).")
 
 // -----------------------------------------------------------------------------
 // Pure math helpers (bot-port mirror — no drawings)
@@ -184,13 +187,23 @@ sessionEndBar(int startBarIdx, string sess) =>
     int mins = sessionDurationMinutes(sess)
     int tfSec = timeframe.in_seconds()
     int tfMins = tfSec > 0 ? math.max(1, int(tfSec / 60)) : 1
-    // Sub-minute charts: approximate with bar count from seconds
     int bars = 1
     if tfSec > 0 and tfSec < 60
         bars := math.max(1, int(mins * 60 / tfSec))
     else
         bars := math.max(1, int(mins / tfMins))
     startBarIdx + bars - 1
+
+// Shorten grid so neighboring sessions do not visually overlap
+gridRightBar(int leftBar, int sessStartBar, string sess) =>
+    int sessEnd = sessionEndBar(sessStartBar, sess)
+    int span = math.max(1, sessEnd - leftBar)
+    int scaled = leftBar + math.max(1, int(span * gridWidthFrac))
+    int right = scaled - gridEndTrim
+    math.max(leftBar, right)
+
+zoneShortName(string z) =>
+    z == "inner" ? "in" : z == "mid" ? "md" : z == "full" ? "fl" : "ex"
 
 // -----------------------------------------------------------------------------
 // Types
@@ -441,11 +454,9 @@ method beginGrid(SessionState this) =>
         color upC = this.accent
         color dnC = downColor
         color upLine = color.new(upC, 0)
-        // IB mode: grid left edge is the print bar; right edge = scheduled session end (drawn once)
+        // IB mode: grid left = print bar; right = shortened session span (avoids neighbor overlap)
         int leftBar = delayUntilIB ? bar_index : this.startBar
-        int rightBar = sessionEndBar(this.startBar, this.session)
-        if rightBar < leftBar
-            rightBar := leftBar
+        int rightBar = gridRightBar(leftBar, this.startBar, this.session)
         FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>())
         d.zeroLine := line.new(leftBar, this.sessOpen, rightBar, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
@@ -476,10 +487,9 @@ method beginGrid(SessionState this) =>
             string modeTag = rangeMode == RANGE_ATR ? "ATR(" + str.tostring(atrLen) + ")" : "prev"
             if delayUntilIB
                 modeTag := "IB " + str.tostring(ibMinutes) + "m  " + modeTag
-            string txt = this.name + "  " + str.tostring(dist, format.mintick) + "  " + modeTag
-            if labelMode == LABEL_ALL
-                txt += "\n0=" + str.tostring(this.sessOpen, format.mintick)
-            d.lab := label.new(leftBar, this.sessOpen, txt, style = label.style_label_right, textalign = text.align_left, textcolor = upLine, color = color(na), size = size.small)
+            string tip = this.name + "\nDist " + str.tostring(dist, format.mintick) + "  " + modeTag + "\n0 = " + str.tostring(this.sessOpen, format.mintick)
+            string shortName = str.length(this.name) <= 6 ? this.name : str.substring(this.name, 0, 6)
+            d.lab := label.new(leftBar, this.sessOpen, shortName, style = label.style_label_right, textalign = text.align_left, textcolor = color.white, color = color.new(upC, 0), size = size.tiny, tooltip = tip)
         this.active := d
         true
 
@@ -543,7 +553,7 @@ method markTouches(FibDraw this, color upC, color dnC) =>
         true
 
 method printFade(FibDraw this, color accent, string sessName, int sideSign, string zName) =>
-    // sideSign +1 = up-sweep → short fade; -1 = down-sweep → long fade
+    // Compact shape marker + tooltip; optional E/SL/TP lines
     if keepLatestFade and not na(this.fade)
         this.fade.disposeFade()
         this.fade := na
@@ -560,19 +570,20 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     color ec = upSide ? color.new(#f23645, 0) : color.new(#089981, 0)
     color sc = color.new(#ff9800, 0)
     color tc = color.new(accent, 0)
-    int x2 = math.max(this.endBar, bar_index + 1)
     FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3)
-    f.entryLn := line.new(bar_index, entry, x2, entry, color = ec, width = math.max(lineWidth, 2), style = line.style_solid)
-    f.stopLn := line.new(bar_index, stop, x2, stop, color = sc, width = lineWidth, style = line.style_dotted)
-    f.tp1Ln := line.new(bar_index, tp1, x2, tp1, color = tc, width = lineWidth, style = line.style_dashed)
-    f.tp2Ln := line.new(bar_index, tp2, x2, tp2, color = tc, width = lineWidth, style = line.style_dashed)
-    f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
-    string sideTxt = upSide ? "SHORT fade (up sweep)" : "LONG fade (down sweep)"
-    string txt = sessName + " " + sideTxt + " @ " + zName + "\nE " + str.tostring(entry, format.mintick) + "  SL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "  TP2 " + str.tostring(tp2, format.mintick) + "  TP3 " + str.tostring(tp3, format.mintick)
-    f.lab := label.new(bar_index, entry, txt, style = upSide ? label.style_label_down : label.style_label_up, textcolor = ec, color = color(na), size = size.small)
+    if showFadeLines
+        int x2 = math.max(this.endBar, bar_index + 1)
+        f.entryLn := line.new(bar_index, entry, x2, entry, color = ec, width = math.max(lineWidth, 2), style = line.style_solid)
+        f.stopLn := line.new(bar_index, stop, x2, stop, color = sc, width = lineWidth, style = line.style_dotted)
+        f.tp1Ln := line.new(bar_index, tp1, x2, tp1, color = tc, width = lineWidth, style = line.style_dashed)
+        f.tp2Ln := line.new(bar_index, tp2, x2, tp2, color = tc, width = lineWidth, style = line.style_dashed)
+        f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
+    string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick)
+    // Compact triangle at entry; hover tooltip has the full trade plan
+    f.lab := label.new(bar_index, entry, sideLetter + zShort, xloc = xloc.bar_index, yloc = yloc.price, style = upSide ? label.style_triangledown : label.style_triangleup, color = ec, textcolor = color.white, size = size.small, tooltip = tip)
     this.fade := f
     this.setupDone := true
-    txt
+    tip
 
 method maybeSignal(FibDraw this, color accent, string sessName) =>
     // First-touch only per zone/side — never re-print while price stays inside a band.
