@@ -15,7 +15,8 @@ indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 500, max_
 //
 // Ratios / zones (keep in sync with session_fibonacci_sweep_math.py):
 //   0.236, 0.2795, 0.5, 0.559, 0.8365, 1, 1.382, 1.5, 1.618
-//   inner 0.236–0.2795 | mid 0.5–0.559 | full 0.8365–1.0 | ext 1.382–1.618
+//   inner 0.236–0.2795 (mid 0.25775) | mid 0.5–0.559 (mid 0.5295)
+//   full 0.8365–1.0 (mid 0.91825) | ext 1.382–1.618 (mid 1.5)
 //
 // Visual-only by default; optional sweep → fade markers + alertconditions.
 // Does not place orders.
@@ -111,6 +112,8 @@ bool showZoneFull   = input.bool(true, "0.8365–1.0 full range",     group = ZO
 bool showZoneExt    = input.bool(true, "1.382–1.618 extension",     group = ZONES_GROUP)
 bool showZoneMidlines = input.bool(true, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (same idea as 1.5 between 1.382–1.618).")
 bool showExtMidline = input.bool(true, "1.5 midline in extension",  group = ZONES_GROUP, tooltip = "Kept for compatibility; also covered when Midlines in each zone is on.")
+bool showZoneNest   = input.bool(true, "Nest zone sets (vertical connectors)", group = ZONES_GROUP, tooltip = "Inset each zone set and join up/down bands with vertical dotted lines. Outer = extension, then full → mid → inner.")
+int  nestStepBars   = input.int(2, "Nest step (bars)", minval = 1, maxval = 20, group = ZONES_GROUP, active = showZoneNest, tooltip = "How many bars to inset each nested zone set from the previous.")
 
 string displayMode   = input.string(DISP_FULL, "Display mode", options = [DISP_FULL, DISP_ZONES, DISP_ACTIVE], group = DISPLAY_GROUP, tooltip = "Full grid draws all levels. Zones only keeps fib 0 + zone fills (+ zone edges). Active session only hides completed history while a session is live.")
 string labelMode     = input.string(LABEL_ZONE, "Labels", options = [LABEL_OFF, LABEL_ZONE, LABEL_ALL], group = DISPLAY_GROUP)
@@ -294,13 +297,17 @@ method addBothLevels(FibDraw this, float ratio, bool on, color upC, color dnC, b
             this.lines.push(line.new(this.startBar, this.openPx - off, x2, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_solid))
     true
 
-method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color upC, color dnC, string zName) =>
+method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color upC, color dnC, string zName, int nestIdx) =>
     if on
         float lo = loRatio * this.dist
         float hi = hiRatio * this.dist
-        int x2 = this.endBar
-        box ub = box.new(this.startBar, this.openPx + hi, x2, this.openPx + lo, bgcolor = upC, border_color = color.new(upC, 50), border_width = 1)
-        box db = box.new(this.startBar, this.openPx - lo, x2, this.openPx - hi, bgcolor = dnC, border_color = color.new(dnC, 50), border_width = 1)
+        int inset = showZoneNest ? nestIdx * nestStepBars : 0
+        int x1 = this.startBar + inset
+        int x2 = this.endBar - inset
+        if x2 <= x1
+            x2 := x1 + 1
+        box ub = box.new(x1, this.openPx + hi, x2, this.openPx + lo, bgcolor = upC, border_color = color.new(upC, 50), border_width = 1)
+        box db = box.new(x1, this.openPx - lo, x2, this.openPx - hi, bgcolor = dnC, border_color = color.new(dnC, 50), border_width = 1)
         this.boxes.push(ub)
         this.boxes.push(db)
         this.upZones.push(ub)
@@ -310,6 +317,18 @@ method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color u
         this.upSignaled.push(false)
         this.dnSignaled.push(false)
         this.zoneNames.push(zName)
+        // Vertical dotted connectors joining corresponding up/down bands (nested frame)
+        if showZoneNest
+            color vc = color.new(upC, 0)
+            float yTop = this.openPx + hi
+            float yBot = this.openPx - hi
+            this.lines.push(line.new(x1, yTop, x1, yBot, color = vc, width = lineWidth, style = line.style_dotted))
+            this.lines.push(line.new(x2, yTop, x2, yBot, color = vc, width = lineWidth, style = line.style_dotted))
+            // Optional inner-edge rails at lo ratio (lighter nesting cue)
+            float yTopIn = this.openPx + lo
+            float yBotIn = this.openPx - lo
+            this.lines.push(line.new(x1, yTopIn, x1, yBotIn, color = color.new(upC, 40), width = lineWidth, style = line.style_dotted))
+            this.lines.push(line.new(x2, yTopIn, x2, yBotIn, color = color.new(upC, 40), width = lineWidth, style = line.style_dotted))
     true
 
 method disposeFade(FadeDraw this) =>
@@ -488,10 +507,28 @@ method beginGrid(SessionState this) =>
         if wantExtMid and (edgeOnly or not showL15)
             d.addBothLevels(R_EXT_MID, true, upC, dnC, true)
 
-        d.addBothZones(R_INNER_LO, R_INNER_HI, showZoneInner, upC, dnC, "inner")
-        d.addBothZones(R_MID_LO,   R_MID_HI,   showZoneMid,   upC, dnC, "mid")
-        d.addBothZones(R_FULL_LO,  R_FULL_HI,  showZoneFull,  upC, dnC, "full")
-        d.addBothZones(R_EXT_LO,   R_EXT_HI,   showZoneExt,   upC, dnC, "extension")
+        // Nest index: extension outermost (0) → full → mid → inner
+        int nestExt = 0
+        int nestFull = 0
+        int nestMid = 0
+        int nestInner = 0
+        if showZoneNest
+            int n = 0
+            if showZoneExt
+                nestExt := n
+                n += 1
+            if showZoneFull
+                nestFull := n
+                n += 1
+            if showZoneMid
+                nestMid := n
+                n += 1
+            if showZoneInner
+                nestInner := n
+        d.addBothZones(R_INNER_LO, R_INNER_HI, showZoneInner, upC, dnC, "inner", nestInner)
+        d.addBothZones(R_MID_LO,   R_MID_HI,   showZoneMid,   upC, dnC, "mid", nestMid)
+        d.addBothZones(R_FULL_LO,  R_FULL_HI,  showZoneFull,  upC, dnC, "full", nestFull)
+        d.addBothZones(R_EXT_LO,   R_EXT_HI,   showZoneExt,   upC, dnC, "extension", nestExt)
 
         if showSessionBox
             // Box always spans the true session start → scheduled end
