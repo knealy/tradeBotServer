@@ -954,3 +954,5 @@ for st in sessionStates
 alertcondition(alertUpSweep, title = "Up-sweep fade (short)", message = "Session fib up-sweep fade setup")
 alertcondition(alertDnSweep, title = "Down-sweep fade (long)", message = "Session fib down-sweep fade setup")
 alertcondition(alertSetup, title = "Any fade setup", message = "Session fib fade setup")
+
+renderStatsTable()
