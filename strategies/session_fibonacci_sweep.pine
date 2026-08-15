@@ -1,5 +1,5 @@
 //@version=6
-indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 1000)
+indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 1000, max_lines_count = 500, max_labels_count = 1000)
 
 // =============================================================================
 // Session Fibonacci Sweep — visual overlay + fade setups
@@ -132,8 +132,9 @@ bool  oneSetupPerSess = input.bool(false, "One setup per session", group = SIGNA
 bool  requireConfirm  = input.bool(true, "Require sweep confirmation", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Wick must pierce the zone, then close back toward fib 0 (inside) before a fade prints. Cuts fake sweeps.")
 bool  requireFullPierce = input.bool(true, "Require full pierce (far edge)", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "On: high/low must reach the far edge of the zone. Off: entering the near edge is enough.")
 bool  requireIfvg     = input.bool(false, "Confirm with sweep + IFVG", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "Also require a recent inverted FVG in the fade direction overlapping the swept zone (bearish IFVG for shorts, bullish IFVG for longs).")
-bool  showIfvg        = input.bool(true, "Show inverted FVG markers", group = SIGNAL_GROUP, tooltip = "Grey box from original FVG (left + height) to the inversion bar. Also drawn automatically when Confirm with sweep + IFVG is on.")
-int   ifvgLookback    = input.int(60, "IFVG lookback (bars)", minval = 3, maxval = 200, group = SIGNAL_GROUP, active = enableSignals and (requireIfvg or showIfvg), tooltip = "How far back to keep / match IFVGs for display and confirmation.")
+bool  showIfvg        = input.bool(true, "Show inverted FVG markers", group = SIGNAL_GROUP, tooltip = "Grey box from original FVG (left + height) to the inversion bar. Kept on chart historically (like fib zones). Also drawn when Confirm with sweep + IFVG is on.")
+int   ifvgLookback    = input.int(60, "IFVG confirm lookback (bars)", minval = 3, maxval = 500, group = SIGNAL_GROUP, active = enableSignals and (requireIfvg or showIfvg), tooltip = "How recent an IFVG must be to count for sweep+IFVG confirmation (and how long an open FVG waits to invert).")
+int   ifvgHistoryKeep = input.int(120, "IFVG boxes to keep", minval = 10, maxval = 400, group = SIGNAL_GROUP, active = showIfvg or requireIfvg, tooltip = "How many inverted-FVG boxes to leave on the chart (oldest dropped first). Independent of confirm lookback — same idea as Completed sessions to keep for fib grids.")
 float stopBufRatio    = input.float(0.15, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(false, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "On: each new setup deletes the previous marker. Off: keep every fade marker in the session (pair with One setup per session off).")
@@ -420,8 +421,8 @@ updateIfvgState() =>
                         bx := box.new(x1, p.top, x2, p.bottom, bgcolor = fillC, border_color = edgeC, border_width = 1)
                     ifvgMarks.push(IfvgMark.new(startBar = p.startBar, invertBar = bar_index, top = p.top, bottom = p.bottom, dir = idir, bx = bx, lab = na))
                 pendingFvgs.remove(i)
-    // Prune old IFVGs
-    while ifvgMarks.size() > 0 and (bar_index - ifvgMarks.get(0).invertBar > ifvgLookback or ifvgMarks.size() > 30)
+    // Keep IFVG boxes on chart historically (like fib zones). Only drop oldest by count.
+    while ifvgMarks.size() > ifvgHistoryKeep
         IfvgMark old = ifvgMarks.shift()
         disposeIfvgMark(old)
     true
