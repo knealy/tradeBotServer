@@ -47,10 +47,6 @@ const string DISP_FULL   = "Full grid"
 const string DISP_ZONES  = "Zones only"
 const string DISP_ACTIVE = "Active session only"
 
-const string LABEL_OFF   = "Off"
-const string LABEL_ZONE  = "Zones + anchor"
-const string LABEL_ALL   = "All levels"
-
 const string FIRST_SESSION_GROUP  = "Tokyo"
 const string SECOND_SESSION_GROUP = "London"
 const string THIRD_SESSION_GROUP  = "NY AM"
@@ -102,6 +98,8 @@ bool showL10    = input.bool(false, "1.0",    group = LEVELS_GROUP, inline = "L2
 bool showL1382  = input.bool(false, "1.382",  group = LEVELS_GROUP, inline = "L3")
 bool showL15    = input.bool(false, "1.5",    group = LEVELS_GROUP, inline = "L3")
 bool showL1618  = input.bool(false, "1.618",  group = LEVELS_GROUP, inline = "L3")
+bool showLevelRatios = input.bool(false, "Show fib ratios at line ends", group = LEVELS_GROUP, tooltip = "Tiny ratio labels one bar right of each drawn level line.")
+bool showLevelPrices = input.bool(false, "Show prices at line ends", group = LEVELS_GROUP, tooltip = "Tiny price labels one bar right of each drawn level line.")
 
 bool showZoneInner  = input.bool(true, "0.236–0.2795 inner sweep",  group = ZONES_GROUP)
 bool showZoneMid    = input.bool(true, "0.5–0.559 mid sweep",       group = ZONES_GROUP)
@@ -114,12 +112,11 @@ int  nestStepBars   = input.int(1, "Nest step (bars)", minval = 1, maxval = 20, 
 
 string rangeMode = input.string(RANGE_ATR, "Range source", options = [RANGE_PREV, RANGE_ATR], group = RANGE_GROUP, tooltip = "ATR = average of the last N completed like-session H–L ranges (Tokyo→Tokyo, …). Previous = only the last one.")
 int    atrLen    = input.int(5, "N (ATR lookback)", minval = 1, maxval = 50, group = RANGE_GROUP, active = rangeMode == RANGE_ATR)
-bool   showWarmup = input.bool(true, "Show ATR warmup label", group = RANGE_GROUP, tooltip = "While ATR mode needs more completed like-sessions, prints a visible tag at the session open. Needs at least N finished sessions of that type.")
+bool   showOpenLabels = input.bool(false, "Show open / warmup labels", group = RANGE_GROUP, tooltip = "Off by default. When on: session name at fib 0, and a small warmup tag while ATR/previous range is unavailable. Uses the session color (same transparency).")
 bool   delayUntilIB  = input.bool(true, "Draw after initial balance close", group = RANGE_GROUP, tooltip = "Wait until the first N minutes of the session have elapsed, then print. Fib 0 is the close of the last bar still inside the IB window. Distance still comes from Range source.")
 int    ibMinutes     = input.int(30, "Initial balance minutes", minval = 1, maxval = 240, group = RANGE_GROUP, active = delayUntilIB)
 
 string displayMode   = input.string(DISP_ZONES, "Display mode", options = [DISP_FULL, DISP_ZONES, DISP_ACTIVE], group = DISPLAY_GROUP, tooltip = "Full grid = fib 0 + any Levels you enable + zones. Zones only = fib 0 + zone fills (level lines ignored). Active session only = clears completed session drawings when a new session starts (use with Completed sessions to keep > 0 to compare). With all Levels off, Full and Zones look the same.")
-string labelMode     = input.string(LABEL_ZONE, "Labels", options = [LABEL_OFF, LABEL_ZONE, LABEL_ALL], group = DISPLAY_GROUP)
 int    historyKeep   = input.int(2, "Completed sessions to keep", minval = 0, maxval = 8, group = DISPLAY_GROUP)
 int    historyDim    = input.int(55, "History extra transparency", minval = 0, maxval = 90, group = DISPLAY_GROUP)
 float  gridWidthFrac = input.float(0.85, "Grid width (× session)", minval = 0.50, maxval = 1.00, step = 0.01, group = DISPLAY_GROUP, tooltip = "Fraction of the session span to draw. Lower = shorter boxes, less overlap at session boundaries.")
@@ -316,6 +313,7 @@ type FibDraw
     array<bool> upSignaled
     array<bool> dnSignaled
     array<string> zoneNames
+    array<label> levelLabs
     box   sessBox = na
     label lab = na
     label warmLab = na
@@ -400,7 +398,7 @@ updateIfvgState() =>
                         int x2 = math.max(x1 + 1, bar_index)  // right edge = inversion bar
                         color fillC = color.new(color.gray, 72)
                         color edgeC = color.new(color.gray, 40)
-                        bx := box.new(x1, p.top, x2, p.bottom, bgcolor = fillC, border_color = edgeC, border_width = 1, tooltip = (idir > 0 ? "Bullish IFVG (support)" : "Bearish IFVG (resistance)") + "\nFVG → invert  " + str.tostring(p.bottom, format.mintick) + " – " + str.tostring(p.top, format.mintick))
+                        bx := box.new(x1, p.top, x2, p.bottom, bgcolor = fillC, border_color = edgeC, border_width = 1)
                     ifvgMarks.push(IfvgMark.new(startBar = p.startBar, invertBar = bar_index, top = p.top, bottom = p.bottom, dir = idir, bx = bx, lab = na))
                 pendingFvgs.remove(i)
     // Prune old IFVGs
@@ -512,13 +510,32 @@ fillStatsTable(table t) =>
 method addBothLevels(FibDraw this, float ratio, bool on, color upC, color dnC, bool dotted) =>
     if on
         float off = ratio * this.dist
+        float upPx = this.openPx + off
+        float dnPx = this.openPx - off
         int x2 = this.endBar
         if dotted
-            this.lines.push(line.new(this.startBar, this.openPx + off, x2, this.openPx + off, color = color.new(upC, 0), width = lineWidth, style = line.style_dotted))
-            this.lines.push(line.new(this.startBar, this.openPx - off, x2, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_dotted))
+            this.lines.push(line.new(this.startBar, upPx, x2, upPx, color = color.new(upC, 0), width = lineWidth, style = line.style_dotted))
+            this.lines.push(line.new(this.startBar, dnPx, x2, dnPx, color = color.new(dnC, 0), width = lineWidth, style = line.style_dotted))
         else
-            this.lines.push(line.new(this.startBar, this.openPx + off, x2, this.openPx + off, color = color.new(upC, 0), width = lineWidth, style = line.style_solid))
-            this.lines.push(line.new(this.startBar, this.openPx - off, x2, this.openPx - off, color = color.new(dnC, 0), width = lineWidth, style = line.style_solid))
+            this.lines.push(line.new(this.startBar, upPx, x2, upPx, color = color.new(upC, 0), width = lineWidth, style = line.style_solid))
+            this.lines.push(line.new(this.startBar, dnPx, x2, dnPx, color = color.new(dnC, 0), width = lineWidth, style = line.style_solid))
+        if showLevelRatios or showLevelPrices
+            if na(this.levelLabs)
+                this.levelLabs := array.new<label>()
+            int lx = this.endBar + 1
+            string ratioTxt = str.tostring(ratio, "#.####")
+            string upTxt = ""
+            string dnTxt = ""
+            if showLevelRatios
+                upTxt := ratioTxt
+                dnTxt := ratioTxt
+            if showLevelPrices
+                string upP = str.tostring(upPx, format.mintick)
+                string dnP = str.tostring(dnPx, format.mintick)
+                upTxt := upTxt == "" ? upP : upTxt + " " + upP
+                dnTxt := dnTxt == "" ? dnP : dnTxt + " " + dnP
+            this.levelLabs.push(label.new(lx, upPx, upTxt, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(upC, 0), size = size.tiny))
+            this.levelLabs.push(label.new(lx, dnPx, dnTxt, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(dnC, 0), size = size.tiny))
     true
 
 method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color upC, color dnC, string zName, int nestIdx) =>
@@ -596,6 +613,9 @@ method dispose(FibDraw this) =>
         label.delete(this.lab)
     if not na(this.warmLab)
         label.delete(this.warmLab)
+    if not na(this.levelLabs)
+        for lb in this.levelLabs
+            label.delete(lb)
     true
 
 method dimDraw(FibDraw this, int extraTransp) =>
@@ -629,6 +649,12 @@ method dimDraw(FibDraw this, int extraTransp) =>
         this.sessBox.set_bgcolor(color.new(this.upC, math.min(95, 92 + t / 4)))
     if not na(this.lab)
         this.lab.set_textcolor(upDim)
+        this.lab.set_color(color.new(this.upC, math.min(95, color.t(this.upC) + t / 2)))
+    if not na(this.levelLabs)
+        int li = 0
+        for lb in this.levelLabs
+            lb.set_textcolor(li % 2 == 0 ? upDim : dnDim)
+            li += 1
     if not na(this.fade)
         FadeDraw f = this.fade
         color ec = color.new(f.sideSign > 0 ? #f23645 : #089981, t)
@@ -702,11 +728,12 @@ method beginGrid(SessionState this) =>
     if na(dist) or dist < syminfo.mintick
         this.active := na
         int need = rangeMode == RANGE_ATR ? this.atrWarmupLeft() : (na(this.lastRange) ? 1 : 0)
-        if showWarmup and need > 0
-            string why = rangeMode == RANGE_ATR ? "ATR need " + str.tostring(need) + " more sess" : "waiting first like-session range"
+        if showOpenLabels and need > 0
+            string why = rangeMode == RANGE_ATR ? "ATR +" + str.tostring(need) : "need range"
             if not na(this.warmLab)
                 label.delete(this.warmLab)
-            this.warmLab := label.new(bar_index, this.sessOpen, this.name + "\n" + why, style = label.style_label_right, textalign = text.align_left, textcolor = color.white, color = color.new(this.accent, 0), size = size.small, tooltip = "Range source has no usable distance yet. ATR mode needs N completed like-sessions of this type; Previous needs one finished session.")
+            // Same color/transparency as session accent; small tag at fib 0
+            this.warmLab := label.new(bar_index, this.sessOpen, this.name + " " + why, style = label.style_label_right, textalign = text.align_left, textcolor = color.new(this.accent, 0), color = this.accent, size = size.tiny, tooltip = "Range source has no usable distance yet. ATR needs N completed like-sessions; Previous needs one finished session.")
         true
     else
         if not na(this.warmLab)
@@ -718,7 +745,7 @@ method beginGrid(SessionState this) =>
         // IB mode: grid left = print bar; right = shortened session span (avoids neighbor overlap)
         int leftBar = delayUntilIB ? bar_index : this.startBar
         int rightBar = gridRightBar(leftBar, this.startBar, this.session)
-        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), nestLines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upPierced = array.new<bool>(), dnPierced = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>(), fades = array.new<FadeDraw>())
+        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), nestLines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upPierced = array.new<bool>(), dnPierced = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>(), levelLabs = array.new<label>(), fades = array.new<FadeDraw>())
         d.zeroLine := line.new(leftBar, this.sessOpen, rightBar, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
         bool edgeOnly = isZonesOnly()
@@ -772,13 +799,24 @@ method beginGrid(SessionState this) =>
             // Box always spans the true session start → scheduled end
             d.sessBox := box.new(this.startBar, high, rightBar, low, bgcolor = color.new(upC, 92), border_color = na)
 
-        if labelMode != LABEL_OFF
+        if showOpenLabels
             string modeTag = rangeMode == RANGE_ATR ? "ATR(" + str.tostring(atrLen) + ")" : "prev"
             if delayUntilIB
                 modeTag := "IB " + str.tostring(ibMinutes) + "m  " + modeTag
             string tip = this.name + "\nDist " + str.tostring(dist, format.mintick) + "  " + modeTag + "\n0 = " + str.tostring(this.sessOpen, format.mintick)
             string shortName = str.length(this.name) <= 6 ? this.name : str.substring(this.name, 0, 6)
-            d.lab := label.new(leftBar, this.sessOpen, shortName, style = label.style_label_right, textalign = text.align_left, textcolor = color.white, color = color.new(upC, 0), size = size.tiny, tooltip = tip)
+            // Same session color/transparency as input; tiny
+            d.lab := label.new(leftBar, this.sessOpen, shortName, style = label.style_label_right, textalign = text.align_left, textcolor = color.new(upC, 0), color = upC, size = size.tiny, tooltip = tip)
+        // Optional fib 0 end labels
+        if showLevelRatios or showLevelPrices
+            int lx0 = rightBar + 1
+            string zTxt = ""
+            if showLevelRatios
+                zTxt := "0"
+            if showLevelPrices
+                string zP = str.tostring(this.sessOpen, format.mintick)
+                zTxt := zTxt == "" ? zP : zTxt + " " + zP
+            d.levelLabs.push(label.new(lx0, this.sessOpen, zTxt, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(upC, 0), size = size.tiny))
         this.active := d
         true
 
