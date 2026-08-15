@@ -640,7 +640,7 @@ method dispose(FibDraw this) =>
 method dimDraw(FibDraw this, int extraTransp) =>
     // No line.get_color / box.get_bgcolor / label.get_textcolor in Pine — use stored colors.
     int t = math.min(95, extraTransp)
-    int boxT = math.min(95, 80 + t / 3)
+    int boxT = math.min(95, zoneFillTransp + t / 2)
     color upDim = color.new(this.upC, t)
     color dnDim = color.new(this.dnC, t)
     color upBox = color.new(this.upC, boxT)
@@ -659,11 +659,11 @@ method dimDraw(FibDraw this, int extraTransp) =>
     if not na(this.upZones)
         for bx in this.upZones
             bx.set_bgcolor(upBox)
-            bx.set_border_color(upDim)
+            bx.set_border_color(zoneBorder(this.upC))
     if not na(this.dnZones)
         for bx in this.dnZones
             bx.set_bgcolor(dnBox)
-            bx.set_border_color(dnDim)
+            bx.set_border_color(zoneBorder(this.dnC))
     if not na(this.sessBox)
         this.sessBox.set_bgcolor(sessBoxFill(this.upC))
         this.sessBox.set_border_color(sessBoxBorder(this.upC))
