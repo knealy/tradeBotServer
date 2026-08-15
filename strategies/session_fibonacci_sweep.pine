@@ -134,7 +134,7 @@ bool  oneSetupPerSess = input.bool(false, "One setup per session", group = SIGNA
 bool  requireConfirm  = input.bool(true, "Require sweep confirmation", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Wick must pierce the zone, then close back toward fib 0 (inside) before a fade prints. Cuts fake sweeps.")
 bool  requireFullPierce = input.bool(true, "Require full pierce (far edge)", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "On: high/low must reach the far edge of the zone. Off: entering the near edge is enough.")
 bool  requireIfvg     = input.bool(false, "Confirm with sweep + IFVG", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "Also require a recent inverted FVG in the fade direction overlapping the swept zone (bearish IFVG for shorts, bullish IFVG for longs).")
-bool  showIfvg        = input.bool(false, "Show inverted FVG markers", group = SIGNAL_GROUP, tooltip = "Draw IFVG boxes when a 3-candle FVG is closed through (inverted). Bullish IFVG = support; bearish IFVG = resistance.")
+bool  showIfvg        = input.bool(false, "Show inverted FVG markers", group = SIGNAL_GROUP, tooltip = "Draw a small grey box from the original FVG (left edge + height) through the bar that closes through it (right edge = inversion).")
 int   ifvgLookback    = input.int(20, "IFVG lookback (bars)", minval = 3, maxval = 100, group = SIGNAL_GROUP, active = enableSignals and (requireIfvg or showIfvg), tooltip = "How far back to keep / match IFVGs for display and confirmation.")
 float stopBufRatio    = input.float(0.15, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
@@ -376,6 +376,7 @@ hasIfvgForFade(int fadeDir, float bandLo, float bandHi) =>
 
 updateIfvgState() =>
     // Detect new 3-candle FVGs and invert when closed through.
+    // Markation: grey box from original FVG start/height → inversion bar.
     if bar_index >= 2
         if low > high[2]
             pendingFvgs.push(PendingFvg.new(startBar = bar_index - 2, top = low, bottom = high[2], dir = 1))
@@ -393,27 +394,19 @@ updateIfvgState() =>
             if invert or expired
                 if invert
                     int idir = -p.dir  // inverted bias
-                    color bc = idir > 0 ? color.new(#089981, 70) : color.new(#f23645, 70)
-                    color bd = idir > 0 ? color.new(#089981, 20) : color.new(#f23645, 20)
                     box bx = na
-                    label lb = na
                     if showIfvg
-                        int x2 = bar_index + math.max(2, ifvgLookback / 4)
-                        bx := box.new(p.startBar, p.top, x2, p.bottom, bgcolor = bc, border_color = bd, border_width = 1, border_style = line.style_dashed)
-                        float midY = (p.top + p.bottom) * 0.5
-                        lb := label.new(bar_index, midY, "iFVG", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color.new(bd, 0), textcolor = color.white, size = size.tiny, tooltip = (idir > 0 ? "Bullish IFVG (support)" : "Bearish IFVG (resistance)") + "\n" + str.tostring(p.bottom, format.mintick) + " – " + str.tostring(p.top, format.mintick))
-                    ifvgMarks.push(IfvgMark.new(startBar = p.startBar, invertBar = bar_index, top = p.top, bottom = p.bottom, dir = idir, bx = bx, lab = lb))
+                        int x1 = p.startBar
+                        int x2 = math.max(x1 + 1, bar_index)  // right edge = inversion bar
+                        color fillC = color.new(color.gray, 72)
+                        color edgeC = color.new(color.gray, 40)
+                        bx := box.new(x1, p.top, x2, p.bottom, bgcolor = fillC, border_color = edgeC, border_width = 1, tooltip = (idir > 0 ? "Bullish IFVG (support)" : "Bearish IFVG (resistance)") + "\nFVG → invert  " + str.tostring(p.bottom, format.mintick) + " – " + str.tostring(p.top, format.mintick))
+                    ifvgMarks.push(IfvgMark.new(startBar = p.startBar, invertBar = bar_index, top = p.top, bottom = p.bottom, dir = idir, bx = bx, lab = na))
                 pendingFvgs.remove(i)
     // Prune old IFVGs
     while ifvgMarks.size() > 0 and (bar_index - ifvgMarks.get(0).invertBar > ifvgLookback or ifvgMarks.size() > 30)
         IfvgMark old = ifvgMarks.shift()
         disposeIfvgMark(old)
-    // Extend visible IFVG boxes while fresh
-    if showIfvg and ifvgMarks.size() > 0
-        for i = 0 to ifvgMarks.size() - 1
-            IfvgMark m = ifvgMarks.get(i)
-            if not na(m.bx) and bar_index - m.invertBar <= ifvgLookback
-                m.bx.set_right(bar_index + 1)
     true
 
 statsTablePos() =>
@@ -510,7 +503,7 @@ fillStatsTable(table t) =>
     table.cell(t, 0, 10, "TP2→TP3", text_color = color.silver, text_size = size.tiny)
     table.cell(t, 1, 10, pctStr(s.tp3, s.tp2), text_color = color.white, text_size = size.tiny)
     table.cell(t, 0, 11, "Confirm", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 11, requireConfirm ? (requireFullPierce ? "full pierce" : "near pierce") : "first touch", text_color = color.white, text_size = size.tiny)
+    table.cell(t, 1, 11, requireConfirm ? ((requireIfvg ? "sweep+IFVG / " : "") + (requireFullPierce ? "full pierce" : "near pierce")) : "first touch", text_color = color.white, text_size = size.tiny)
     true
 
 // -----------------------------------------------------------------------------
