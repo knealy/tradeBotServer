@@ -1,5 +1,5 @@
 //@version=6
-indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 1000)
 
 // =============================================================================
 // Session Fibonacci Sweep — visual overlay + fade setups
