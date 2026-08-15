@@ -66,25 +66,25 @@ showFirst         = input.bool(true, "Show session", group = FIRST_SESSION_GROUP
 firstSessionName  = input.string("Tokyo", "Displayed name", group = FIRST_SESSION_GROUP, display = display.none, active = showFirst)
 firstSessionTime  = input.session("1830-0000", "Session time", group = FIRST_SESSION_GROUP, display = display.none, active = showFirst)
 firstSessionTZ    = input.string(TZ_ET, "Session timezone", group = FIRST_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showFirst)
-firstSessionColor = input.color(color.new(#2962FF, 85), "Session color", group = FIRST_SESSION_GROUP, active = showFirst)
+firstSessionColor = input.color(color.new(#2962FF, 0), "Session color", group = FIRST_SESSION_GROUP, active = showFirst)
 
 showSecond         = input.bool(true, "Show session", group = SECOND_SESSION_GROUP, display = display.none)
 secondSessionName  = input.string("London", "Displayed name", group = SECOND_SESSION_GROUP, display = display.none, active = showSecond)
 secondSessionTime  = input.session("0130-0500", "Session time", group = SECOND_SESSION_GROUP, display = display.none, active = showSecond)
 secondSessionTZ    = input.string(TZ_ET, "Session timezone", group = SECOND_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showSecond)
-secondSessionColor = input.color(color.new(#FF9800, 85), "Session color", group = SECOND_SESSION_GROUP, active = showSecond)
+secondSessionColor = input.color(color.new(#FF9800, 0), "Session color", group = SECOND_SESSION_GROUP, active = showSecond)
 
 showThird         = input.bool(true, "Show session", group = THIRD_SESSION_GROUP, display = display.none)
 thirdSessionName  = input.string("NY AM", "Displayed name", group = THIRD_SESSION_GROUP, display = display.none, active = showThird)
 thirdSessionTime  = input.session("0800-1100", "Session time", group = THIRD_SESSION_GROUP, display = display.none, active = showThird)
 thirdSessionTZ    = input.string(TZ_ET, "Session timezone", group = THIRD_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showThird)
-thirdSessionColor = input.color(color.new(#089981, 85), "Session color", group = THIRD_SESSION_GROUP, active = showThird)
+thirdSessionColor = input.color(color.new(#089981, 0), "Session color", group = THIRD_SESSION_GROUP, active = showThird)
 
 showFourth         = input.bool(true, "Show session", group = FOURTH_SESSION_GROUP, display = display.none)
 fourthSessionName  = input.string("NY PM", "Displayed name", group = FOURTH_SESSION_GROUP, display = display.none, active = showFourth)
 fourthSessionTime  = input.session("1300-1600", "Session time", group = FOURTH_SESSION_GROUP, display = display.none, active = showFourth)
 fourthSessionTZ    = input.string(TZ_ET, "Session timezone", group = FOURTH_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showFourth)
-fourthSessionColor = input.color(color.new(#7E57C2, 85), "Session color", group = FOURTH_SESSION_GROUP, active = showFourth)
+fourthSessionColor = input.color(color.new(#7E57C2, 0), "Session color", group = FOURTH_SESSION_GROUP, active = showFourth)
 
 // -----------------------------------------------------------------------------
 // Levels → Zones → Range → Display → Signals  (group order = first input order)
@@ -107,6 +107,7 @@ bool showZoneFull   = input.bool(false, "0.8365–1.0 full range",    group = ZO
 bool showZoneExt    = input.bool(true, "1.382–1.618 extension",     group = ZONES_GROUP)
 bool showZoneMidlines = input.bool(false, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (same idea as 1.5 between 1.382–1.618).")
 bool showExtMidline = input.bool(false, "1.5 midline in extension",  group = ZONES_GROUP, tooltip = "Kept for compatibility; also covered when Midlines in each zone is on.")
+int  zoneFillTransp = input.int(70, "Zone fill transparency", minval = 40, maxval = 92, group = ZONES_GROUP, tooltip = "Lower = more opaque fills. Session color pickers stay for hue; this sets fill opacity so zones stay visible on dark charts.")
 bool showZoneNest   = input.bool(false, "Nest zone sets (vertical connectors)", group = ZONES_GROUP, tooltip = "Inset zones by nest step. Draws one vertical on the outer zone (left) and one on the inner zone (right) only.")
 int  nestStepBars   = input.int(1, "Nest step (bars)", minval = 1, maxval = 20, group = ZONES_GROUP, active = showZoneNest, tooltip = "How many bars to inset each nested zone set from the previous.")
 
@@ -121,18 +122,18 @@ int    historyKeep   = input.int(2, "Completed sessions to keep", minval = 0, ma
 int    historyDim    = input.int(55, "History extra transparency", minval = 0, maxval = 90, group = DISPLAY_GROUP)
 float  gridWidthFrac = input.float(0.85, "Grid width (× session)", minval = 0.50, maxval = 1.00, step = 0.01, group = DISPLAY_GROUP, tooltip = "Fraction of the session span to draw. Lower = shorter boxes, less overlap at session boundaries.")
 int    gridEndTrim   = input.int(3, "Trim bars from right edge", minval = 0, maxval = 50, group = DISPLAY_GROUP, tooltip = "Extra bars clipped from the scheduled session end so neighboring sessions do not butt into each other.")
-bool   showSessionBox = input.bool(false, "Show session high/low box", group = DISPLAY_GROUP)
+bool   showSessionBox = input.bool(false, "Show session high/low box", group = DISPLAY_GROUP, tooltip = "Live session range box with a visible border + soft fill (not borderless).")
 bool   highlightTouch = input.bool(true, "Highlight touched zones", group = DISPLAY_GROUP)
 int    lineWidth     = input.int(1, "Line width", minval = 1, maxval = 4, group = DISPLAY_GROUP)
-color  downColor     = input.color(color.new(#f23645, 85), "Down-side color", group = DISPLAY_GROUP)
+color  downColor     = input.color(color.new(#f23645, 0), "Down-side color", group = DISPLAY_GROUP, tooltip = "Hue for down-side levels/zones. Fill opacity is controlled by Zone fill transparency.")
 
 bool  enableSignals   = input.bool(true, "Show fade setups on sweep", group = SIGNAL_GROUP, tooltip = "When price first sweeps a zone, mark fade entry / stop / TP1–TP3 for that session.")
 bool  oneSetupPerSess = input.bool(false, "One setup per session", group = SIGNAL_GROUP, active = enableSignals, tooltip = "If on, only the first qualifying setup in a session prints. Turn off to allow one setup per zone/side.")
 bool  requireConfirm  = input.bool(true, "Require sweep confirmation", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Wick must pierce the zone, then close back toward fib 0 (inside) before a fade prints. Cuts fake sweeps.")
 bool  requireFullPierce = input.bool(true, "Require full pierce (far edge)", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "On: high/low must reach the far edge of the zone. Off: entering the near edge is enough.")
 bool  requireIfvg     = input.bool(false, "Confirm with sweep + IFVG", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "Also require a recent inverted FVG in the fade direction overlapping the swept zone (bearish IFVG for shorts, bullish IFVG for longs).")
-bool  showIfvg        = input.bool(false, "Show inverted FVG markers", group = SIGNAL_GROUP, tooltip = "Draw a small grey box from the original FVG (left edge + height) through the bar that closes through it (right edge = inversion).")
-int   ifvgLookback    = input.int(20, "IFVG lookback (bars)", minval = 3, maxval = 100, group = SIGNAL_GROUP, active = enableSignals and (requireIfvg or showIfvg), tooltip = "How far back to keep / match IFVGs for display and confirmation.")
+bool  showIfvg        = input.bool(true, "Show inverted FVG markers", group = SIGNAL_GROUP, tooltip = "Grey box from original FVG (left + height) to the inversion bar. Also drawn automatically when Confirm with sweep + IFVG is on.")
+int   ifvgLookback    = input.int(60, "IFVG lookback (bars)", minval = 3, maxval = 200, group = SIGNAL_GROUP, active = enableSignals and (requireIfvg or showIfvg), tooltip = "How far back to keep / match IFVGs for display and confirmation.")
 float stopBufRatio    = input.float(0.15, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(false, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "On: each new setup deletes the previous marker. Off: keep every fade marker in the session (pair with One setup per session off).")
@@ -239,6 +240,22 @@ zoneShortName(string z) =>
 // bearish FVG → close above top). Bullish IFVG acts as support; bearish as resistance.
 overlapsBand(float aLo, float aHi, float bLo, float bHi) =>
     math.min(aHi, bHi) >= math.max(aLo, bLo)
+
+// Re-apply transparency so session hue pickers can stay opaque while fills stay readable.
+zoneFill(color c) =>
+    color.new(c, zoneFillTransp)
+
+zoneBorder(color c) =>
+    color.new(c, math.max(0, zoneFillTransp - 40))
+
+sessBoxFill(color c) =>
+    color.new(c, math.min(92, zoneFillTransp + 12))
+
+sessBoxBorder(color c) =>
+    color.new(c, 25)
+
+drawIfvgBoxes() =>
+    showIfvg or requireIfvg
 
 // -----------------------------------------------------------------------------
 // Types
@@ -375,6 +392,7 @@ hasIfvgForFade(int fadeDir, float bandLo, float bandHi) =>
 updateIfvgState() =>
     // Detect new 3-candle FVGs and invert when closed through.
     // Markation: grey box from original FVG start/height → inversion bar.
+    bool drawBox = drawIfvgBoxes()
     if bar_index >= 2
         if low > high[2]
             pendingFvgs.push(PendingFvg.new(startBar = bar_index - 2, top = low, bottom = high[2], dir = 1))
@@ -393,11 +411,12 @@ updateIfvgState() =>
                 if invert
                     int idir = -p.dir  // inverted bias
                     box bx = na
-                    if showIfvg
+                    if drawBox
                         int x1 = p.startBar
                         int x2 = math.max(x1 + 1, bar_index)  // right edge = inversion bar
-                        color fillC = color.new(color.gray, 72)
-                        color edgeC = color.new(color.gray, 40)
+                        // Visible on dark charts (not near-black grey)
+                        color fillC = color.new(#9E9E9E, 50)
+                        color edgeC = color.new(#CFCFCF, 0)
                         bx := box.new(x1, p.top, x2, p.bottom, bgcolor = fillC, border_color = edgeC, border_width = 1)
                     ifvgMarks.push(IfvgMark.new(startBar = p.startBar, invertBar = bar_index, top = p.top, bottom = p.bottom, dir = idir, bx = bx, lab = na))
                 pendingFvgs.remove(i)
@@ -547,8 +566,8 @@ method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color u
         int x2 = this.endBar - inset
         if x2 <= x1
             x2 := x1 + 1
-        box ub = box.new(x1, this.openPx + hi, x2, this.openPx + lo, bgcolor = upC, border_color = color.new(upC, 50), border_width = 1)
-        box db = box.new(x1, this.openPx - lo, x2, this.openPx - hi, bgcolor = dnC, border_color = color.new(dnC, 50), border_width = 1)
+        box ub = box.new(x1, this.openPx + hi, x2, this.openPx + lo, bgcolor = zoneFill(upC), border_color = zoneBorder(upC), border_width = 1)
+        box db = box.new(x1, this.openPx - lo, x2, this.openPx - hi, bgcolor = zoneFill(dnC), border_color = zoneBorder(dnC), border_width = 1)
         this.boxes.push(ub)
         this.boxes.push(db)
         this.upZones.push(ub)
@@ -646,7 +665,8 @@ method dimDraw(FibDraw this, int extraTransp) =>
             bx.set_bgcolor(dnBox)
             bx.set_border_color(dnDim)
     if not na(this.sessBox)
-        this.sessBox.set_bgcolor(color.new(this.upC, math.min(95, 92 + t / 4)))
+        this.sessBox.set_bgcolor(sessBoxFill(this.upC))
+        this.sessBox.set_border_color(sessBoxBorder(this.upC))
     if not na(this.lab)
         this.lab.set_textcolor(upDim)
         this.lab.set_color(color.new(this.upC, math.min(95, color.t(this.upC) + t / 2)))
@@ -796,8 +816,8 @@ method beginGrid(SessionState this) =>
         d.addBothZones(R_EXT_LO,   R_EXT_HI,   showZoneExt,   upC, dnC, "extension", nestExt)
 
         if showSessionBox
-            // Box always spans the true session start → scheduled end
-            d.sessBox := box.new(this.startBar, high, rightBar, low, bgcolor = color.new(upC, 92), border_color = na)
+            // Live H–L box: soft fill + visible border (border was na → looked empty)
+            d.sessBox := box.new(this.startBar, high, rightBar, low, bgcolor = sessBoxFill(upC), border_color = sessBoxBorder(upC), border_width = 1)
 
         if showOpenLabels
             string modeTag = rangeMode == RANGE_ATR ? "ATR(" + str.tostring(atrLen) + ")" : "prev"
@@ -876,12 +896,12 @@ method markTouches(FibDraw this, color upC, color dnC) =>
                     this.upTouched.set(i, true)
                     ub.set_border_color(color.new(upC, 0))
                     ub.set_border_width(2)
-                    ub.set_bgcolor(color.new(upC, 70))
+                    ub.set_bgcolor(color.new(upC, math.max(40, zoneFillTransp - 15)))
                 if not this.dnTouched.get(i) and touchesBand(high, low, dnLo, dnHi)
                     this.dnTouched.set(i, true)
                     db.set_border_color(color.new(dnC, 0))
                     db.set_border_width(2)
-                    db.set_bgcolor(color.new(dnC, 70))
+                    db.set_bgcolor(color.new(dnC, math.max(40, zoneFillTransp - 15)))
         true
 
 method printFade(FibDraw this, color accent, string sessName, int sideSign, string zName) =>
