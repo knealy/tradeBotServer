@@ -45,10 +45,10 @@ ZONE_ORDER: Tuple[str, ...] = ("inner", "mid", "full", "extension")
 
 # Default session clocks in America/New_York (same as Pine defaults)
 DEFAULT_SESSIONS: Dict[str, Tuple[str, str]] = {
-    "Tokyo": ("19:00", "00:00"),
-    "London": ("00:00", "08:00"),
-    "NY AM": ("08:00", "13:00"),
-    "NY PM": ("13:00", "19:00"),
+    "Tokyo": ("18:30", "00:00"),
+    "London": ("01:30", "05:00"),
+    "NY AM": ("08:00", "11:00"),
+    "NY PM": ("13:00", "16:00"),
 }
 
 DEFAULT_TIMEZONE = "America/New_York"
@@ -157,7 +157,7 @@ def avg_like_session_ranges(ranges: Sequence[float], n: int) -> Optional[float]:
 def resolve_distance(
     last_range: Optional[float],
     ranges: Sequence[float],
-    mode: Literal["previous", "atr"] = "previous",
+    mode: Literal["previous", "atr"] = "atr",
     atr_len: int = 5,
     min_tick: float = 0.0,
 ) -> Optional[float]:
@@ -260,7 +260,7 @@ def build_fade_setup(
     distance: float,
     swept_side: Side,
     zone: str,
-    stop_buffer_ratio: float = 0.05,
+    stop_buffer_ratio: float = 0.15,
     entry_at: Literal["mid", "near", "far"] = "mid",
 ) -> FadeSetup:
     """
@@ -325,6 +325,71 @@ def ib_anchor_ready(
     return prev_bar_time_ms < end
 
 
+def detect_fvg(
+    high: float,
+    low: float,
+    high_2: float,
+    low_2: float,
+) -> Optional[Tuple[Side, float, float]]:
+    """
+    Classic 3-candle FVG on the current bar vs bar[2].
+
+    Returns (side, top, bottom) where side ``up`` = bullish FVG, ``down`` = bearish.
+    If both form (rare), prefer bullish.
+    """
+    if low > high_2:
+        return ("up", low, high_2)
+    if high < low_2:
+        return ("down", low_2, high)
+    return None
+
+
+def fvg_inverted(
+    close: float,
+    top: float,
+    bottom: float,
+    fvg_side: Side,
+) -> bool:
+    """True when close trades through an FVG against its original bias."""
+    if fvg_side == "up":
+        return close < bottom
+    return close > top
+
+
+def ifvg_dir_after_invert(fvg_side: Side) -> Side:
+    """Bullish FVG inverted → bearish IFVG (resistance); opposite for bearish FVG."""
+    return "down" if fvg_side == "up" else "up"
+
+
+def overlaps_band(a_lo: float, a_hi: float, b_lo: float, b_hi: float) -> bool:
+    return min(a_hi, b_hi) >= max(a_lo, b_lo)
+
+
+def sweep_ifvg_confirmed(
+    high: float,
+    low: float,
+    close: float,
+    band: ZoneBand,
+    side: Side,
+    ifvg_top: float,
+    ifvg_bottom: float,
+    ifvg_side: Side,
+    full_pierce: bool = True,
+) -> bool:
+    """
+    Sweep confirmation plus overlapping IFVG in the fade direction.
+
+    Up-sweep fade (short) wants bearish IFVG (``down``).
+    Down-sweep fade (long) wants bullish IFVG (``up``).
+    """
+    if not sweep_confirmed(high, low, close, band, side, full_pierce=full_pierce):
+        return False
+    want: Side = "down" if side == "up" else "up"
+    if ifvg_side != want:
+        return False
+    return overlaps_band(ifvg_bottom, ifvg_top, band.lo, band.hi)
+
+
 def levels_as_dict(book: LevelBook) -> Dict[str, Dict[str, float]]:
     """JSON-friendly dump of projected levels."""
     return {
@@ -356,5 +421,10 @@ __all__ = [
     "first_swept_zone",
     "build_fade_setup",
     "ib_anchor_ready",
+    "detect_fvg",
+    "fvg_inverted",
+    "ifvg_dir_after_invert",
+    "overlaps_band",
+    "sweep_ifvg_confirmed",
     "levels_as_dict",
 ]

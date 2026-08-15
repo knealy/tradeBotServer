@@ -8,15 +8,21 @@ from strategies.session_fibonacci_sweep_math import (
     FIB_RATIOS,
     ZONES,
     ZONE_ORDER,
+    DEFAULT_SESSIONS,
     avg_like_session_ranges,
     build_fade_setup,
+    detect_fvg,
     first_swept_zone,
+    fvg_inverted,
     ib_anchor_ready,
+    ifvg_dir_after_invert,
     next_wider_zone,
+    overlaps_band,
     price_touches_zone,
     project_levels,
     resolve_distance,
     sweep_confirmed,
+    sweep_ifvg_confirmed,
     sweep_pierced,
     zone_band,
 )
@@ -60,8 +66,17 @@ def test_resolve_distance_modes():
     ranges = [8.0, 10.0, 12.0, 14.0, 16.0]
     assert resolve_distance(9.0, ranges, mode="previous") == 9.0
     assert resolve_distance(9.0, ranges, mode="atr", atr_len=3) == pytest.approx(14.0)
+    # Default mode is ATR of last 5
+    assert resolve_distance(9.0, ranges) == pytest.approx(12.0)
     assert resolve_distance(None, [], mode="previous") is None
     assert resolve_distance(0.0, ranges, mode="previous", min_tick=0.25) is None
+
+
+def test_default_sessions_match_pine():
+    assert DEFAULT_SESSIONS["Tokyo"] == ("18:30", "00:00")
+    assert DEFAULT_SESSIONS["London"] == ("01:30", "05:00")
+    assert DEFAULT_SESSIONS["NY AM"] == ("08:00", "11:00")
+    assert DEFAULT_SESSIONS["NY PM"] == ("13:00", "16:00")
 
 
 def test_avg_like_session_ranges():
@@ -123,3 +138,26 @@ def test_sweep_confirmation_up_and_down():
     dn = zone_band(100.0, 10.0, "inner", "down")
     assert sweep_confirmed(100.0, 97.1, 98.0, dn, "down", full_pierce=True)
     assert not sweep_confirmed(100.0, 97.1, 97.5, dn, "down", full_pierce=True)
+
+
+def test_ifvg_detect_invert_and_sweep_confirm():
+    # Bullish FVG: low > high[2]
+    fvg = detect_fvg(high=103.0, low=102.5, high_2=102.0, low_2=101.0)
+    assert fvg == ("up", 102.5, 102.0)
+    assert fvg_inverted(101.5, 102.5, 102.0, "up")
+    assert ifvg_dir_after_invert("up") == "down"
+    assert overlaps_band(102.0, 102.5, 102.36, 102.795)
+
+    up = zone_band(100.0, 10.0, "inner", "up")
+    # Sweep confirm + overlapping bearish IFVG
+    assert sweep_ifvg_confirmed(
+        102.9, 100.0, 102.0, up, "up", ifvg_top=102.5, ifvg_bottom=102.0, ifvg_side="down"
+    )
+    # Wrong IFVG direction
+    assert not sweep_ifvg_confirmed(
+        102.9, 100.0, 102.0, up, "up", ifvg_top=102.5, ifvg_bottom=102.0, ifvg_side="up"
+    )
+    # Non-overlapping IFVG
+    assert not sweep_ifvg_confirmed(
+        102.9, 100.0, 102.0, up, "up", ifvg_top=110.0, ifvg_bottom=109.0, ifvg_side="down"
+    )
