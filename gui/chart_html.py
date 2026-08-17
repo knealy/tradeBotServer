@@ -5006,10 +5006,109 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
 
+    _session_fib_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+    _SESSION_FIB_TTL_SEC = 20.0
+
+    async def handle_session_fib_sweep(request):
+        """Session Fibonacci Sweep zone overlays for the master chart GUI."""
+        import copy
+        import time
+
+        try:
+            from strategies.session_fibonacci_sweep_math import build_session_fib_overlays
+
+            sym = (request.query.get("symbol") or getattr(trading_bot, "symbol", None) or "MNQ")
+            sym = str(sym).strip().upper()
+            tf = (request.query.get("timeframe") or "5m").strip().lower()
+            try:
+                limit = int(request.query.get("limit", "3500"))
+            except (TypeError, ValueError):
+                limit = 3500
+            limit = max(200, min(8000, limit))
+            try:
+                max_sessions = int(request.query.get("max_sessions", "4"))
+            except (TypeError, ValueError):
+                max_sessions = 4
+            max_sessions = max(0, min(16, max_sessions))
+            try:
+                atr_len = int(request.query.get("atr_len", "5"))
+            except (TypeError, ValueError):
+                atr_len = 5
+            atr_len = max(1, min(50, atr_len))
+            try:
+                ib_minutes = int(request.query.get("ib_minutes", "30"))
+            except (TypeError, ValueError):
+                ib_minutes = 30
+            ib_minutes = max(1, min(240, ib_minutes))
+            zones_raw = (request.query.get("zones") or "inner,mid,extension").strip()
+            zone_names = [z.strip() for z in zones_raw.split(",") if z.strip()]
+            if not zone_names:
+                zone_names = ["inner", "mid", "extension"]
+            delay_until_ib = request.query.get("delay_until_ib", "1") not in ("0", "false", "False")
+            range_mode = (request.query.get("range_mode") or "atr").strip().lower()
+            if range_mode not in ("atr", "previous"):
+                range_mode = "atr"
+
+            cache_key = "|".join(
+                [
+                    sym,
+                    tf,
+                    str(limit),
+                    str(max_sessions),
+                    str(atr_len),
+                    str(ib_minutes),
+                    ",".join(zone_names),
+                    "1" if delay_until_ib else "0",
+                    range_mode,
+                ]
+            )
+            now = time.time()
+            hit = _session_fib_cache.get(cache_key)
+            if hit and hit[0] > now:
+                response = web.json_response(copy.deepcopy(hit[1]))
+                response.headers["Access-Control-Allow-Origin"] = "*"
+                response.headers["X-Session-Fib-Cache"] = "hit"
+                return response
+
+            bars_raw = await trading_bot.get_historical_data(
+                symbol=sym, timeframe=tf, limit=limit,
+            )
+            chart_bars = broker_bars_to_chart_rows(bars_raw or [])
+            overlays = build_session_fib_overlays(
+                chart_bars,
+                atr_len=atr_len,
+                ib_minutes=ib_minutes,
+                delay_until_ib=delay_until_ib,
+                range_mode=range_mode,  # type: ignore[arg-type]
+                zone_names=zone_names,
+                max_sessions=max_sessions,
+            )
+            payload = {
+                "symbol": sym,
+                "timeframe": tf,
+                "bar_count": len(chart_bars),
+                "atr_len": atr_len,
+                "ib_minutes": ib_minutes,
+                "zones": zone_names,
+                "sessions": overlays,
+            }
+            _session_fib_cache[cache_key] = (now + _SESSION_FIB_TTL_SEC, copy.deepcopy(payload))
+            response = web.json_response(payload)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["X-Session-Fib-Cache"] = "miss"
+            return response
+        except Exception as e:
+            logger.error("session_fib_sweep error: %s", e, exc_info=True)
+            response = web.json_response({"error": str(e), "sessions": []}, status=500)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            return response
+
     app.router.add_get('/api/chart/strategy/status', handle_strategy_status)
     app.router.add_options('/api/chart/strategy/status', handle_options)
     app.router.add_get('/api/chart/range_overlays', handle_range_overlays)
     app.router.add_options('/api/chart/range_overlays', handle_options)
+    app.router.add_get('/api/chart/session_fib_sweep', handle_session_fib_sweep)
+    app.router.add_options('/api/chart/session_fib_sweep', handle_options)
     app.router.add_get('/api/chart/strategy/details/{name}', handle_strategy_details)
     app.router.add_options('/api/chart/strategy/details/{name}', handle_options)
     app.router.add_post('/api/chart/strategy/start', handle_strategy_start)
