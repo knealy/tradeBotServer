@@ -186,22 +186,6 @@ def _et_unix(y, m, d, hh, mm):
     return int(datetime(y, m, d, hh, mm, tzinfo=tz).timestamp())
 
 
-def _flat_bars(start_sec, n, step=60, px=100.0, rng=2.0):
-    bars = []
-    for i in range(n):
-        t = start_sec + i * step
-        bars.append(
-            {
-                "time": t,
-                "open": px,
-                "high": px + rng / 2,
-                "low": px - rng / 2,
-                "close": px,
-            }
-        )
-    return bars
-
-
 def test_build_session_fib_overlays_ny_am_atr():
     # Seed several prior NY AM sessions so ATR(5) has distance, then print one.
     bars = []
