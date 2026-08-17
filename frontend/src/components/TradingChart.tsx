@@ -21,8 +21,6 @@ import { analyticsApi, orderApi } from '../services/api'
 import { wsService } from '../services/websocket'
 import type { HistoricalBar, HistoricalDataResponse, Position, Order } from '../types'
 import { useChartTheme, getCandlestickColors, getVolumeColors } from '../hooks/useChartTheme'
-import SessionFibonacciSweepOverlay from './overlays/SessionFibonacciSweepOverlay'
-import type { OverlayBar } from '../utils/sessionFibonacciSweepMath'
 
 // Convert timestamp to Unix seconds (UTC)
 // Note: Chart displays times in UTC, so we keep timestamps as-is
@@ -151,10 +149,6 @@ export default function TradingChart({
   
   // Moving Average toggle
   const [showMAs, setShowMAs] = useState(true)
-  // Session Fibonacci Sweep overlay (Tokyo / London / NY AM / NY PM)
-  const [showSessionFib, setShowSessionFib] = useState(true)
-  const [chartApi, setChartApi] = useState<IChartApi | null>(null)
-  const [candleApi, setCandleApi] = useState<ISeriesApi<'Candlestick'> | null>(null)
   
   // Chart theme configuration
   const chartTheme = useChartTheme({ theme: 'dark', height })
@@ -448,8 +442,6 @@ export default function TradingChart({
       volumeSeriesRef.current = volumeSeries
       maSeriesRefs.current = maSeries
       markersPluginRef.current = createSeriesMarkers(candlestickSeries, [])
-      setChartApi(newChart)
-      setCandleApi(candlestickSeries)
       setChartInitialized(true)
 
       resizeObserver = new ResizeObserver((entries) => {
@@ -483,8 +475,6 @@ export default function TradingChart({
       if (chart) {
         chart.remove()
       }
-      setChartApi(null)
-      setCandleApi(null)
       setChartInitialized(false)
     }
   }, [height, chartTheme]) // Chart initialization - timeframe changes handled separately
@@ -548,17 +538,6 @@ export default function TradingChart({
 
     return { candlestickData, volumeData }
   }, [data])
-
-  const sessionFibBars: OverlayBar[] = useMemo(() => {
-    if (!chartData?.candlestickData?.length) return []
-    return chartData.candlestickData.map((b) => ({
-      time: Number(b.time),
-      open: b.open,
-      high: b.high,
-      low: b.low,
-      close: b.close,
-    }))
-  }, [chartData])
 
   // Calculate Moving Averages from chart data
   const maData = useMemo(() => {
@@ -1568,18 +1547,6 @@ export default function TradingChart({
               />
               <span className="whitespace-nowrap">Moving Averages</span>
             </label>
-            <label
-              className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-400 cursor-pointer shrink-0"
-              title="Tokyo / London / NY AM / NY PM fib 0 + sweep zones (ATR distance, IB delay)"
-            >
-              <input
-                type="checkbox"
-                checked={showSessionFib}
-                onChange={(e) => setShowSessionFib(e.target.checked)}
-                className="rounded w-3 h-3 sm:w-4 sm:h-4"
-              />
-              <span className="whitespace-nowrap">Session Fib Sweep</span>
-            </label>
             <label className="flex items-center gap-1.5 sm:gap-2 text-xs text-slate-400 cursor-pointer shrink-0">
               <input
                 type="checkbox"
@@ -1605,16 +1572,6 @@ export default function TradingChart({
       {/* Chart Container */}
       <div className="relative rounded overflow-hidden" style={{ minHeight: height }}>
         <div ref={chartContainerRef} className="rounded overflow-hidden" style={{ minHeight: height }} />
-
-        {chartInitialized && (
-          <SessionFibonacciSweepOverlay
-            chart={chartApi}
-            series={candleApi}
-            container={chartContainerRef.current}
-            bars={sessionFibBars}
-            enabled={showSessionFib}
-          />
-        )}
         
         {/* OHLC Display - Top Left Overlay (TopStepX Style) - Shows bar under crosshair */}
         {ohlcDisplay && (
