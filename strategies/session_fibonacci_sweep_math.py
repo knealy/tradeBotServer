@@ -55,7 +55,13 @@ DEFAULT_SESSIONS: Dict[str, Tuple[str, str]] = {
 
 DEFAULT_TIMEZONE = "America/New_York"
 DEFAULT_ATR_LEN = 2
-DEFAULT_ZONE_NAMES: Tuple[str, ...] = ("inner", "mid", "extension")
+DEFAULT_ZONE_NAMES: Tuple[str, ...] = ("inner", "mid")
+DEFAULT_SESSION_ZONES: Dict[str, Tuple[str, ...]] = {
+    "Tokyo": ("inner", "mid"),
+    "London": ("mid", "full"),
+    "NY AM": ("inner", "mid"),
+    "NY PM": ("inner", "mid", "extension"),
+}
 
 Side = Literal["up", "down"]
 FadeSide = Literal["short", "long"]  # fade up-sweep => short; fade down-sweep => long
@@ -617,7 +623,7 @@ def build_session_fib_overlays(
     max_sessions: int = 8,
     timezone_name: str = DEFAULT_TIMEZONE,
     sessions: Optional[Dict[str, Tuple[str, str]]] = None,
-    grid_width_frac: float = 0.85,
+    grid_width_frac: float = 1.0,
     grid_end_trim_sec: int = 180,
     min_tick: float = 0.0,
 ) -> List[Dict[str, Any]]:
@@ -632,7 +638,11 @@ def build_session_fib_overlays(
     tz = ZoneInfo(timezone_name or DEFAULT_TIMEZONE)
     sess_map = sessions or DEFAULT_SESSIONS
     default_zones = normalize_zone_names(zone_names)
-    per_sess = session_zones or {}
+    if session_zones:
+        per_sess = dict(DEFAULT_SESSION_ZONES)
+        per_sess.update({k: normalize_zone_names(v) for k, v in session_zones.items()})
+    else:
+        per_sess = {n: default_zones for n in (sessions or DEFAULT_SESSIONS)}
     trackers = [
         _SessionTracker(
             name=n,
@@ -757,6 +767,7 @@ __all__ = [
     "DEFAULT_TIMEZONE",
     "DEFAULT_ATR_LEN",
     "DEFAULT_ZONE_NAMES",
+    "DEFAULT_SESSION_ZONES",
     "LevelBook",
     "ZoneBand",
     "FadeSetup",

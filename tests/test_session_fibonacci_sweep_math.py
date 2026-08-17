@@ -216,7 +216,7 @@ def test_parse_and_session_membership():
 
 def test_normalize_zone_names():
     assert normalize_zone_names(["in", "ext", "mid"]) == ("inner", "extension", "mid")
-    assert normalize_zone_names([]) == ("inner", "mid", "extension")
+    assert normalize_zone_names([]) == ("inner", "mid")
     assert normalize_zone_names(["full", "full", "nope"]) == ("full",)
 
 

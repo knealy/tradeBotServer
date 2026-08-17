@@ -5017,6 +5017,8 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         try:
             from strategies.session_fibonacci_sweep_math import (
                 DEFAULT_ATR_LEN,
+                DEFAULT_SESSION_ZONES,
+                DEFAULT_ZONE_NAMES,
                 build_session_fib_overlays,
                 normalize_zone_names,
             )
@@ -5035,9 +5037,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 limit = 3500
             limit = max(200, min(8000, limit))
             try:
-                max_sessions = int(request.query.get("max_sessions", "4"))
+                max_sessions = int(request.query.get("max_sessions", "5"))
             except (TypeError, ValueError):
-                max_sessions = 4
+                max_sessions = 5
             max_sessions = max(0, min(16, max_sessions))
             try:
                 atr_len = int(request.query.get("atr_len", str(DEFAULT_ATR_LEN)))
@@ -5049,17 +5051,17 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             except (TypeError, ValueError):
                 ib_minutes = 30
             ib_minutes = max(1, min(240, ib_minutes))
-            zone_names = list(_parse_zones(request.query.get("zones"), ("inner", "mid", "extension")))
+            zone_names = list(_parse_zones(request.query.get("zones"), DEFAULT_ZONE_NAMES))
             session_zones = {
-                "Tokyo": _parse_zones(request.query.get("zones_tokyo"), zone_names),
-                "London": _parse_zones(request.query.get("zones_london"), zone_names),
+                "Tokyo": _parse_zones(request.query.get("zones_tokyo"), DEFAULT_SESSION_ZONES["Tokyo"]),
+                "London": _parse_zones(request.query.get("zones_london"), DEFAULT_SESSION_ZONES["London"]),
                 "NY AM": _parse_zones(
                     request.query.get("zones_nyam") or request.query.get("zones_ny_am"),
-                    zone_names,
+                    DEFAULT_SESSION_ZONES["NY AM"],
                 ),
                 "NY PM": _parse_zones(
                     request.query.get("zones_nypm") or request.query.get("zones_ny_pm"),
-                    zone_names,
+                    DEFAULT_SESSION_ZONES["NY PM"],
                 ),
             }
             delay_until_ib = request.query.get("delay_until_ib", "1") not in ("0", "false", "False")
