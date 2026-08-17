@@ -54,6 +54,8 @@ DEFAULT_SESSIONS: Dict[str, Tuple[str, str]] = {
 }
 
 DEFAULT_TIMEZONE = "America/New_York"
+DEFAULT_ATR_LEN = 2
+DEFAULT_ZONE_NAMES: Tuple[str, ...] = ("inner", "mid", "extension")
 
 Side = Literal["up", "down"]
 FadeSide = Literal["short", "long"]  # fade up-sweep => short; fade down-sweep => long
@@ -160,7 +162,7 @@ def resolve_distance(
     last_range: Optional[float],
     ranges: Sequence[float],
     mode: Literal["previous", "atr"] = "atr",
-    atr_len: int = 5,
+    atr_len: int = DEFAULT_ATR_LEN,
     min_tick: float = 0.0,
 ) -> Optional[float]:
     """
@@ -455,6 +457,7 @@ class _SessionTracker:
     start_hm: str
     end_hm: str
     ranges: List[float] = field(default_factory=list)
+    zone_names: Tuple[str, ...] = DEFAULT_ZONE_NAMES
     was_in: bool = False
     saw_start: bool = False
     grid_started: bool = False
@@ -463,6 +466,20 @@ class _SessionTracker:
     run_high: Optional[float] = None
     run_low: Optional[float] = None
     active: Optional[Dict[str, Any]] = None
+
+
+def normalize_zone_names(raw: Optional[Iterable[str]]) -> Tuple[str, ...]:
+    """Map aliases (ext/in/md/fl) onto ZONE_ORDER names; drop unknowns."""
+    aliases = {"ext": "extension", "in": "inner", "md": "mid", "fl": "full"}
+    out: List[str] = []
+    seen = set()
+    for item in raw or ():
+        key = str(item).strip().lower()
+        key = aliases.get(key, key)
+        if key in ZONES and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return tuple(out) if out else DEFAULT_ZONE_NAMES
 
 
 def _zone_payload(anchor: float, distance: float, zone_names: Sequence[str]) -> List[Dict[str, Any]]:
@@ -516,11 +533,12 @@ def _emit_grid(
 def build_session_fib_overlays(
     bars: Sequence[Dict[str, Any]],
     *,
-    atr_len: int = 5,
+    atr_len: int = DEFAULT_ATR_LEN,
     ib_minutes: int = 30,
     delay_until_ib: bool = True,
     range_mode: Literal["atr", "previous"] = "atr",
-    zone_names: Sequence[str] = ("inner", "mid", "extension"),
+    zone_names: Sequence[str] = DEFAULT_ZONE_NAMES,
+    session_zones: Optional[Dict[str, Sequence[str]]] = None,
     max_sessions: int = 8,
     timezone_name: str = DEFAULT_TIMEZONE,
     sessions: Optional[Dict[str, Tuple[str, str]]] = None,
@@ -538,8 +556,15 @@ def build_session_fib_overlays(
         return []
     tz = ZoneInfo(timezone_name or DEFAULT_TIMEZONE)
     sess_map = sessions or DEFAULT_SESSIONS
+    default_zones = normalize_zone_names(zone_names)
+    per_sess = session_zones or {}
     trackers = [
-        _SessionTracker(name=n, start_hm=w[0], end_hm=w[1])
+        _SessionTracker(
+            name=n,
+            start_hm=w[0],
+            end_hm=w[1],
+            zone_names=normalize_zone_names(per_sess.get(n, default_zones)),
+        )
         for n, w in sess_map.items()
     ]
     completed: List[Dict[str, Any]] = []
@@ -607,7 +632,7 @@ def build_session_fib_overlays(
                                 grid_start_sec=t_sec if delay_until_ib else int(tr.start_sec or t_sec),
                                 anchor=float(tr.sess_open),
                                 distance=float(dist),
-                                zone_names=zone_names,
+                                zone_names=tr.zone_names,
                                 grid_width_frac=grid_width_frac,
                                 grid_end_trim_sec=grid_end_trim_sec,
                             )
@@ -651,6 +676,8 @@ __all__ = [
     "ZONE_ORDER",
     "DEFAULT_SESSIONS",
     "DEFAULT_TIMEZONE",
+    "DEFAULT_ATR_LEN",
+    "DEFAULT_ZONE_NAMES",
     "LevelBook",
     "ZoneBand",
     "FadeSetup",
@@ -675,5 +702,6 @@ __all__ = [
     "parse_hhmm_to_minutes",
     "minutes_in_session",
     "session_duration_minutes",
+    "normalize_zone_names",
     "build_session_fib_overlays",
 ]

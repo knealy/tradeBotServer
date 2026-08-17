@@ -399,6 +399,11 @@
   }
   .overlay-strats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
   .overlay-strats label{margin:0;font-size:9px;cursor:pointer}
+  .session-fib-zone-panel{margin-top:4px;padding-top:6px;border-top:1px solid var(--hairline)}
+  .session-fib-zone-panel[hidden]{display:none}
+  .sfib-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;font-size:9px;color:var(--muted)}
+  .sfib-row > span{min-width:42px;color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:9px}
+  .sfib-row label{margin:0;font-size:9px;cursor:pointer;gap:4px}
   .chart-tf-input{
     width:52px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink);
     background:transparent;border:0;padding:0;outline:none;
@@ -789,6 +794,32 @@
               <label><input type="checkbox" id="range-show-orb" onchange="onRangeOverlayChange()"> ORB</label>
               <label title="Session Fibonacci Sweep (Tokyo/London/NY AM/NY PM)"><input type="checkbox" id="range-show-session-fib" onchange="onRangeOverlayChange()"> Session Fib</label>
             </div>
+            <div id="session-fib-zone-panel" class="session-fib-zone-panel" hidden>
+              <div class="sfib-row"><span>Tokyo</span>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="extension" checked onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>London</span>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="extension" checked onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>NY AM</span>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="extension" checked onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>NY PM</span>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="extension" checked onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+            </div>
             <div id="mrr-live-status" class="mrr-live-status" aria-live="polite"></div>
           </div>
         </details>
@@ -1047,6 +1078,7 @@
   const CHART_RANGE_SHOW_MRR_LS_KEY = 'masterv2.chart.rangeShowMrr';
   const CHART_RANGE_SHOW_ORB_LS_KEY = 'masterv2.chart.rangeShowOrb';
   const CHART_RANGE_SHOW_SESSION_FIB_LS_KEY = 'masterv2.chart.rangeShowSessionFib';
+  const CHART_SESSION_FIB_ZONES_LS_KEY = 'masterv2.chart.sessionFibZones';
   const CHART_BG_LS_KEY = 'masterv2.chart.bgColor';
   const CHART_DRAWINGS_LS_PREFIX = 'masterv2.chart.drawings.';
 
@@ -1984,6 +2016,8 @@
     if (orbCb) orbCb.checked = localStorage.getItem(CHART_RANGE_SHOW_ORB_LS_KEY) === '1';
     const fibCb = document.getElementById('range-show-session-fib');
     if (fibCb) fibCb.checked = localStorage.getItem(CHART_RANGE_SHOW_SESSION_FIB_LS_KEY) === '1';
+    restoreSessionFibZoneChecks();
+    syncSessionFibZonePanel();
     sessSel.addEventListener('change', () => {
       if (customInp) customInp.style.display = sessSel.value === 'custom' ? '' : 'none';
     });
@@ -2200,11 +2234,69 @@
     London: { line: 'rgba(255, 152, 0, 0.75)',  fill1: 'rgba(255, 152, 0, 0.18)',  fill2: 'rgba(255, 152, 0, 0.06)',  label: 'LN' },
     'NY AM':{ line: 'rgba(8, 153, 129, 0.75)',  fill1: 'rgba(8, 153, 129, 0.18)',  fill2: 'rgba(8, 153, 129, 0.06)',  label: 'NYA' },
     'NY PM':{ line: 'rgba(126, 87, 194, 0.75)', fill1: 'rgba(126, 87, 194, 0.18)', fill2: 'rgba(126, 87, 194, 0.06)', label: 'NYP' },
-    _down:  { line: 'rgba(242, 54, 69, 0.70)',  fill1: 'rgba(242, 54, 69, 0.16)',  fill2: 'rgba(242, 54, 69, 0.05)',  label: 'dn' },
   };
+  const SESSION_FIB_ZONE_MIX = { inner: 0, mid: 0.38, full: 0, extension: 0.38 };
+  const SESSION_FIB_ZONE_SESSIONS = ['Tokyo', 'London', 'NY AM', 'NY PM'];
+  const SESSION_FIB_ZONE_QUERY = { Tokyo: 'zones_tokyo', London: 'zones_london', 'NY AM': 'zones_nyam', 'NY PM': 'zones_nypm' };
   let __sessionFibSessions = [];
   let __sessionFibSeries = [];
   let __sessionFibFetchGen = 0;
+  function mixRgbTowardWhite(color, mix) {
+    const p = rgbaFromCss(color, 'rgba(41,98,255,.75)');
+    if (typeof p === 'string') return color;
+    const m = Math.max(0, Math.min(1, mix || 0));
+    return {
+      r: Math.round(p.r + (255 - p.r) * m),
+      g: Math.round(p.g + (255 - p.g) * m),
+      b: Math.round(p.b + (255 - p.b) * m),
+    };
+  }
+  function sessionFibZonePalette(base, zoneName, sessionIdx) {
+    const mix = SESSION_FIB_ZONE_MIX[zoneName] != null ? SESSION_FIB_ZONE_MIX[zoneName] : 0;
+    const rgb = mixRgbTowardWhite(base.line, mix);
+    const faded = paletteForSession({
+      line: 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.78)',
+      fill1: 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.20)',
+      fill2: 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.06)',
+      label: base.label,
+    }, sessionIdx);
+    return faded;
+  }
+  function getSessionFibZones() {
+    const out = {};
+    SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+      const names = [];
+      document.querySelectorAll('input[data-sfib-sess="' + sess + '"]').forEach(function(el) {
+        if (el.checked) names.push(el.getAttribute('data-sfib-zone'));
+      });
+      out[sess] = names.length ? names : ['inner'];
+    });
+    return out;
+  }
+  function persistSessionFibZones() {
+    try { localStorage.setItem(CHART_SESSION_FIB_ZONES_LS_KEY, JSON.stringify(getSessionFibZones())); } catch (e) { /* ignore */ }
+  }
+  function restoreSessionFibZoneChecks() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(CHART_SESSION_FIB_ZONES_LS_KEY) || 'null'); } catch (e) { stored = null; }
+    if (!stored || typeof stored !== 'object') return;
+    SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+      const want = stored[sess];
+      if (!Array.isArray(want)) return;
+      document.querySelectorAll('input[data-sfib-sess="' + sess + '"]').forEach(function(el) {
+        el.checked = want.indexOf(el.getAttribute('data-sfib-zone')) >= 0;
+      });
+    });
+  }
+  function syncSessionFibZonePanel() {
+    const panel = document.getElementById('session-fib-zone-panel');
+    if (panel) panel.hidden = !isSessionFibOverlayOn();
+  }
+  function onSessionFibZoneChange() {
+    persistSessionFibZones();
+    if (isSessionFibOverlayOn()) refreshSessionFibOverlay();
+  }
+  window.onSessionFibZoneChange = onSessionFibZoneChange;
   function clearSessionFibOverlay() {
     __sessionFibSeries.forEach(s => {
       try { chart && chart.removeSeries(s); } catch (e) { /* old handle */ }
@@ -2238,11 +2330,15 @@
         timeframe: String(tf),
         limit: String(limit),
         max_sessions: String(sessionFibMaxSessions()),
-        atr_len: '5',
+        atr_len: '2',
         ib_minutes: '30',
-        zones: 'inner,mid,extension',
         delay_until_ib: '1',
         range_mode: 'atr',
+      });
+      const zmap = getSessionFibZones();
+      SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+        const key = SESSION_FIB_ZONE_QUERY[sess];
+        if (key) q.set(key, (zmap[sess] || []).join(','));
       });
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 15000);
@@ -2300,10 +2396,8 @@
       const anchor = +sess.anchor;
       if (!Number.isFinite(gs) || !Number.isFinite(ge) || ge <= gs) return;
       if (!Number.isFinite(anchor)) return;
-      const baseUp = SESSION_FIB_PALETTE[sess.name] || SESSION_FIB_PALETTE.Tokyo;
-      const baseDn = SESSION_FIB_PALETTE._down;
-      const upPal = paletteForSession(baseUp, sessionIdx);
-      const dnPal = paletteForSession(baseDn, sessionIdx);
+      const base = SESSION_FIB_PALETTE[sess.name] || SESSION_FIB_PALETTE.Tokyo;
+      const upPal = paletteForSession(base, sessionIdx);
       const common = rangeSeriesCommonOpts(sessionIdx || 0);
       try {
         const zero = chart.addLineSeries(Object.assign({}, common, {
@@ -2318,7 +2412,7 @@
       zones.forEach(z => {
         const lo = +z.lo, hi = +z.hi;
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
-        addZoneBox(gs, ge, hi, lo, (z.side === 'down') ? dnPal : upPal, sessionIdx || 0);
+        addZoneBox(gs, ge, hi, lo, sessionFibZonePalette(base, z.name, sessionIdx || 0), sessionIdx || 0);
       });
     });
   }
@@ -2612,6 +2706,8 @@
     localStorage.setItem(CHART_RANGE_SHOW_MRR_LS_KEY, mrrOn ? '1' : '0');
     localStorage.setItem(CHART_RANGE_SHOW_ORB_LS_KEY, orbOn ? '1' : '0');
     localStorage.setItem(CHART_RANGE_SHOW_SESSION_FIB_LS_KEY, fibOn ? '1' : '0');
+    persistSessionFibZones();
+    syncSessionFibZonePanel();
     applyChartRanges();
     if (fibOn) refreshSessionFibOverlay();
     else {

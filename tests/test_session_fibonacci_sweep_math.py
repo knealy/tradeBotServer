@@ -22,6 +22,7 @@ from strategies.session_fibonacci_sweep_math import (
     ifvg_dir_after_invert,
     minutes_in_session,
     next_wider_zone,
+    normalize_zone_names,
     overlaps_band,
     parse_hhmm_to_minutes,
     price_touches_zone,
@@ -73,8 +74,8 @@ def test_resolve_distance_modes():
     ranges = [8.0, 10.0, 12.0, 14.0, 16.0]
     assert resolve_distance(9.0, ranges, mode="previous") == 9.0
     assert resolve_distance(9.0, ranges, mode="atr", atr_len=3) == pytest.approx(14.0)
-    # Default mode is ATR of last 5
-    assert resolve_distance(9.0, ranges) == pytest.approx(12.0)
+    # Default mode is ATR of last 2
+    assert resolve_distance(9.0, ranges) == pytest.approx(15.0)
     assert resolve_distance(None, [], mode="previous") is None
     assert resolve_distance(0.0, ranges, mode="previous", min_tick=0.25) is None
 
@@ -181,13 +182,19 @@ def test_parse_and_session_membership():
     assert not minutes_in_session(11 * 60, "08:00", "11:00")
 
 
+def test_normalize_zone_names():
+    assert normalize_zone_names(["in", "ext", "mid"]) == ("inner", "extension", "mid")
+    assert normalize_zone_names([]) == ("inner", "mid", "extension")
+    assert normalize_zone_names(["full", "full", "nope"]) == ("full",)
+
+
 def _et_unix(y, m, d, hh, mm):
     tz = ZoneInfo("America/New_York")
     return int(datetime(y, m, d, hh, mm, tzinfo=tz).timestamp())
 
 
 def test_build_session_fib_overlays_ny_am_atr():
-    # Seed several prior NY AM sessions so ATR(5) has distance, then print one.
+    # Seed several prior NY AM sessions so ATR(2) has distance, then print one.
     bars = []
     # 7 weekdays of NY AM 08:00–11:00 ET with distinct H–L so ATR is non-zero
     day0 = datetime(2024, 6, 3, tzinfo=ZoneInfo("America/New_York"))  # Monday
@@ -224,7 +231,7 @@ def test_build_session_fib_overlays_ny_am_atr():
     # Only NY AM so other sessions don't clutter
     overlays = build_session_fib_overlays(
         bars,
-        atr_len=5,
+        atr_len=2,
         ib_minutes=30,
         delay_until_ib=True,
         max_sessions=10,
@@ -240,3 +247,16 @@ def test_build_session_fib_overlays_ny_am_atr():
     assert ("inner", "up") in names
     assert ("extension", "down") in names
     assert ("full", "up") not in names
+
+    inner_only = build_session_fib_overlays(
+        bars,
+        atr_len=2,
+        ib_minutes=30,
+        delay_until_ib=True,
+        max_sessions=4,
+        sessions={"NY AM": ("08:00", "11:00")},
+        session_zones={"NY AM": ("mid",)},
+    )
+    assert inner_only
+    znames = {z["name"] for z in inner_only[0]["zones"]}
+    assert znames == {"mid"}

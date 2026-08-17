@@ -1,5 +1,5 @@
 //@version=6
-indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 1000, max_lines_count = 500, max_labels_count = 1000)
+indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 1000, max_lines_count = 500, max_labels_count = 500)
 
 // =============================================================================
 // Session Fibonacci Sweep — visual overlay + fade setups
@@ -19,6 +19,8 @@ indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 1000, max
 //   full 0.8365–1.0 (mid 0.91825) | ext 1.382–1.618 (mid 1.5)
 //
 // Visual-only by default; optional sweep → fade markers + alertconditions.
+// Zone visibility is per session (inner .25 vs mid .5+). Zone pairs share the
+// session hue, alternating light/dark. Trade marker shape is optional.
 // Optional inverted FVG (IFVG) markers + sweep+IFVG confirmation.
 // Does not place orders.
 // =============================================================================
@@ -47,6 +49,14 @@ const string DISP_FULL   = "Full grid"
 const string DISP_ZONES  = "Zones only"
 const string DISP_ACTIVE = "Active session only"
 
+const string MARK_TRI  = "Triangle"
+const string MARK_DIA  = "Diamond"
+const string MARK_CIR  = "Circle"
+const string MARK_FLG  = "Flag"
+const string MARK_X    = "Cross"
+const string MARK_LBL  = "Label"
+const string MARK_NONE = "None"
+
 const string FIRST_SESSION_GROUP  = "Tokyo"
 const string SECOND_SESSION_GROUP = "London"
 const string THIRD_SESSION_GROUP  = "NY AM"
@@ -67,24 +77,40 @@ firstSessionName  = input.string("Tokyo", "Displayed name", group = FIRST_SESSIO
 firstSessionTime  = input.session("1830-0000", "Session time", group = FIRST_SESSION_GROUP, display = display.none, active = showFirst)
 firstSessionTZ    = input.string(TZ_ET, "Session timezone", group = FIRST_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showFirst)
 firstSessionColor = input.color(color.new(#2962FF, 0), "Session color", group = FIRST_SESSION_GROUP, active = showFirst)
+firstShowInner    = input.bool(true,  "0.236 inner", group = FIRST_SESSION_GROUP, inline = "z1", active = showFirst, tooltip = "0.236–0.2795 pair (both sides). Tune per session — some like .25 sweeps, others .5+.")
+firstShowMid      = input.bool(true,  "0.5 mid",     group = FIRST_SESSION_GROUP, inline = "z1", active = showFirst)
+firstShowFull     = input.bool(false, "1.0 full",    group = FIRST_SESSION_GROUP, inline = "z2", active = showFirst)
+firstShowExt      = input.bool(true,  "1.382 ext",   group = FIRST_SESSION_GROUP, inline = "z2", active = showFirst)
 
 showSecond         = input.bool(true, "Show session", group = SECOND_SESSION_GROUP, display = display.none)
 secondSessionName  = input.string("London", "Displayed name", group = SECOND_SESSION_GROUP, display = display.none, active = showSecond)
 secondSessionTime  = input.session("0130-0500", "Session time", group = SECOND_SESSION_GROUP, display = display.none, active = showSecond)
 secondSessionTZ    = input.string(TZ_ET, "Session timezone", group = SECOND_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showSecond)
 secondSessionColor = input.color(color.new(#FF9800, 0), "Session color", group = SECOND_SESSION_GROUP, active = showSecond)
+secondShowInner    = input.bool(true,  "0.236 inner", group = SECOND_SESSION_GROUP, inline = "z1", active = showSecond)
+secondShowMid      = input.bool(true,  "0.5 mid",     group = SECOND_SESSION_GROUP, inline = "z1", active = showSecond)
+secondShowFull     = input.bool(false, "1.0 full",    group = SECOND_SESSION_GROUP, inline = "z2", active = showSecond)
+secondShowExt      = input.bool(true,  "1.382 ext",   group = SECOND_SESSION_GROUP, inline = "z2", active = showSecond)
 
 showThird         = input.bool(true, "Show session", group = THIRD_SESSION_GROUP, display = display.none)
 thirdSessionName  = input.string("NY AM", "Displayed name", group = THIRD_SESSION_GROUP, display = display.none, active = showThird)
 thirdSessionTime  = input.session("0800-1100", "Session time", group = THIRD_SESSION_GROUP, display = display.none, active = showThird)
 thirdSessionTZ    = input.string(TZ_ET, "Session timezone", group = THIRD_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showThird)
 thirdSessionColor = input.color(color.new(#089981, 0), "Session color", group = THIRD_SESSION_GROUP, active = showThird)
+thirdShowInner    = input.bool(true,  "0.236 inner", group = THIRD_SESSION_GROUP, inline = "z1", active = showThird)
+thirdShowMid      = input.bool(true,  "0.5 mid",     group = THIRD_SESSION_GROUP, inline = "z1", active = showThird)
+thirdShowFull     = input.bool(false, "1.0 full",    group = THIRD_SESSION_GROUP, inline = "z2", active = showThird)
+thirdShowExt      = input.bool(true,  "1.382 ext",   group = THIRD_SESSION_GROUP, inline = "z2", active = showThird)
 
 showFourth         = input.bool(true, "Show session", group = FOURTH_SESSION_GROUP, display = display.none)
 fourthSessionName  = input.string("NY PM", "Displayed name", group = FOURTH_SESSION_GROUP, display = display.none, active = showFourth)
 fourthSessionTime  = input.session("1300-1600", "Session time", group = FOURTH_SESSION_GROUP, display = display.none, active = showFourth)
 fourthSessionTZ    = input.string(TZ_ET, "Session timezone", group = FOURTH_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showFourth)
 fourthSessionColor = input.color(color.new(#7E57C2, 0), "Session color", group = FOURTH_SESSION_GROUP, active = showFourth)
+fourthShowInner    = input.bool(true,  "0.236 inner", group = FOURTH_SESSION_GROUP, inline = "z1", active = showFourth)
+fourthShowMid      = input.bool(true,  "0.5 mid",     group = FOURTH_SESSION_GROUP, inline = "z1", active = showFourth)
+fourthShowFull     = input.bool(false, "1.0 full",    group = FOURTH_SESSION_GROUP, inline = "z2", active = showFourth)
+fourthShowExt      = input.bool(true,  "1.382 ext",   group = FOURTH_SESSION_GROUP, inline = "z2", active = showFourth)
 
 // -----------------------------------------------------------------------------
 // Levels → Zones → Range → Display → Signals  (group order = first input order)
@@ -101,18 +127,14 @@ bool showL1618  = input.bool(false, "1.618",  group = LEVELS_GROUP, inline = "L3
 bool showLevelRatios = input.bool(false, "Show fib ratios at line ends", group = LEVELS_GROUP, tooltip = "Tiny ratio labels one bar right of each drawn level line.")
 bool showLevelPrices = input.bool(false, "Show prices at line ends", group = LEVELS_GROUP, tooltip = "Tiny price labels one bar right of each drawn level line.")
 
-bool showZoneInner  = input.bool(true, "0.236–0.2795 inner sweep",  group = ZONES_GROUP)
-bool showZoneMid    = input.bool(true, "0.5–0.559 mid sweep",       group = ZONES_GROUP)
-bool showZoneFull   = input.bool(false, "0.8365–1.0 full range",    group = ZONES_GROUP)
-bool showZoneExt    = input.bool(true, "1.382–1.618 extension",     group = ZONES_GROUP)
-bool showZoneMidlines = input.bool(false, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (same idea as 1.5 between 1.382–1.618).")
+bool showZoneMidlines = input.bool(false, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (same idea as 1.5 between 1.382–1.618). Which zones draw is set per session.")
 bool showExtMidline = input.bool(false, "1.5 midline in extension",  group = ZONES_GROUP, tooltip = "Kept for compatibility; also covered when Midlines in each zone is on.")
 int  zoneFillTransp = input.int(70, "Zone fill transparency", minval = 40, maxval = 92, group = ZONES_GROUP, tooltip = "Lower = more opaque fills. Session color pickers stay for hue; this sets fill opacity so zones stay visible on dark charts.")
 bool showZoneNest   = input.bool(false, "Nest zone sets (vertical connectors)", group = ZONES_GROUP, tooltip = "Inset zones by nest step. Draws one vertical on the outer zone (left) and one on the inner zone (right) only.")
 int  nestStepBars   = input.int(1, "Nest step (bars)", minval = 1, maxval = 20, group = ZONES_GROUP, active = showZoneNest, tooltip = "How many bars to inset each nested zone set from the previous.")
 
 string rangeMode = input.string(RANGE_ATR, "Range source", options = [RANGE_PREV, RANGE_ATR], group = RANGE_GROUP, tooltip = "ATR = average of the last N completed like-session H–L ranges (Tokyo→Tokyo, …). Previous = only the last one.")
-int    atrLen    = input.int(5, "N (ATR lookback)", minval = 1, maxval = 50, group = RANGE_GROUP, active = rangeMode == RANGE_ATR)
+int    atrLen    = input.int(2, "N (ATR lookback)", minval = 1, maxval = 50, group = RANGE_GROUP, active = rangeMode == RANGE_ATR)
 bool   showOpenLabels = input.bool(false, "Show open / warmup labels", group = RANGE_GROUP, tooltip = "Off by default. When on: session name at fib 0, and a small warmup tag while ATR/previous range is unavailable. Uses the session color (same transparency).")
 bool   delayUntilIB  = input.bool(true, "Draw after initial balance close", group = RANGE_GROUP, tooltip = "Wait until the first N minutes of the session have elapsed, then print. Fib 0 is the close of the last bar still inside the IB window. Distance still comes from Range source.")
 int    ibMinutes     = input.int(30, "Initial balance minutes", minval = 1, maxval = 240, group = RANGE_GROUP, active = delayUntilIB)
@@ -125,7 +147,6 @@ int    gridEndTrim   = input.int(3, "Trim bars from right edge", minval = 0, max
 bool   showSessionBox = input.bool(false, "Show session high/low box", group = DISPLAY_GROUP, tooltip = "Live session range box with a visible border + soft fill (not borderless).")
 bool   highlightTouch = input.bool(true, "Highlight touched zones", group = DISPLAY_GROUP)
 int    lineWidth     = input.int(1, "Line width", minval = 1, maxval = 4, group = DISPLAY_GROUP)
-color  downColor     = input.color(color.new(#f23645, 0), "Down-side color", group = DISPLAY_GROUP, tooltip = "Hue for down-side levels/zones. Fill opacity is controlled by Zone fill transparency.")
 
 bool  enableSignals   = input.bool(true, "Show fade setups on sweep", group = SIGNAL_GROUP, tooltip = "When price first sweeps a zone, mark fade entry / stop / TP1–TP3 for that session.")
 bool  oneSetupPerSess = input.bool(false, "One setup per session", group = SIGNAL_GROUP, active = enableSignals, tooltip = "If on, only the first qualifying setup in a session prints. Turn off to allow one setup per zone/side.")
@@ -138,7 +159,8 @@ int   ifvgHistoryKeep = input.int(120, "IFVG boxes to keep", minval = 10, maxval
 float stopBufRatio    = input.float(0.15, "Stop buffer (× distance)", minval = 0.0, maxval = 0.5, step = 0.01, group = SIGNAL_GROUP, active = enableSignals)
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(false, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "On: each new setup deletes the previous marker. Off: keep every fade marker in the session (pair with One setup per session off).")
-bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Off = compact triangle marker + tooltip only (recommended).")
+string fadeMarkerShape = input.string(MARK_TRI, "Trade marker shape", options = [MARK_TRI, MARK_DIA, MARK_CIR, MARK_FLG, MARK_X, MARK_LBL, MARK_NONE], group = SIGNAL_GROUP, active = enableSignals, tooltip = "Shape at fade entry. None skips the marker (E/SL/TP lines still draw if enabled).")
+bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Off = compact marker + tooltip only (recommended).")
 bool  showStatsTable  = input.bool(true, "Show stats table", group = SIGNAL_GROUP, active = enableSignals)
 string statsPosition  = input.string("Top Right", "Stats table position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = SIGNAL_GROUP, active = enableSignals and showStatsTable)
 
@@ -255,6 +277,17 @@ sessBoxFill(color c) =>
 sessBoxBorder(color c) =>
     color.new(c, 25)
 
+zonePairIndex(string z) =>
+    z == "inner" ? 0 : z == "mid" ? 1 : z == "full" ? 2 : 3
+
+// Even zone pairs (inner, full) stay the session hue; odd pairs (mid, ext) lighten.
+zonePairColor(color base, string z) =>
+    float mix = zonePairIndex(z) % 2 == 0 ? 0.0 : 0.38
+    color.rgb(color.r(base) + (255.0 - color.r(base)) * mix, color.g(base) + (255.0 - color.g(base)) * mix, color.b(base) + (255.0 - color.b(base)) * mix, color.t(base))
+
+fadeMarkerStyle(bool upSide) =>
+    fadeMarkerShape == MARK_DIA ? label.style_diamond : fadeMarkerShape == MARK_CIR ? label.style_circle : fadeMarkerShape == MARK_FLG ? label.style_flag : fadeMarkerShape == MARK_X ? label.style_xcross : fadeMarkerShape == MARK_LBL ? (upSide ? label.style_label_down : label.style_label_up) : (upSide ? label.style_triangledown : label.style_triangleup)
+
 drawIfvgBoxes() =>
     showIfvg or requireIfvg
 
@@ -340,6 +373,10 @@ type FibDraw
     bool  setupDone = false
     int   signalSide = 0
     string signalMsg = ""
+    bool  showInner = true
+    bool  showMid = true
+    bool  showFull = false
+    bool  showExt = true
 
 type SessionState
     color  accent
@@ -361,6 +398,10 @@ type SessionState
     label  warmLab = na
     int    signalSide = 0
     string signalMsg = ""
+    bool   showInner = true
+    bool   showMid = true
+    bool   showFull = false
+    bool   showExt = true
 
 // Alert plumbing (set true for one bar when a setup prints)
 var bool alertUpSweep = false
@@ -585,10 +626,10 @@ method addBothZones(FibDraw this, float loRatio, float hiRatio, bool on, color u
             color vc = color.new(upC, 0)
             float yTop = this.openPx + hi
             float yBot = this.openPx - hi
-            if zName == "extension" or (zName == "full" and not showZoneExt) or (zName == "mid" and not showZoneExt and not showZoneFull)
+            if zName == "extension" or (zName == "full" and not this.showExt) or (zName == "mid" and not this.showExt and not this.showFull)
                 // Outermost enabled zone: left vertical only
                 this.nestLines.push(line.new(x1, yTop, x1, yBot, color = vc, width = lineWidth, style = line.style_dotted))
-            if zName == "inner" or (zName == "mid" and not showZoneInner) or (zName == "full" and not showZoneInner and not showZoneMid)
+            if zName == "inner" or (zName == "mid" and not this.showInner) or (zName == "full" and not this.showInner and not this.showMid)
                 // Innermost enabled zone: right vertical only
                 this.nestLines.push(line.new(x2, yTop, x2, yBot, color = vc, width = lineWidth, style = line.style_dotted))
     true
@@ -643,28 +684,30 @@ method dimDraw(FibDraw this, int extraTransp) =>
     int t = math.min(95, extraTransp)
     int boxT = math.min(95, zoneFillTransp + t / 2)
     color upDim = color.new(this.upC, t)
-    color dnDim = color.new(this.dnC, t)
-    color upBox = color.new(this.upC, boxT)
-    color dnBox = color.new(this.dnC, boxT)
     if not na(this.zeroLine)
         this.zeroLine.set_color(upDim)
     if not na(this.lines)
-        int i = 0
         for ln in this.lines
-            // addBothLevels pushes up then down
-            ln.set_color(i % 2 == 0 ? upDim : dnDim)
-            i += 1
+            ln.set_color(upDim)
     if not na(this.nestLines)
         for ln in this.nestLines
             ln.set_color(upDim)
     if not na(this.upZones)
+        int ui = 0
         for bx in this.upZones
-            bx.set_bgcolor(upBox)
-            bx.set_border_color(zoneBorder(this.upC))
+            string zn = this.zoneNames.get(ui)
+            color zc = zonePairColor(this.upC, zn)
+            bx.set_bgcolor(color.new(zc, boxT))
+            bx.set_border_color(zoneBorder(zc))
+            ui += 1
     if not na(this.dnZones)
+        int di = 0
         for bx in this.dnZones
-            bx.set_bgcolor(dnBox)
-            bx.set_border_color(zoneBorder(this.dnC))
+            string zn = this.zoneNames.get(di)
+            color zc = zonePairColor(this.upC, zn)
+            bx.set_bgcolor(color.new(zc, boxT))
+            bx.set_border_color(zoneBorder(zc))
+            di += 1
     if not na(this.sessBox)
         this.sessBox.set_bgcolor(sessBoxFill(this.upC))
         this.sessBox.set_border_color(sessBoxBorder(this.upC))
@@ -672,10 +715,8 @@ method dimDraw(FibDraw this, int extraTransp) =>
         this.lab.set_textcolor(upDim)
         this.lab.set_color(color.new(this.upC, math.min(95, color.t(this.upC) + t / 2)))
     if not na(this.levelLabs)
-        int li = 0
         for lb in this.levelLabs
-            lb.set_textcolor(li % 2 == 0 ? upDim : dnDim)
-            li += 1
+            lb.set_textcolor(upDim)
     if not na(this.fade)
         FadeDraw f = this.fade
         color ec = color.new(f.sideSign > 0 ? #f23645 : #089981, t)
@@ -761,37 +802,44 @@ method beginGrid(SessionState this) =>
             label.delete(this.warmLab)
             this.warmLab := na
         color upC = this.accent
-        color dnC = downColor
+        color innerC = zonePairColor(upC, "inner")
+        color midC = zonePairColor(upC, "mid")
+        color fullC = zonePairColor(upC, "full")
+        color extC = zonePairColor(upC, "extension")
         color upLine = color.new(upC, 0)
         // IB mode: grid left = print bar; right = shortened session span (avoids neighbor overlap)
         int leftBar = delayUntilIB ? bar_index : this.startBar
         int rightBar = gridRightBar(leftBar, this.startBar, this.session)
-        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = dnC, lines = array.new<line>(), nestLines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upPierced = array.new<bool>(), dnPierced = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>(), levelLabs = array.new<label>(), fades = array.new<FadeDraw>())
+        FibDraw d = FibDraw.new(startBar = leftBar, endBar = rightBar, openPx = this.sessOpen, dist = dist, upC = upC, dnC = upC, lines = array.new<line>(), nestLines = array.new<line>(), boxes = array.new<box>(), upZones = array.new<box>(), dnZones = array.new<box>(), upTouched = array.new<bool>(), dnTouched = array.new<bool>(), upPierced = array.new<bool>(), dnPierced = array.new<bool>(), upSignaled = array.new<bool>(), dnSignaled = array.new<bool>(), zoneNames = array.new<string>(), levelLabs = array.new<label>(), fades = array.new<FadeDraw>())
+        d.showInner := this.showInner
+        d.showMid := this.showMid
+        d.showFull := this.showFull
+        d.showExt := this.showExt
         d.zeroLine := line.new(leftBar, this.sessOpen, rightBar, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
         bool edgeOnly = isZonesOnly()
         // Zone edge lines when zones-only; otherwise respect per-level toggles
-        d.addBothLevels(R_INNER_LO, edgeOnly ? showZoneInner : drawLevelOn(showL0236),  upC, dnC, false)
-        d.addBothLevels(R_INNER_HI, edgeOnly ? showZoneInner : drawLevelOn(showL02795), upC, dnC, false)
-        d.addBothLevels(R_MID_LO,   edgeOnly ? showZoneMid   : drawLevelOn(showL05),    upC, dnC, false)
-        d.addBothLevels(R_MID_HI,   edgeOnly ? showZoneMid   : drawLevelOn(showL0559),  upC, dnC, false)
-        d.addBothLevels(R_FULL_LO,  edgeOnly ? showZoneFull  : drawLevelOn(showL08365), upC, dnC, false)
-        d.addBothLevels(R_FULL_HI,  edgeOnly ? showZoneFull  : drawLevelOn(showL10),    upC, dnC, false)
-        d.addBothLevels(R_EXT_LO,   edgeOnly ? showZoneExt   : drawLevelOn(showL1382),  upC, dnC, false)
-        d.addBothLevels(R_EXT_HI,   edgeOnly ? showZoneExt   : drawLevelOn(showL1618),  upC, dnC, false)
+        d.addBothLevels(R_INNER_LO, edgeOnly ? this.showInner : drawLevelOn(showL0236),  innerC, innerC, false)
+        d.addBothLevels(R_INNER_HI, edgeOnly ? this.showInner : drawLevelOn(showL02795), innerC, innerC, false)
+        d.addBothLevels(R_MID_LO,   edgeOnly ? this.showMid   : drawLevelOn(showL05),    midC, midC, false)
+        d.addBothLevels(R_MID_HI,   edgeOnly ? this.showMid   : drawLevelOn(showL0559),  midC, midC, false)
+        d.addBothLevels(R_FULL_LO,  edgeOnly ? this.showFull  : drawLevelOn(showL08365), fullC, fullC, false)
+        d.addBothLevels(R_FULL_HI,  edgeOnly ? this.showFull  : drawLevelOn(showL10),    fullC, fullC, false)
+        d.addBothLevels(R_EXT_LO,   edgeOnly ? this.showExt   : drawLevelOn(showL1382),  extC, extC, false)
+        d.addBothLevels(R_EXT_HI,   edgeOnly ? this.showExt   : drawLevelOn(showL1618),  extC, extC, false)
         // Solid 1.5 level when Full grid + Levels toggle (not a dotted zone midline)
         if not edgeOnly and showL15
-            d.addBothLevels(R_EXT_MID, true, upC, dnC, false)
+            d.addBothLevels(R_EXT_MID, true, extC, extC, false)
         // Dotted midlines inside each enabled zone (inner / mid / full / extension)
-        bool wantExtMid = showZoneExt and (showZoneMidlines or showExtMidline)
-        if showZoneMidlines and showZoneInner
-            d.addBothLevels(R_INNER_MID, true, upC, dnC, true)
-        if showZoneMidlines and showZoneMid
-            d.addBothLevels(R_MID_MID, true, upC, dnC, true)
-        if showZoneMidlines and showZoneFull
-            d.addBothLevels(R_FULL_MID, true, upC, dnC, true)
+        bool wantExtMid = this.showExt and (showZoneMidlines or showExtMidline)
+        if showZoneMidlines and this.showInner
+            d.addBothLevels(R_INNER_MID, true, innerC, innerC, true)
+        if showZoneMidlines and this.showMid
+            d.addBothLevels(R_MID_MID, true, midC, midC, true)
+        if showZoneMidlines and this.showFull
+            d.addBothLevels(R_FULL_MID, true, fullC, fullC, true)
         if wantExtMid and (edgeOnly or not showL15)
-            d.addBothLevels(R_EXT_MID, true, upC, dnC, true)
+            d.addBothLevels(R_EXT_MID, true, extC, extC, true)
 
         // Nest index: extension outermost (0) → full → mid → inner
         int nestExt = 0
@@ -800,21 +848,21 @@ method beginGrid(SessionState this) =>
         int nestInner = 0
         if showZoneNest
             int n = 0
-            if showZoneExt
+            if this.showExt
                 nestExt := n
                 n += 1
-            if showZoneFull
+            if this.showFull
                 nestFull := n
                 n += 1
-            if showZoneMid
+            if this.showMid
                 nestMid := n
                 n += 1
-            if showZoneInner
+            if this.showInner
                 nestInner := n
-        d.addBothZones(R_INNER_LO, R_INNER_HI, showZoneInner, upC, dnC, "inner", nestInner)
-        d.addBothZones(R_MID_LO,   R_MID_HI,   showZoneMid,   upC, dnC, "mid", nestMid)
-        d.addBothZones(R_FULL_LO,  R_FULL_HI,  showZoneFull,  upC, dnC, "full", nestFull)
-        d.addBothZones(R_EXT_LO,   R_EXT_HI,   showZoneExt,   upC, dnC, "extension", nestExt)
+        d.addBothZones(R_INNER_LO, R_INNER_HI, this.showInner, innerC, innerC, "inner", nestInner)
+        d.addBothZones(R_MID_LO,   R_MID_HI,   this.showMid,   midC, midC, "mid", nestMid)
+        d.addBothZones(R_FULL_LO,  R_FULL_HI,  this.showFull,  fullC, fullC, "full", nestFull)
+        d.addBothZones(R_EXT_LO,   R_EXT_HI,   this.showExt,   extC, extC, "extension", nestExt)
 
         if showSessionBox
             // Live H–L box: soft fill + visible border (border was na → looked empty)
@@ -880,7 +928,7 @@ method endGrid(SessionState this) =>
         this.warmLab := na
     true
 
-method markTouches(FibDraw this, color upC, color dnC) =>
+method markTouches(FibDraw this, color accent) =>
     if not highlightTouch or na(this.upZones)
         true
     else
@@ -889,20 +937,22 @@ method markTouches(FibDraw this, color upC, color dnC) =>
             for i = 0 to n - 1
                 box ub = this.upZones.get(i)
                 box db = this.dnZones.get(i)
+                string zn = this.zoneNames.get(i)
+                color zc = zonePairColor(accent, zn)
                 float upLo = math.min(ub.get_top(), ub.get_bottom())
                 float upHi = math.max(ub.get_top(), ub.get_bottom())
                 float dnLo = math.min(db.get_top(), db.get_bottom())
                 float dnHi = math.max(db.get_top(), db.get_bottom())
                 if not this.upTouched.get(i) and touchesBand(high, low, upLo, upHi)
                     this.upTouched.set(i, true)
-                    ub.set_border_color(color.new(upC, 0))
+                    ub.set_border_color(color.new(zc, 0))
                     ub.set_border_width(2)
-                    ub.set_bgcolor(color.new(upC, math.max(40, zoneFillTransp - 15)))
+                    ub.set_bgcolor(color.new(zc, math.max(40, zoneFillTransp - 15)))
                 if not this.dnTouched.get(i) and touchesBand(high, low, dnLo, dnHi)
                     this.dnTouched.set(i, true)
-                    db.set_border_color(color.new(dnC, 0))
+                    db.set_border_color(color.new(zc, 0))
                     db.set_border_width(2)
-                    db.set_bgcolor(color.new(dnC, math.max(40, zoneFillTransp - 15)))
+                    db.set_bgcolor(color.new(zc, math.max(40, zoneFillTransp - 15)))
         true
 
 method printFade(FibDraw this, color accent, string sessName, int sideSign, string zName) =>
@@ -945,8 +995,9 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
         f.tp2Ln := line.new(bar_index, tp2, x2, tp2, color = tc, width = lineWidth, style = line.style_dashed)
         f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
     string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? (requireIfvg ? " [sweep+IFVG]" : " [confirmed]") : "") + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick)
-    // Tiny empty triangle — tooltip holds the details
-    f.lab := label.new(bar_index, entry, "", xloc = xloc.bar_index, yloc = yloc.price, style = upSide ? label.style_triangledown : label.style_triangleup, color = ec, textcolor = color.white, size = size.tiny, tooltip = tip)
+    if fadeMarkerShape != MARK_NONE
+        string mkTxt = fadeMarkerShape == MARK_LBL ? (upSide ? "S" : "L") : ""
+        f.lab := label.new(bar_index, entry, mkTxt, xloc = xloc.bar_index, yloc = yloc.price, style = fadeMarkerStyle(upSide), color = ec, textcolor = color.white, size = size.tiny, tooltip = tip)
     this.fade := f
     this.setupDone := true
     sweepStats.registerSetup(sideSign, zName)
@@ -1055,7 +1106,7 @@ method update(SessionState this) =>
             this.tryPrintGrid()
             if not na(this.active)
                 this.active.bumpSessBox(high, low)
-                this.active.markTouches(this.accent, downColor)
+                this.active.markTouches(this.accent)
                 this.active.maybeSignal(this.accent, this.name)
                 if not na(this.active.fades) and this.active.fades.size() > 0
                     for fHist in this.active.fades
@@ -1075,13 +1126,13 @@ method update(SessionState this) =>
 getSessionStates() =>
     array<SessionState> states = array.new<SessionState>()
     if showFirst
-        states.push(SessionState.new(accent = firstSessionColor, name = firstSessionName, session = firstSessionTime, timezone = firstSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>()))
+        states.push(SessionState.new(accent = firstSessionColor, name = firstSessionName, session = firstSessionTime, timezone = firstSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>(), showInner = firstShowInner, showMid = firstShowMid, showFull = firstShowFull, showExt = firstShowExt))
     if showSecond
-        states.push(SessionState.new(accent = secondSessionColor, name = secondSessionName, session = secondSessionTime, timezone = secondSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>()))
+        states.push(SessionState.new(accent = secondSessionColor, name = secondSessionName, session = secondSessionTime, timezone = secondSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>(), showInner = secondShowInner, showMid = secondShowMid, showFull = secondShowFull, showExt = secondShowExt))
     if showThird
-        states.push(SessionState.new(accent = thirdSessionColor, name = thirdSessionName, session = thirdSessionTime, timezone = thirdSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>()))
+        states.push(SessionState.new(accent = thirdSessionColor, name = thirdSessionName, session = thirdSessionTime, timezone = thirdSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>(), showInner = thirdShowInner, showMid = thirdShowMid, showFull = thirdShowFull, showExt = thirdShowExt))
     if showFourth
-        states.push(SessionState.new(accent = fourthSessionColor, name = fourthSessionName, session = fourthSessionTime, timezone = fourthSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>()))
+        states.push(SessionState.new(accent = fourthSessionColor, name = fourthSessionName, session = fourthSessionTime, timezone = fourthSessionTZ, ranges = array.new<float>(), history = array.new<FibDraw>(), showInner = fourthShowInner, showMid = fourthShowMid, showFull = fourthShowFull, showExt = fourthShowExt))
     states
 
 var array<SessionState> sessionStates = getSessionStates()

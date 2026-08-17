@@ -5015,7 +5015,16 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
         import time
 
         try:
-            from strategies.session_fibonacci_sweep_math import build_session_fib_overlays
+            from strategies.session_fibonacci_sweep_math import (
+                DEFAULT_ATR_LEN,
+                build_session_fib_overlays,
+                normalize_zone_names,
+            )
+
+            def _parse_zones(raw, fallback):
+                if raw is None or not str(raw).strip():
+                    return normalize_zone_names(fallback)
+                return normalize_zone_names([z.strip() for z in str(raw).split(",") if z.strip()])
 
             sym = (request.query.get("symbol") or getattr(trading_bot, "symbol", None) or "MNQ")
             sym = str(sym).strip().upper()
@@ -5031,19 +5040,28 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 max_sessions = 4
             max_sessions = max(0, min(16, max_sessions))
             try:
-                atr_len = int(request.query.get("atr_len", "5"))
+                atr_len = int(request.query.get("atr_len", str(DEFAULT_ATR_LEN)))
             except (TypeError, ValueError):
-                atr_len = 5
+                atr_len = DEFAULT_ATR_LEN
             atr_len = max(1, min(50, atr_len))
             try:
                 ib_minutes = int(request.query.get("ib_minutes", "30"))
             except (TypeError, ValueError):
                 ib_minutes = 30
             ib_minutes = max(1, min(240, ib_minutes))
-            zones_raw = (request.query.get("zones") or "inner,mid,extension").strip()
-            zone_names = [z.strip() for z in zones_raw.split(",") if z.strip()]
-            if not zone_names:
-                zone_names = ["inner", "mid", "extension"]
+            zone_names = list(_parse_zones(request.query.get("zones"), ("inner", "mid", "extension")))
+            session_zones = {
+                "Tokyo": _parse_zones(request.query.get("zones_tokyo"), zone_names),
+                "London": _parse_zones(request.query.get("zones_london"), zone_names),
+                "NY AM": _parse_zones(
+                    request.query.get("zones_nyam") or request.query.get("zones_ny_am"),
+                    zone_names,
+                ),
+                "NY PM": _parse_zones(
+                    request.query.get("zones_nypm") or request.query.get("zones_ny_pm"),
+                    zone_names,
+                ),
+            }
             delay_until_ib = request.query.get("delay_until_ib", "1") not in ("0", "false", "False")
             range_mode = (request.query.get("range_mode") or "atr").strip().lower()
             if range_mode not in ("atr", "previous"):
@@ -5058,6 +5076,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     str(atr_len),
                     str(ib_minutes),
                     ",".join(zone_names),
+                    ";".join(f"{k}:{','.join(v)}" for k, v in session_zones.items()),
                     "1" if delay_until_ib else "0",
                     range_mode,
                 ]
@@ -5081,6 +5100,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 delay_until_ib=delay_until_ib,
                 range_mode=range_mode,  # type: ignore[arg-type]
                 zone_names=zone_names,
+                session_zones=session_zones,
                 max_sessions=max_sessions,
             )
             payload = {
@@ -5090,6 +5110,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 "atr_len": atr_len,
                 "ib_minutes": ib_minutes,
                 "zones": zone_names,
+                "session_zones": {k: list(v) for k, v in session_zones.items()},
                 "sessions": overlays,
             }
             _session_fib_cache[cache_key] = (now + _SESSION_FIB_TTL_SEC, copy.deepcopy(payload))
