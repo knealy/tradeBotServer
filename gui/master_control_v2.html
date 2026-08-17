@@ -2407,6 +2407,22 @@
         }));
         zero.setData([{ time: gs, value: anchor }, { time: ge, value: anchor }]);
         pushSeries(zero);
+        const fades = Array.isArray(sess.fades) ? sess.fades : [];
+        if (fades.length && typeof zero.setMarkers === 'function') {
+          zero.setMarkers(fades.map(function(f) {
+            const short = f.fade === 'short';
+            const t = +f.time;
+            if (!Number.isFinite(t) || !Number.isFinite(+f.entry)) return null;
+            // Fades are only emitted while that session's clock is open.
+            return {
+              time: t,
+              position: short ? 'aboveBar' : 'belowBar',
+              color: short ? '#f23645' : '#089981',
+              shape: short ? 'arrowDown' : 'arrowUp',
+              text: (short ? 'S ' : 'L ') + (f.zone || ''),
+            };
+          }).filter(Boolean));
+        }
       } catch (e) { console.warn('[v2] session fib 0', e); }
       const zones = Array.isArray(sess.zones) ? sess.zones : [];
       zones.forEach(z => {

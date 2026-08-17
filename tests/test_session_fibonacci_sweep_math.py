@@ -20,6 +20,7 @@ from strategies.session_fibonacci_sweep_math import (
     fvg_inverted,
     ib_anchor_ready,
     ifvg_dir_after_invert,
+    maybe_session_fade,
     minutes_in_session,
     next_wider_zone,
     normalize_zone_names,
@@ -28,6 +29,7 @@ from strategies.session_fibonacci_sweep_math import (
     price_touches_zone,
     project_levels,
     resolve_distance,
+    session_allows_signal,
     session_duration_minutes,
     sweep_confirmed,
     sweep_ifvg_confirmed,
@@ -169,6 +171,36 @@ def test_ifvg_detect_invert_and_sweep_confirm():
     assert not sweep_ifvg_confirmed(
         102.9, 100.0, 102.0, up, "up", ifvg_top=110.0, ifvg_bottom=109.0, ifvg_side="down"
     )
+
+
+def test_session_allows_signal_and_maybe_fade_gated():
+    assert session_allows_signal(8 * 60 + 30, "08:00", "11:00")
+    assert not session_allows_signal(12 * 60, "08:00", "11:00")
+    # Perfect up-sweep of inner — still no setup outside the session clock
+    up = zone_band(100.0, 10.0, "inner", "up")
+    assert sweep_confirmed(102.9, 100.0, 102.0, up, "up", full_pierce=True)
+    assert maybe_session_fade(
+        in_session=False,
+        high=102.9,
+        low=100.0,
+        close=102.0,
+        anchor=100.0,
+        distance=10.0,
+        zone="inner",
+        side="up",
+    ) is None
+    live = maybe_session_fade(
+        in_session=True,
+        high=102.9,
+        low=100.0,
+        close=102.0,
+        anchor=100.0,
+        distance=10.0,
+        zone="inner",
+        side="up",
+    )
+    assert live is not None
+    assert live.fade == "short"
 
 
 def test_parse_and_session_membership():

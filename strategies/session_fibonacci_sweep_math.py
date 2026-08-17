@@ -466,6 +466,8 @@ class _SessionTracker:
     run_high: Optional[float] = None
     run_low: Optional[float] = None
     active: Optional[Dict[str, Any]] = None
+    pierced: Dict[Tuple[str, str], bool] = field(default_factory=dict)
+    signaled: Dict[Tuple[str, str], bool] = field(default_factory=dict)
 
 
 def normalize_zone_names(raw: Optional[Iterable[str]]) -> Tuple[str, ...]:
@@ -527,7 +529,80 @@ def _emit_grid(
         "grid_start": int(grid_start_sec),
         "grid_end": int(grid_end_sec),
         "zones": _zone_payload(anchor, distance, zone_names),
+        "fades": [],
     }
+
+
+def session_allows_signal(mins: int, start_hm: str, end_hm: str) -> bool:
+    """True only while the bar clock is inside ``[start, end)``."""
+    return minutes_in_session(mins, start_hm, end_hm)
+
+
+def maybe_session_fade(
+    *,
+    in_session: bool,
+    high: float,
+    low: float,
+    close: float,
+    anchor: float,
+    distance: float,
+    zone: str,
+    side: Side,
+    full_pierce: bool = True,
+    require_confirm: bool = True,
+    stop_buffer_ratio: float = 0.15,
+) -> Optional[FadeSetup]:
+    """Build a fade setup only when the bar is inside the session clock."""
+    if not in_session or distance is None or distance <= 0:
+        return None
+    band = zone_band(anchor, distance, zone, side)
+    if require_confirm:
+        if not sweep_confirmed(high, low, close, band, side, full_pierce=full_pierce):
+            return None
+    elif not price_touches_zone(high, low, band):
+        return None
+    return build_fade_setup(
+        anchor, distance, side, zone, stop_buffer_ratio=stop_buffer_ratio
+    )
+
+
+def _append_live_fade(
+    tracker: _SessionTracker,
+    *,
+    t_sec: int,
+    high: float,
+    low: float,
+    close: float,
+) -> None:
+    grid = tracker.active
+    if grid is None:
+        return
+    anchor = float(grid["anchor"])
+    dist = float(grid["distance"])
+    fades: List[Dict[str, Any]] = grid.setdefault("fades", [])
+    for zname in tracker.zone_names:
+        for side in ("up", "down"):
+            key = (zname, side)
+            band = zone_band(anchor, dist, zname, side)  # type: ignore[arg-type]
+            if sweep_pierced(high, low, band, side, full_pierce=True):
+                tracker.pierced[key] = True
+            if tracker.pierced.get(key) and not tracker.signaled.get(key):
+                if sweep_confirmed(high, low, close, band, side, full_pierce=True):
+                    tracker.signaled[key] = True
+                    setup = build_fade_setup(anchor, dist, side, zname)  # type: ignore[arg-type]
+                    fades.append(
+                        {
+                            "time": int(t_sec),
+                            "zone": zname,
+                            "side": side,
+                            "fade": setup.fade,
+                            "entry": setup.entry,
+                            "stop": setup.stop,
+                            "tp1": setup.tp1,
+                            "tp2": setup.tp2,
+                            "tp3": setup.tp3,
+                        }
+                    )
 
 
 def build_session_fib_overlays(
@@ -596,6 +671,8 @@ def build_session_fib_overlays(
                     tr.saw_start = prev_sec is not None
                     tr.grid_started = False
                     tr.active = None
+                    tr.pierced = {}
+                    tr.signaled = {}
                 else:
                     if tr.run_high is not None:
                         tr.run_high = max(tr.run_high, h)
@@ -639,6 +716,8 @@ def build_session_fib_overlays(
                             if grid is not None:
                                 tr.active = grid
                                 tr.grid_started = True
+                if tr.active is not None:
+                    _append_live_fade(tr, t_sec=t_sec, high=h, low=l, close=c)
             elif tr.was_in:
                 # Session ended — commit H–L range and archive active grid
                 if (
@@ -702,6 +781,8 @@ __all__ = [
     "parse_hhmm_to_minutes",
     "minutes_in_session",
     "session_duration_minutes",
+    "session_allows_signal",
+    "maybe_session_fade",
     "normalize_zone_names",
     "build_session_fib_overlays",
 ]

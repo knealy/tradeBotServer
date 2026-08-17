@@ -148,7 +148,7 @@ bool   showSessionBox = input.bool(false, "Show session high/low box", group = D
 bool   highlightTouch = input.bool(true, "Highlight touched zones", group = DISPLAY_GROUP)
 int    lineWidth     = input.int(1, "Line width", minval = 1, maxval = 4, group = DISPLAY_GROUP)
 
-bool  enableSignals   = input.bool(true, "Show fade setups on sweep", group = SIGNAL_GROUP, tooltip = "When price first sweeps a zone, mark fade entry / stop / TP1–TP3 for that session.")
+bool  enableSignals   = input.bool(true, "Show fade setups on sweep", group = SIGNAL_GROUP, tooltip = "When price first sweeps a zone, mark fade entry / stop / TP1–TP3. Setups and alerts only print while the bar is inside that session's clock (Tokyo / London / NY AM / NY PM). Completed session boxes stay visual-only.")
 bool  oneSetupPerSess = input.bool(false, "One setup per session", group = SIGNAL_GROUP, active = enableSignals, tooltip = "If on, only the first qualifying setup in a session prints. Turn off to allow one setup per zone/side.")
 bool  requireConfirm  = input.bool(true, "Require sweep confirmation", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Wick must pierce the zone, then close back toward fib 0 (inside) before a fade prints. Cuts fake sweeps.")
 bool  requireFullPierce = input.bool(true, "Require full pierce (far edge)", group = SIGNAL_GROUP, active = enableSignals and requireConfirm, tooltip = "On: high/low must reach the far edge of the zone. Off: entering the near edge is enough.")
@@ -377,6 +377,7 @@ type FibDraw
     bool  showMid = true
     bool  showFull = false
     bool  showExt = true
+    bool  live = true
 
 type SessionState
     color  accent
@@ -914,6 +915,7 @@ method endGrid(SessionState this) =>
                 fHist.finalizeFade(sweepStats)
         if not na(this.active.fade)
             this.active.fade.finalizeFade(sweepStats)
+        this.active.live := false
         if displayMode == DISP_ACTIVE or historyKeep <= 0
             this.active.dispose()
         else
@@ -1003,13 +1005,16 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     sweepStats.registerSetup(sideSign, zName)
     tip
 
-method maybeSignal(FibDraw this, color accent, string sessName) =>
+method maybeSignal(FibDraw this, color accent, string sessName, bool inSession) =>
     // Confirmed sweep (default): pierce zone, then close back toward fib 0.
     // Optional: also require overlapping IFVG in fade direction.
     // Without confirm: first touch only per zone/side.
+    // Trades only while this session's clock is open — leftover history boxes never signal.
     this.signalSide := 0
     this.signalMsg := ""
-    if enableSignals and not (oneSetupPerSess and this.setupDone) and not na(this.upZones) and not na(this.upSignaled)
+    if not this.live or not inSession or not enableSignals
+        true
+    else if not (oneSetupPerSess and this.setupDone) and not na(this.upZones) and not na(this.upSignaled)
         int n = this.upZones.size()
         float bestDist = na
         int bestSign = 0
@@ -1100,6 +1105,11 @@ method update(SessionState this) =>
             this.gridStarted := false
             this.active := na
             this.tryPrintGrid()
+            if not na(this.active)
+                this.active.markTouches(this.accent)
+                this.active.maybeSignal(this.accent, this.name, true)
+                this.signalSide := this.active.signalSide
+                this.signalMsg := this.active.signalMsg
         else
             this.runHigh := math.max(this.runHigh, high)
             this.runLow := math.min(this.runLow, low)
@@ -1107,7 +1117,7 @@ method update(SessionState this) =>
             if not na(this.active)
                 this.active.bumpSessBox(high, low)
                 this.active.markTouches(this.accent)
-                this.active.maybeSignal(this.accent, this.name)
+                this.active.maybeSignal(this.accent, this.name, true)
                 if not na(this.active.fades) and this.active.fades.size() > 0
                     for fHist in this.active.fades
                         fHist.trackFade(sweepStats)
