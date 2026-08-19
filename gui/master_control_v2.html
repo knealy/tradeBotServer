@@ -830,6 +830,13 @@
                   <option value="path">Next zones toward 0</option>
                 </select>
               </div>
+              <div class="sfib-row"><span>Tags</span>
+                <select id="session-fib-zone-tags" onchange="onSessionFibZoneChange()" title="Centered Sweep/Target text. Inner/mid = Sweep; 1.0 and 1.38+ = Target. Compact is +S/−S/+T/−T.">
+                  <option value="off">Off</option>
+                  <option value="full" selected>Sweep / Target</option>
+                  <option value="compact">+S / −S</option>
+                </select>
+              </div>
             </div>
             <div id="mrr-live-status" class="mrr-live-status" aria-live="polite"></div>
           </div>
@@ -1092,6 +1099,7 @@
   const CHART_SESSION_FIB_ZONES_LS_KEY = 'masterv2.chart.sessionFibZones';
   const CHART_SESSION_FIB_TP_PULL_LS_KEY = 'masterv2.chart.sessionFibTpPull';
   const CHART_SESSION_FIB_TP_STRUCT_LS_KEY = 'masterv2.chart.sessionFibTpStructure';
+  const CHART_SESSION_FIB_ZONE_TAGS_LS_KEY = 'masterv2.chart.sessionFibZoneTags';
   const CHART_BG_LS_KEY = 'masterv2.chart.bgColor';
   const CHART_DRAWINGS_LS_PREFIX = 'masterv2.chart.drawings.';
 
@@ -2290,6 +2298,7 @@
     try { localStorage.setItem(CHART_SESSION_FIB_ZONES_LS_KEY, JSON.stringify(getSessionFibZones())); } catch (e) { /* ignore */ }
     try { localStorage.setItem(CHART_SESSION_FIB_TP_PULL_LS_KEY, String(getSessionFibTpPullMult())); } catch (e) { /* ignore */ }
     try { localStorage.setItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY, getSessionFibTpStructure()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_ZONE_TAGS_LS_KEY, getSessionFibZoneTags()); } catch (e) { /* ignore */ }
   }
   function getSessionFibTpPullMult() {
     const el = document.getElementById('session-fib-tp-pull');
@@ -2301,6 +2310,11 @@
     const el = document.getElementById('session-fib-tp-structure');
     const v = el ? String(el.value || 'classic') : 'classic';
     return v === 'path' ? 'path' : 'classic';
+  }
+  function getSessionFibZoneTags() {
+    const el = document.getElementById('session-fib-zone-tags');
+    const v = el ? String(el.value || 'full') : 'full';
+    return (v === 'off' || v === 'compact') ? v : 'full';
   }
   function restoreSessionFibZoneChecks() {
     let stored = null;
@@ -2324,6 +2338,11 @@
     if (structEl) {
       const raw = localStorage.getItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY);
       if (raw === 'path' || raw === 'classic') structEl.value = raw;
+    }
+    const tagEl = document.getElementById('session-fib-zone-tags');
+    if (tagEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_ZONE_TAGS_LS_KEY);
+      if (raw === 'off' || raw === 'full' || raw === 'compact') tagEl.value = raw;
     }
   }
   function syncSessionFibZonePanel() {
@@ -2485,7 +2504,33 @@
       zones.forEach(z => {
         const lo = +z.lo, hi = +z.hi;
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
-        addZoneBox(gs, ge, hi, lo, sessionFibZonePalette(base, z.name, sessionIdx || 0), sessionIdx || 0);
+        const z0 = Number.isFinite(+z.grid_start) ? +z.grid_start : gs;
+        const z1 = Number.isFinite(+z.grid_end) ? +z.grid_end : ge;
+        if (!(z1 > z0)) return;
+        addZoneBox(z0, z1, hi, lo, sessionFibZonePalette(base, z.name, sessionIdx || 0), sessionIdx || 0);
+        const tagMode = getSessionFibZoneTags();
+        if (tagMode === 'off') return;
+        const tag = tagMode === 'compact' ? (z.tag_compact || '') : (z.tag || '');
+        const midT = Math.round((z0 + z1) / 2);
+        const midP = (lo + hi) / 2;
+        if (!tag || !Number.isFinite(midT) || !Number.isFinite(midP)) return;
+        try {
+          const tagLn = chart.addLineSeries(Object.assign({}, common, {
+            color: 'rgba(0,0,0,0)', lineWidth: 1, lineVisible: false,
+            lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+          }));
+          tagLn.setData([{ time: midT, value: midP }]);
+          if (typeof tagLn.setMarkers === 'function') {
+            tagLn.setMarkers([{
+              time: midT,
+              position: 'inBar',
+              color: tintCss(upPal.line, 0.9),
+              shape: 'circle',
+              text: tag,
+            }]);
+          }
+          pushSeries(tagLn);
+        } catch (e) { console.warn('[v2] session fib tag', e); }
       });
     });
   }

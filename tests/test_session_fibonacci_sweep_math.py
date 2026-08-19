@@ -40,6 +40,8 @@ from strategies.session_fibonacci_sweep_math import (
     true_range,
     wilder_atr,
     zone_band,
+    zone_role_tag,
+    nest_indices,
 )
 
 
@@ -75,6 +77,17 @@ def test_zone_order_and_wider():
     assert next_wider_zone("full") == "extension"
     assert next_wider_zone("extension") == "extension"
     assert set(ZONES) == set(ZONE_ORDER)
+
+
+def test_zone_role_tags_and_nest_indices():
+    assert zone_role_tag("inner", "up") == "+ Sweep"
+    assert zone_role_tag("mid", "down") == "- Sweep"
+    assert zone_role_tag("full", "up") == "- Target"
+    assert zone_role_tag("extension", "down") == "+ Target"
+    assert zone_role_tag("inner", "up", compact=True) == "+S"
+    assert zone_role_tag("full", "up", compact=True) == "-T"
+    assert nest_indices(("inner", "mid")) == {"mid": 0, "inner": 1}
+    assert nest_indices(("mid", "full", "extension")) == {"extension": 0, "full": 1, "mid": 2}
 
 
 def test_resolve_distance_modes():

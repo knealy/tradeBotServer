@@ -202,6 +202,38 @@ def next_wider_zone(zone: str) -> str:
     return ZONE_ORDER[idx + 1]
 
 
+def nest_indices(zone_names: Sequence[str]) -> Dict[str, int]:
+    """Outermost enabled zone is 0 (extension → inner)."""
+    enabled = set(zone_names)
+    out: Dict[str, int] = {}
+    n = 0
+    for name in ("extension", "full", "mid", "inner"):
+        if name in enabled:
+            out[name] = n
+            n += 1
+    return out
+
+
+def zone_role_tag(name: str, side: Side, compact: bool = False) -> str:
+    """
+    Centered zone role text.
+
+    Inner 0.236 + mid 0.5 = Sweep (up ``+``, down ``-``).
+    Full 1.0 + extension 1.382+ = Target (up ``-``, down ``+``).
+    Compact: ``+S`` / ``-S`` / ``+T`` / ``-T``.
+    """
+    sweep = name in ("inner", "mid")
+    if sweep:
+        plus = side == "up"
+        if compact:
+            return "+S" if plus else "-S"
+        return "+ Sweep" if plus else "- Sweep"
+    plus = side == "down"
+    if compact:
+        return "+T" if plus else "-T"
+    return "+ Target" if plus else "- Target"
+
+
 def closer_zones_toward_zero(zone: str) -> Tuple[str, ...]:
     """Same-side zones strictly closer to fib 0, in the order price would hit them."""
     try:
@@ -624,11 +656,32 @@ def normalize_zone_names(raw: Optional[Iterable[str]]) -> Tuple[str, ...]:
     return tuple(out) if out else DEFAULT_ZONE_NAMES
 
 
-def _zone_payload(anchor: float, distance: float, zone_names: Sequence[str]) -> List[Dict[str, Any]]:
+def _zone_payload(
+    anchor: float,
+    distance: float,
+    zone_names: Sequence[str],
+    *,
+    grid_start: Optional[int] = None,
+    grid_end: Optional[int] = None,
+    nest_step_sec: int = 0,
+) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
+    idx_map = nest_indices(zone_names)
+    span = 0
+    if grid_start is not None and grid_end is not None:
+        span = max(0, int(grid_end) - int(grid_start))
+    step = max(0, int(nest_step_sec))
+    if step <= 0 and span > 0:
+        step = max(1, int(span * 0.045))
     for name in zone_names:
         if name not in ZONES:
             continue
+        nest = int(idx_map.get(name, 0))
+        inset = nest * step
+        z0 = int(grid_start) + inset if grid_start is not None else None
+        z1 = int(grid_end) - inset if grid_end is not None else None
+        if z0 is not None and z1 is not None and z1 <= z0:
+            z1 = z0 + 1
         for side in ("up", "down"):
             band = zone_band(anchor, distance, name, side)  # type: ignore[arg-type]
             out.append(
@@ -638,6 +691,11 @@ def _zone_payload(anchor: float, distance: float, zone_names: Sequence[str]) -> 
                     "lo": band.lo,
                     "hi": band.hi,
                     "mid": band.mid,
+                    "nest": nest,
+                    "grid_start": z0,
+                    "grid_end": z1,
+                    "tag": zone_role_tag(name, side, compact=False),
+                    "tag_compact": zone_role_tag(name, side, compact=True),
                 }
             )
     return out
@@ -668,7 +726,13 @@ def _emit_grid(
         "session_end": int(session_end_sec),
         "grid_start": int(grid_start_sec),
         "grid_end": int(grid_end_sec),
-        "zones": _zone_payload(anchor, distance, zone_names),
+        "zones": _zone_payload(
+            anchor,
+            distance,
+            zone_names,
+            grid_start=int(grid_start_sec),
+            grid_end=int(grid_end_sec),
+        ),
         "fades": [],
     }
 
@@ -963,6 +1027,8 @@ __all__ = [
     "avg_like_session_ranges",
     "resolve_distance",
     "next_wider_zone",
+    "nest_indices",
+    "zone_role_tag",
     "closer_zones_toward_zero",
     "path_tp_raws",
     "price_touches_zone",
