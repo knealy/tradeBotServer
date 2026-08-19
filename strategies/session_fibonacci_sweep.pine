@@ -226,6 +226,19 @@ pullTp(float raw, float entry, bool isShort, float off) =>
         t := isShort ? math.min(t, entry - syminfo.mintick) : math.max(t, entry + syminfo.mintick)
     t
 
+// Series must be declared before methods that read them (no forward-ref).
+// request.security stays in global scope (not inside a method).
+float tpAtrPull = request.security(syminfo.tickerid, tpPullTf, ta.atr(tpPullAtrLen), barmerge.gaps_off, barmerge.lookahead_off)
+float tpPullOff = math.max(0.0, nz(tpAtrPull, ta.atr(tpPullAtrLen)) * tpPullMult)
+
+// Cache line styles / constructor so FibDraw methods do not shadow the `line` namespace.
+string LN_SOLID = line.style_solid
+string LN_DOTTED = line.style_dotted
+string LN_DASHED = line.style_dashed
+
+fadeHLine(int x1, float y, int x2, color col, int w, string st) =>
+    line.new(x1, y, x2, y, color = col, width = w, style = st)
+
 // Parse input.session "HHMM-HHMM" or "HHMM-HHMM:days" → duration in minutes
 sessionDurationMinutes(string sess) =>
     int dash = str.pos(sess, "-")
@@ -1002,12 +1015,12 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     color tc = color.new(accent, 0)
     FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, sessName = sessName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3)
     if showFadeLines
-        int x2 = math.max(this.endBar, bar_index + 1)
-        f.entryLn := line.new(bar_index, entry, x2, entry, color = ec, width = math.max(lineWidth, 2), style = line.style_solid)
-        f.stopLn := line.new(bar_index, stop, x2, stop, color = sc, width = lineWidth, style = line.style_dotted)
-        f.tp1Ln := line.new(bar_index, tp1, x2, tp1, color = tc, width = lineWidth, style = line.style_dashed)
-        f.tp2Ln := line.new(bar_index, tp2, x2, tp2, color = tc, width = lineWidth, style = line.style_dashed)
-        f.tp3Ln := line.new(bar_index, tp3, x2, tp3, color = tc, width = lineWidth, style = line.style_dotted)
+        int xRight = math.max(this.endBar, bar_index + 1)
+        f.entryLn := fadeHLine(bar_index, entry, xRight, ec, math.max(lineWidth, 2), LN_SOLID)
+        f.stopLn := fadeHLine(bar_index, stop, xRight, sc, lineWidth, LN_DOTTED)
+        f.tp1Ln := fadeHLine(bar_index, tp1, xRight, tc, lineWidth, LN_DASHED)
+        f.tp2Ln := fadeHLine(bar_index, tp2, xRight, tc, lineWidth, LN_DASHED)
+        f.tp3Ln := fadeHLine(bar_index, tp3, xRight, tc, lineWidth, LN_DOTTED)
     string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? (requireIfvg ? " [sweep+IFVG]" : " [confirmed]") : "") + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick) + (tpPullOff > 0 ? "\nTPs pulled " + str.tostring(tpPullOff, format.mintick) + " in front of fibs (" + str.tostring(tpPullMult, "#.#") + "× ATR " + tpPullTf + ")" : "")
     if fadeMarkerShape != MARK_NONE
         string mkTxt = fadeMarkerShape == MARK_LBL ? (upSide ? "S" : "L") : ""
@@ -1160,10 +1173,6 @@ getSessionStates() =>
 var array<SessionState> sessionStates = getSessionStates()
 if timeframe.isdwm
     runtime.error("This indicator can only be used on intraday timeframes.")
-
-// 3-minute (adjustable) ATR used to sit TPs in front of fib/zone levels.
-float tpAtrPull = request.security(syminfo.tickerid, tpPullTf, ta.atr(tpPullAtrLen), barmerge.gaps_off, barmerge.lookahead_off)
-float tpPullOff = math.max(0.0, nz(tpAtrPull, ta.atr(tpPullAtrLen)) * tpPullMult)
 
 // Reset per-bar alert flags
 alertUpSweep := false
