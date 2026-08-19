@@ -80,6 +80,9 @@ const string LVL_GAP = "  "
 const string TP_CLASSIC = "Fib 0 / opposite"
 const string TP_PATH    = "Next zones toward 0"
 
+const string STATS_FULL    = "Full"
+const string STATS_COMPACT = "Compact"
+
 const string FIRST_SESSION_GROUP  = "Tokyo"
 const string SECOND_SESSION_GROUP = "London"
 const string THIRD_SESSION_GROUP  = "NY AM"
@@ -195,6 +198,9 @@ color  fadeMarkerLongC  = input.color(#089981, "Long marker", group = SIGNAL_GRO
 bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Off = compact marker + tooltip only (recommended).")
 bool  showStatsTable  = input.bool(true, "Show stats table", group = SIGNAL_GROUP, active = enableSignals)
 string statsPosition  = input.string("Top Right", "Stats table position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = SIGNAL_GROUP, active = enableSignals and showStatsTable)
+string statsDetail    = input.string(STATS_FULL, "Stats table detail", options = [STATS_FULL, STATS_COMPACT], group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "Full = outcome paths + level-touch audit rows with plain labels. Compact = smaller table with abbreviations.")
+float statsPartialPct = input.float(33.0, "Partial exit at TP1 (%)", minval = 0.0, maxval = 100.0, step = 5.0, group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "For TP1-then-stop paths, assume this fraction of size exits at TP1 and the rest stops out. Used for E(R) only — not a live order model.")
+bool  statsShowTouches = input.bool(true, "Stats: level-touch rows", group = SIGNAL_GROUP, active = enableSignals and showStatsTable and statsDetail == STATS_FULL, tooltip = "Full mode only. Show legacy any-time stop/TP1/TP2/TP3 touch counts (can overlap on the same setup).")
 bool  signalsOnClose  = input.bool(true, "Signals on bar close only", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Anti-repaint: print fade setups only on a confirmed (closed) bar so a forming wick cannot flash a setup and then vanish. Keep Require sweep confirmation on. Fib 0 uses the IB close (not the live bar). 3m ATR uses lookahead_off. Completed session boxes are frozen (live = false). Forward-extending boxes to session end is visual only — historical prices do not change.")
 
 // -----------------------------------------------------------------------------
@@ -411,21 +417,42 @@ type FadeDraw
     line   tp2Ln = na
     line   tp3Ln = na
     label  lab = na
+    string tipBase = ""
+    int    setupBar = na
+    int    setupTime = na
+    bool   entryFilled = false
+    int    fillBar = na
+    int    fillTime = na
     bool   hitTp1 = false
     bool   hitTp2 = false
     bool   hitTp3 = false
     bool   hitStop = false
+    int    tp1Bar = na
+    int    tp1Time = na
+    int    tp2Bar = na
+    int    tp2Time = na
+    int    tp3Bar = na
+    int    tp3Time = na
+    int    stopBar = na
+    int    stopTime = na
+    bool   outcomeDone = false
     bool   statDone = false
 
 type SweepStats
     int setups = 0
     int shorts = 0
     int longs = 0
+    int entryFilled = 0
+    int entryNever = 0
+    int stopBeforeTp1 = 0
+    int tp1Clean = 0
+    int tp1ThenStop = 0
     int stopped = 0
     int tp1 = 0
     int tp2 = 0
     int tp3 = 0
     int expired = 0
+    float sumR = 0.0
     int firstInner = 0
     int firstMid = 0
     int firstFull = 0
@@ -514,6 +541,7 @@ var bool alertSetup = false
 var string alertMsg = ""
 var SweepStats sweepStats = SweepStats.new()
 var table statsTbl = na
+var string statsTblMode = ""
 var array<PendingFvg> pendingFvgs = array.new<PendingFvg>()
 var array<IfvgMark> ifvgMarks = array.new<IfvgMark>()
 
@@ -578,6 +606,25 @@ statsTablePos() =>
 pctStr(int num, int den) =>
     den > 0 ? str.tostring(100.0 * num / den, "#.#") + "%" : "—"
 
+fmtStatTime(int t) =>
+    na(t) ? "—" : str.format_time(t, "MM-dd HH:mm", TZ_ET)
+
+fadeTouchEntry(FadeDraw f) =>
+    low <= f.entry and high >= f.entry
+
+fadeRiskR(FadeDraw f) =>
+    math.abs(f.entry - f.stop)
+
+fadeTp1R(FadeDraw f) =>
+    float risk = fadeRiskR(f)
+    risk > syminfo.mintick ? math.abs(f.entry - f.tp1) / risk : 0.0
+
+expectancyStr(SweepStats s) =>
+    s.setups > 0 ? str.tostring(s.sumR / s.setups, "#.##") + "R / setup" : "—"
+
+confirmModeStr() =>
+    requireConfirm ? ((requireIfvg ? "sweep+IFVG / " : "") + (requireFullPierce ? "full pierce" : "near pierce")) : "first touch"
+
 bumpFirstZone(SweepStats st, string z) =>
     if z == "inner"
         st.firstInner += 1
@@ -598,75 +645,163 @@ method registerSetup(SweepStats this, int sideSign, string zName) =>
     bumpFirstZone(this, zName)
     true
 
+method appendFadeAudit(FadeDraw this) =>
+    if not na(this.lab)
+        string audit = "\n— path audit —\nSetup " + fmtStatTime(this.setupTime)
+        audit += this.entryFilled ? "\nFill " + fmtStatTime(this.fillTime) : "\nFill — (no entry touch)"
+        audit += this.hitTp1 ? "\nTP1 " + fmtStatTime(this.tp1Time) : ""
+        audit += this.hitTp2 ? "\nTP2 " + fmtStatTime(this.tp2Time) : ""
+        audit += this.hitTp3 ? "\nTP3 " + fmtStatTime(this.tp3Time) : ""
+        audit += this.hitStop ? "\nSL " + fmtStatTime(this.stopTime) : ""
+        this.lab.set_tooltip(this.tipBase + audit)
+    true
+
+method maybeFillEntry(FadeDraw this, SweepStats st) =>
+    if not this.entryFilled and fadeTouchEntry(this)
+        this.entryFilled := true
+        this.fillBar := bar_index
+        this.fillTime := time
+        st.entryFilled += 1
+        this.appendFadeAudit()
+    true
+
+method classifyOutcome(FadeDraw this, SweepStats st) =>
+    if this.outcomeDone or na(this.entry)
+        true
+    else
+        this.outcomeDone := true
+        this.appendFadeAudit()
+        if not this.entryFilled
+            st.entryNever += 1
+        else
+            float rw = fadeTp1R(this)
+            float part = statsPartialPct * 0.01
+            if not this.hitTp1 and not this.hitStop
+                st.expired += 1
+            else if this.hitStop and not this.hitTp1
+                st.stopBeforeTp1 += 1
+                st.sumR -= 1.0
+            else if this.hitTp1 and not this.hitStop
+                st.tp1Clean += 1
+                st.sumR += rw
+            else if this.hitTp1 and this.hitStop
+                if na(this.tp1Bar) or na(this.stopBar) or this.tp1Bar <= this.stopBar
+                    st.tp1ThenStop += 1
+                    st.sumR += rw * part - (1.0 - part) * 1.0
+                else
+                    st.stopBeforeTp1 += 1
+                    st.sumR -= 1.0
+        this.statDone := true
+    true
+
 method finalizeFade(FadeDraw this, SweepStats st) =>
     // Mutate stats via parameter only — never write sweepStats.* by global name (CE10088).
-    if not this.statDone and not na(this.entry)
-        // Still open at dispose / replace → expired (no stop, no TP1)
-        if not this.hitStop and not this.hitTp1
-            st.expired += 1
-        this.statDone := true
+    if not this.outcomeDone and not na(this.entry)
+        this.classifyOutcome(st)
     true
 
 method trackFade(FadeDraw this, SweepStats st) =>
     if this.statDone or na(this.entry) or na(this.stop)
         true
     else
+        this.maybeFillEntry(st)
         bool isShort = this.sideSign > 0
         bool stopNow = isShort ? high >= this.stop : low <= this.stop
         if stopNow
-            this.hitStop := true
-            this.statDone := true
-            st.stopped += 1
+            if not this.hitStop
+                this.hitStop := true
+                this.stopBar := bar_index
+                this.stopTime := time
+                st.stopped += 1
+                this.appendFadeAudit()
+            this.classifyOutcome(st)
         else
             if isShort
                 if not this.hitTp1 and low <= this.tp1
                     this.hitTp1 := true
+                    this.tp1Bar := bar_index
+                    this.tp1Time := time
                     st.tp1 += 1
+                    this.appendFadeAudit()
                 if this.hitTp1 and not this.hitTp2 and low <= this.tp2
                     this.hitTp2 := true
+                    this.tp2Bar := bar_index
+                    this.tp2Time := time
                     st.tp2 += 1
+                    this.appendFadeAudit()
                 if this.hitTp2 and not this.hitTp3 and low <= this.tp3
                     this.hitTp3 := true
+                    this.tp3Bar := bar_index
+                    this.tp3Time := time
                     st.tp3 += 1
+                    this.appendFadeAudit()
             else
                 if not this.hitTp1 and high >= this.tp1
                     this.hitTp1 := true
+                    this.tp1Bar := bar_index
+                    this.tp1Time := time
                     st.tp1 += 1
+                    this.appendFadeAudit()
                 if this.hitTp1 and not this.hitTp2 and high >= this.tp2
                     this.hitTp2 := true
+                    this.tp2Bar := bar_index
+                    this.tp2Time := time
                     st.tp2 += 1
+                    this.appendFadeAudit()
                 if this.hitTp2 and not this.hitTp3 and high >= this.tp3
                     this.hitTp3 := true
+                    this.tp3Bar := bar_index
+                    this.tp3Time := time
                     st.tp3 += 1
+                    this.appendFadeAudit()
         true
+
+statsCell(table t, int row, string lbl, string val, string txtSize) =>
+    table.cell(t, 0, row, lbl, text_color = color.silver, text_size = txtSize)
+    table.cell(t, 1, row, val, text_color = color.white, text_size = txtSize)
 
 fillStatsTable(table t) =>
     // Only fills cells. table.new / statsTbl := must stay in global scope (CE10088).
     SweepStats s = sweepStats
-    table.cell(t, 0, 0, "Sweep stats", text_color = color.white, text_size = size.small)
-    table.cell(t, 1, 0, "", text_color = color.white, text_size = size.small)
-    table.cell(t, 0, 1, "Setups", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 1, str.tostring(s.setups), text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 2, "Short / Long", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 2, str.tostring(s.shorts) + " / " + str.tostring(s.longs), text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 3, "First zone in/md/fl/ex", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 3, str.tostring(s.firstInner) + "/" + str.tostring(s.firstMid) + "/" + str.tostring(s.firstFull) + "/" + str.tostring(s.firstExt), text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 4, "Stopped", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 4, str.tostring(s.stopped) + "  (" + pctStr(s.stopped, s.setups) + ")", text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 5, "TP1", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 5, str.tostring(s.tp1) + "  (" + pctStr(s.tp1, s.setups) + ")", text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 6, "TP2", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 6, str.tostring(s.tp2) + "  (" + pctStr(s.tp2, s.tp1) + " of TP1)", text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 7, "TP3", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 7, str.tostring(s.tp3) + "  (" + pctStr(s.tp3, s.tp2) + " of TP2)", text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 8, "Expired", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 8, str.tostring(s.expired), text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 9, "TP1→TP2", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 9, pctStr(s.tp2, s.tp1), text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 10, "TP2→TP3", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 10, pctStr(s.tp3, s.tp2), text_color = color.white, text_size = size.tiny)
-    table.cell(t, 0, 11, "Confirm", text_color = color.silver, text_size = size.tiny)
-    table.cell(t, 1, 11, requireConfirm ? ((requireIfvg ? "sweep+IFVG / " : "") + (requireFullPierce ? "full pierce" : "near pierce")) : "first touch", text_color = color.white, text_size = size.tiny)
+    string txtSize = statsDetail == STATS_COMPACT ? size.tiny : size.small
+    string hdrSize = statsDetail == STATS_COMPACT ? size.tiny : size.small
+    table.cell(t, 0, 0, statsDetail == STATS_COMPACT ? "Sweep stats" : "Sweep fade stats", text_color = color.white, text_size = hdrSize)
+    table.cell(t, 1, 0, statsDetail == STATS_COMPACT ? "compact" : "full", text_color = color.gray, text_size = size.tiny)
+    if statsDetail == STATS_COMPACT
+        statsCell(t, 1, "Setups", str.tostring(s.setups), txtSize)
+        statsCell(t, 2, "S / L", str.tostring(s.shorts) + " / " + str.tostring(s.longs), txtSize)
+        statsCell(t, 3, "Zone in/md/fl/ex", str.tostring(s.firstInner) + "/" + str.tostring(s.firstMid) + "/" + str.tostring(s.firstFull) + "/" + str.tostring(s.firstExt), txtSize)
+        statsCell(t, 4, "Entry fill", str.tostring(s.entryFilled) + " (" + pctStr(s.entryFilled, s.setups) + ")", txtSize)
+        statsCell(t, 5, "Loss SL<TP1", str.tostring(s.stopBeforeTp1) + " (" + pctStr(s.stopBeforeTp1, s.entryFilled) + " of fill)", txtSize)
+        statsCell(t, 6, "Part TP1→SL", str.tostring(s.tp1ThenStop) + " (" + pctStr(s.tp1ThenStop, s.entryFilled) + " of fill)", txtSize)
+        statsCell(t, 7, "Win TP1 ok", str.tostring(s.tp1Clean) + " (" + pctStr(s.tp1Clean, s.entryFilled) + " of fill)", txtSize)
+        statsCell(t, 8, "E(R)", expectancyStr(s), txtSize)
+    else
+        statsCell(t, 1, "Setups", str.tostring(s.setups), txtSize)
+        statsCell(t, 2, "Short / Long", str.tostring(s.shorts) + " / " + str.tostring(s.longs), txtSize)
+        statsCell(t, 3, "Setup zone in/md/fl/ex", str.tostring(s.firstInner) + "/" + str.tostring(s.firstMid) + "/" + str.tostring(s.firstFull) + "/" + str.tostring(s.firstExt), txtSize)
+        statsCell(t, 4, "Entry filled (limit touch)", str.tostring(s.entryFilled) + "  (" + pctStr(s.entryFilled, s.setups) + ")", txtSize)
+        statsCell(t, 5, "No entry fill", str.tostring(s.entryNever) + "  (" + pctStr(s.entryNever, s.setups) + ")", txtSize)
+        statsCell(t, 6, "Stop before TP1 (loss path)", str.tostring(s.stopBeforeTp1) + "  (" + pctStr(s.stopBeforeTp1, s.entryFilled) + " of filled)", txtSize)
+        statsCell(t, 7, "TP1 then stop (partial path)", str.tostring(s.tp1ThenStop) + "  (" + pctStr(s.tp1ThenStop, s.entryFilled) + " of filled)", txtSize)
+        statsCell(t, 8, "TP1, no stop (session end)", str.tostring(s.tp1Clean) + "  (" + pctStr(s.tp1Clean, s.entryFilled) + " of filled)", txtSize)
+        statsCell(t, 9, "Filled, no TP1 or stop", str.tostring(s.expired) + "  (" + pctStr(s.expired, s.entryFilled) + " of filled)", txtSize)
+        statsCell(t, 10, "Expectancy E(R)", expectancyStr(s) + "  (part " + str.tostring(statsPartialPct, "#") + "% @ TP1)", txtSize)
+        int row = 11
+        if statsShowTouches
+            statsCell(t, row, "Stop touched (any time)", str.tostring(s.stopped) + "  (" + pctStr(s.stopped, s.setups) + ")", txtSize)
+            row += 1
+            statsCell(t, row, "TP1 touched (any time)", str.tostring(s.tp1) + "  (" + pctStr(s.tp1, s.setups) + ")", txtSize)
+            row += 1
+            statsCell(t, row, "TP2 touched (after TP1)", str.tostring(s.tp2) + "  (" + pctStr(s.tp2, s.tp1) + " of TP1)", txtSize)
+            row += 1
+            statsCell(t, row, "TP3 touched (after TP2)", str.tostring(s.tp3) + "  (" + pctStr(s.tp3, s.tp2) + " of TP2)", txtSize)
+            row += 1
+            statsCell(t, row, "TP1→TP2 chain", pctStr(s.tp2, s.tp1), txtSize)
+            row += 1
+            statsCell(t, row, "TP2→TP3 chain", pctStr(s.tp3, s.tp2), txtSize)
+            row += 1
+        statsCell(t, row, "Confirm mode", confirmModeStr(), txtSize)
     true
 
 // -----------------------------------------------------------------------------
@@ -1119,7 +1254,7 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     color ec = upSide ? color.new(#f23645, 0) : color.new(#089981, 0)
     color sc = color.new(#ff9800, 0)
     color tc = color.new(accent, 0)
-    FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, sessName = sessName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3)
+    FadeDraw f = FadeDraw.new(sideSign = sideSign, zone = zName, sessName = sessName, entry = entry, stop = stop, tp1 = tp1, tp2 = tp2, tp3 = tp3, setupBar = bar_index, setupTime = time)
     if showFadeLines
         int xRight = math.max(this.endBar, bar_index + 1)
         f.entryLn := fadeHLine(bar_index, entry, xRight, ec, math.max(lineWidth, 2), LN_SOLID)
@@ -1128,10 +1263,13 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
         f.tp2Ln := fadeHLine(bar_index, tp2, xRight, tc, lineWidth, LN_DASHED)
         f.tp3Ln := fadeHLine(bar_index, tp3, xRight, tc, lineWidth, LN_DOTTED)
     string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? (requireIfvg ? " [sweep+IFVG]" : " [confirmed]") : "") + " [" + tpStructure + "]" + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick) + (tpPullOff > 0 ? "\nTPs pulled " + str.tostring(tpPullOff, format.mintick) + " in front of fibs (" + str.tostring(tpPullMult, "#.#") + "× ATR " + tpPullTf + ")" : "")
+    f.tipBase := tip
+    f.maybeFillEntry(sweepStats)
     if fadeMarkerShape != MARK_NONE
         string mkTxt = fadeMarkerShape == MARK_LBL ? (upSide ? "S" : "L") : ""
         color mkC = fadeMarkerFill(upSide)
         f.lab := label.new(bar_index, entry, mkTxt, xloc = xloc.bar_index, yloc = yloc.price, style = fadeMarkerStyle(upSide), color = mkC, textcolor = fadeMarkerShape == MARK_LBL ? color.white : mkC, size = fadeMarkerSizeVal(), tooltip = tip)
+        f.appendFadeAudit()
     this.fade := f
     this.setupDone := true
     sweepStats.registerSetup(sideSign, zName)
@@ -1322,6 +1460,15 @@ alertcondition(alertSetup, title = "Any fade setup", message = "Session fib fade
 
 // table.new / statsTbl := only here in global scope (CE10088 forbids this inside functions).
 if showStatsTable and enableSignals and barstate.islast
-    if na(statsTbl)
-        statsTbl := table.new(statsTablePos(), 2, 12, bgcolor = color.new(color.black, 75), border_width = 1, border_color = color.new(color.gray, 50))
+    if na(statsTbl) or statsTblMode != statsDetail
+        if not na(statsTbl)
+            table.delete(statsTbl)
+            statsTbl := na
+        statsTblMode := statsDetail
+        int statsRows = statsDetail == STATS_COMPACT ? 9 : 17
+        statsTbl := table.new(statsTablePos(), 2, statsRows, bgcolor = color.new(color.black, 75), border_width = 1, border_color = color.new(color.gray, 50))
     fillStatsTable(statsTbl)
+else if not na(statsTbl)
+    table.delete(statsTbl)
+    statsTbl := na
+    statsTblMode := ""
