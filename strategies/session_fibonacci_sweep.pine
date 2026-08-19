@@ -20,7 +20,9 @@ indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 1000, max
 //
 // Visual-only by default; optional sweep → fade markers + alertconditions.
 // Zone visibility is per session (inner .25 vs mid .5+). Zone pairs share the
-// session hue, alternating light/dark. Trade marker shape is optional.
+// session hue, alternating light/dark. Trade marker shape, size, and colors
+// are optional. Level ratio/price labels sit in one column at the grid's
+// right edge (independent of nest/midline length).
 // TP1–TP3 sit 1× 3-minute ATR in front of the fib/zone (adjustable) so a stall
 // just before the level can still fill. Optional TP structure: classic
 // (fib 0 / opposite) or next zones toward 0 (e.g. 0.5 sweep → 0.236 then 0).
@@ -65,6 +67,15 @@ const string MARK_FLG  = "Flag"
 const string MARK_X    = "Cross"
 const string MARK_LBL  = "Label"
 const string MARK_NONE = "None"
+
+const string SZ_TINY   = "Tiny"
+const string SZ_SMALL  = "Small"
+const string SZ_NORMAL = "Normal"
+const string SZ_LARGE  = "Large"
+const string SZ_HUGE   = "Huge"
+
+// Extra gap between fib ratio and price so the two values don't run together.
+const string LVL_GAP = "  "
 
 const string TP_CLASSIC = "Fib 0 / opposite"
 const string TP_PATH    = "Next zones toward 0"
@@ -136,11 +147,10 @@ bool showL10    = input.bool(false, "1.0",    group = LEVELS_GROUP, inline = "L2
 bool showL1382  = input.bool(false, "1.382",  group = LEVELS_GROUP, inline = "L3")
 bool showL15    = input.bool(false, "1.5",    group = LEVELS_GROUP, inline = "L3")
 bool showL1618  = input.bool(false, "1.618",  group = LEVELS_GROUP, inline = "L3")
-bool showLevelRatios = input.bool(false, "Show fib ratios at line ends", group = LEVELS_GROUP, tooltip = "Tiny ratio labels one bar right of each drawn level line.")
-bool showLevelPrices = input.bool(true, "Show prices at line ends", group = LEVELS_GROUP, tooltip = "Tiny price labels one bar right of each drawn level line.")
+bool showLevelRatios = input.bool(false, "Show fib ratios at line ends", group = LEVELS_GROUP, tooltip = "Tiny ratio labels in one vertical column one bar right of the full grid edge (not the nested midline end).")
+bool showLevelPrices = input.bool(true, "Show prices at line ends", group = LEVELS_GROUP, tooltip = "Tiny price labels in the same column as the ratios, one bar right of the full grid edge.")
 
-bool showZoneMidlines = input.bool(true, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (same idea as 1.5 between 1.382–1.618). Which zones draw is set per session.")
-bool showExtMidline = input.bool(false, "1.5 midline in extension",  group = ZONES_GROUP, tooltip = "Kept for compatibility; also covered when Midlines in each zone is on.")
+bool showZoneMidlines = input.bool(true, "Midlines in each zone", group = ZONES_GROUP, tooltip = "Dotted midline inside each enabled zone (inner / mid / full / 1.5 in the extension). Which zones draw is set per session.")
 int  zoneFillTransp = input.int(40, "Zone fill transparency", minval = 40, maxval = 92, group = ZONES_GROUP, tooltip = "Lower = more opaque fills. Session color pickers stay for hue; this sets fill opacity so zones stay visible on dark charts.")
 string nestStyle    = input.string(NEST_FRAME, "Zone nest style", options = [NEST_OFF, NEST_INSET, NEST_CONN, NEST_FRAME], group = ZONES_GROUP, tooltip = "Off = same width. Inset only = stepped boxes, no extra rails. Connectors = left rail on the outermost zone and right rail on the innermost. Frames = left+right rails on every nest level (clearest nested look).")
 int  nestStepBars   = input.int(2, "Nest step (bars)", minval = 1, maxval = 20, group = ZONES_GROUP, active = nestStyle != NEST_OFF, tooltip = "How many bars to inset each nested zone from the previous. 2–3 reads as a frame; 1 is tight.")
@@ -179,6 +189,9 @@ string tpStructure    = input.string(TP_CLASSIC, "Take-profit structure", option
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(false, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "On: each new setup deletes the previous marker. Off: keep every fade marker in the session (pair with One setup per session off).")
 string fadeMarkerShape = input.string(MARK_DIA, "Trade marker shape", options = [MARK_TRI, MARK_DIA, MARK_CIR, MARK_FLG, MARK_X, MARK_LBL, MARK_NONE], group = SIGNAL_GROUP, active = enableSignals, tooltip = "Shape at fade entry. None skips the marker (E/SL/TP lines still draw if enabled).")
+string fadeMarkerSize  = input.string(SZ_TINY, "Trade marker size", options = [SZ_TINY, SZ_SMALL, SZ_NORMAL, SZ_LARGE, SZ_HUGE], group = SIGNAL_GROUP, active = enableSignals and fadeMarkerShape != MARK_NONE, tooltip = "TradingView label size for the fade entry marker.")
+color  fadeMarkerShortC = input.color(#f23645, "Short marker", group = SIGNAL_GROUP, inline = "mkc", active = enableSignals and fadeMarkerShape != MARK_NONE)
+color  fadeMarkerLongC  = input.color(#089981, "Long marker", group = SIGNAL_GROUP, inline = "mkc", active = enableSignals and fadeMarkerShape != MARK_NONE)
 bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Off = compact marker + tooltip only (recommended).")
 bool  showStatsTable  = input.bool(true, "Show stats table", group = SIGNAL_GROUP, active = enableSignals)
 string statsPosition  = input.string("Top Right", "Stats table position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = SIGNAL_GROUP, active = enableSignals and showStatsTable)
@@ -367,6 +380,15 @@ zonePairColor(color base, string z) =>
 
 fadeMarkerStyle(bool upSide) =>
     fadeMarkerShape == MARK_DIA ? label.style_diamond : fadeMarkerShape == MARK_CIR ? label.style_circle : fadeMarkerShape == MARK_FLG ? label.style_flag : fadeMarkerShape == MARK_X ? label.style_xcross : fadeMarkerShape == MARK_LBL ? (upSide ? label.style_label_down : label.style_label_up) : (upSide ? label.style_triangledown : label.style_triangleup)
+
+fadeMarkerSizeVal() =>
+    fadeMarkerSize == SZ_SMALL ? size.small : fadeMarkerSize == SZ_NORMAL ? size.normal : fadeMarkerSize == SZ_LARGE ? size.large : fadeMarkerSize == SZ_HUGE ? size.huge : size.tiny
+
+fadeMarkerFill(bool upSide) =>
+    upSide ? fadeMarkerShortC : fadeMarkerLongC
+
+levelEndText(string ratioTxt, string priceTxt) =>
+    ratioTxt == "" ? priceTxt : priceTxt == "" ? ratioTxt : ratioTxt + LVL_GAP + priceTxt
 
 drawIfvgBoxes() =>
     showIfvg or requireIfvg
@@ -669,18 +691,12 @@ method addBothLevels(FibDraw this, float ratio, bool on, color upC, color dnC, b
         if showLevelRatios or showLevelPrices
             if na(this.levelLabs)
                 this.levelLabs := array.new<label>()
-            int lx = x2 + 1
-            string ratioTxt = str.tostring(ratio, "#.####")
-            string upTxt = ""
-            string dnTxt = ""
-            if showLevelRatios
-                upTxt := ratioTxt
-                dnTxt := ratioTxt
-            if showLevelPrices
-                string upP = str.tostring(upPx, format.mintick)
-                string dnP = str.tostring(dnPx, format.mintick)
-                upTxt := upTxt == "" ? upP : upTxt + " " + upP
-                dnTxt := dnTxt == "" ? dnP : dnTxt + " " + dnP
+            // Pin every ratio/price label to the full grid right edge so nested
+            // (shorter) midlines still stack in one vertical column.
+            int lx = this.endBar + 1
+            string ratioTxt = showLevelRatios ? str.tostring(ratio, "#.####") : ""
+            string upTxt = levelEndText(ratioTxt, showLevelPrices ? str.tostring(upPx, format.mintick) : "")
+            string dnTxt = levelEndText(ratioTxt, showLevelPrices ? str.tostring(dnPx, format.mintick) : "")
             this.levelLabs.push(label.new(lx, upPx, upTxt, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(upC, 0), size = size.tiny))
             this.levelLabs.push(label.new(lx, dnPx, dnTxt, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(dnC, 0), size = size.tiny))
     true
@@ -828,6 +844,7 @@ method dimDraw(FibDraw this, int extraTransp) =>
         color ec = color.new(f.sideSign > 0 ? #f23645 : #089981, t)
         color sc = color.new(#ff9800, t)
         color tc = upDim
+        color mk = color.new(fadeMarkerFill(f.sideSign > 0), math.min(100, color.t(fadeMarkerFill(f.sideSign > 0)) + t))
         if not na(f.entryLn)
             f.entryLn.set_color(ec)
         if not na(f.stopLn)
@@ -839,7 +856,8 @@ method dimDraw(FibDraw this, int extraTransp) =>
         if not na(f.tp3Ln)
             f.tp3Ln.set_color(tc)
         if not na(f.lab)
-            f.lab.set_textcolor(ec)
+            f.lab.set_color(mk)
+            f.lab.set_textcolor(fadeMarkerShape == MARK_LBL ? color.new(color.white, t) : mk)
     true
 
 method bumpSessBox(FibDraw this, float h, float l) =>
@@ -956,7 +974,7 @@ method beginGrid(SessionState this) =>
         if not edgeOnly and showL15
             d.addBothLevels(R_EXT_MID, true, extC, extC, false, 0)
         // Dotted midlines clip to the same inset as the zone box
-        bool wantExtMid = this.showExt and (showZoneMidlines or showExtMidline)
+        bool wantExtMid = this.showExt and showZoneMidlines
         if showZoneMidlines and this.showInner
             d.addBothLevels(R_INNER_MID, true, innerC, innerC, true, nestInner)
         if showZoneMidlines and this.showMid
@@ -990,8 +1008,7 @@ method beginGrid(SessionState this) =>
             if showLevelRatios
                 zTxt := "0"
             if showLevelPrices
-                string zP = str.tostring(this.sessOpen, format.mintick)
-                zTxt := zTxt == "" ? zP : zTxt + " " + zP
+                zTxt := levelEndText(zTxt, str.tostring(this.sessOpen, format.mintick))
             d.levelLabs.push(label.new(lx0, this.sessOpen, zTxt, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(upC, 0), size = size.tiny))
         this.active := d
         true
@@ -1113,7 +1130,8 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? (requireIfvg ? " [sweep+IFVG]" : " [confirmed]") : "") + " [" + tpStructure + "]" + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick) + (tpPullOff > 0 ? "\nTPs pulled " + str.tostring(tpPullOff, format.mintick) + " in front of fibs (" + str.tostring(tpPullMult, "#.#") + "× ATR " + tpPullTf + ")" : "")
     if fadeMarkerShape != MARK_NONE
         string mkTxt = fadeMarkerShape == MARK_LBL ? (upSide ? "S" : "L") : ""
-        f.lab := label.new(bar_index, entry, mkTxt, xloc = xloc.bar_index, yloc = yloc.price, style = fadeMarkerStyle(upSide), color = ec, textcolor = color.white, size = size.tiny, tooltip = tip)
+        color mkC = fadeMarkerFill(upSide)
+        f.lab := label.new(bar_index, entry, mkTxt, xloc = xloc.bar_index, yloc = yloc.price, style = fadeMarkerStyle(upSide), color = mkC, textcolor = fadeMarkerShape == MARK_LBL ? color.white : mkC, size = fadeMarkerSizeVal(), tooltip = tip)
     this.fade := f
     this.setupDone := true
     sweepStats.registerSetup(sideSign, zName)

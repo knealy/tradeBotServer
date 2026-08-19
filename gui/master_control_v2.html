@@ -397,6 +397,10 @@
     font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink);
     background:transparent;border:1px solid var(--hairline);border-radius:2px;padding:2px 4px;
   }
+  .overlay-panel input[type=color]{
+    width:18px;height:16px;padding:0;border:1px solid var(--hairline);border-radius:2px;
+    background:transparent;cursor:pointer;
+  }
   .overlay-strats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
   .overlay-strats label{margin:0;font-size:9px;cursor:pointer}
   .session-fib-zone-panel{margin-top:4px;padding-top:6px;border-top:1px solid var(--hairline)}
@@ -837,6 +841,16 @@
                   <option value="compact">+S / −S</option>
                 </select>
               </div>
+              <div class="sfib-row"><span>Marks</span>
+                <select id="session-fib-marker-shape" onchange="onSessionFibZoneChange()" title="Fade entry marker on the chart. Arrow follows short/long direction.">
+                  <option value="arrow" selected>Arrow</option>
+                  <option value="circle">Circle</option>
+                  <option value="square">Square</option>
+                  <option value="none">None</option>
+                </select>
+                <label title="Short fade marker color">S <input type="color" id="session-fib-marker-short" value="#f23645" onchange="onSessionFibZoneChange()"></label>
+                <label title="Long fade marker color">L <input type="color" id="session-fib-marker-long" value="#089981" onchange="onSessionFibZoneChange()"></label>
+              </div>
             </div>
             <div id="mrr-live-status" class="mrr-live-status" aria-live="polite"></div>
           </div>
@@ -1100,6 +1114,9 @@
   const CHART_SESSION_FIB_TP_PULL_LS_KEY = 'masterv2.chart.sessionFibTpPull';
   const CHART_SESSION_FIB_TP_STRUCT_LS_KEY = 'masterv2.chart.sessionFibTpStructure';
   const CHART_SESSION_FIB_ZONE_TAGS_LS_KEY = 'masterv2.chart.sessionFibZoneTags';
+  const CHART_SESSION_FIB_MARK_SHAPE_LS_KEY = 'masterv2.chart.sessionFibMarkShape';
+  const CHART_SESSION_FIB_MARK_SHORT_LS_KEY = 'masterv2.chart.sessionFibMarkShort';
+  const CHART_SESSION_FIB_MARK_LONG_LS_KEY = 'masterv2.chart.sessionFibMarkLong';
   const CHART_BG_LS_KEY = 'masterv2.chart.bgColor';
   const CHART_DRAWINGS_LS_PREFIX = 'masterv2.chart.drawings.';
 
@@ -2299,6 +2316,9 @@
     try { localStorage.setItem(CHART_SESSION_FIB_TP_PULL_LS_KEY, String(getSessionFibTpPullMult())); } catch (e) { /* ignore */ }
     try { localStorage.setItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY, getSessionFibTpStructure()); } catch (e) { /* ignore */ }
     try { localStorage.setItem(CHART_SESSION_FIB_ZONE_TAGS_LS_KEY, getSessionFibZoneTags()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_MARK_SHAPE_LS_KEY, getSessionFibMarkerShape()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_MARK_SHORT_LS_KEY, getSessionFibMarkerShort()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_MARK_LONG_LS_KEY, getSessionFibMarkerLong()); } catch (e) { /* ignore */ }
   }
   function getSessionFibTpPullMult() {
     const el = document.getElementById('session-fib-tp-pull');
@@ -2315,6 +2335,23 @@
     const el = document.getElementById('session-fib-zone-tags');
     const v = el ? String(el.value || 'full') : 'full';
     return (v === 'off' || v === 'compact') ? v : 'full';
+  }
+  function getSessionFibMarkerShape() {
+    const el = document.getElementById('session-fib-marker-shape');
+    const v = el ? String(el.value || 'arrow') : 'arrow';
+    return (v === 'circle' || v === 'square' || v === 'none') ? v : 'arrow';
+  }
+  function sessionFibHexColor(raw, fallback) {
+    const v = String(raw || '').trim();
+    return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : fallback;
+  }
+  function getSessionFibMarkerShort() {
+    const el = document.getElementById('session-fib-marker-short');
+    return sessionFibHexColor(el && el.value, '#f23645');
+  }
+  function getSessionFibMarkerLong() {
+    const el = document.getElementById('session-fib-marker-long');
+    return sessionFibHexColor(el && el.value, '#089981');
   }
   function restoreSessionFibZoneChecks() {
     let stored = null;
@@ -2343,6 +2380,21 @@
     if (tagEl) {
       const raw = localStorage.getItem(CHART_SESSION_FIB_ZONE_TAGS_LS_KEY);
       if (raw === 'off' || raw === 'full' || raw === 'compact') tagEl.value = raw;
+    }
+    const markEl = document.getElementById('session-fib-marker-shape');
+    if (markEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_MARK_SHAPE_LS_KEY);
+      if (raw === 'arrow' || raw === 'circle' || raw === 'square' || raw === 'none') markEl.value = raw;
+    }
+    const shortEl = document.getElementById('session-fib-marker-short');
+    if (shortEl) {
+      const raw = sessionFibHexColor(localStorage.getItem(CHART_SESSION_FIB_MARK_SHORT_LS_KEY), '');
+      if (raw) shortEl.value = raw;
+    }
+    const longEl = document.getElementById('session-fib-marker-long');
+    if (longEl) {
+      const raw = sessionFibHexColor(localStorage.getItem(CHART_SESSION_FIB_MARK_LONG_LS_KEY), '');
+      if (raw) longEl.value = raw;
     }
   }
   function syncSessionFibZonePanel() {
@@ -2467,17 +2519,21 @@
         zero.setData([{ time: gs, value: anchor }, { time: ge, value: anchor }]);
         pushSeries(zero);
         const fades = Array.isArray(sess.fades) ? sess.fades : [];
-        if (fades.length && typeof zero.setMarkers === 'function') {
-          zero.setMarkers(fades.map(function(f) {
+        if (typeof zero.setMarkers === 'function') {
+          const markShape = getSessionFibMarkerShape();
+          const shortC = getSessionFibMarkerShort();
+          const longC = getSessionFibMarkerLong();
+          zero.setMarkers(markShape === 'none' ? [] : fades.map(function(f) {
             const short = f.fade === 'short';
             const t = +f.time;
             if (!Number.isFinite(t) || !Number.isFinite(+f.entry)) return null;
             // Fades are only emitted while that session's clock is open.
+            const shape = markShape === 'circle' ? 'circle' : markShape === 'square' ? 'square' : (short ? 'arrowDown' : 'arrowUp');
             return {
               time: t,
               position: short ? 'aboveBar' : 'belowBar',
-              color: short ? '#f23645' : '#089981',
-              shape: short ? 'arrowDown' : 'arrowUp',
+              color: short ? shortC : longC,
+              shape: shape,
               text: (short ? 'S ' : 'L ') + (f.zone || ''),
             };
           }).filter(Boolean));
