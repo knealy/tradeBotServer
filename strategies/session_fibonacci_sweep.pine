@@ -199,7 +199,8 @@ bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SI
 bool  showStatsTable  = input.bool(true, "Show stats table", group = SIGNAL_GROUP, active = enableSignals)
 string statsPosition  = input.string("Top Right", "Stats table position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = SIGNAL_GROUP, active = enableSignals and showStatsTable)
 string statsDetail    = input.string(STATS_FULL, "Stats table detail", options = [STATS_FULL, STATS_COMPACT], group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "Full = outcome paths + level-touch audit rows with plain labels. Compact = smaller table with abbreviations.")
-float statsPartialPct = input.float(33.0, "Partial exit at TP1 (%)", minval = 0.0, maxval = 100.0, step = 5.0, group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "For TP1-then-stop paths, assume this fraction of size exits at TP1 and the rest stops out. Used for E(R) only — not a live order model.")
+float statsPartialPct = input.float(33.0, "Partial exit at TP1 (%)", minval = 0.0, maxval = 100.0, step = 5.0, group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "For TP1-then-stop paths, assume this fraction of size exits at TP1. Used for E(R) only — not a live order model.")
+bool  statsBeAtTp1    = input.bool(false, "Move stop to BE at TP1 (E(R))", group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "When on, TP1-then-stop paths assume the runner stop moves to breakeven after the partial at TP1 — so the remaining size stops at 0R instead of −1R. Used for E(R) only.")
 bool  statsShowTouches = input.bool(true, "Stats: level-touch rows", group = SIGNAL_GROUP, active = enableSignals and showStatsTable and statsDetail == STATS_FULL, tooltip = "Full mode only. Show legacy any-time stop/TP1/TP2/TP3 touch counts (can overlap on the same setup).")
 bool  signalsOnClose  = input.bool(true, "Signals on bar close only", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Anti-repaint: print fade setups only on a confirmed (closed) bar so a forming wick cannot flash a setup and then vanish. Keep Require sweep confirmation on. Fib 0 uses the IB close (not the live bar). 3m ATR uses lookahead_off. Completed session boxes are frozen (live = false). Forward-extending boxes to session end is visual only — historical prices do not change.")
 
@@ -619,8 +620,16 @@ fadeTp1R(FadeDraw f) =>
     float risk = fadeRiskR(f)
     risk > syminfo.mintick ? math.abs(f.entry - f.tp1) / risk : 0.0
 
+partialPathR(float rw) =>
+    float part = statsPartialPct * 0.01
+    statsBeAtTp1 ? rw * part : rw * part - (1.0 - part) * 1.0
+
 expectancyStr(SweepStats s) =>
     s.setups > 0 ? str.tostring(s.sumR / s.setups, "#.##") + "R / setup" : "—"
+
+erModelFootnote() =>
+    string foot = "part " + str.tostring(statsPartialPct, "#") + "% @ TP1"
+    statsBeAtTp1 ? foot + ", BE rest" : foot + ", SL rest"
 
 confirmModeStr() =>
     requireConfirm ? ((requireIfvg ? "sweep+IFVG / " : "") + (requireFullPierce ? "full pierce" : "near pierce")) : "first touch"
@@ -675,7 +684,6 @@ method classifyOutcome(FadeDraw this, SweepStats st) =>
             st.entryNever += 1
         else
             float rw = fadeTp1R(this)
-            float part = statsPartialPct * 0.01
             if not this.hitTp1 and not this.hitStop
                 st.expired += 1
             else if this.hitStop and not this.hitTp1
@@ -687,7 +695,7 @@ method classifyOutcome(FadeDraw this, SweepStats st) =>
             else if this.hitTp1 and this.hitStop
                 if na(this.tp1Bar) or na(this.stopBar) or this.tp1Bar <= this.stopBar
                     st.tp1ThenStop += 1
-                    st.sumR += rw * part - (1.0 - part) * 1.0
+                    st.sumR += partialPathR(rw)
                 else
                     st.stopBeforeTp1 += 1
                     st.sumR -= 1.0
@@ -786,7 +794,7 @@ fillStatsTable(table t) =>
         statsCell(t, 7, "TP1 then stop (partial path)", str.tostring(s.tp1ThenStop) + "  (" + pctStr(s.tp1ThenStop, s.entryFilled) + " of filled)", txtSize)
         statsCell(t, 8, "TP1, no stop (session end)", str.tostring(s.tp1Clean) + "  (" + pctStr(s.tp1Clean, s.entryFilled) + " of filled)", txtSize)
         statsCell(t, 9, "Filled, no TP1 or stop", str.tostring(s.expired) + "  (" + pctStr(s.expired, s.entryFilled) + " of filled)", txtSize)
-        statsCell(t, 10, "Expectancy E(R)", expectancyStr(s) + "  (part " + str.tostring(statsPartialPct, "#") + "% @ TP1)", txtSize)
+        statsCell(t, 10, "Expectancy E(R)", expectancyStr(s) + "  (" + erModelFootnote() + ")", txtSize)
         int row = 11
         if statsShowTouches
             statsCell(t, row, "Stop touched (any time)", str.tostring(s.stopped) + "  (" + pctStr(s.stopped, s.setups) + ")", txtSize)
