@@ -199,8 +199,8 @@ bool  showFadeLines   = input.bool(false, "Draw E/SL/TP level lines", group = SI
 bool  showStatsTable  = input.bool(true, "Show stats table", group = SIGNAL_GROUP, active = enableSignals)
 string statsPosition  = input.string("Top Right", "Stats table position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = SIGNAL_GROUP, active = enableSignals and showStatsTable)
 string statsDetail    = input.string(STATS_FULL, "Stats table detail", options = [STATS_FULL, STATS_COMPACT], group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "Full = outcome paths + level-touch audit rows with plain labels. Compact = smaller table with abbreviations.")
-float statsPartialPct = input.float(33.0, "Partial exit at TP1 (%)", minval = 0.0, maxval = 100.0, step = 5.0, group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "For TP1-then-stop paths, assume this fraction of size exits at TP1. Used for E(R) only — not a live order model.")
-bool  statsBeAtTp1    = input.bool(false, "Move stop to BE at TP1 (E(R))", group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "When on, TP1-then-stop paths assume the runner stop moves to breakeven after the partial at TP1 — so the remaining size stops at 0R instead of −1R. Used for E(R) only.")
+float statsPartialPct = input.float(70.0, "Scale out at TP1 (%)", minval = 0.0, maxval = 100.0, step = 5.0, group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "E(R) only: fraction closed at TP1. Default 70% ≈ 3–4 of 5 contracts. Remaining size uses the BE runner rules below.")
+bool  statsBeAtTp1    = input.bool(true, "Move stop to BE at TP1 (E(R))", group = SIGNAL_GROUP, active = enableSignals and showStatsTable, tooltip = "E(R) only: after the TP1 scale-out, runner stop is breakeven (0R if tagged). TP1-then-stop paths no longer charge −1R on the runner.")
 bool  statsShowTouches = input.bool(true, "Stats: level-touch rows", group = SIGNAL_GROUP, active = enableSignals and showStatsTable and statsDetail == STATS_FULL, tooltip = "Full mode only. Show legacy any-time stop/TP1/TP2/TP3 touch counts (can overlap on the same setup).")
 bool  signalsOnClose  = input.bool(true, "Signals on bar close only", group = SIGNAL_GROUP, active = enableSignals, tooltip = "Anti-repaint: print fade setups only on a confirmed (closed) bar so a forming wick cannot flash a setup and then vanish. Keep Require sweep confirmation on. Fib 0 uses the IB close (not the live bar). 3m ATR uses lookahead_off. Completed session boxes are frozen (live = false). Forward-extending boxes to session end is visual only — historical prices do not change.")
 
@@ -620,16 +620,35 @@ fadeTp1R(FadeDraw f) =>
     float risk = fadeRiskR(f)
     risk > syminfo.mintick ? math.abs(f.entry - f.tp1) / risk : 0.0
 
+fadeLevelR(FadeDraw f, float px) =>
+    float risk = fadeRiskR(f)
+    risk > syminfo.mintick ? math.abs(f.entry - px) / risk : 0.0
+
 partialPathR(float rw) =>
     float part = statsPartialPct * 0.01
     statsBeAtTp1 ? rw * part : rw * part - (1.0 - part) * 1.0
+
+// Scale-out at TP1 + optional BE runner; credit TP2/TP3 on runner when tagged.
+cleanWinR(FadeDraw f, float rw) =>
+    float part = statsPartialPct * 0.01
+    if part >= 0.999 and not statsBeAtTp1
+        rw
+    else
+        float runnerR = 0.0
+        if f.hitTp3
+            runnerR := fadeLevelR(f, f.tp3)
+        else if f.hitTp2
+            runnerR := fadeLevelR(f, f.tp2)
+        part * rw + (1.0 - part) * runnerR
 
 expectancyStr(SweepStats s) =>
     s.setups > 0 ? str.tostring(s.sumR / s.setups, "#.##") + "R / setup" : "—"
 
 erModelFootnote() =>
-    string foot = "part " + str.tostring(statsPartialPct, "#") + "% @ TP1"
-    statsBeAtTp1 ? foot + ", BE rest" : foot + ", SL rest"
+    string pct = str.tostring(statsPartialPct, "#")
+    string lot = statsPartialPct >= 55.0 and statsPartialPct <= 85.0 ? " (~" + str.tostring(statsPartialPct * 0.05, "#.#") + "/5)" : ""
+    string foot = pct + "% @ TP1" + lot
+    statsBeAtTp1 ? foot + ", BE runner" : foot + ", SL runner"
 
 confirmModeStr() =>
     requireConfirm ? ((requireIfvg ? "sweep+IFVG / " : "") + (requireFullPierce ? "full pierce" : "near pierce")) : "first touch"
@@ -691,7 +710,7 @@ method classifyOutcome(FadeDraw this, SweepStats st) =>
                 st.sumR -= 1.0
             else if this.hitTp1 and not this.hitStop
                 st.tp1Clean += 1
-                st.sumR += rw
+                st.sumR += cleanWinR(this, rw)
             else if this.hitTp1 and this.hitStop
                 if na(this.tp1Bar) or na(this.stopBar) or this.tp1Bar <= this.stopBar
                     st.tp1ThenStop += 1
