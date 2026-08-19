@@ -15,6 +15,7 @@ from strategies.session_fibonacci_sweep_math import (
     avg_like_session_ranges,
     build_fade_setup,
     build_session_fib_overlays,
+    closer_zones_toward_zero,
     detect_fvg,
     first_swept_zone,
     fvg_inverted,
@@ -26,6 +27,7 @@ from strategies.session_fibonacci_sweep_math import (
     normalize_zone_names,
     overlaps_band,
     parse_hhmm_to_minutes,
+    path_tp_raws,
     price_touches_zone,
     pull_take_profit,
     project_levels,
@@ -124,6 +126,32 @@ def test_build_fade_setup_short_and_long():
     assert long.fade == "long"
     assert long.stop < long.entry
     assert long.tp2 > long.tp1  # opposite mid is above anchor
+
+
+def test_path_tps_are_next_zones_toward_zero():
+    assert closer_zones_toward_zero("mid") == ("inner",)
+    assert closer_zones_toward_zero("full") == ("mid", "inner")
+    assert closer_zones_toward_zero("inner") == ()
+
+    # 0.5 up-sweep short: TP1 at 0.236 zone (same side), TP2 at fib 0 — not 0 / -0.5
+    classic = build_fade_setup(100.0, 10.0, "up", "mid")
+    path = build_fade_setup(100.0, 10.0, "up", "mid", tp_structure="path")
+    assert path.stop == pytest.approx(classic.stop)
+    assert path.entry == pytest.approx(classic.entry)
+    assert path.tp1 == pytest.approx(zone_band(100.0, 10.0, "inner", "up").mid)
+    assert path.tp2 == pytest.approx(100.0)
+    assert path.tp1 != pytest.approx(classic.tp1)
+    r1, r2, r3 = path_tp_raws(100.0, 10.0, "up", "mid")
+    assert (r1, r2, r3) == pytest.approx((path.tp1, path.tp2, path.tp3))
+
+    inner = build_fade_setup(100.0, 10.0, "up", "inner", tp_structure="path")
+    assert inner.tp1 == pytest.approx(100.0)
+    assert inner.tp2 == pytest.approx(zone_band(100.0, 10.0, "inner", "down").mid)
+
+    long_mid = build_fade_setup(100.0, 10.0, "down", "mid", tp_structure="path")
+    assert long_mid.tp1 == pytest.approx(zone_band(100.0, 10.0, "inner", "down").mid)
+    assert long_mid.tp2 == pytest.approx(100.0)
+    assert long_mid.stop < long_mid.entry
 
 
 def test_tp_pull_sits_in_front_of_fibs():

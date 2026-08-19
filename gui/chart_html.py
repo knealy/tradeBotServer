@@ -5019,6 +5019,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 DEFAULT_ATR_LEN,
                 DEFAULT_SESSION_ZONES,
                 DEFAULT_TP_PULL_MULT,
+                DEFAULT_TP_STRUCTURE,
                 DEFAULT_ZONE_NAMES,
                 build_session_fib_overlays,
                 normalize_zone_names,
@@ -5074,6 +5075,9 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             except (TypeError, ValueError):
                 tp_pull_mult = DEFAULT_TP_PULL_MULT
             tp_pull_mult = max(0.0, min(5.0, tp_pull_mult))
+            tp_structure = (request.query.get("tp_structure") or DEFAULT_TP_STRUCTURE).strip().lower()
+            if tp_structure not in ("classic", "path"):
+                tp_structure = DEFAULT_TP_STRUCTURE
 
             cache_key = "|".join(
                 [
@@ -5088,6 +5092,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     "1" if delay_until_ib else "0",
                     range_mode,
                     f"{tp_pull_mult:.4f}",
+                    tp_structure,
                 ]
             )
             now = time.time()
@@ -5112,6 +5117,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 session_zones=session_zones,
                 max_sessions=max_sessions,
                 tp_pull_mult=tp_pull_mult,
+                tp_structure=tp_structure,  # type: ignore[arg-type]
             )
             payload = {
                 "symbol": sym,
@@ -5120,6 +5126,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 "atr_len": atr_len,
                 "ib_minutes": ib_minutes,
                 "tp_pull_mult": tp_pull_mult,
+                "tp_structure": tp_structure,
                 "zones": zone_names,
                 "session_zones": {k: list(v) for k, v in session_zones.items()},
                 "sessions": overlays,

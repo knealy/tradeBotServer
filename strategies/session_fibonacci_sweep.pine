@@ -22,8 +22,9 @@ indicator("Session Fibonacci Sweep", overlay = true, max_boxes_count = 1000, max
 // Zone visibility is per session (inner .25 vs mid .5+). Zone pairs share the
 // session hue, alternating light/dark. Trade marker shape is optional.
 // TP1–TP3 sit 1× 3-minute ATR in front of the fib/zone (adjustable) so a stall
-// just before the level can still fill. Optional inverted FVG (IFVG) markers
-// + sweep+IFVG confirmation. Does not place orders.
+// just before the level can still fill. Optional TP structure: classic
+// (fib 0 / opposite) or next zones toward 0 (e.g. 0.5 sweep → 0.236 then 0).
+// Optional inverted FVG (IFVG) markers + sweep+IFVG confirmation. Does not place orders.
 // =============================================================================
 
 // ---- Shared ratios (bot-port mirror) ----------------------------------------
@@ -57,6 +58,9 @@ const string MARK_FLG  = "Flag"
 const string MARK_X    = "Cross"
 const string MARK_LBL  = "Label"
 const string MARK_NONE = "None"
+
+const string TP_CLASSIC = "Fib 0 / opposite"
+const string TP_PATH    = "Next zones toward 0"
 
 const string FIRST_SESSION_GROUP  = "Tokyo"
 const string SECOND_SESSION_GROUP = "London"
@@ -161,6 +165,7 @@ float stopBufRatio    = input.float(0.15, "Stop buffer (× distance)", minval = 
 float tpPullMult      = input.float(1.0, "TP pullback (× ATR)", minval = 0.0, maxval = 5.0, step = 0.1, group = SIGNAL_GROUP, active = enableSignals, tooltip = "Pull TP1–TP3 this many ATRs in front of the fib/zone so a reverse just before the level can still fill. Default 1 × 3-minute ATR. 0 = TPs sit on the fibs.")
 string tpPullTf       = input.timeframe("3", "TP pullback timeframe", group = SIGNAL_GROUP, active = enableSignals and tpPullMult > 0, tooltip = "Timeframe used for the TP pullback ATR (default 3 minutes).")
 int    tpPullAtrLen   = input.int(1, "TP pullback ATR length", minval = 1, maxval = 50, group = SIGNAL_GROUP, active = enableSignals and tpPullMult > 0, tooltip = "ATR length on the pullback timeframe. 1 = last 3m candle's true range.")
+string tpStructure    = input.string(TP_CLASSIC, "Take-profit structure", options = [TP_CLASSIC, TP_PATH], group = SIGNAL_GROUP, active = enableSignals, tooltip = "Classic: TP1 = fib 0, TP2 = opposite same zone, TP3 = opposite next-wider. Next zones: walk toward fib 0 then through — e.g. fade a 0.5 sweep → TP1 at the 0.236 zone, TP2 at fib 0. Stop is unchanged.")
 bool  alertOnSweep    = input.bool(true, "Fire alert() on sweep setup", group = SIGNAL_GROUP, active = enableSignals)
 bool  keepLatestFade  = input.bool(false, "Keep only latest fade drawing", group = SIGNAL_GROUP, active = enableSignals, tooltip = "On: each new setup deletes the previous marker. Off: keep every fade marker in the session (pair with One setup per session off).")
 string fadeMarkerShape = input.string(MARK_DIA, "Trade marker shape", options = [MARK_TRI, MARK_DIA, MARK_CIR, MARK_FLG, MARK_X, MARK_LBL, MARK_NONE], group = SIGNAL_GROUP, active = enableSignals, tooltip = "Shape at fade entry. None skips the marker (E/SL/TP lines still draw if enabled).")
@@ -211,6 +216,27 @@ widerRatios(string z) =>
 
 zoneRatios(string z) =>
     z == "inner" ? array.from(R_INNER_LO, R_INNER_HI) : z == "mid" ? array.from(R_MID_LO, R_MID_HI) : z == "full" ? array.from(R_FULL_LO, R_FULL_HI) : array.from(R_EXT_LO, R_EXT_HI)
+
+// Next levels toward fib 0 (same-side closer mids), then 0, then opposite inner→full.
+pathTpRaws(float anchor, float dist, bool upSide, string zName) =>
+    array<float> raws = array.new<float>()
+    if zName == "extension"
+        array<float> rf = zoneRatios("full")
+        raws.push(zoneMid(anchor, dist, rf.get(0), rf.get(1), upSide))
+    if zName == "extension" or zName == "full"
+        array<float> rm = zoneRatios("mid")
+        raws.push(zoneMid(anchor, dist, rm.get(0), rm.get(1), upSide))
+    if zName == "extension" or zName == "full" or zName == "mid"
+        array<float> ri = zoneRatios("inner")
+        raws.push(zoneMid(anchor, dist, ri.get(0), ri.get(1), upSide))
+    raws.push(anchor)
+    array<float> oi = zoneRatios("inner")
+    raws.push(zoneMid(anchor, dist, oi.get(0), oi.get(1), not upSide))
+    array<float> om = zoneRatios("mid")
+    raws.push(zoneMid(anchor, dist, om.get(0), om.get(1), not upSide))
+    array<float> ofu = zoneRatios("full")
+    raws.push(zoneMid(anchor, dist, ofu.get(0), ofu.get(1), not upSide))
+    raws
 
 isZonesOnly() =>
     displayMode == DISP_ZONES
@@ -1007,9 +1033,17 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
     float farEdge = upSide ? zoneHi(this.openPx, this.dist, zr.get(0), zr.get(1), true) : zoneLo(this.openPx, this.dist, zr.get(0), zr.get(1), false)
     float buf = stopBufRatio * this.dist
     float stop = upSide ? farEdge + buf : farEdge - buf
-    float tp1 = pullTp(this.openPx, entry, upSide, tpPullOff)
-    float tp2 = pullTp(zoneMid(this.openPx, this.dist, zr.get(0), zr.get(1), not upSide), entry, upSide, tpPullOff)
-    float tp3 = pullTp(zoneMid(this.openPx, this.dist, wr.get(0), wr.get(1), not upSide), entry, upSide, tpPullOff)
+    float tp1Raw = this.openPx
+    float tp2Raw = zoneMid(this.openPx, this.dist, zr.get(0), zr.get(1), not upSide)
+    float tp3Raw = zoneMid(this.openPx, this.dist, wr.get(0), wr.get(1), not upSide)
+    if tpStructure == TP_PATH
+        array<float> path = pathTpRaws(this.openPx, this.dist, upSide, zName)
+        tp1Raw := path.get(0)
+        tp2Raw := path.get(1)
+        tp3Raw := path.get(2)
+    float tp1 = pullTp(tp1Raw, entry, upSide, tpPullOff)
+    float tp2 = pullTp(tp2Raw, entry, upSide, tpPullOff)
+    float tp3 = pullTp(tp3Raw, entry, upSide, tpPullOff)
     color ec = upSide ? color.new(#f23645, 0) : color.new(#089981, 0)
     color sc = color.new(#ff9800, 0)
     color tc = color.new(accent, 0)
@@ -1021,7 +1055,7 @@ method printFade(FibDraw this, color accent, string sessName, int sideSign, stri
         f.tp1Ln := fadeHLine(bar_index, tp1, xRight, tc, lineWidth, LN_DASHED)
         f.tp2Ln := fadeHLine(bar_index, tp2, xRight, tc, lineWidth, LN_DASHED)
         f.tp3Ln := fadeHLine(bar_index, tp3, xRight, tc, lineWidth, LN_DOTTED)
-    string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? (requireIfvg ? " [sweep+IFVG]" : " [confirmed]") : "") + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick) + (tpPullOff > 0 ? "\nTPs pulled " + str.tostring(tpPullOff, format.mintick) + " in front of fibs (" + str.tostring(tpPullMult, "#.#") + "× ATR " + tpPullTf + ")" : "")
+    string tip = sessName + (upSide ? " SHORT fade (up sweep)" : " LONG fade (down sweep)") + " @ " + zName + (requireConfirm ? (requireIfvg ? " [sweep+IFVG]" : " [confirmed]") : "") + " [" + tpStructure + "]" + "\nE  " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(stop, format.mintick) + "\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3, format.mintick) + (tpPullOff > 0 ? "\nTPs pulled " + str.tostring(tpPullOff, format.mintick) + " in front of fibs (" + str.tostring(tpPullMult, "#.#") + "× ATR " + tpPullTf + ")" : "")
     if fadeMarkerShape != MARK_NONE
         string mkTxt = fadeMarkerShape == MARK_LBL ? (upSide ? "S" : "L") : ""
         f.lab := label.new(bar_index, entry, mkTxt, xloc = xloc.bar_index, yloc = yloc.price, style = fadeMarkerStyle(upSide), color = ec, textcolor = color.white, size = size.tiny, tooltip = tip)

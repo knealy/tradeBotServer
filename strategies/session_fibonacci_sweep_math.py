@@ -58,6 +58,7 @@ DEFAULT_ATR_LEN = 2
 DEFAULT_TP_PULL_MULT = 1.0
 DEFAULT_TP_PULL_PERIOD_SEC = 180  # 3-minute candle, matches Pine tpPullTf default
 DEFAULT_TP_PULL_ATR_LEN = 1  # last period true range (Pine ta.atr(1))
+DEFAULT_TP_STRUCTURE: Literal["classic", "path"] = "classic"
 DEFAULT_ZONE_NAMES: Tuple[str, ...] = ("inner", "mid")
 DEFAULT_SESSION_ZONES: Dict[str, Tuple[str, ...]] = {
     "Tokyo": ("inner", "mid"),
@@ -68,6 +69,7 @@ DEFAULT_SESSION_ZONES: Dict[str, Tuple[str, ...]] = {
 
 Side = Literal["up", "down"]
 FadeSide = Literal["short", "long"]  # fade up-sweep => short; fade down-sweep => long
+TpStructure = Literal["classic", "path"]
 
 
 @dataclass(frozen=True)
@@ -105,9 +107,9 @@ class FadeSetup:
     zone: str
     entry: float
     stop: float
-    tp1: float  # fib 0, pulled in front of the level by tp_offset
-    tp2: float  # opposite same-zone mid (same pull)
-    tp3: float  # opposite next-wider zone mid (same pull)
+    tp1: float  # pulled in front of the raw TP level by tp_offset
+    tp2: float
+    tp3: float
     stop_buffer: float
 
 
@@ -198,6 +200,37 @@ def next_wider_zone(zone: str) -> str:
     if idx >= len(ZONE_ORDER) - 1:
         return ZONE_ORDER[-1]
     return ZONE_ORDER[idx + 1]
+
+
+def closer_zones_toward_zero(zone: str) -> Tuple[str, ...]:
+    """Same-side zones strictly closer to fib 0, in the order price would hit them."""
+    try:
+        idx = ZONE_ORDER.index(zone)
+    except ValueError as exc:
+        raise KeyError(zone) from exc
+    return tuple(reversed(ZONE_ORDER[:idx]))
+
+
+def path_tp_raws(
+    anchor: float,
+    distance: float,
+    swept_side: Side,
+    zone: str,
+) -> Tuple[float, float, float]:
+    """
+    Next three fade targets walking toward fib 0, then through.
+
+    Same-side closer zone mids (far → near), then fib 0, then opposite
+    inner → extension. Example: 0.5 up-sweep short → inner mid, then 0.
+    """
+    raws: List[float] = []
+    for name in closer_zones_toward_zero(zone):
+        raws.append(zone_band(anchor, distance, name, swept_side).mid)
+    raws.append(float(anchor))
+    opp_side: Side = "down" if swept_side == "up" else "up"
+    for name in ZONE_ORDER:
+        raws.append(zone_band(anchor, distance, name, opp_side).mid)
+    return (raws[0], raws[1], raws[2])
 
 
 def price_touches_zone(high: float, low: float, band: ZoneBand) -> bool:
@@ -364,20 +397,21 @@ def build_fade_setup(
     entry_at: Literal["mid", "near", "far"] = "mid",
     tp_offset: float = 0.0,
     min_tick: float = 0.0,
+    tp_structure: TpStructure = DEFAULT_TP_STRUCTURE,
 ) -> FadeSetup:
     """
     Build fade levels after a zone sweep.
 
     Entry: inside the swept zone (mid / near / far edge from anchor).
     Stop: beyond the far edge + ``stop_buffer_ratio * distance``.
-    TP1: fib 0 (anchor), pulled ``tp_offset`` in front of the level.
-    TP2: opposite same-zone mid (same pull).
-    TP3: opposite next-wider zone mid (same pull).
+
+    ``classic`` TPs: fib 0, opposite same-zone mid, opposite next-wider mid.
+    ``path`` TPs: next levels toward fib 0 then through (e.g. 0.5 sweep →
+    inner zone, then 0). Stop is unchanged.
+    Each TP is pulled ``tp_offset`` in front of the raw level.
     """
     swept = zone_band(anchor, distance, zone, swept_side)
     opp_side: Side = "down" if swept_side == "up" else "up"
-    opp = zone_band(anchor, distance, zone, opp_side)
-    wider = zone_band(anchor, distance, next_wider_zone(zone), opp_side)
     buf = max(0.0, stop_buffer_ratio) * distance
 
     if entry_at == "near":
@@ -394,15 +428,23 @@ def build_fade_setup(
         stop = swept.lo - buf
         fade = "long"
 
+    struct: TpStructure = "path" if tp_structure == "path" else "classic"
+    if struct == "path":
+        r1, r2, r3 = path_tp_raws(anchor, distance, swept_side, zone)
+    else:
+        opp = zone_band(anchor, distance, zone, opp_side)
+        wider = zone_band(anchor, distance, next_wider_zone(zone), opp_side)
+        r1, r2, r3 = float(anchor), opp.mid, wider.mid
+
     return FadeSetup(
         swept_side=swept_side,
         fade=fade,
         zone=zone,
         entry=entry,
         stop=stop,
-        tp1=pull_take_profit(anchor, entry, fade, tp_offset, min_tick),
-        tp2=pull_take_profit(opp.mid, entry, fade, tp_offset, min_tick),
-        tp3=pull_take_profit(wider.mid, entry, fade, tp_offset, min_tick),
+        tp1=pull_take_profit(r1, entry, fade, tp_offset, min_tick),
+        tp2=pull_take_profit(r2, entry, fade, tp_offset, min_tick),
+        tp3=pull_take_profit(r3, entry, fade, tp_offset, min_tick),
         stop_buffer=buf,
     )
 
@@ -651,6 +693,7 @@ def maybe_session_fade(
     stop_buffer_ratio: float = 0.15,
     tp_offset: float = 0.0,
     min_tick: float = 0.0,
+    tp_structure: TpStructure = DEFAULT_TP_STRUCTURE,
 ) -> Optional[FadeSetup]:
     """Build a fade setup only when the bar is inside the session clock."""
     if not in_session or distance is None or distance <= 0:
@@ -669,6 +712,7 @@ def maybe_session_fade(
         stop_buffer_ratio=stop_buffer_ratio,
         tp_offset=tp_offset,
         min_tick=min_tick,
+        tp_structure=tp_structure,
     )
 
 
@@ -681,6 +725,7 @@ def _append_live_fade(
     close: float,
     tp_offset: float = 0.0,
     min_tick: float = 0.0,
+    tp_structure: TpStructure = DEFAULT_TP_STRUCTURE,
 ) -> None:
     grid = tracker.active
     if grid is None:
@@ -704,6 +749,7 @@ def _append_live_fade(
                         zname,  # type: ignore[arg-type]
                         tp_offset=tp_offset,
                         min_tick=min_tick,
+                        tp_structure=tp_structure,
                     )
                     fades.append(
                         {
@@ -738,6 +784,7 @@ def build_session_fib_overlays(
     tp_pull_mult: float = DEFAULT_TP_PULL_MULT,
     tp_pull_period_sec: int = DEFAULT_TP_PULL_PERIOD_SEC,
     tp_pull_atr_len: int = DEFAULT_TP_PULL_ATR_LEN,
+    tp_structure: TpStructure = DEFAULT_TP_STRUCTURE,
 ) -> List[Dict[str, Any]]:
     """
     Walk OHLCV bars and emit Session Fibonacci Sweep grids (Pine-parity).
@@ -747,6 +794,8 @@ def build_session_fib_overlays(
 
     Fade TP1–TP3 sit ``tp_pull_mult`` × last completed 3-minute ATR in front of
     the fib/zone (Pine ``tpPullMult`` / ``tpPullTf``). ``0`` leaves TPs on the fibs.
+    ``tp_structure`` ``path`` uses the next zones toward fib 0 (then through);
+    ``classic`` is fib 0 / opposite same zone / opposite next-wider.
     """
     if not bars:
         return []
@@ -772,6 +821,7 @@ def build_session_fib_overlays(
     prev_close: Optional[float] = None
     period_atr = _PeriodAtr(period_sec=tp_pull_period_sec, atr_len=tp_pull_atr_len)
     pull_mult = max(0.0, float(tp_pull_mult))
+    struct: TpStructure = "path" if tp_structure == "path" else "classic"
 
     mode: Literal["atr", "previous"] = "atr" if range_mode == "atr" else "previous"
 
@@ -858,6 +908,7 @@ def build_session_fib_overlays(
                         close=c,
                         tp_offset=tp_off,
                         min_tick=min_tick,
+                        tp_structure=struct,
                     )
             elif tr.was_in:
                 # Session ended — commit H–L range and archive active grid
@@ -900,6 +951,7 @@ __all__ = [
     "DEFAULT_TP_PULL_MULT",
     "DEFAULT_TP_PULL_PERIOD_SEC",
     "DEFAULT_TP_PULL_ATR_LEN",
+    "DEFAULT_TP_STRUCTURE",
     "DEFAULT_ZONE_NAMES",
     "DEFAULT_SESSION_ZONES",
     "LevelBook",
@@ -911,6 +963,8 @@ __all__ = [
     "avg_like_session_ranges",
     "resolve_distance",
     "next_wider_zone",
+    "closer_zones_toward_zero",
+    "path_tp_raws",
     "price_touches_zone",
     "sweep_pierced",
     "sweep_confirmed",

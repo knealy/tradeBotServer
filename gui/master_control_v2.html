@@ -824,6 +824,12 @@
                   <input type="number" id="session-fib-tp-pull" min="0" max="5" step="0.1" value="1" style="width:48px" onchange="onSessionFibZoneChange()"> × 3m ATR
                 </label>
               </div>
+              <div class="sfib-row"><span>TPs</span>
+                <select id="session-fib-tp-structure" onchange="onSessionFibZoneChange()" title="Classic: TP1 = fib 0, TP2 = opposite same zone. Next zones: walk toward fib 0 — e.g. fade a 0.5 sweep → TP1 at 0.236, TP2 at 0. Stop unchanged.">
+                  <option value="classic" selected>Fib 0 / opposite</option>
+                  <option value="path">Next zones toward 0</option>
+                </select>
+              </div>
             </div>
             <div id="mrr-live-status" class="mrr-live-status" aria-live="polite"></div>
           </div>
@@ -1085,6 +1091,7 @@
   const CHART_RANGE_SHOW_SESSION_FIB_LS_KEY = 'masterv2.chart.rangeShowSessionFib';
   const CHART_SESSION_FIB_ZONES_LS_KEY = 'masterv2.chart.sessionFibZones';
   const CHART_SESSION_FIB_TP_PULL_LS_KEY = 'masterv2.chart.sessionFibTpPull';
+  const CHART_SESSION_FIB_TP_STRUCT_LS_KEY = 'masterv2.chart.sessionFibTpStructure';
   const CHART_BG_LS_KEY = 'masterv2.chart.bgColor';
   const CHART_DRAWINGS_LS_PREFIX = 'masterv2.chart.drawings.';
 
@@ -2282,12 +2289,18 @@
   function persistSessionFibZones() {
     try { localStorage.setItem(CHART_SESSION_FIB_ZONES_LS_KEY, JSON.stringify(getSessionFibZones())); } catch (e) { /* ignore */ }
     try { localStorage.setItem(CHART_SESSION_FIB_TP_PULL_LS_KEY, String(getSessionFibTpPullMult())); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY, getSessionFibTpStructure()); } catch (e) { /* ignore */ }
   }
   function getSessionFibTpPullMult() {
     const el = document.getElementById('session-fib-tp-pull');
     let n = el ? parseFloat(el.value) : 1;
     if (!Number.isFinite(n)) n = 1;
     return Math.max(0, Math.min(5, n));
+  }
+  function getSessionFibTpStructure() {
+    const el = document.getElementById('session-fib-tp-structure');
+    const v = el ? String(el.value || 'classic') : 'classic';
+    return v === 'path' ? 'path' : 'classic';
   }
   function restoreSessionFibZoneChecks() {
     let stored = null;
@@ -2306,6 +2319,11 @@
       const raw = localStorage.getItem(CHART_SESSION_FIB_TP_PULL_LS_KEY);
       const n = raw != null ? parseFloat(raw) : NaN;
       if (Number.isFinite(n)) pullEl.value = String(Math.max(0, Math.min(5, n)));
+    }
+    const structEl = document.getElementById('session-fib-tp-structure');
+    if (structEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY);
+      if (raw === 'path' || raw === 'classic') structEl.value = raw;
     }
   }
   function syncSessionFibZonePanel() {
@@ -2355,6 +2373,7 @@
         delay_until_ib: '1',
         range_mode: 'atr',
         tp_pull_mult: String(getSessionFibTpPullMult()),
+        tp_structure: getSessionFibTpStructure(),
       });
       const zmap = getSessionFibZones();
       SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
