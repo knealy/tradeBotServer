@@ -397,8 +397,17 @@
     font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink);
     background:transparent;border:1px solid var(--hairline);border-radius:2px;padding:2px 4px;
   }
+  .overlay-panel input[type=color]{
+    width:18px;height:16px;padding:0;border:1px solid var(--hairline);border-radius:2px;
+    background:transparent;cursor:pointer;
+  }
   .overlay-strats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
   .overlay-strats label{margin:0;font-size:9px;cursor:pointer}
+  .session-fib-zone-panel{margin-top:4px;padding-top:6px;border-top:1px solid var(--hairline)}
+  .session-fib-zone-panel[hidden]{display:none}
+  .sfib-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;font-size:9px;color:var(--muted)}
+  .sfib-row > span{min-width:42px;color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:9px}
+  .sfib-row label{margin:0;font-size:9px;cursor:pointer;gap:4px}
   .chart-tf-input{
     width:52px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink);
     background:transparent;border:0;padding:0;outline:none;
@@ -787,6 +796,61 @@
               <label><input type="checkbox" id="range-show-or" onchange="onRangeOverlayChange()"> OR</label>
               <label><input type="checkbox" id="range-show-mrr" checked onchange="onRangeOverlayChange()"> MRR</label>
               <label><input type="checkbox" id="range-show-orb" onchange="onRangeOverlayChange()"> ORB</label>
+              <label title="Session Fibonacci Sweep (Tokyo/London/NY AM/NY PM)"><input type="checkbox" id="range-show-session-fib" onchange="onRangeOverlayChange()"> Session Fib</label>
+            </div>
+            <div id="session-fib-zone-panel" class="session-fib-zone-panel" hidden>
+              <div class="sfib-row"><span>Tokyo</span>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="Tokyo" data-sfib-zone="extension" onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>London</span>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="inner" onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="full" checked onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="London" data-sfib-zone="extension" onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>NY AM</span>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="NY AM" data-sfib-zone="extension" onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>NY PM</span>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="inner" checked onchange="onSessionFibZoneChange()"> .25</label>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="mid" checked onchange="onSessionFibZoneChange()"> .5</label>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
+                <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="extension" checked onchange="onSessionFibZoneChange()"> 1.38</label>
+              </div>
+              <div class="sfib-row"><span>TP pull</span>
+                <label title="Sit fade TPs this many 3-minute ATRs in front of the fib/zone so a stall just before the level can still fill. 0 = TPs sit on the fibs.">
+                  <input type="number" id="session-fib-tp-pull" min="0" max="5" step="0.1" value="1" style="width:48px" onchange="onSessionFibZoneChange()"> × 3m ATR
+                </label>
+              </div>
+              <div class="sfib-row"><span>TPs</span>
+                <select id="session-fib-tp-structure" onchange="onSessionFibZoneChange()" title="Classic: TP1 = fib 0, TP2 = opposite same zone. Next zones: walk toward fib 0 — e.g. fade a 0.5 sweep → TP1 at 0.236, TP2 at 0. Stop unchanged.">
+                  <option value="classic" selected>Fib 0 / opposite</option>
+                  <option value="path">Next zones toward 0</option>
+                </select>
+              </div>
+              <div class="sfib-row"><span>Tags</span>
+                <select id="session-fib-zone-tags" onchange="onSessionFibZoneChange()" title="Centered Sweep/Target text. Inner/mid = Sweep; 1.0 and 1.38+ = Target. Compact is +S/−S/+T/−T.">
+                  <option value="off">Off</option>
+                  <option value="full" selected>Sweep / Target</option>
+                  <option value="compact">+S / −S</option>
+                </select>
+              </div>
+              <div class="sfib-row"><span>Marks</span>
+                <select id="session-fib-marker-shape" onchange="onSessionFibZoneChange()" title="Fade entry marker on the chart. Arrow follows short/long direction.">
+                  <option value="arrow" selected>Arrow</option>
+                  <option value="circle">Circle</option>
+                  <option value="square">Square</option>
+                  <option value="none">None</option>
+                </select>
+                <label title="Short fade marker color">S <input type="color" id="session-fib-marker-short" value="#f23645" onchange="onSessionFibZoneChange()"></label>
+                <label title="Long fade marker color">L <input type="color" id="session-fib-marker-long" value="#089981" onchange="onSessionFibZoneChange()"></label>
+              </div>
             </div>
             <div id="mrr-live-status" class="mrr-live-status" aria-live="polite"></div>
           </div>
@@ -1045,6 +1109,14 @@
   const CHART_RANGE_SHOW_OR_LS_KEY = 'masterv2.chart.rangeShowOr';
   const CHART_RANGE_SHOW_MRR_LS_KEY = 'masterv2.chart.rangeShowMrr';
   const CHART_RANGE_SHOW_ORB_LS_KEY = 'masterv2.chart.rangeShowOrb';
+  const CHART_RANGE_SHOW_SESSION_FIB_LS_KEY = 'masterv2.chart.rangeShowSessionFib';
+  const CHART_SESSION_FIB_ZONES_LS_KEY = 'masterv2.chart.sessionFibZones';
+  const CHART_SESSION_FIB_TP_PULL_LS_KEY = 'masterv2.chart.sessionFibTpPull';
+  const CHART_SESSION_FIB_TP_STRUCT_LS_KEY = 'masterv2.chart.sessionFibTpStructure';
+  const CHART_SESSION_FIB_ZONE_TAGS_LS_KEY = 'masterv2.chart.sessionFibZoneTags';
+  const CHART_SESSION_FIB_MARK_SHAPE_LS_KEY = 'masterv2.chart.sessionFibMarkShape';
+  const CHART_SESSION_FIB_MARK_SHORT_LS_KEY = 'masterv2.chart.sessionFibMarkShort';
+  const CHART_SESSION_FIB_MARK_LONG_LS_KEY = 'masterv2.chart.sessionFibMarkLong';
   const CHART_BG_LS_KEY = 'masterv2.chart.bgColor';
   const CHART_DRAWINGS_LS_PREFIX = 'masterv2.chart.drawings.';
 
@@ -1432,6 +1504,7 @@
     __rangeRefreshTimer = setTimeout(() => {
       __rangeRefreshTimer = null;
       refreshStrategyRanges();
+      refreshSessionFibOverlay();
     }, 120);
   }
   function flashLastPrice(el, price, barOpen) {
@@ -1979,6 +2052,10 @@
     if (orCb) orCb.checked = localStorage.getItem(CHART_RANGE_SHOW_OR_LS_KEY) === '1';
     if (mrrCb) mrrCb.checked = localStorage.getItem(CHART_RANGE_SHOW_MRR_LS_KEY) !== '0';
     if (orbCb) orbCb.checked = localStorage.getItem(CHART_RANGE_SHOW_ORB_LS_KEY) === '1';
+    const fibCb = document.getElementById('range-show-session-fib');
+    if (fibCb) fibCb.checked = localStorage.getItem(CHART_RANGE_SHOW_SESSION_FIB_LS_KEY) === '1';
+    restoreSessionFibZoneChecks();
+    syncSessionFibZonePanel();
     sessSel.addEventListener('change', () => {
       if (customInp) customInp.style.display = sessSel.value === 'custom' ? '' : 'none';
     });
@@ -2185,6 +2262,333 @@
   async function refreshStrategyRanges() {
     await refreshActiveRangesFor(getEnabledRangeStrategies());
     refreshMrrLiveStatus();
+  }
+
+  // -------------------------------------------------------------------------
+  // Session Fibonacci Sweep — zone boxes + fib 0 (Pine parity defaults)
+  // -------------------------------------------------------------------------
+  const SESSION_FIB_PALETTE = {
+    Tokyo:  { line: 'rgba(41, 98, 255, 0.75)',  fill1: 'rgba(41, 98, 255, 0.18)',  fill2: 'rgba(41, 98, 255, 0.06)',  label: 'TK' },
+    London: { line: 'rgba(255, 152, 0, 0.75)',  fill1: 'rgba(255, 152, 0, 0.18)',  fill2: 'rgba(255, 152, 0, 0.06)',  label: 'LN' },
+    'NY AM':{ line: 'rgba(8, 153, 129, 0.75)',  fill1: 'rgba(8, 153, 129, 0.18)',  fill2: 'rgba(8, 153, 129, 0.06)',  label: 'NYA' },
+    'NY PM':{ line: 'rgba(126, 87, 194, 0.75)', fill1: 'rgba(126, 87, 194, 0.18)', fill2: 'rgba(126, 87, 194, 0.06)', label: 'NYP' },
+  };
+  const SESSION_FIB_ZONE_MIX = { inner: 0, mid: 0.38, full: 0, extension: 0.38 };
+  const SESSION_FIB_ZONE_SESSIONS = ['Tokyo', 'London', 'NY AM', 'NY PM'];
+  const SESSION_FIB_ZONE_QUERY = { Tokyo: 'zones_tokyo', London: 'zones_london', 'NY AM': 'zones_nyam', 'NY PM': 'zones_nypm' };
+  let __sessionFibSessions = [];
+  let __sessionFibSeries = [];
+  let __sessionFibFetchGen = 0;
+  function mixRgbTowardWhite(color, mix) {
+    const p = rgbaFromCss(color, 'rgba(41,98,255,.75)');
+    if (typeof p === 'string') return color;
+    const m = Math.max(0, Math.min(1, mix || 0));
+    return {
+      r: Math.round(p.r + (255 - p.r) * m),
+      g: Math.round(p.g + (255 - p.g) * m),
+      b: Math.round(p.b + (255 - p.b) * m),
+    };
+  }
+  function sessionFibZonePalette(base, zoneName, sessionIdx) {
+    const mix = SESSION_FIB_ZONE_MIX[zoneName] != null ? SESSION_FIB_ZONE_MIX[zoneName] : 0;
+    const rgb = mixRgbTowardWhite(base.line, mix);
+    const faded = paletteForSession({
+      line: 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.78)',
+      fill1: 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.20)',
+      fill2: 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.06)',
+      label: base.label,
+    }, sessionIdx);
+    return faded;
+  }
+  function getSessionFibZones() {
+    const out = {};
+    SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+      const names = [];
+      document.querySelectorAll('input[data-sfib-sess="' + sess + '"]').forEach(function(el) {
+        if (el.checked) names.push(el.getAttribute('data-sfib-zone'));
+      });
+      out[sess] = names.length ? names : ['inner'];
+    });
+    return out;
+  }
+  function persistSessionFibZones() {
+    try { localStorage.setItem(CHART_SESSION_FIB_ZONES_LS_KEY, JSON.stringify(getSessionFibZones())); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_TP_PULL_LS_KEY, String(getSessionFibTpPullMult())); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY, getSessionFibTpStructure()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_ZONE_TAGS_LS_KEY, getSessionFibZoneTags()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_MARK_SHAPE_LS_KEY, getSessionFibMarkerShape()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_MARK_SHORT_LS_KEY, getSessionFibMarkerShort()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_MARK_LONG_LS_KEY, getSessionFibMarkerLong()); } catch (e) { /* ignore */ }
+  }
+  function getSessionFibTpPullMult() {
+    const el = document.getElementById('session-fib-tp-pull');
+    let n = el ? parseFloat(el.value) : 1;
+    if (!Number.isFinite(n)) n = 1;
+    return Math.max(0, Math.min(5, n));
+  }
+  function getSessionFibTpStructure() {
+    const el = document.getElementById('session-fib-tp-structure');
+    const v = el ? String(el.value || 'classic') : 'classic';
+    return v === 'path' ? 'path' : 'classic';
+  }
+  function getSessionFibZoneTags() {
+    const el = document.getElementById('session-fib-zone-tags');
+    const v = el ? String(el.value || 'full') : 'full';
+    return (v === 'off' || v === 'compact') ? v : 'full';
+  }
+  function getSessionFibMarkerShape() {
+    const el = document.getElementById('session-fib-marker-shape');
+    const v = el ? String(el.value || 'arrow') : 'arrow';
+    return (v === 'circle' || v === 'square' || v === 'none') ? v : 'arrow';
+  }
+  function sessionFibHexColor(raw, fallback) {
+    const v = String(raw || '').trim();
+    return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : fallback;
+  }
+  function getSessionFibMarkerShort() {
+    const el = document.getElementById('session-fib-marker-short');
+    return sessionFibHexColor(el && el.value, '#f23645');
+  }
+  function getSessionFibMarkerLong() {
+    const el = document.getElementById('session-fib-marker-long');
+    return sessionFibHexColor(el && el.value, '#089981');
+  }
+  function restoreSessionFibZoneChecks() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(CHART_SESSION_FIB_ZONES_LS_KEY) || 'null'); } catch (e) { stored = null; }
+    if (stored && typeof stored === 'object') {
+      SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+        const want = stored[sess];
+        if (!Array.isArray(want)) return;
+        document.querySelectorAll('input[data-sfib-sess="' + sess + '"]').forEach(function(el) {
+          el.checked = want.indexOf(el.getAttribute('data-sfib-zone')) >= 0;
+        });
+      });
+    }
+    const pullEl = document.getElementById('session-fib-tp-pull');
+    if (pullEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_TP_PULL_LS_KEY);
+      const n = raw != null ? parseFloat(raw) : NaN;
+      if (Number.isFinite(n)) pullEl.value = String(Math.max(0, Math.min(5, n)));
+    }
+    const structEl = document.getElementById('session-fib-tp-structure');
+    if (structEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_TP_STRUCT_LS_KEY);
+      if (raw === 'path' || raw === 'classic') structEl.value = raw;
+    }
+    const tagEl = document.getElementById('session-fib-zone-tags');
+    if (tagEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_ZONE_TAGS_LS_KEY);
+      if (raw === 'off' || raw === 'full' || raw === 'compact') tagEl.value = raw;
+    }
+    const markEl = document.getElementById('session-fib-marker-shape');
+    if (markEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_MARK_SHAPE_LS_KEY);
+      if (raw === 'arrow' || raw === 'circle' || raw === 'square' || raw === 'none') markEl.value = raw;
+    }
+    const shortEl = document.getElementById('session-fib-marker-short');
+    if (shortEl) {
+      const raw = sessionFibHexColor(localStorage.getItem(CHART_SESSION_FIB_MARK_SHORT_LS_KEY), '');
+      if (raw) shortEl.value = raw;
+    }
+    const longEl = document.getElementById('session-fib-marker-long');
+    if (longEl) {
+      const raw = sessionFibHexColor(localStorage.getItem(CHART_SESSION_FIB_MARK_LONG_LS_KEY), '');
+      if (raw) longEl.value = raw;
+    }
+  }
+  function syncSessionFibZonePanel() {
+    const panel = document.getElementById('session-fib-zone-panel');
+    if (panel) panel.hidden = !isSessionFibOverlayOn();
+  }
+  function onSessionFibZoneChange() {
+    persistSessionFibZones();
+    if (isSessionFibOverlayOn()) refreshSessionFibOverlay();
+  }
+  window.onSessionFibZoneChange = onSessionFibZoneChange;
+  function clearSessionFibOverlay() {
+    __sessionFibSeries.forEach(s => {
+      try { chart && chart.removeSeries(s); } catch (e) { /* old handle */ }
+    });
+    __sessionFibSeries = [];
+  }
+  function isSessionFibOverlayOn() {
+    return elChecked('range-show-session-fib');
+  }
+  function sessionFibMaxSessions() {
+    return getRangeOverlayCount();
+  }
+  async function refreshSessionFibOverlay() {
+    if (!isSessionFibOverlayOn() || sessionFibMaxSessions() <= 0) {
+      __sessionFibSessions = [];
+      clearSessionFibOverlay();
+      return;
+    }
+    const gen = ++__sessionFibFetchGen;
+    const sym = (document.getElementById('chart-symbol-select') && document.getElementById('chart-symbol-select').value)
+      || currentChartSymbol || SYMBOL || '';
+    const tf = getChartTimeframe();
+    const rangeKey = getChartRangeKey();
+    const histSrcUi = (document.getElementById('chart-history-source') || {}).value || 'auto';
+    const histSrc = resolveHistorySource(rangeKey, histSrcUi);
+    const info = chartRangeBarLimit(rangeKey, tf, histSrc);
+    const limit = Math.max(1500, Math.min(8000, info.limit || 3500));
+    try {
+      const q = new URLSearchParams({
+        symbol: String(sym),
+        timeframe: String(tf),
+        limit: String(limit),
+        max_sessions: String(sessionFibMaxSessions()),
+        atr_len: '2',
+        ib_minutes: '30',
+        delay_until_ib: '1',
+        range_mode: 'atr',
+        tp_pull_mult: String(getSessionFibTpPullMult()),
+        tp_structure: getSessionFibTpStructure(),
+      });
+      const zmap = getSessionFibZones();
+      SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+        const key = SESSION_FIB_ZONE_QUERY[sess];
+        if (key) q.set(key, (zmap[sess] || []).join(','));
+      });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const r = await fetch(BASE_URL + '/api/chart/session_fib_sweep?' + q.toString(), { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (gen !== __sessionFibFetchGen) return;
+      if (!r.ok) {
+        console.warn('[v2] session_fib_sweep HTTP', r.status);
+        return;
+      }
+      const d = await r.json();
+      if (gen !== __sessionFibFetchGen) return;
+      __sessionFibSessions = (d && Array.isArray(d.sessions)) ? d.sessions : [];
+      applySessionFibOverlay();
+    } catch (e) {
+      if (e && e.name === 'AbortError') console.warn('[v2] session_fib_sweep timeout');
+      else console.warn('[v2] session_fib_sweep fetch', e);
+    }
+  }
+  function applySessionFibOverlay() {
+    if (!chart || !candlestickSeries) return;
+    clearSessionFibOverlay();
+    if (!isSessionFibOverlayOn() || !__sessionFibSessions.length) return;
+    const pushSeries = (s) => { if (s) __sessionFibSeries.push(s); };
+    function addZoneBox(buildStart, buildEnd, hi, lo, palette, sessionIdx) {
+      if (!chart || typeof chart.addBaselineSeries !== 'function') return;
+      const border = tintCss(palette.line, Math.max(0.45, 0.75 - (sessionIdx || 0) * 0.15));
+      const fill = tintCss(palette.fill1, Math.max(0.12, 0.22 - (sessionIdx || 0) * 0.04));
+      const common = rangeSeriesCommonOpts(sessionIdx || 0);
+      try {
+        const shade = chart.addBaselineSeries(Object.assign({}, common, {
+          baseValue: { type: 'price', price: lo },
+          topFillColor1: fill,
+          topFillColor2: tintCss(palette.fill1, 0.08),
+          topLineColor: border,
+          bottomLineColor: 'rgba(0,0,0,0)',
+          topLineVisible: true,
+          lineWidth: 1,
+          bottomFillColor1: 'rgba(0,0,0,0)',
+          bottomFillColor2: 'rgba(0,0,0,0)',
+        }));
+        shade.setData([{ time: buildStart, value: hi }, { time: buildEnd, value: hi }]);
+        pushSeries(shade);
+      } catch (e) { console.warn('[v2] session fib shade', e); }
+      try {
+        const loLn = chart.addLineSeries(Object.assign({}, common, {
+          color: border, lineWidth: 1, lineStyle: 0,
+        }));
+        loLn.setData([{ time: buildStart, value: lo }, { time: buildEnd, value: lo }]);
+        pushSeries(loLn);
+      } catch (e) { console.warn('[v2] session fib lo', e); }
+    }
+    __sessionFibSessions.forEach((sess, sessionIdx) => {
+      const gs = +sess.grid_start, ge = +sess.grid_end;
+      const anchor = +sess.anchor;
+      if (!Number.isFinite(gs) || !Number.isFinite(ge) || ge <= gs) return;
+      if (!Number.isFinite(anchor)) return;
+      const base = SESSION_FIB_PALETTE[sess.name] || SESSION_FIB_PALETTE.Tokyo;
+      const upPal = paletteForSession(base, sessionIdx);
+      const common = rangeSeriesCommonOpts(sessionIdx || 0);
+      try {
+        const zero = chart.addLineSeries(Object.assign({}, common, {
+          color: tintCss(upPal.line, 0.85),
+          lineWidth: 2,
+          lineStyle: 0,
+        }));
+        zero.setData([{ time: gs, value: anchor }, { time: ge, value: anchor }]);
+        pushSeries(zero);
+        const fades = Array.isArray(sess.fades) ? sess.fades : [];
+        if (typeof zero.setMarkers === 'function') {
+          const markShape = getSessionFibMarkerShape();
+          const shortC = getSessionFibMarkerShort();
+          const longC = getSessionFibMarkerLong();
+          zero.setMarkers(markShape === 'none' ? [] : fades.map(function(f) {
+            const short = f.fade === 'short';
+            const t = +f.time;
+            if (!Number.isFinite(t) || !Number.isFinite(+f.entry)) return null;
+            // Fades are only emitted while that session's clock is open.
+            const shape = markShape === 'circle' ? 'circle' : markShape === 'square' ? 'square' : (short ? 'arrowDown' : 'arrowUp');
+            return {
+              time: t,
+              position: short ? 'aboveBar' : 'belowBar',
+              color: short ? shortC : longC,
+              shape: shape,
+              text: (short ? 'S ' : 'L ') + (f.zone || ''),
+            };
+          }).filter(Boolean));
+        }
+        const lastFade = fades.length ? fades[fades.length - 1] : null;
+        if (lastFade) {
+          const t0 = +lastFade.time;
+          ['tp1', 'tp2', 'tp3'].forEach(function(k, i) {
+            const px = +lastFade[k];
+            if (!Number.isFinite(t0) || !Number.isFinite(px) || t0 >= ge) return;
+            try {
+              const ln = chart.addLineSeries(Object.assign({}, common, {
+                color: tintCss(upPal.line, 0.5),
+                lineWidth: 1,
+                lineStyle: i < 2 ? 2 : 1,
+              }));
+              ln.setData([{ time: t0, value: px }, { time: ge, value: px }]);
+              pushSeries(ln);
+            } catch (e) { console.warn('[v2] session fib tp', k, e); }
+          });
+        }
+      } catch (e) { console.warn('[v2] session fib 0', e); }
+      const zones = Array.isArray(sess.zones) ? sess.zones : [];
+      zones.forEach(z => {
+        const lo = +z.lo, hi = +z.hi;
+        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+        const z0 = Number.isFinite(+z.grid_start) ? +z.grid_start : gs;
+        const z1 = Number.isFinite(+z.grid_end) ? +z.grid_end : ge;
+        if (!(z1 > z0)) return;
+        addZoneBox(z0, z1, hi, lo, sessionFibZonePalette(base, z.name, sessionIdx || 0), sessionIdx || 0);
+        const tagMode = getSessionFibZoneTags();
+        if (tagMode === 'off') return;
+        const tag = tagMode === 'compact' ? (z.tag_compact || '') : (z.tag || '');
+        const midT = Math.round((z0 + z1) / 2);
+        const midP = (lo + hi) / 2;
+        if (!tag || !Number.isFinite(midT) || !Number.isFinite(midP)) return;
+        try {
+          const tagLn = chart.addLineSeries(Object.assign({}, common, {
+            color: 'rgba(0,0,0,0)', lineWidth: 1, lineVisible: false,
+            lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+          }));
+          tagLn.setData([{ time: midT, value: midP }]);
+          if (typeof tagLn.setMarkers === 'function') {
+            tagLn.setMarkers([{
+              time: midT,
+              position: 'inBar',
+              color: tintCss(upPal.line, 0.9),
+              shape: 'circle',
+              text: tag,
+            }]);
+          }
+          pushSeries(tagLn);
+        } catch (e) { console.warn('[v2] session fib tag', e); }
+      });
+    });
   }
   function ingestRangeOverlayPayload(name, d) {
     if (!d || typeof d !== 'object') {
@@ -2471,12 +2875,21 @@
     const orOn = elChecked('range-show-or');
     const mrrOn = elChecked('range-show-mrr');
     const orbOn = elChecked('range-show-orb');
+    const fibOn = elChecked('range-show-session-fib');
     localStorage.setItem(CHART_RANGE_SHOW_OR_LS_KEY, orOn ? '1' : '0');
     localStorage.setItem(CHART_RANGE_SHOW_MRR_LS_KEY, mrrOn ? '1' : '0');
     localStorage.setItem(CHART_RANGE_SHOW_ORB_LS_KEY, orbOn ? '1' : '0');
+    localStorage.setItem(CHART_RANGE_SHOW_SESSION_FIB_LS_KEY, fibOn ? '1' : '0');
+    persistSessionFibZones();
+    syncSessionFibZonePanel();
     applyChartRanges();
+    if (fibOn) refreshSessionFibOverlay();
+    else {
+      __sessionFibSessions = [];
+      clearSessionFibOverlay();
+    }
     if (v > 0 && (orOn || mrrOn || orbOn)) scheduleRangeRefresh();
-    else refreshMrrLiveStatus();
+    else if (!fibOn) refreshMrrLiveStatus();
   }
   window.onRangeOverlayChange = onRangeOverlayChange;
   function onChartRangeChange() {
