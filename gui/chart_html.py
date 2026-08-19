@@ -5018,6 +5018,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             from strategies.session_fibonacci_sweep_math import (
                 DEFAULT_ATR_LEN,
                 DEFAULT_SESSION_ZONES,
+                DEFAULT_TP_PULL_MULT,
                 DEFAULT_ZONE_NAMES,
                 build_session_fib_overlays,
                 normalize_zone_names,
@@ -5068,6 +5069,11 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
             range_mode = (request.query.get("range_mode") or "atr").strip().lower()
             if range_mode not in ("atr", "previous"):
                 range_mode = "atr"
+            try:
+                tp_pull_mult = float(request.query.get("tp_pull_mult", str(DEFAULT_TP_PULL_MULT)))
+            except (TypeError, ValueError):
+                tp_pull_mult = DEFAULT_TP_PULL_MULT
+            tp_pull_mult = max(0.0, min(5.0, tp_pull_mult))
 
             cache_key = "|".join(
                 [
@@ -5081,6 +5087,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                     ";".join(f"{k}:{','.join(v)}" for k, v in session_zones.items()),
                     "1" if delay_until_ib else "0",
                     range_mode,
+                    f"{tp_pull_mult:.4f}",
                 ]
             )
             now = time.time()
@@ -5104,6 +5111,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 zone_names=zone_names,
                 session_zones=session_zones,
                 max_sessions=max_sessions,
+                tp_pull_mult=tp_pull_mult,
             )
             payload = {
                 "symbol": sym,
@@ -5111,6 +5119,7 @@ async def _start_chart_server(trading_bot, symbol: str, timeframe: str = '5m') -
                 "bar_count": len(chart_bars),
                 "atr_len": atr_len,
                 "ib_minutes": ib_minutes,
+                "tp_pull_mult": tp_pull_mult,
                 "zones": zone_names,
                 "session_zones": {k: list(v) for k, v in session_zones.items()},
                 "sessions": overlays,

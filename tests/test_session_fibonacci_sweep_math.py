@@ -27,6 +27,7 @@ from strategies.session_fibonacci_sweep_math import (
     overlaps_band,
     parse_hhmm_to_minutes,
     price_touches_zone,
+    pull_take_profit,
     project_levels,
     resolve_distance,
     session_allows_signal,
@@ -34,6 +35,8 @@ from strategies.session_fibonacci_sweep_math import (
     sweep_confirmed,
     sweep_ifvg_confirmed,
     sweep_pierced,
+    true_range,
+    wilder_atr,
     zone_band,
 )
 
@@ -123,7 +126,86 @@ def test_build_fade_setup_short_and_long():
     assert long.tp2 > long.tp1  # opposite mid is above anchor
 
 
-def test_ib_anchor_ready():
+def test_tp_pull_sits_in_front_of_fibs():
+    assert pull_take_profit(100.0, 102.5, "short", 0.0) == 100.0
+    assert pull_take_profit(100.0, 102.5, "short", 0.4) == pytest.approx(100.4)
+    assert pull_take_profit(105.0, 102.5, "long", 0.4) == pytest.approx(104.6)
+    # Do not pull through entry
+    assert pull_take_profit(100.0, 100.2, "short", 5.0, min_tick=0.1) == pytest.approx(100.1)
+
+    short = build_fade_setup(100.0, 10.0, "up", "inner", tp_offset=0.5)
+    assert short.tp1 == pytest.approx(100.5)
+    assert short.tp1 < short.entry
+    assert short.tp2 < short.tp1  # opposite-side TP is still beyond fib 0
+    long = build_fade_setup(100.0, 10.0, "down", "mid", tp_offset=0.5)
+    assert long.tp1 == pytest.approx(99.5)
+    assert long.tp1 > long.entry
+
+    pulled = maybe_session_fade(
+        in_session=True,
+        high=102.9,
+        low=100.0,
+        close=102.0,
+        anchor=100.0,
+        distance=10.0,
+        zone="inner",
+        side="up",
+        tp_offset=0.3,
+    )
+    assert pulled is not None
+    assert pulled.tp1 == pytest.approx(100.3)
+
+
+def test_wilder_atr_and_true_range():
+    assert true_range(10.0, 8.0) == pytest.approx(2.0)
+    assert true_range(10.0, 8.0, 11.0) == pytest.approx(3.0)
+    assert wilder_atr([], 1) == 0.0
+    assert wilder_atr([2.0, 4.0, 6.0], 1) == pytest.approx(6.0)
+    # Length 3 seed = mean of first 3
+    assert wilder_atr([2.0, 4.0, 6.0], 3) == pytest.approx(4.0)
+
+
+def test_overlay_fade_tps_pulled_in_front_of_fibs():
+    day0 = datetime(2024, 6, 3, tzinfo=ZoneInfo("America/New_York"))  # Monday
+    bars = []
+    for d in range(3):
+        day = day0 + timedelta(days=d)
+        start = _et_unix(day.year, day.month, day.day, 8, 0)
+        for i in range(180):
+            t = start + i * 60
+            if d == 2 and i == 40:
+                # Wick through inner high, close back toward fib 0
+                bars.append(
+                    {"time": t, "open": 100.0, "high": 103.0, "low": 99.8, "close": 100.1}
+                )
+            else:
+                bars.append(
+                    {"time": t, "open": 100.0, "high": 100.4, "low": 99.6, "close": 100.0}
+                )
+        after = start + 180 * 60
+        for i in range(5):
+            bars.append(
+                {"time": after + i * 60, "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0}
+            )
+
+    kwargs = dict(
+        atr_len=2,
+        ib_minutes=30,
+        delay_until_ib=True,
+        max_sessions=5,
+        sessions={"NY AM": ("08:00", "11:00")},
+        zone_names=("inner",),
+        min_tick=0.01,
+    )
+    pulled = build_session_fib_overlays(bars, tp_pull_mult=0.1, **kwargs)
+    unpulled = build_session_fib_overlays(bars, tp_pull_mult=0.0, **kwargs)
+    assert pulled and unpulled
+    pf = next((f for g in pulled for f in (g.get("fades") or []) if f.get("fade") == "short"), None)
+    uf = next((f for g in unpulled for f in (g.get("fades") or []) if f.get("fade") == "short"), None)
+    assert pf is not None and uf is not None
+    assert uf["tp1"] == pytest.approx(unpulled[0]["anchor"])
+    assert pf["tp1"] > uf["tp1"]
+    assert pf["tp1"] < pf["entry"]
     start = 1_000_000
     ib_min = 30
     end = start + ib_min * 60 * 1000

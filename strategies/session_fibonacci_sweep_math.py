@@ -55,6 +55,9 @@ DEFAULT_SESSIONS: Dict[str, Tuple[str, str]] = {
 
 DEFAULT_TIMEZONE = "America/New_York"
 DEFAULT_ATR_LEN = 2
+DEFAULT_TP_PULL_MULT = 1.0
+DEFAULT_TP_PULL_PERIOD_SEC = 180  # 3-minute candle, matches Pine tpPullTf default
+DEFAULT_TP_PULL_ATR_LEN = 1  # last period true range (Pine ta.atr(1))
 DEFAULT_ZONE_NAMES: Tuple[str, ...] = ("inner", "mid")
 DEFAULT_SESSION_ZONES: Dict[str, Tuple[str, ...]] = {
     "Tokyo": ("inner", "mid"),
@@ -102,9 +105,9 @@ class FadeSetup:
     zone: str
     entry: float
     stop: float
-    tp1: float  # fib 0 (anchor)
-    tp2: float  # opposite same-zone mid
-    tp3: float  # opposite next-wider zone mid (or extension mid)
+    tp1: float  # fib 0, pulled in front of the level by tp_offset
+    tp2: float  # opposite same-zone mid (same pull)
+    tp3: float  # opposite next-wider zone mid (same pull)
     stop_buffer: float
 
 
@@ -265,6 +268,93 @@ def first_swept_zone(
     return side, name  # type: ignore[return-value]
 
 
+def true_range(high: float, low: float, prev_close: Optional[float] = None) -> float:
+    """Classic true range; ``prev_close`` None → high−low."""
+    span = float(high) - float(low)
+    if prev_close is None:
+        return max(0.0, span)
+    pc = float(prev_close)
+    return max(span, abs(float(high) - pc), abs(float(low) - pc))
+
+
+def wilder_atr(true_ranges: Sequence[float], length: int = 1) -> float:
+    """Wilder ATR (Pine ``ta.atr``). Length 1 is the last true range."""
+    if not true_ranges:
+        return 0.0
+    n = max(1, int(length))
+    vals = [max(0.0, float(x)) for x in true_ranges]
+    if n == 1:
+        return vals[-1]
+    if len(vals) < n:
+        return sum(vals) / len(vals)
+    atr = sum(vals[:n]) / float(n)
+    for tr in vals[n:]:
+        atr = (atr * (n - 1) + tr) / float(n)
+    return atr
+
+
+class _PeriodAtr:
+    """ATR of completed wall-clock period bars (``lookahead_off`` — forming bar omitted)."""
+
+    def __init__(self, period_sec: int = DEFAULT_TP_PULL_PERIOD_SEC, atr_len: int = DEFAULT_TP_PULL_ATR_LEN):
+        self.period_sec = max(1, int(period_sec))
+        self.atr_len = max(1, int(atr_len))
+        self.bucket: Optional[int] = None
+        self.bh = 0.0
+        self.bl = 0.0
+        self.bc = 0.0
+        self.prev_c: Optional[float] = None
+        self.trs: List[float] = []
+
+    def update(self, t_sec: int, high: float, low: float, close: float) -> float:
+        b = int(t_sec) // self.period_sec
+        h, l, c = float(high), float(low), float(close)
+        if self.bucket is None:
+            self.bucket = b
+            self.bh, self.bl, self.bc = h, l, c
+            return self.value()
+        if b != self.bucket:
+            self.trs.append(true_range(self.bh, self.bl, self.prev_c))
+            cap = max(self.atr_len * 5, 50)
+            if len(self.trs) > cap:
+                self.trs = self.trs[-cap:]
+            self.prev_c = self.bc
+            self.bucket = b
+            self.bh, self.bl, self.bc = h, l, c
+        else:
+            self.bh = max(self.bh, h)
+            self.bl = min(self.bl, l)
+            self.bc = c
+        return self.value()
+
+    def value(self) -> float:
+        return wilder_atr(self.trs, self.atr_len)
+
+
+def pull_take_profit(
+    raw: float,
+    entry: float,
+    fade: FadeSide,
+    offset: float,
+    min_tick: float = 0.0,
+) -> float:
+    """
+    Sit a take-profit in front of the fib/zone (toward entry).
+
+    Short: raise the TP. Long: lower the TP. ``offset <= 0`` leaves ``raw``.
+    """
+    if offset is None or offset <= 0:
+        return float(raw)
+    tick = max(0.0, float(min_tick))
+    if fade == "short":
+        pulled = float(raw) + float(offset)
+        cap = float(entry) - tick
+        return pulled if pulled <= cap else cap
+    pulled = float(raw) - float(offset)
+    floor = float(entry) + tick
+    return pulled if pulled >= floor else floor
+
+
 def build_fade_setup(
     anchor: float,
     distance: float,
@@ -272,15 +362,17 @@ def build_fade_setup(
     zone: str,
     stop_buffer_ratio: float = 0.15,
     entry_at: Literal["mid", "near", "far"] = "mid",
+    tp_offset: float = 0.0,
+    min_tick: float = 0.0,
 ) -> FadeSetup:
     """
     Build fade levels after a zone sweep.
 
     Entry: inside the swept zone (mid / near / far edge from anchor).
     Stop: beyond the far edge + ``stop_buffer_ratio * distance``.
-    TP1: fib 0 (anchor).
-    TP2: opposite same-zone mid.
-    TP3: opposite next-wider zone mid.
+    TP1: fib 0 (anchor), pulled ``tp_offset`` in front of the level.
+    TP2: opposite same-zone mid (same pull).
+    TP3: opposite next-wider zone mid (same pull).
     """
     swept = zone_band(anchor, distance, zone, swept_side)
     opp_side: Side = "down" if swept_side == "up" else "up"
@@ -308,9 +400,9 @@ def build_fade_setup(
         zone=zone,
         entry=entry,
         stop=stop,
-        tp1=anchor,
-        tp2=opp.mid,
-        tp3=wider.mid,
+        tp1=pull_take_profit(anchor, entry, fade, tp_offset, min_tick),
+        tp2=pull_take_profit(opp.mid, entry, fade, tp_offset, min_tick),
+        tp3=pull_take_profit(wider.mid, entry, fade, tp_offset, min_tick),
         stop_buffer=buf,
     )
 
@@ -557,6 +649,8 @@ def maybe_session_fade(
     full_pierce: bool = True,
     require_confirm: bool = True,
     stop_buffer_ratio: float = 0.15,
+    tp_offset: float = 0.0,
+    min_tick: float = 0.0,
 ) -> Optional[FadeSetup]:
     """Build a fade setup only when the bar is inside the session clock."""
     if not in_session or distance is None or distance <= 0:
@@ -568,7 +662,13 @@ def maybe_session_fade(
     elif not price_touches_zone(high, low, band):
         return None
     return build_fade_setup(
-        anchor, distance, side, zone, stop_buffer_ratio=stop_buffer_ratio
+        anchor,
+        distance,
+        side,
+        zone,
+        stop_buffer_ratio=stop_buffer_ratio,
+        tp_offset=tp_offset,
+        min_tick=min_tick,
     )
 
 
@@ -579,6 +679,8 @@ def _append_live_fade(
     high: float,
     low: float,
     close: float,
+    tp_offset: float = 0.0,
+    min_tick: float = 0.0,
 ) -> None:
     grid = tracker.active
     if grid is None:
@@ -595,7 +697,14 @@ def _append_live_fade(
             if tracker.pierced.get(key) and not tracker.signaled.get(key):
                 if sweep_confirmed(high, low, close, band, side, full_pierce=True):
                     tracker.signaled[key] = True
-                    setup = build_fade_setup(anchor, dist, side, zname)  # type: ignore[arg-type]
+                    setup = build_fade_setup(
+                        anchor,
+                        dist,
+                        side,
+                        zname,  # type: ignore[arg-type]
+                        tp_offset=tp_offset,
+                        min_tick=min_tick,
+                    )
                     fades.append(
                         {
                             "time": int(t_sec),
@@ -626,12 +735,18 @@ def build_session_fib_overlays(
     grid_width_frac: float = 1.0,
     grid_end_trim_sec: int = 180,
     min_tick: float = 0.0,
+    tp_pull_mult: float = DEFAULT_TP_PULL_MULT,
+    tp_pull_period_sec: int = DEFAULT_TP_PULL_PERIOD_SEC,
+    tp_pull_atr_len: int = DEFAULT_TP_PULL_ATR_LEN,
 ) -> List[Dict[str, Any]]:
     """
     Walk OHLCV bars and emit Session Fibonacci Sweep grids (Pine-parity).
 
     Each bar dict needs ``time`` (unix sec or ms), ``open``, ``high``, ``low``,
     ``close``. Returns newest-first list capped at ``max_sessions``.
+
+    Fade TP1–TP3 sit ``tp_pull_mult`` × last completed 3-minute ATR in front of
+    the fib/zone (Pine ``tpPullMult`` / ``tpPullTf``). ``0`` leaves TPs on the fibs.
     """
     if not bars:
         return []
@@ -655,6 +770,8 @@ def build_session_fib_overlays(
     completed: List[Dict[str, Any]] = []
     prev_sec: Optional[int] = None
     prev_close: Optional[float] = None
+    period_atr = _PeriodAtr(period_sec=tp_pull_period_sec, atr_len=tp_pull_atr_len)
+    pull_mult = max(0.0, float(tp_pull_mult))
 
     mode: Literal["atr", "previous"] = "atr" if range_mode == "atr" else "previous"
 
@@ -669,6 +786,12 @@ def build_session_fib_overlays(
             continue
         local = datetime.fromtimestamp(t_sec, tz=timezone.utc).astimezone(tz)
         mins = local.hour * 60 + local.minute
+        closed_atr = period_atr.update(t_sec, h, l, c)
+        fallback_tr = true_range(h, l, prev_close)
+        tp_off = 0.0
+        if pull_mult > 0:
+            base = closed_atr if closed_atr > 0 else fallback_tr
+            tp_off = max(0.0, base * pull_mult)
 
         for tr in trackers:
             in_now = minutes_in_session(mins, tr.start_hm, tr.end_hm)
@@ -727,7 +850,15 @@ def build_session_fib_overlays(
                                 tr.active = grid
                                 tr.grid_started = True
                 if tr.active is not None:
-                    _append_live_fade(tr, t_sec=t_sec, high=h, low=l, close=c)
+                    _append_live_fade(
+                        tr,
+                        t_sec=t_sec,
+                        high=h,
+                        low=l,
+                        close=c,
+                        tp_offset=tp_off,
+                        min_tick=min_tick,
+                    )
             elif tr.was_in:
                 # Session ended — commit H–L range and archive active grid
                 if (
@@ -766,6 +897,9 @@ __all__ = [
     "DEFAULT_SESSIONS",
     "DEFAULT_TIMEZONE",
     "DEFAULT_ATR_LEN",
+    "DEFAULT_TP_PULL_MULT",
+    "DEFAULT_TP_PULL_PERIOD_SEC",
+    "DEFAULT_TP_PULL_ATR_LEN",
     "DEFAULT_ZONE_NAMES",
     "DEFAULT_SESSION_ZONES",
     "LevelBook",
@@ -781,6 +915,9 @@ __all__ = [
     "sweep_pierced",
     "sweep_confirmed",
     "first_swept_zone",
+    "true_range",
+    "wilder_atr",
+    "pull_take_profit",
     "build_fade_setup",
     "ib_anchor_ready",
     "detect_fvg",

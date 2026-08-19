@@ -819,6 +819,11 @@
                 <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="full" onchange="onSessionFibZoneChange()"> 1.0</label>
                 <label><input type="checkbox" data-sfib-sess="NY PM" data-sfib-zone="extension" checked onchange="onSessionFibZoneChange()"> 1.38</label>
               </div>
+              <div class="sfib-row"><span>TP pull</span>
+                <label title="Sit fade TPs this many 3-minute ATRs in front of the fib/zone so a stall just before the level can still fill. 0 = TPs sit on the fibs.">
+                  <input type="number" id="session-fib-tp-pull" min="0" max="5" step="0.1" value="1" style="width:48px" onchange="onSessionFibZoneChange()"> × 3m ATR
+                </label>
+              </div>
             </div>
             <div id="mrr-live-status" class="mrr-live-status" aria-live="polite"></div>
           </div>
@@ -1079,6 +1084,7 @@
   const CHART_RANGE_SHOW_ORB_LS_KEY = 'masterv2.chart.rangeShowOrb';
   const CHART_RANGE_SHOW_SESSION_FIB_LS_KEY = 'masterv2.chart.rangeShowSessionFib';
   const CHART_SESSION_FIB_ZONES_LS_KEY = 'masterv2.chart.sessionFibZones';
+  const CHART_SESSION_FIB_TP_PULL_LS_KEY = 'masterv2.chart.sessionFibTpPull';
   const CHART_BG_LS_KEY = 'masterv2.chart.bgColor';
   const CHART_DRAWINGS_LS_PREFIX = 'masterv2.chart.drawings.';
 
@@ -2275,18 +2281,32 @@
   }
   function persistSessionFibZones() {
     try { localStorage.setItem(CHART_SESSION_FIB_ZONES_LS_KEY, JSON.stringify(getSessionFibZones())); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(CHART_SESSION_FIB_TP_PULL_LS_KEY, String(getSessionFibTpPullMult())); } catch (e) { /* ignore */ }
+  }
+  function getSessionFibTpPullMult() {
+    const el = document.getElementById('session-fib-tp-pull');
+    let n = el ? parseFloat(el.value) : 1;
+    if (!Number.isFinite(n)) n = 1;
+    return Math.max(0, Math.min(5, n));
   }
   function restoreSessionFibZoneChecks() {
     let stored = null;
     try { stored = JSON.parse(localStorage.getItem(CHART_SESSION_FIB_ZONES_LS_KEY) || 'null'); } catch (e) { stored = null; }
-    if (!stored || typeof stored !== 'object') return;
-    SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
-      const want = stored[sess];
-      if (!Array.isArray(want)) return;
-      document.querySelectorAll('input[data-sfib-sess="' + sess + '"]').forEach(function(el) {
-        el.checked = want.indexOf(el.getAttribute('data-sfib-zone')) >= 0;
+    if (stored && typeof stored === 'object') {
+      SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
+        const want = stored[sess];
+        if (!Array.isArray(want)) return;
+        document.querySelectorAll('input[data-sfib-sess="' + sess + '"]').forEach(function(el) {
+          el.checked = want.indexOf(el.getAttribute('data-sfib-zone')) >= 0;
+        });
       });
-    });
+    }
+    const pullEl = document.getElementById('session-fib-tp-pull');
+    if (pullEl) {
+      const raw = localStorage.getItem(CHART_SESSION_FIB_TP_PULL_LS_KEY);
+      const n = raw != null ? parseFloat(raw) : NaN;
+      if (Number.isFinite(n)) pullEl.value = String(Math.max(0, Math.min(5, n)));
+    }
   }
   function syncSessionFibZonePanel() {
     const panel = document.getElementById('session-fib-zone-panel');
@@ -2334,6 +2354,7 @@
         ib_minutes: '30',
         delay_until_ib: '1',
         range_mode: 'atr',
+        tp_pull_mult: String(getSessionFibTpPullMult()),
       });
       const zmap = getSessionFibZones();
       SESSION_FIB_ZONE_SESSIONS.forEach(function(sess) {
@@ -2422,6 +2443,23 @@
               text: (short ? 'S ' : 'L ') + (f.zone || ''),
             };
           }).filter(Boolean));
+        }
+        const lastFade = fades.length ? fades[fades.length - 1] : null;
+        if (lastFade) {
+          const t0 = +lastFade.time;
+          ['tp1', 'tp2', 'tp3'].forEach(function(k, i) {
+            const px = +lastFade[k];
+            if (!Number.isFinite(t0) || !Number.isFinite(px) || t0 >= ge) return;
+            try {
+              const ln = chart.addLineSeries(Object.assign({}, common, {
+                color: tintCss(upPal.line, 0.5),
+                lineWidth: 1,
+                lineStyle: i < 2 ? 2 : 1,
+              }));
+              ln.setData([{ time: t0, value: px }, { time: ge, value: px }]);
+              pushSeries(ln);
+            } catch (e) { console.warn('[v2] session fib tp', k, e); }
+          });
         }
       } catch (e) { console.warn('[v2] session fib 0', e); }
       const zones = Array.isArray(sess.zones) ? sess.zones : [];
