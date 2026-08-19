@@ -650,22 +650,26 @@ fillStatsTable(table t) =>
 // -----------------------------------------------------------------------------
 // Drawing helpers
 // -----------------------------------------------------------------------------
-method addBothLevels(FibDraw this, float ratio, bool on, color upC, color dnC, bool dotted) =>
+method addBothLevels(FibDraw this, float ratio, bool on, color upC, color dnC, bool dotted, int nestIdx) =>
     if on
         float off = ratio * this.dist
         float upPx = this.openPx + off
         float dnPx = this.openPx - off
-        int x2 = this.endBar
+        int inset = nestOn() ? nestIdx * nestStepBars : 0
+        int x1 = this.startBar + inset
+        int x2 = this.endBar - inset
+        if x2 <= x1
+            x2 := x1 + 1
         if dotted
-            this.lines.push(line.new(this.startBar, upPx, x2, upPx, color = color.new(upC, 0), width = lineWidth, style = line.style_dotted))
-            this.lines.push(line.new(this.startBar, dnPx, x2, dnPx, color = color.new(dnC, 0), width = lineWidth, style = line.style_dotted))
+            this.lines.push(fadeHLine(x1, upPx, x2, color.new(upC, 0), lineWidth, LN_DOTTED))
+            this.lines.push(fadeHLine(x1, dnPx, x2, color.new(dnC, 0), lineWidth, LN_DOTTED))
         else
-            this.lines.push(line.new(this.startBar, upPx, x2, upPx, color = color.new(upC, 0), width = lineWidth, style = line.style_solid))
-            this.lines.push(line.new(this.startBar, dnPx, x2, dnPx, color = color.new(dnC, 0), width = lineWidth, style = line.style_solid))
+            this.lines.push(fadeHLine(x1, upPx, x2, color.new(upC, 0), lineWidth, LN_SOLID))
+            this.lines.push(fadeHLine(x1, dnPx, x2, color.new(dnC, 0), lineWidth, LN_SOLID))
         if showLevelRatios or showLevelPrices
             if na(this.levelLabs)
                 this.levelLabs := array.new<label>()
-            int lx = this.endBar + 1
+            int lx = x2 + 1
             string ratioTxt = str.tostring(ratio, "#.####")
             string upTxt = ""
             string dnTxt = ""
@@ -919,30 +923,6 @@ method beginGrid(SessionState this) =>
         d.showExt := this.showExt
         d.zeroLine := line.new(leftBar, this.sessOpen, rightBar, this.sessOpen, color = upLine, width = math.max(lineWidth, 2), style = line.style_solid)
 
-        bool edgeOnly = isZonesOnly()
-        // Zone edge lines when zones-only; otherwise respect per-level toggles
-        d.addBothLevels(R_INNER_LO, edgeOnly ? this.showInner : drawLevelOn(showL0236),  innerC, innerC, false)
-        d.addBothLevels(R_INNER_HI, edgeOnly ? this.showInner : drawLevelOn(showL02795), innerC, innerC, false)
-        d.addBothLevels(R_MID_LO,   edgeOnly ? this.showMid   : drawLevelOn(showL05),    midC, midC, false)
-        d.addBothLevels(R_MID_HI,   edgeOnly ? this.showMid   : drawLevelOn(showL0559),  midC, midC, false)
-        d.addBothLevels(R_FULL_LO,  edgeOnly ? this.showFull  : drawLevelOn(showL08365), fullC, fullC, false)
-        d.addBothLevels(R_FULL_HI,  edgeOnly ? this.showFull  : drawLevelOn(showL10),    fullC, fullC, false)
-        d.addBothLevels(R_EXT_LO,   edgeOnly ? this.showExt   : drawLevelOn(showL1382),  extC, extC, false)
-        d.addBothLevels(R_EXT_HI,   edgeOnly ? this.showExt   : drawLevelOn(showL1618),  extC, extC, false)
-        // Solid 1.5 level when Full grid + Levels toggle (not a dotted zone midline)
-        if not edgeOnly and showL15
-            d.addBothLevels(R_EXT_MID, true, extC, extC, false)
-        // Dotted midlines inside each enabled zone (inner / mid / full / extension)
-        bool wantExtMid = this.showExt and (showZoneMidlines or showExtMidline)
-        if showZoneMidlines and this.showInner
-            d.addBothLevels(R_INNER_MID, true, innerC, innerC, true)
-        if showZoneMidlines and this.showMid
-            d.addBothLevels(R_MID_MID, true, midC, midC, true)
-        if showZoneMidlines and this.showFull
-            d.addBothLevels(R_FULL_MID, true, fullC, fullC, true)
-        if wantExtMid and (edgeOnly or not showL15)
-            d.addBothLevels(R_EXT_MID, true, extC, extC, true)
-
         // Nest index: extension outermost (0) → full → mid → inner
         int nestExt = 0
         int nestFull = 0
@@ -961,6 +941,31 @@ method beginGrid(SessionState this) =>
                 n += 1
             if this.showInner
                 nestInner := n
+
+        bool edgeOnly = isZonesOnly()
+        // Zone edge lines when zones-only (clipped to nest); otherwise full-width Levels toggles
+        d.addBothLevels(R_INNER_LO, edgeOnly ? this.showInner : drawLevelOn(showL0236),  innerC, innerC, false, edgeOnly ? nestInner : 0)
+        d.addBothLevels(R_INNER_HI, edgeOnly ? this.showInner : drawLevelOn(showL02795), innerC, innerC, false, edgeOnly ? nestInner : 0)
+        d.addBothLevels(R_MID_LO,   edgeOnly ? this.showMid   : drawLevelOn(showL05),    midC, midC, false, edgeOnly ? nestMid : 0)
+        d.addBothLevels(R_MID_HI,   edgeOnly ? this.showMid   : drawLevelOn(showL0559),  midC, midC, false, edgeOnly ? nestMid : 0)
+        d.addBothLevels(R_FULL_LO,  edgeOnly ? this.showFull  : drawLevelOn(showL08365), fullC, fullC, false, edgeOnly ? nestFull : 0)
+        d.addBothLevels(R_FULL_HI,  edgeOnly ? this.showFull  : drawLevelOn(showL10),    fullC, fullC, false, edgeOnly ? nestFull : 0)
+        d.addBothLevels(R_EXT_LO,   edgeOnly ? this.showExt   : drawLevelOn(showL1382),  extC, extC, false, edgeOnly ? nestExt : 0)
+        d.addBothLevels(R_EXT_HI,   edgeOnly ? this.showExt   : drawLevelOn(showL1618),  extC, extC, false, edgeOnly ? nestExt : 0)
+        // Solid 1.5 level when Full grid + Levels toggle (not a dotted zone midline)
+        if not edgeOnly and showL15
+            d.addBothLevels(R_EXT_MID, true, extC, extC, false, 0)
+        // Dotted midlines clip to the same inset as the zone box
+        bool wantExtMid = this.showExt and (showZoneMidlines or showExtMidline)
+        if showZoneMidlines and this.showInner
+            d.addBothLevels(R_INNER_MID, true, innerC, innerC, true, nestInner)
+        if showZoneMidlines and this.showMid
+            d.addBothLevels(R_MID_MID, true, midC, midC, true, nestMid)
+        if showZoneMidlines and this.showFull
+            d.addBothLevels(R_FULL_MID, true, fullC, fullC, true, nestFull)
+        if wantExtMid and (edgeOnly or not showL15)
+            d.addBothLevels(R_EXT_MID, true, extC, extC, true, nestExt)
+
         d.addBothZones(R_INNER_LO, R_INNER_HI, this.showInner, innerC, innerC, "inner", nestInner)
         d.addBothZones(R_MID_LO,   R_MID_HI,   this.showMid,   midC, midC, "mid", nestMid)
         d.addBothZones(R_FULL_LO,  R_FULL_HI,  this.showFull,  fullC, fullC, "full", nestFull)
