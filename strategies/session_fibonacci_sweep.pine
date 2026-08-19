@@ -1465,7 +1465,7 @@ if showStatsTable and enableSignals and barstate.islast
             table.delete(statsTbl)
             statsTbl := na
         statsTblMode := statsDetail
-        int statsRows = statsDetail == STATS_COMPACT ? 9 : 17
+        int statsRows = statsDetail == STATS_COMPACT ? 9 : 18
         statsTbl := table.new(statsTablePos(), 2, statsRows, bgcolor = color.new(color.black, 75), border_width = 1, border_color = color.new(color.gray, 50))
     fillStatsTable(statsTbl)
 else if not na(statsTbl)
